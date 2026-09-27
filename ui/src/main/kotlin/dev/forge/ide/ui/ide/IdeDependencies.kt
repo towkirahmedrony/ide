@@ -8,6 +8,7 @@ import dev.forge.ide.ui.ide.data.mock.MockAgentSession
 import dev.forge.ide.ui.ide.data.mock.MockGitRepository
 import dev.forge.ide.ui.ide.data.mock.MockTerminalSession
 import dev.forge.ide.ui.ide.data.mock.mockWorkspaceManager
+import dev.forge.ide.ui.ide.data.mock.mockWorkspacePicker
 import dev.forge.ide.workspace.WorkspaceManager
 
 /**
