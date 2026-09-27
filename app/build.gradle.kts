@@ -50,6 +50,7 @@ dependencies {
     // Android-facing layers.
     implementation(project(":ui"))
     implementation(project(":workspace-android"))
+    implementation(project(":model-android"))
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)

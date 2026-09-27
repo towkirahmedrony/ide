@@ -8,6 +8,14 @@ enum class ForgeErrorCode {
     DUPLICATE_SERVICE,
     SERVICE_NOT_FOUND,
     ARCHITECTURE_INVALID,
+    /** A model preset failed validation. */
+    MODEL_PRESET_INVALID,
+    /** No model preset exists for the requested id. */
+    MODEL_PRESET_NOT_FOUND,
+    /** A model lifecycle operation (start/stop/reconnect/health) did not succeed. */
+    MODEL_OPERATION_FAILED,
+    /** No runner is registered for the preset's provider type. */
+    MODEL_RUNNER_UNAVAILABLE,
     UNKNOWN,
 }
 

@@ -1,8 +1,10 @@
 package dev.forge.ide.ui.ide.data.mock
 
+import android.webkit.WebView
 import dev.forge.ide.ui.ide.data.AgentSession
 import dev.forge.ide.ui.ide.data.AgentStreamEvent
 import dev.forge.ide.ui.ide.data.GitRepository
+import dev.forge.ide.ui.ide.data.ModelRunnerBrowserHost
 import dev.forge.ide.ui.ide.data.TerminalSession
 import dev.forge.ide.ui.ide.data.WorkspacePicker
 import dev.forge.ide.ui.ide.model.AgentActivity
@@ -16,6 +18,8 @@ import dev.forge.ide.workspace.WorkspaceManager
 import dev.forge.ide.workspace.memory.InMemoryWorkspaceBackend
 import dev.forge.ide.workspace.memory.InMemoryWorkspaceMetadataStore
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import java.util.UUID
 
 /**
@@ -135,4 +139,34 @@ class MockTerminalSession : TerminalSession {
 class MockGitRepository : GitRepository {
 
     override suspend fun snapshot(workspaceId: String): GitSnapshot = GitSnapshot(available = false)
+}
+
+/**
+ * A Model Runner browser that never exists. Previews and tests get the same
+ * "the platform has no browser here" path the real host reports when a WebView
+ * cannot be created, so the screen's fallback is exercised rather than bypassed.
+ */
+class MockModelRunnerBrowser : ModelRunnerBrowserHost {
+
+    private val blocked = MutableStateFlow<String?>(null)
+
+    override val available: Boolean = false
+
+    override val blockedNavigation: StateFlow<String?> = blocked
+
+    override fun view(presetId: String, url: String, outputMarker: String): WebView? = null
+
+    override fun onSessionDetached(presetId: String) = Unit
+
+    override fun release() = Unit
+
+    override fun saveState(out: android.os.Bundle) = Unit
+
+    override fun restoreState(state: android.os.Bundle?) = Unit
+
+    override fun openExternally(url: String) = Unit
+
+    override fun clearBlockedNavigation() {
+        blocked.value = null
+    }
 }

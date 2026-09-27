@@ -22,6 +22,13 @@ class OrchestratorAgentSession(
 ) : AgentSession {
 
     override suspend fun run(input: String, onEvent: (AgentStreamEvent) -> Unit) {
+        // No model online means no agent turn. Say so in user terms, and never fall
+        // back to an endpoint the user did not select.
+        if (modelConfig().validate().isNotEmpty()) {
+            onEvent(AgentStreamEvent.Failed(NO_MODEL_ONLINE))
+            return
+        }
+
         val sink = AgentEventSink { event ->
             mapEvent(event)?.let(onEvent)
         }
@@ -43,6 +50,11 @@ class OrchestratorAgentSession(
                 onEvent(AgentStreamEvent.Failed(message))
             }
         }
+    }
+
+    private companion object {
+        const val NO_MODEL_ONLINE =
+            "No model is online. Open Settings → Models, select a model and connect it first."
     }
 }
 

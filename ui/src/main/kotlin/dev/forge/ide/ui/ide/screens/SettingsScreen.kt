@@ -51,7 +51,7 @@ enum class SettingsSection(
     val description: String,
     val icon: ImageVector,
 ) {
-    MODEL("model", "Model", "Providers, endpoints and model selection", Icons.Filled.Memory),
+    MODEL("model", "Models", "Saved models, runners and the active connection", Icons.Filled.Memory),
     AGENT("agent", "Agent", "Instructions, autonomy and generation limits", Icons.Filled.AutoAwesome),
     TOOLS("tools", "Tools", "Enable or disable agent tools", Icons.Filled.Handyman),
     PERMISSIONS("permissions", "Permissions", "Allow, ask or deny per capability", Icons.Filled.Security),

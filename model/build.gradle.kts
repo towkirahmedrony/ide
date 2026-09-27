@@ -9,6 +9,8 @@ kotlin {
 
 dependencies {
     api(project(":core"))
+    // The Model Manager exposes StateFlow in its public API.
+    api(libs.kotlinx.coroutines.core)
 
     testImplementation(kotlin("test"))
 }

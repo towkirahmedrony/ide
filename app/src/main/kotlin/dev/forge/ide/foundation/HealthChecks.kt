@@ -3,6 +3,7 @@ package dev.forge.ide.foundation
 import dev.forge.ide.core.architecture.LayerDescriptor
 import dev.forge.ide.core.config.ForgeConfig
 import dev.forge.ide.core.di.ServiceContainer
+import dev.forge.ide.core.foundation.ServiceKeys
 import dev.forge.ide.core.health.HealthCheckResult
 import dev.forge.ide.core.health.HealthStatus
 import dev.forge.ide.core.module.ModuleRegistry
@@ -28,6 +29,21 @@ internal fun moduleCheck(registry: ModuleRegistry, services: ServiceContainer): 
             message = "no modules initialized",
         )
     }
+}
+
+/**
+ * The model layer must publish a manager: without it no saved model could be
+ * connected, and the agent would have nothing to talk to.
+ */
+internal fun modelCheck(services: ServiceContainer): HealthCheckResult {
+    val hasManager = services.has(ServiceKeys.MODEL_MANAGER)
+    val hasGateway = services.has(ServiceKeys.MODEL_GATEWAY)
+    return HealthCheckResult(
+        name = "model",
+        status = if (hasManager && hasGateway) HealthStatus.HEALTHY else HealthStatus.UNHEALTHY,
+        message = "gateway=${if (hasGateway) "ready" else "missing"}, " +
+            "manager=${if (hasManager) "ready" else "missing"}",
+    )
 }
 
 internal fun architectureCheck(layers: List<LayerDescriptor>): HealthCheckResult {

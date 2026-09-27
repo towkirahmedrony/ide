@@ -29,6 +29,8 @@ android {
 dependencies {
     api(project(":core"))
     api(project(":workspace"))
+    // The Models screen talks to the Model Manager domain contract directly.
+    api(project(":model"))
 
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.viewmodel.ktx)

@@ -201,3 +201,7 @@ There is no requirement to send source code to a third-party AI provider. AI sho
   <br>
   <p><i>🚧 Status: Early Development. The architecture and feature set are evolving.</i></p>
 </div>
+
+## Documentation
+
+- [Model Manager, Model Presets and the Colab Model Runner](docs/model-manager.md) — how a saved model is started, connected and used by the agent.

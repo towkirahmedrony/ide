@@ -8,6 +8,18 @@ package dev.forge.ide.model
 interface ModelGateway {
     fun register(provider: ModelProvider)
 
+    /**
+     * Registers [provider], replacing an existing provider with the same id.
+     *
+     * Model presets are switched by re-pointing the active connection, which
+     * means the same provider id is registered again with a different endpoint.
+     * Without this, connecting a second model would fail as a duplicate.
+     */
+    fun registerOrReplace(provider: ModelProvider) {
+        unregister(provider.id)
+        register(provider)
+    }
+
     fun unregister(id: String): Boolean
 
     fun providers(): List<ModelProvider>

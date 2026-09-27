@@ -18,6 +18,12 @@ import dev.forge.ide.git.GIT_LAYER
 import dev.forge.ide.integrations.INTEGRATIONS_LAYER
 import dev.forge.ide.model.MODEL_LAYER
 import dev.forge.ide.model.ModelModule
+import dev.forge.ide.model.manager.ModelRuntimeModule
+import dev.forge.ide.model.preset.InMemoryModelPresetStore
+import dev.forge.ide.model.preset.InMemoryModelSecretStore
+import dev.forge.ide.model.preset.ModelPresetStore
+import dev.forge.ide.model.preset.ModelSecretStore
+import dev.forge.ide.model.runtime.RuntimeOutputBuffer
 import dev.forge.ide.skills.SKILLS_LAYER
 import dev.forge.ide.tools.TOOLS_LAYER
 import dev.forge.ide.tools.ToolsModule
@@ -39,7 +45,13 @@ data class FoundationState(
  */
 object Foundation {
 
-    fun boot(config: ForgeConfig = ForgeConfig()): FoundationState {
+    fun boot(
+        config: ForgeConfig = ForgeConfig(),
+        presetStore: ModelPresetStore = InMemoryModelPresetStore(),
+        secretStore: ModelSecretStore = InMemoryModelSecretStore(),
+        runtimeOutput: RuntimeOutputBuffer = RuntimeOutputBuffer(),
+        monitorModelConnections: Boolean = true,
+    ): FoundationState {
         val logger = ForgeLoggers.create(
             level = config.logLevel,
             baseFields = mapOf("app" to config.appName),
@@ -55,6 +67,15 @@ object Foundation {
         modules.register(ArchitectureModule(layers))
         modules.register(ToolsModule())
         modules.register(ModelModule())
+        // Model presets, runners and the active connection live beside the gateway.
+        modules.register(
+            ModelRuntimeModule(
+                presetStore = presetStore,
+                secretStore = secretStore,
+                runtimeOutput = runtimeOutput,
+                monitorEnabled = monitorModelConnections,
+            ),
+        )
         modules.register(AgentModule())
         modules.initialize(services)
 
@@ -62,6 +83,7 @@ object Foundation {
             .register { configCheck(config) }
             .register { moduleCheck(modules, services) }
             .register { architectureCheck(layers) }
+            .register { modelCheck(services) }
             .run()
 
         logger.info("Foundation ready", mapOf("layers" to layers.size, "status" to health.status))
