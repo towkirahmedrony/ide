@@ -10,7 +10,7 @@ import dev.forge.ide.core.module.ModuleContext
  * default permission policy, so it stays independent of any specific tool.
  */
 class ToolsModule(
-    tools: List<Tool> = emptyList(),
+    private val tools: List<Tool> = emptyList(),
     private val policy: ToolPermissionPolicy = ToolPermissionPolicy.default(),
 ) : ForgeModule {
 
