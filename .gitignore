@@ -21,3 +21,7 @@ local.properties
 captures/
 .cxx/
 .externalNativeBuild/
+
+# Android signing keys
+*.jks
+*.keystore

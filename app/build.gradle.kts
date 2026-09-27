@@ -7,6 +7,19 @@ android {
     namespace = "com.agentx.app"
     compileSdk = 37
 
+    signingConfigs {
+        create("release") {
+            val storeFilePath = System.getenv("AGENTX_STORE_FILE")
+
+            if (!storeFilePath.isNullOrBlank()) {
+                storeFile = file(storeFilePath)
+                storePassword = System.getenv("AGENTX_STORE_PASSWORD")
+                keyAlias = System.getenv("AGENTX_KEY_ALIAS")
+                keyPassword = System.getenv("AGENTX_KEY_PASSWORD")
+            }
+        }
+    }
+
     defaultConfig {
         applicationId = "com.agentx.app"
         minSdk = 26
@@ -18,6 +31,11 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
+
+            if (!System.getenv("AGENTX_STORE_FILE").isNullOrBlank()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
