@@ -1,0 +1,23 @@
+# Gradle
+.gradle/
+build/
+.kotlin/
+!gradle/wrapper/gradle-wrapper.jar
+
+# Local machine SDK path (never commit)
+local.properties
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+
+# Build outputs
+*.apk
+*.aab
+captures/
+.cxx/
+.externalNativeBuild/
