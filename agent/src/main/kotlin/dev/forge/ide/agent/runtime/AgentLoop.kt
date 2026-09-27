@@ -27,6 +27,7 @@ import dev.forge.ide.model.ModelResponse
 import dev.forge.ide.model.ModelStreamEvent
 import dev.forge.ide.model.ModelToolCall
 import dev.forge.ide.model.ModelToolChoice
+import dev.forge.ide.model.ModelToolSpec
 import dev.forge.ide.model.json.JsonObject
 import dev.forge.ide.model.json.JsonValue
 import dev.forge.ide.tools.ToolApproval
