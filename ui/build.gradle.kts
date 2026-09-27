@@ -45,6 +45,8 @@ dependencies {
 
     debugImplementation(libs.androidx.compose.ui.tooling)
 
-    testImplementation(kotlin("test"))
+    // Android unit tests run on JUnit 4, so the JUnit variant of kotlin-test is
+    // required; it also brings junit itself onto the test classpath.
+    testImplementation(kotlin("test-junit"))
     testImplementation(libs.kotlinx.coroutines.test)
 }
