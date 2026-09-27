@@ -2,7 +2,7 @@
 <resources>
 
     <!-- Base window theme; the app's visual design lives in Compose. -->
-    <style name="Theme.Forge" parent="android:Theme.Material.NoActionBar">
+    <style name="Theme.AgentX" parent="android:Theme.Material.NoActionBar">
         <item name="android:statusBarColor">#07080B</item>
         <item name="android:navigationBarColor">#07080B</item>
         <item name="android:windowBackground">#07080B</item>

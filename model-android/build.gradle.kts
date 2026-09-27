@@ -3,7 +3,7 @@ plugins {
 }
 
 android {
-    namespace = "dev.forge.ide.model.android"
+    namespace = "com.agentx.app.model.android"
     compileSdk = 37
 
     defaultConfig {

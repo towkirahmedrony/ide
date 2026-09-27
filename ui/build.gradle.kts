@@ -4,7 +4,7 @@ plugins {
 }
 
 android {
-    namespace = "dev.forge.ide.ui"
+    namespace = "com.agentx.app.ui"
     compileSdk = 37
 
     defaultConfig {

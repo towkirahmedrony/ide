@@ -14,7 +14,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Forge"
+rootProject.name = "AgentX"
 
 // Platform-independent domain layers.
 include(":core")

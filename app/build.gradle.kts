@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "dev.forge.ide"
+    namespace = "com.agentx.app"
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "dev.forge.ide"
+        applicationId = "com.agentx.app"
         minSdk = 26
         targetSdk = 37
         versionCode = 1
