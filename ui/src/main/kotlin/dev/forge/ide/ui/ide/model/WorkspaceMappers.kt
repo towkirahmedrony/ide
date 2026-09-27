@@ -1,6 +1,9 @@
 package dev.forge.ide.ui.ide.model
 
+import dev.forge.ide.workspace.DirectoryState
+import dev.forge.ide.workspace.WorkspaceEntryKind
 import dev.forge.ide.workspace.WorkspaceMetadata
+import dev.forge.ide.workspace.WorkspaceTreeEntry
 
 /** Presentation summary for a remembered workspace. */
 fun WorkspaceMetadata.toSummary(nowMillis: Long = System.currentTimeMillis()): ProjectSummary = ProjectSummary(
@@ -9,6 +12,25 @@ fun WorkspaceMetadata.toSummary(nowMillis: Long = System.currentTimeMillis()): P
     rootPath = displayLocation,
     branch = null,
     lastOpenedLabel = relativeTimeLabel(lastOpenedAtEpochMillis, nowMillis),
+)
+
+/**
+ * Turns one entry of the runtime's lazily loaded tree into the presentation
+ * node the Files screen renders. Loaded folders keep their children; folders
+ * that were never opened stay [DirectoryLoadState.UNLOADED] and cost nothing.
+ */
+fun WorkspaceTreeEntry.toFileNode(): FileNode = FileNode(
+    path = path,
+    name = name,
+    kind = if (kind == WorkspaceEntryKind.DIRECTORY) FileNodeKind.DIRECTORY else FileNodeKind.FILE,
+    children = children.map { it.toFileNode() },
+    loadState = when (directory) {
+        null, DirectoryState.Unloaded -> DirectoryLoadState.UNLOADED
+        DirectoryState.Loading -> DirectoryLoadState.LOADING
+        is DirectoryState.Loaded -> DirectoryLoadState.LOADED
+        is DirectoryState.Failed -> DirectoryLoadState.ERROR
+    },
+    errorMessage = (directory as? DirectoryState.Failed)?.error?.userMessage,
 )
 
 /** Human-friendly "last opened" label without pulling in a date library. */

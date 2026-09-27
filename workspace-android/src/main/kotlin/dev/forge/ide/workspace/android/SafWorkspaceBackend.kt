@@ -4,8 +4,12 @@ import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.provider.DocumentsContract
 import androidx.documentfile.provider.DocumentFile
 import dev.forge.ide.core.failure
+import dev.forge.ide.core.logging.ForgeLogger
+import dev.forge.ide.core.logging.ForgeLoggers
+import dev.forge.ide.core.logging.LogLevel
 import dev.forge.ide.core.success
 import dev.forge.ide.workspace.DefaultWorkspace
 import dev.forge.ide.workspace.Workspace
@@ -27,11 +31,23 @@ import kotlinx.coroutines.withContext
  */
 class SafWorkspaceBackend(private val context: Context) : WorkspaceBackend {
 
+    private val logger: ForgeLogger = ForgeLoggers.create(LogLevel.WARN, baseFields = mapOf("layer" to "saf"))
+
     override suspend fun open(handle: String): WorkspaceResult<Workspace> = withContext(Dispatchers.IO) {
         val uri = runCatching { Uri.parse(handle) }.getOrNull() ?: return@withContext invalidHandle()
         if (uri.scheme != ContentResolver.SCHEME_CONTENT) return@withContext invalidHandle()
+        // Only a tree URI (what ACTION_OPEN_DOCUMENT_TREE returns) can be listed
+        // and walked; a single-document URI cannot become a workspace.
+        if (!runCatching { DocumentsContract.isTreeUri(uri) }.getOrDefault(false)) {
+            return@withContext invalidHandle()
+        }
 
-        persistAccess(uri)
+        if (!persistAccess(uri)) {
+            logger.warn(
+                "The folder could not be remembered for later; it stays usable for this session only.",
+                mapOf("location" to displayLocation(uri, "workspace")),
+            )
+        }
 
         val root = runCatching { DocumentFile.fromTreeUri(context, uri) }.getOrNull()
             ?: return@withContext notFound()
@@ -50,13 +66,26 @@ class SafWorkspaceBackend(private val context: Context) : WorkspaceBackend {
         success(DefaultWorkspace(metadata = metadata, fileSystem = SafWorkspaceFileSystem(context, root)))
     }
 
-    /** Requests durable access; falls back to read-only when write was not granted. */
-    private fun persistAccess(uri: Uri) {
-        val readWrite = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+    /**
+     * Requests durable access and verifies it was actually granted.
+     *
+     * Write access is requested first because it implies read, but a folder
+     * picked read-only must still open: the fallback asks for read only, and the
+     * result is confirmed against [ContentResolver.getPersistedUriPermissions]
+     * instead of being assumed.
+     */
+    private fun persistAccess(uri: Uri): Boolean {
+        val readOnly = Intent.FLAG_GRANT_READ_URI_PERMISSION
+        val readWrite = readOnly or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+
         runCatching { context.contentResolver.takePersistableUriPermission(uri, readWrite) }
-            .recoverCatching {
-                context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            .recoverCatching { context.contentResolver.takePersistableUriPermission(uri, readOnly) }
+
+        return runCatching {
+            context.contentResolver.persistedUriPermissions.any { granted ->
+                granted.uri == uri && granted.isReadPermission
             }
+        }.getOrDefault(false)
     }
 
     private fun stableId(uri: Uri): String = "saf-" + uri.toString().hashCode().toUInt().toString(16)

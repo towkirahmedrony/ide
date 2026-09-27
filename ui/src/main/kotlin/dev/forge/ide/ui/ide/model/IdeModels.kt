@@ -18,14 +18,34 @@ data class ProjectSummary(
 
 enum class FileNodeKind { FILE, DIRECTORY }
 
-/** A node in the workspace file tree. */
+/**
+ * How far the workspace runtime has got with reading a directory.
+ *
+ * Folders are read on demand, so a folder that was never opened stays
+ * [UNLOADED] without ever showing a spinner, and a folder that was read is
+ * [LOADED] even when it turned out to be empty.
+ */
+enum class DirectoryLoadState { UNLOADED, LOADING, LOADED, ERROR }
+
+/**
+ * A node in the workspace file tree.
+ *
+ * Directories carry the state of their own read ([loadState], [errorMessage])
+ * and their [children] only appear once that read succeeded.
+ */
 data class FileNode(
     val path: String,
     val name: String,
     val kind: FileNodeKind,
     val children: List<FileNode> = emptyList(),
+    val loadState: DirectoryLoadState = DirectoryLoadState.UNLOADED,
+    val errorMessage: String? = null,
 ) {
     val isDirectory: Boolean get() = kind == FileNodeKind.DIRECTORY
+
+    /** A directory that was read successfully and has nothing in it. */
+    val isEmptyDirectory: Boolean
+        get() = isDirectory && loadState == DirectoryLoadState.LOADED && children.isEmpty()
 }
 
 /** A file loaded into the editor. */

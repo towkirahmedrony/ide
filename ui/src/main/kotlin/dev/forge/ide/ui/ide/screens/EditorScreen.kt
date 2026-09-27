@@ -16,6 +16,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -61,11 +62,14 @@ fun EditorScreen(
 ) {
     val file = state.file
     if (file == null) {
+        // A file that could not be opened (binary, media, unreadable) reports
+        // why here instead of failing silently.
+        val blocked = state.statusMessage
         Box(modifier = modifier.fillMaxSize().background(ForgeCanvas)) {
             IdeEmptyState(
-                icon = Icons.Filled.Description,
-                title = "No file open",
-                message = "Pick a file from the explorer to start editing.",
+                icon = if (blocked != null) Icons.Outlined.ErrorOutline else Icons.Filled.Description,
+                title = if (blocked != null) "Unable to open file" else "No file open",
+                message = blocked ?: "Pick a file from the explorer to start editing.",
                 actionLabel = "Browse files",
                 onAction = onBrowseFiles,
                 modifier = Modifier.align(Alignment.Center),

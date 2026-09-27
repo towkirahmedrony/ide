@@ -170,6 +170,8 @@ fun WorkspaceShell(
                         }
                     },
                     onRetry = workspaceViewModel::loadWorkspace,
+                    onRetryDirectory = workspaceViewModel::retryDirectory,
+                    onNavigateUp = workspaceViewModel::navigateUp,
                 )
             }
             composable(WorkspaceTab.EDITOR.route) {

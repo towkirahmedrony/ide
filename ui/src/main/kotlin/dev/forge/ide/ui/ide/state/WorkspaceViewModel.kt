@@ -6,32 +6,64 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dev.forge.ide.core.ForgeResult
+import dev.forge.ide.core.logging.ForgeLogger
+import dev.forge.ide.core.logging.ForgeLoggers
+import dev.forge.ide.core.logging.LogLevel
 import dev.forge.ide.core.success
+import dev.forge.ide.ui.ide.model.DirectoryLoadState
 import dev.forge.ide.ui.ide.model.FileNode
 import dev.forge.ide.ui.ide.model.FileNodeKind
 import dev.forge.ide.ui.ide.model.OpenFile
 import dev.forge.ide.ui.ide.model.ProjectSummary
+import dev.forge.ide.ui.ide.model.toFileNode
 import dev.forge.ide.ui.ide.model.toSummary
-import dev.forge.ide.workspace.WorkspaceDirectory
-import dev.forge.ide.workspace.WorkspaceFile
-import dev.forge.ide.workspace.WorkspaceFileSystem
+import dev.forge.ide.workspace.WorkspaceFileOpener
 import dev.forge.ide.workspace.WorkspaceId
 import dev.forge.ide.workspace.WorkspaceManager
 import dev.forge.ide.workspace.WorkspacePath
 import dev.forge.ide.workspace.WorkspaceResult
 import dev.forge.ide.workspace.WorkspaceSession
+import dev.forge.ide.workspace.WorkspaceTreeLoader
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
-private const val MAX_TREE_DEPTH = 12
-
+/**
+ * Files page state.
+ *
+ * The root node is a normal [FileNode] that carries its own [DirectoryLoadState],
+ * so "loading", "loaded", "empty" and "error" are all represented for the root
+ * and for every folder below it. Children only exist for folders that were
+ * actually opened.
+ */
 data class FilesUiState(
+    /** The workspace session itself is being opened (permissions, root folder). */
     val loading: Boolean = true,
-    val root: List<FileNode> = emptyList(),
-    val expanded: Set<String> = emptySet(),
-    val selectedPath: String? = null,
+    /** The workspace could not be opened at all; the page shows an error + Retry. */
     val error: String? = null,
+    val root: FileNode = FileNode(
+        path = WorkspacePath.ROOT,
+        name = "",
+        kind = FileNodeKind.DIRECTORY,
+        loadState = DirectoryLoadState.LOADING,
+    ),
+    val expanded: Set<String> = emptySet(),
+    /** Directory the user last worked in; drives the breadcrumb and "up". */
+    val focusedPath: String = WorkspacePath.ROOT,
+    val selectedPath: String? = null,
 ) {
-    val isEmpty: Boolean get() = !loading && error == null && root.isEmpty()
+    val rootState: DirectoryLoadState get() = root.loadState
+    val rootError: String? get() = root.errorMessage
+
+    /** A root folder that was read successfully and contains nothing. */
+    val isEmpty: Boolean get() = !loading && error == null && root.isEmptyDirectory
+
+    /** Readable location of [path] inside the workspace, for the breadcrumb. */
+    fun breadcrumb(path: String = focusedPath): String =
+        if (WorkspacePath.isRoot(path)) root.name else (listOf(root.name) + path.split('/')).joinToString(SEPARATOR)
+
+    private companion object {
+        const val SEPARATOR = " / "
+    }
 }
 
 data class EditorUiState(
@@ -45,12 +77,17 @@ data class EditorUiState(
 }
 
 /**
- * State holder for the workspace shell. It reads the file tree and file contents
- * through the domain [WorkspaceFileSystem] only, never through Android APIs.
+ * State holder for the workspace shell.
+ *
+ * Reading the tree is delegated to the workspace runtime: only the root folder
+ * is read when a workspace opens, and each folder is read the first time it is
+ * expanded. No code path here walks a project recursively, so opening a large
+ * repository shows its first level immediately.
  */
 class WorkspaceViewModel(
     private val workspaceId: String,
     private val manager: WorkspaceManager,
+    private val logger: ForgeLogger = ForgeLoggers.create(LogLevel.WARN, baseFields = mapOf("screen" to "files")),
 ) : ViewModel() {
 
     var project by mutableStateOf<ProjectSummary?>(null)
@@ -67,68 +104,115 @@ class WorkspaceViewModel(
         private set
 
     private var session: WorkspaceSession? = null
+    private var tree: WorkspaceTreeLoader? = null
+    private var rootName: String = ""
 
     init {
         loadWorkspace()
     }
 
+    /**
+     * Opens (or restores) the workspace and reads its root folder only.
+     *
+     * Any failure — including one thrown by the platform storage layer — ends in
+     * a visible error state: the Files page must never be left loading.
+     */
     fun loadWorkspace() {
+        filesState = FilesUiState(loading = true)
         viewModelScope.launch {
-            filesState = filesState.copy(loading = true, error = null)
-            when (val resolved = resolveSession()) {
-                is ForgeResult.Failure -> {
-                    session = null
-                    filesState = filesState.copy(
-                        loading = false,
-                        root = emptyList(),
-                        error = resolved.error.userMessage,
-                    )
-                }
+            try {
+                when (val resolved = resolveSession()) {
+                    is ForgeResult.Failure -> {
+                        session = null
+                        tree = null
+                        filesState = FilesUiState(loading = false, error = resolved.error.userMessage)
+                    }
 
-                is ForgeResult.Success -> {
-                    val active = resolved.value
-                    session = active
-                    project = active.workspace.metadata.toSummary()
+                    is ForgeResult.Success -> {
+                        val opened = resolved.value
+                        session = opened
+                        project = opened.workspace.metadata.toSummary()
+                        rootName = opened.workspace.metadata.name
+                        val loader = WorkspaceTreeLoader(opened.fileSystem)
+                        tree = loader
 
-                    when (val tree = buildTree(active.fileSystem, WorkspacePath.ROOT)) {
-                        is ForgeResult.Success -> filesState = filesState.copy(
-                            loading = false,
-                            root = tree.value,
-                            expanded = tree.value.filter { it.isDirectory }.map { it.path }.toSet(),
-                            error = null,
-                        )
-
-                        is ForgeResult.Failure -> filesState = filesState.copy(
-                            loading = false,
-                            root = emptyList(),
-                            error = tree.error.userMessage,
-                        )
+                        publish(loader)                                  // the root folder starts loading
+                        loader.load(WorkspacePath.ROOT)                   // one level, never the whole project
+                        publish(loader)
                     }
                 }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (cause: Throwable) {
+                logger.error("Opening the workspace failed", cause, mapOf("workspace" to workspaceId))
+                session = null
+                tree = null
+                filesState = FilesUiState(loading = false, error = UNREADABLE_WORKSPACE)
             }
         }
     }
 
+    /**
+     * Expands or collapses a folder. Expanding reads that folder's children the
+     * first time only; a folder that is already loaded is not read again, so
+     * repeated taps or recomposition cannot start another scan.
+     */
     fun toggleDirectory(path: String) {
         val expanded = filesState.expanded
+        if (path in expanded) {
+            filesState = filesState.copy(
+                expanded = expanded - path,
+                focusedPath = WorkspacePath.parent(path),
+            )
+            return
+        }
+        filesState = filesState.copy(expanded = expanded + path, focusedPath = path)
+        readDirectory(path)
+    }
+
+    /** Retries a folder that failed to load. */
+    fun retryDirectory(path: String) {
+        filesState = filesState.copy(expanded = filesState.expanded + path, focusedPath = path)
+        readDirectory(path, force = true)
+    }
+
+    /** Retreats to the parent folder, collapsing the current one. */
+    fun navigateUp() {
+        val current = filesState.focusedPath
+        if (WorkspacePath.isRoot(current)) return
         filesState = filesState.copy(
-            expanded = if (path in expanded) expanded - path else expanded + path,
+            expanded = filesState.expanded - current,
+            focusedPath = WorkspacePath.parent(current),
         )
     }
 
+    /** Selects and reads a file so the editor can show it. */
     fun openFile(path: String) {
         val active = session ?: return
-        filesState = filesState.copy(selectedPath = path)
+        filesState = filesState.copy(selectedPath = path, focusedPath = WorkspacePath.parent(path))
         viewModelScope.launch {
-            when (val result = active.fileSystem.readFile(path)) {
-                is ForgeResult.Success -> editorState = EditorUiState(
-                    file = OpenFile(path = path, name = WorkspacePath.name(path), content = result.value),
-                    draft = result.value,
+            val outcome = try {
+                WorkspaceFileOpener(active.fileSystem).open(path)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (cause: Throwable) {
+                logger.error("Opening a file failed", cause, mapOf("path" to path))
+                return@launch
+            }
+
+            when (outcome) {
+                is WorkspaceFileOpener.Opened.Text -> editorState = EditorUiState(
+                    file = OpenFile(path = outcome.path, name = outcome.name, content = outcome.content),
+                    draft = outcome.content,
                 )
 
-                is ForgeResult.Failure -> editorState = editorState.copy(
-                    statusMessage = result.error.userMessage,
-                )
+                // The open file (if any) is kept: an unreadable file must not
+                // silently discard unsaved edits elsewhere.
+                is WorkspaceFileOpener.Opened.Unsupported ->
+                    editorState = editorState.copy(statusMessage = "“${outcome.name}”: ${outcome.error.userMessage}")
+
+                is WorkspaceFileOpener.Opened.Failed ->
+                    editorState = editorState.copy(statusMessage = outcome.error.userMessage)
             }
         }
     }
@@ -177,47 +261,46 @@ class WorkspaceViewModel(
 
     // --- internals ---------------------------------------------------------
 
+    private fun readDirectory(path: String, force: Boolean = false) {
+        val loader = tree ?: return
+        // Nothing to do when the folder is already loaded (or already loading),
+        // which is what keeps expansion idempotent across recomposition.
+        if (!loader.beginLoad(path, force)) {
+            publish(loader)
+            return
+        }
+        publish(loader)                                            // show this folder as loading
+        viewModelScope.launch {
+            try {
+                loader.read(path)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (cause: Throwable) {
+                logger.error("Reading a folder failed", cause, mapOf("path" to path))
+            } finally {
+                // Always leaves the folder in a terminal state, on success,
+                // failure and cancellation alike.
+                publish(loader)
+            }
+        }
+    }
+
+    private fun publish(loader: WorkspaceTreeLoader) {
+        filesState = filesState.copy(
+            loading = false,
+            error = null,
+            root = loader.snapshot(rootName).toFileNode(),
+        )
+    }
+
     private suspend fun resolveSession(): WorkspaceResult<WorkspaceSession> {
         val current = manager.current
         if (current != null && current.workspace.id.value == workspaceId) return success(current)
         return manager.openRecent(WorkspaceId(workspaceId))
     }
 
-    private suspend fun buildTree(
-        fileSystem: WorkspaceFileSystem,
-        path: String,
-        depth: Int = 0,
-    ): WorkspaceResult<List<FileNode>> {
-        if (depth > MAX_TREE_DEPTH) return success(emptyList())
-
-        val listing = when (val result = fileSystem.list(path)) {
-            is ForgeResult.Success -> result.value
-            is ForgeResult.Failure -> return result
-        }
-
-        val nodes = ArrayList<FileNode>(listing.size)
-        for (node in listing) {
-            when (node) {
-                is WorkspaceDirectory -> {
-                    val children = when (val result = buildTree(fileSystem, node.path, depth + 1)) {
-                        is ForgeResult.Success -> result.value
-                        is ForgeResult.Failure -> emptyList()
-                    }
-                    nodes += FileNode(
-                        path = node.path,
-                        name = node.name,
-                        kind = FileNodeKind.DIRECTORY,
-                        children = children,
-                    )
-                }
-
-                is WorkspaceFile -> nodes += FileNode(
-                    path = node.path,
-                    name = node.name,
-                    kind = FileNodeKind.FILE,
-                )
-            }
-        }
-        return success(nodes)
+    private companion object {
+        const val UNREADABLE_WORKSPACE =
+            "Could not open this workspace. It may have been moved, or access was revoked."
     }
 }

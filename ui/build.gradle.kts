@@ -19,6 +19,11 @@ android {
     buildFeatures {
         compose = true
     }
+
+    testOptions {
+        // State holders are tested on the JVM; no device is involved.
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {
@@ -39,4 +44,7 @@ dependencies {
     implementation(libs.androidx.compose.material.icons.extended)
 
     debugImplementation(libs.androidx.compose.ui.tooling)
+
+    testImplementation(kotlin("test"))
+    testImplementation(libs.kotlinx.coroutines.test)
 }

@@ -37,6 +37,9 @@ enum class WorkspaceErrorCode {
     /** The file is larger than the runtime is willing to read into memory. */
     FILE_TOO_LARGE,
 
+    /** The file is not text (binary, media, archive, …) and cannot be edited. */
+    UNSUPPORTED_FILE_TYPE,
+
     /** The backing storage reported an I/O failure. */
     IO_FAILED,
 
@@ -79,6 +82,8 @@ data class WorkspaceError(
             WorkspaceErrorCode.ABSOLUTE_PATH -> "Only paths inside the workspace are allowed."
             WorkspaceErrorCode.PATH_TRAVERSAL -> "That path points outside the workspace."
             WorkspaceErrorCode.FILE_TOO_LARGE -> "This file is too large to open in the editor."
+            WorkspaceErrorCode.UNSUPPORTED_FILE_TYPE ->
+                "This file is not a text file, so it cannot be opened in the editor."
             WorkspaceErrorCode.IO_FAILED -> "The workspace could not be read or written."
             WorkspaceErrorCode.UNSUPPORTED_OPERATION -> "This operation is not supported here."
             WorkspaceErrorCode.PROCESS_EXECUTION_UNAVAILABLE ->
