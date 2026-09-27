@@ -18,6 +18,7 @@ import dev.forge.ide.integrations.INTEGRATIONS_LAYER
 import dev.forge.ide.model.MODEL_LAYER
 import dev.forge.ide.skills.SKILLS_LAYER
 import dev.forge.ide.tools.TOOLS_LAYER
+import dev.forge.ide.tools.ToolsModule
 import dev.forge.ide.ui.UI_LAYER
 import dev.forge.ide.workspace.WORKSPACE_LAYER
 
@@ -49,6 +50,7 @@ object Foundation {
         val modules = ModuleRegistry(logger)
         modules.register(ConfigModule(config))
         modules.register(ArchitectureModule(layers))
+        modules.register(ToolsModule())
         modules.initialize(services)
 
         val health = HealthMonitor()
