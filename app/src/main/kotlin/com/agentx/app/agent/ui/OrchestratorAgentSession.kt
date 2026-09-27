@@ -28,7 +28,7 @@ class OrchestratorAgentSession(
     private val workspaceId: String? = null,
 ) : AgentSession {
 
-    override suspend fun run(input: String, onEvent: (AgentStreamEvent) -> Unit) {
+    override suspend fun run(input: String, onEvent: (AgentStreamEvent) -> Unit, workspaceId: String?) {
         val config = modelConfig()
         if (config.validate().isNotEmpty()) {
             onEvent(AgentStreamEvent.Failed(NO_MODEL_ONLINE, AgentFailureKind.NOT_CONFIGURED))
@@ -47,7 +47,7 @@ class OrchestratorAgentSession(
         val result = orchestrator.run(
             request = AgentRunRequest(
                 prompt = input,
-                workspaceId = workspaceId,
+                workspaceId = workspaceId ?: this.workspaceId,
             ),
             modelConfig = config,
             sink = sink,
@@ -57,6 +57,18 @@ class OrchestratorAgentSession(
                 onEvent(AgentStreamEvent.Completed(result.summary))
             AgentStatus.CANCELLED ->
                 onEvent(AgentStreamEvent.Failed("Cancelled", AgentFailureKind.CANCELLED))
+            AgentStatus.WAITING_FOR_PERMISSION -> {
+                val pending = result.pendingPermission
+                if (pending != null) {
+                    onEvent(AgentStreamEvent.PermissionRequired(pending.toolName, pending.reason))
+                } else {
+                    onEvent(
+                        AgentStreamEvent.Activity(
+                            AgentActivity(AgentActivityStatus.PERMISSION_REQUIRED, result.summary),
+                        ),
+                    )
+                }
+            }
             else -> {
                 val error = result.errors.firstOrNull()
                 val message = error?.message ?: result.summary
@@ -79,8 +91,17 @@ internal fun mapEvent(event: AgentEvent): AgentStreamEvent? = when (event) {
         AgentActivity(AgentActivityStatus.THINKING, event.detail ?: "AI responding"),
     )
 
-    is AgentEvent.ToolCallStarted -> AgentStreamEvent.Activity(
-        AgentActivity(AgentActivityStatus.USING_TOOL, "Using tool · ${event.toolName}"),
+    is AgentEvent.ToolCallStarted -> AgentStreamEvent.ToolRunning(event.toolName)
+
+    is AgentEvent.ToolCallFinished -> AgentStreamEvent.ToolFinished(
+        toolName = event.toolName,
+        success = event.success,
+        summary = event.summary,
+    )
+
+    is AgentEvent.PermissionRequested -> AgentStreamEvent.PermissionRequired(
+        toolName = event.pending.toolName,
+        reason = event.pending.reason,
     )
 
     is AgentEvent.SubAgentStarted -> AgentStreamEvent.AgentChanged(

@@ -13,6 +13,15 @@ interface ToolRouter {
         input: ToolInput = ToolInput(),
         context: ToolExecutionContext = ToolExecutionContext.EMPTY,
     ): ToolResult
+
+    suspend fun invoke(
+        call: ToolCall,
+        context: ToolExecutionContext = ToolExecutionContext.EMPTY,
+    ): ToolResult = invoke(
+        toolName = call.toolId.value,
+        input = call.input,
+        context = context.copy(callId = context.callId ?: call.id),
+    )
 }
 
 class DefaultToolRouter(
@@ -29,6 +38,10 @@ class DefaultToolRouter(
         val tool = registry.find(toolName)
             ?: return unknownTool(toolName)
 
+        val executionContext = context.copy(
+            callId = context.callId ?: "tool-$toolName",
+        )
+
         val validationErrors = tool.definition.inputSchema.validate(input.arguments)
         if (validationErrors.isNotEmpty()) {
             return ToolResult.Failure(
@@ -42,7 +55,22 @@ class DefaultToolRouter(
             )
         }
 
-        val permission = policy.evaluate(ToolPermissionRequest(tool.definition, input, context))
+        val missing = tool.definition.requiredPermissions - executionContext.grantedPermissions
+        if (missing.isNotEmpty()) {
+            return ToolResult.Failure(
+                toolName = toolName,
+                error = ToolExecutionError(
+                    code = ToolErrorCode.PERMISSION_DENIED,
+                    message = "Tool '$toolName' requires ${missing.joinToString { it.name }}",
+                    toolName = toolName,
+                    details = mapOf(
+                        "missing" to Json.array(missing.map { Json.of(it.name) }),
+                    ),
+                ),
+            )
+        }
+
+        val permission = policy.evaluate(ToolPermissionRequest(tool.definition, input, executionContext))
         when (permission.decision) {
             ToolPermissionDecision.ALLOW -> Unit
 
@@ -57,7 +85,7 @@ class DefaultToolRouter(
             )
 
             ToolPermissionDecision.ASK -> {
-                val approval = context.approval
+                val approval = executionContext.approval
                 if (approval == null) {
                     return ToolResult.ApprovalRequired(
                         toolName = toolName,
@@ -82,7 +110,21 @@ class DefaultToolRouter(
             }
         }
 
-        return executor.execute(tool, input, context)
+        return try {
+            executor.execute(tool, input, executionContext)
+        } catch (cancelled: kotlin.coroutines.cancellation.CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            ToolResult.Failure(
+                toolName = toolName,
+                error = ToolExecutionError(
+                    code = ToolErrorCode.EXECUTION_FAILED,
+                    message = error.message ?: "Tool '$toolName' failed unexpectedly",
+                    toolName = toolName,
+                    cause = error,
+                ),
+            )
+        }
     }
 
     private fun unknownTool(toolName: String): ToolResult.Failure = ToolResult.Failure(

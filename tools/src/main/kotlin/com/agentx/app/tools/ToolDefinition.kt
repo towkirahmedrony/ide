@@ -105,13 +105,18 @@ data class ToolDefinition(
     val permission: ToolPermissionDecision = ToolPermissionDecision.ALLOW,
     val capabilities: Set<ToolCapability> = emptySet(),
     val metadata: Map<String, String> = emptyMap(),
+    val category: ToolCategory = ToolCategory.OTHER,
+    val requiredPermissions: Set<ToolPermissionLevel> = emptySet(),
 ) {
     init {
         require(name.isNotBlank()) { "Tool name must not be blank" }
         require(name.matches(NAME_PATTERN)) {
             "Tool name '$name' must contain only letters, digits, '.', '_', or '-'"
         }
+        require(description.isNotBlank()) { "Tool '$name' must have a description" }
     }
+
+    val id: ToolId get() = ToolId(name)
 
     companion object {
         val NAME_PATTERN = Regex("[A-Za-z0-9_.-]+")

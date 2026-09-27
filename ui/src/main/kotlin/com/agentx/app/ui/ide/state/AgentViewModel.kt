@@ -34,7 +34,10 @@ data class AgentUiState(
  * transport's job. Failures never drop the user's message; they become a
  * visible error state instead of crashing.
  */
-class AgentViewModel(private val session: AgentSession) : ViewModel() {
+class AgentViewModel(
+    private val session: AgentSession,
+    private val workspaceId: String? = null,
+) : ViewModel() {
 
     var uiState by mutableStateOf(
         AgentUiState(
@@ -72,7 +75,7 @@ class AgentViewModel(private val session: AgentSession) : ViewModel() {
 
         job = viewModelScope.launch {
             try {
-                session.run(prompt) { event -> handleEvent(agentMessageId, event) }
+                session.run(prompt, { event -> handleEvent(agentMessageId, event) }, workspaceId)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
@@ -123,6 +126,18 @@ class AgentViewModel(private val session: AgentSession) : ViewModel() {
                 uiState = uiState.copy(currentAgent = event.label)
                 setActivity(AgentActivityStatus.WAITING, event.label)
             }
+
+            is AgentStreamEvent.ToolRunning ->
+                setActivity(AgentActivityStatus.USING_TOOL, "Using tool · ${event.toolName}")
+
+            is AgentStreamEvent.ToolFinished -> {
+                val status = if (event.success) AgentActivityStatus.TOOL_SUCCESS else AgentActivityStatus.TOOL_FAILURE
+                val prefix = if (event.success) "Tool ok" else "Tool failed"
+                setActivity(status, "$prefix · ${event.toolName}")
+            }
+
+            is AgentStreamEvent.PermissionRequired ->
+                setActivity(AgentActivityStatus.PERMISSION_REQUIRED, "Permission required · ${event.toolName}")
         }
     }
 

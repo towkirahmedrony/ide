@@ -1,6 +1,7 @@
 package com.agentx.app.agent.domain
 
 import com.agentx.app.tools.ToolCapability
+import com.agentx.app.tools.ToolPermissionLevel as ToolGrant
 
 enum class AgentRole {
     MAIN,
@@ -93,4 +94,17 @@ enum class PermissionLevel {
 fun PermissionLevel.restrictTo(other: PermissionLevel?): PermissionLevel {
     if (other == null) return this
     return if (other.isAtMost(this)) other else this
+}
+
+/** Maps the agent permission ceiling onto Tool System grants. Never expands scope. */
+fun PermissionLevel.toToolGrants(): Set<ToolGrant> = when (this) {
+    PermissionLevel.READ_ONLY -> setOf(ToolGrant.READ_ONLY)
+    PermissionLevel.WORKSPACE_WRITE -> setOf(ToolGrant.READ_ONLY, ToolGrant.WORKSPACE_WRITE)
+    PermissionLevel.COMMAND_EXECUTION -> setOf(
+        ToolGrant.READ_ONLY,
+        ToolGrant.WORKSPACE_WRITE,
+        ToolGrant.COMMAND_EXECUTION,
+    )
+    PermissionLevel.NETWORK -> setOf(ToolGrant.READ_ONLY, ToolGrant.NETWORK)
+    PermissionLevel.GIT_WRITE -> setOf(ToolGrant.READ_ONLY, ToolGrant.GIT_WRITE)
 }

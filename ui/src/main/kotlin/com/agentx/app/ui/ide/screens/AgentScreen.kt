@@ -226,6 +226,9 @@ private fun activityColor(status: AgentActivityStatus): Color = when (status) {
     AgentActivityStatus.SENDING -> ForgePeriwinkle
     AgentActivityStatus.THINKING -> ForgePeriwinkle
     AgentActivityStatus.USING_TOOL -> ForgeMint
+    AgentActivityStatus.TOOL_SUCCESS -> ForgeMint
+    AgentActivityStatus.TOOL_FAILURE -> ForgeDanger
+    AgentActivityStatus.PERMISSION_REQUIRED -> ForgeAmber
     AgentActivityStatus.WAITING -> ForgeAmber
     AgentActivityStatus.COMPLETED -> ForgeMint
     AgentActivityStatus.CONNECTION_ERROR,

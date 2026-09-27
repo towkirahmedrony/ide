@@ -46,7 +46,7 @@ fun mockWorkspacePicker(): WorkspacePicker {
 /** Returns a canned response so the agent panel can be demonstrated. */
 class MockAgentSession : AgentSession {
 
-    override suspend fun run(input: String, onEvent: (AgentStreamEvent) -> Unit) {
+    override suspend fun run(input: String, onEvent: (AgentStreamEvent) -> Unit, workspaceId: String?) {
         onEvent(AgentStreamEvent.Activity(AgentActivity(AgentActivityStatus.THINKING, "Thinking")))
         delay(700)
 

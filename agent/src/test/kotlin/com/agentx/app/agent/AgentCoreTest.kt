@@ -197,6 +197,49 @@ class AgentCoreTest {
     }
 
     @Test
+    fun `agent loop routes a tool call through the router and continues after the result`() = runAgent {
+        val fx = Fixtures()
+        val provider = ScriptedModelProvider(
+            mapOf(
+                AgentRole.MAIN to mutableListOf(
+                    response("", toolCall("read_file", "path" to "Auth.kt")),
+                    response("", toolCall(AgentProtocol.FINISH_TOOL, AgentProtocol.ARG_SUMMARY to "Inspected Auth.kt")),
+                ),
+            ),
+        )
+        val gateway = DefaultModelGateway().also { it.register(provider) }
+        val sink = CollectingEventSink()
+        val result = AgentLoop(
+            gateway = gateway,
+            toolRouter = DefaultToolRouter(fx.registry),
+            bridge = AgentToolBridge(fx.registry),
+        ).run(
+            request = AgentLoopRequest(
+                sessionId = "s",
+                parentSessionId = null,
+                definition = AgentCatalog.MAIN,
+                allowedTools = listOf("read_file", AgentProtocol.FINISH_TOOL),
+                permissionLevel = PermissionLevel.READ_ONLY,
+                maxSteps = 4,
+                userPrompt = "inspect auth",
+                objective = null,
+                scopedContext = "",
+                workspaceId = "ws",
+                modelConfig = testConfig(),
+            ),
+            sink = sink,
+            onCancelled = { false },
+        )
+        assertEquals(AgentStatus.COMPLETED, result.status)
+        assertEquals("Inspected Auth.kt", result.summary)
+        assertEquals(1, fx.readFile.invocations.size)
+        assertEquals("Auth.kt", fx.readFile.invocations.single().string("path"))
+        assertTrue(sink.events.any { it is AgentEvent.ToolCallStarted && it.toolName == "read_file" })
+        assertTrue(sink.events.any { it is AgentEvent.ToolCallFinished && it.toolName == "read_file" && it.success })
+        assertEquals(listOf(AgentRole.MAIN, AgentRole.MAIN), provider.completeCalls)
+    }
+
+    @Test
     fun `coder may write but cannot use network tools`() {
         val fx = Fixtures()
         val bridge = AgentToolBridge(fx.registry)

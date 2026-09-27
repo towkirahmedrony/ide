@@ -37,6 +37,12 @@ sealed interface AgentStreamEvent {
     ) : AgentStreamEvent
 
     data class AgentChanged(val role: String, val label: String) : AgentStreamEvent
+
+    data class ToolRunning(val toolName: String) : AgentStreamEvent
+
+    data class ToolFinished(val toolName: String, val success: Boolean, val summary: String) : AgentStreamEvent
+
+    data class PermissionRequired(val toolName: String, val reason: String) : AgentStreamEvent
 }
 
 /**
@@ -55,7 +61,7 @@ enum class AgentFailureKind {
 }
 
 interface AgentSession {
-    suspend fun run(input: String, onEvent: (AgentStreamEvent) -> Unit)
+    suspend fun run(input: String, onEvent: (AgentStreamEvent) -> Unit, workspaceId: String? = null)
 }
 
 /** Executes shell commands for a workspace. Mocked until the runtime exists. */

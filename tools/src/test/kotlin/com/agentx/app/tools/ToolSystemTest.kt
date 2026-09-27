@@ -2,13 +2,10 @@ package com.agentx.app.tools
 
 import com.agentx.app.tools.mock.CurrentTimeTool
 import com.agentx.app.tools.mock.EchoTool
+import kotlinx.coroutines.runBlocking
 import java.time.Clock
 import java.time.Instant
 import java.time.ZoneOffset
-import kotlin.coroutines.Continuation
-import kotlin.coroutines.CoroutineContext
-import kotlin.coroutines.EmptyCoroutineContext
-import kotlin.coroutines.startCoroutine
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -19,24 +16,7 @@ import kotlin.test.assertTrue
 
 class ToolSystemTest {
 
-    // --- helpers -----------------------------------------------------------
-
-    /**
-     * Runs a suspending block without pulling in the coroutines library. The
-     * tools under test never really suspend, so the coroutine completes on the
-     * calling thread.
-     */
-    private fun <T> runSuspend(block: suspend () -> T): T {
-        var outcome: Result<T>? = null
-        block.startCoroutine(object : Continuation<T> {
-            override val context: CoroutineContext = EmptyCoroutineContext
-
-            override fun resumeWith(result: Result<T>) {
-                outcome = result
-            }
-        })
-        return checkNotNull(outcome) { "The test coroutine suspended unexpectedly" }.getOrThrow()
-    }
+    private fun <T> runSuspend(block: suspend () -> T): T = runBlocking { block() }
 
     private fun tool(
         name: String,

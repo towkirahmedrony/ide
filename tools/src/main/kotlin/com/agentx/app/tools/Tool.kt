@@ -33,11 +33,17 @@ data class ToolOutput(
  * method. The router is solely responsible for resolving, validating, and
  * authorizing calls, so a new tool never requires changes to the agent core.
  *
- * A tool may `throw ToolExecutionError` to signal a structured failure; the
- * executor normalizes that (or any other throwable) into a `ToolResult.Failure`.
+ * Future tools must provide a unique [id], name/description, input schema,
+ * required permissions, and an [execute] method. The executor normalizes
+ * thrown [ToolExecutionError] values (or any other throwable) into a
+ * [ToolResult.Failure].
  */
 interface Tool {
     val definition: ToolDefinition
+
+    val id: ToolId get() = definition.id
+
+    val requiredPermissions: Set<ToolPermissionLevel> get() = definition.requiredPermissions
 
     suspend fun execute(input: ToolInput, context: ToolExecutionContext): ToolOutput
 }

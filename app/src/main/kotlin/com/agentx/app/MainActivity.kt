@@ -17,6 +17,8 @@ import com.agentx.app.model.manager.ModelManager
 import com.agentx.app.model.android.KeystoreModelSecretStore
 import com.agentx.app.model.android.SharedPreferencesModelPresetStore
 import com.agentx.app.model.runtime.RuntimeOutputBuffer
+import com.agentx.app.tools.DelegatingWorkspaceFileSystemResolver
+import com.agentx.app.tools.WorkspaceManagerFileSystemResolver
 import com.agentx.app.ui.ide.ForgeIdeApp
 import com.agentx.app.ui.ide.IdeDependencies
 import com.agentx.app.ui.ide.data.mock.MockGitRepository
@@ -71,11 +73,18 @@ class MainActivity : ComponentActivity() {
                 val workspacePicker = rememberAndroidWorkspacePicker()
                 val dependencies = remember(workspacePicker, foundation) {
                     val orchestrator = foundation.services.get<AgentOrchestrator>(ServiceKeys.AGENT_ORCHESTRATOR)
+                    val workspaceManager = DefaultWorkspaceManager(
+                        backend = SafWorkspaceBackend(applicationContext),
+                        store = SharedPreferencesWorkspaceMetadataStore(applicationContext),
+                    )
+                    when (
+                        val resolver = foundation.services.get<Any>(ServiceKeys.TOOL_WORKSPACE_RESOLVER)
+                    ) {
+                        is DelegatingWorkspaceFileSystemResolver ->
+                            resolver.bind(WorkspaceManagerFileSystemResolver(workspaceManager))
+                    }
                     IdeDependencies(
-                        workspaceManager = DefaultWorkspaceManager(
-                            backend = SafWorkspaceBackend(applicationContext),
-                            store = SharedPreferencesWorkspaceMetadataStore(applicationContext),
-                        ),
+                        workspaceManager = workspaceManager,
                         workspacePicker = workspacePicker,
                         agent = OrchestratorAgentSession(
                             orchestrator = checkNotNull(orchestrator) { "Agent orchestrator is not registered" },

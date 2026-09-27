@@ -15,6 +15,8 @@ interface ToolRegistry {
     /** Resolves a tool by its unique name, or null when unknown. */
     fun find(name: String): Tool?
 
+    fun find(id: ToolId): Tool? = find(id.value)
+
     fun contains(name: String): Boolean
 
     fun tools(): List<Tool>
@@ -32,6 +34,7 @@ class DefaultToolRegistry : ToolRegistry {
 
     @Synchronized
     override fun register(tool: Tool) {
+        validate(tool.definition)
         val name = tool.definition.name
         if (tools.containsKey(name)) {
             throw ToolExecutionError(
@@ -41,6 +44,21 @@ class DefaultToolRegistry : ToolRegistry {
             )
         }
         tools[name] = tool
+    }
+
+    private fun validate(definition: ToolDefinition) {
+        val problems = mutableListOf<String>()
+        if (definition.name.isBlank()) problems += "name is blank"
+        if (definition.description.isBlank()) problems += "description is blank"
+        val names = definition.inputSchema.parameters.map { it.name }
+        if (names.size != names.toSet().size) problems += "duplicate parameter names"
+        if (problems.isNotEmpty()) {
+            throw ToolExecutionError(
+                code = ToolErrorCode.INVALID_DEFINITION,
+                message = "Invalid tool definition '${definition.name}': ${problems.joinToString(", ")}",
+                toolName = definition.name.takeIf { it.isNotBlank() },
+            )
+        }
     }
 
     @Synchronized

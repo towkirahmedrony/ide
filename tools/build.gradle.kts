@@ -9,8 +9,11 @@ kotlin {
 
 dependencies {
     api(project(":core"))
+    api(project(":workspace"))
+    api(libs.kotlinx.coroutines.core)
 
     testImplementation(kotlin("test"))
+    testImplementation(libs.kotlinx.coroutines.test)
 }
 
 tasks.test {

@@ -9,6 +9,9 @@ enum class ToolErrorCode {
     PERMISSION_DENIED,
     APPROVAL_REQUIRED,
     EXECUTION_FAILED,
+    TIMEOUT,
+    CANCELLED,
+    WORKSPACE_UNAVAILABLE,
 }
 
 /**

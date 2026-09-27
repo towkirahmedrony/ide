@@ -32,6 +32,13 @@ data class ToolExecutionContext(
     val sessionId: String? = null,
     val agentId: String? = null,
     val workspaceId: String? = null,
+    val callId: String? = null,
+
+    /** Permissions already granted for this agent run. Tools may not exceed them. */
+    val grantedPermissions: Set<ToolPermissionLevel> = emptySet(),
+
+    /** Optional per-call timeout; the executor applies a default when this is null. */
+    val timeoutMillis: Long? = null,
 
     /** Present only when a previously-required approval was decided. */
     val approval: ToolApproval? = null,

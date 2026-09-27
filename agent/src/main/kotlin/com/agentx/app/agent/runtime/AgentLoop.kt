@@ -32,6 +32,7 @@ import com.agentx.app.model.ModelToolChoice
 import com.agentx.app.model.ModelToolSpec
 import com.agentx.app.model.json.JsonObject
 import com.agentx.app.model.json.JsonValue
+import com.agentx.app.agent.domain.toToolGrants
 import com.agentx.app.tools.ToolApproval
 import com.agentx.app.tools.ToolErrorCode
 import com.agentx.app.tools.ToolExecutionContext
@@ -141,6 +142,7 @@ class AgentLoop(
             sessionId = request.sessionId,
             agentId = request.definition.role.name,
             workspaceId = request.workspaceId,
+            grantedPermissions = request.permissionLevel.toToolGrants(),
         )
 
         sink.emit(
@@ -522,6 +524,8 @@ class AgentLoop(
                     ToolErrorCode.PERMISSION_DENIED -> AgentErrorCode.PERMISSION_DENIED
                     ToolErrorCode.UNKNOWN_TOOL -> AgentErrorCode.TOOL_UNKNOWN
                     ToolErrorCode.INVALID_ARGUMENTS -> AgentErrorCode.TOOL_ARGUMENTS_INVALID
+                    ToolErrorCode.TIMEOUT -> AgentErrorCode.TIMEOUT
+                    ToolErrorCode.CANCELLED -> AgentErrorCode.CANCELLED
                     else -> AgentErrorCode.TOOL_FAILURE
                 }
                 errors += AgentError(

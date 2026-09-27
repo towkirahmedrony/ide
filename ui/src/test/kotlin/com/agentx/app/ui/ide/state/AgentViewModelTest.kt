@@ -113,6 +113,24 @@ class AgentViewModelTest {
     }
 
     @Test
+    fun `tool running permission and failure update the activity bar`() {
+        val session = ScriptedAgentSession { _, onEvent ->
+            onEvent(AgentStreamEvent.ToolRunning("read_file"))
+            onEvent(AgentStreamEvent.ToolFinished("read_file", true, "ok"))
+            onEvent(AgentStreamEvent.PermissionRequired("write_file", "needs write"))
+            onEvent(AgentStreamEvent.ToolFinished("write_file", false, "denied"))
+            onEvent(AgentStreamEvent.Completed("done"))
+        }
+        val viewModel = AgentViewModel(session)
+        viewModel.onInputChange("write")
+        viewModel.send()
+
+        val state = viewModel.uiState
+        assertEquals(AgentActivityStatus.COMPLETED, state.activity.status)
+        assertEquals("done", state.messages.single { it.role == ChatRole.AGENT }.text)
+    }
+
+    @Test
     fun `blank input is ignored`() {
         val session = ScriptedAgentSession { _, _ -> error("should not run") }
         val viewModel = AgentViewModel(session)
@@ -157,7 +175,7 @@ class AgentViewModelTest {
     private class ScriptedAgentSession(
         private val block: suspend (String, (AgentStreamEvent) -> Unit) -> Unit,
     ) : AgentSession {
-        override suspend fun run(input: String, onEvent: (AgentStreamEvent) -> Unit) {
+        override suspend fun run(input: String, onEvent: (AgentStreamEvent) -> Unit, workspaceId: String?) {
             block(input, onEvent)
         }
     }

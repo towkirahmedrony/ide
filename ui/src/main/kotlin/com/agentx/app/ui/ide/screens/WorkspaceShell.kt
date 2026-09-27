@@ -79,7 +79,7 @@ fun WorkspaceShell(
     )
     val agentViewModel: AgentViewModel = viewModel(
         key = "agent-$workspaceId",
-        factory = IdeViewModelFactory { AgentViewModel(dependencies.agent) },
+        factory = IdeViewModelFactory { AgentViewModel(dependencies.agent, workspaceId) },
     )
     val terminalViewModel: TerminalViewModel = viewModel(
         key = "terminal-$workspaceId",
