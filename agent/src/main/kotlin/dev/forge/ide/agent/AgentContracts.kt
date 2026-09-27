@@ -1,8 +1,8 @@
 package dev.forge.ide.agent
 
-import dev.forge.ide.core.architecture.LayerDescriptor
-import dev.forge.ide.core.architecture.LayerStatus
+import dev.forge.ide.agent.domain.AgentRole
 
+@Deprecated("Use Agent Core domain types in dev.forge.ide.agent.domain")
 enum class AgentEventType {
     STATUS,
     MESSAGE,
@@ -11,12 +11,14 @@ enum class AgentEventType {
 }
 
 /** Incremental output produced while an agent runs. */
+@Deprecated("Use dev.forge.ide.agent.domain.AgentEvent")
 data class AgentEvent(
     val type: AgentEventType,
     val payload: String,
 )
 
 /** Declarative description of an agent and the capabilities it may use. */
+@Deprecated("Use dev.forge.ide.agent.domain.AgentDefinition")
 data class AgentDefinition(
     val id: String,
     val name: String,
@@ -31,7 +33,7 @@ data class AgentRunInput(
     val sessionId: String? = null,
 )
 
-/** A runnable agent. Implemented by the Agent Core in a later task. */
+/** A runnable agent. Implemented by the Agent Core. */
 interface Agent {
     val definition: AgentDefinition
 
@@ -39,7 +41,7 @@ interface Agent {
 }
 
 /** Creates and tracks agents from their definitions. */
-interface AgentRuntime {
+interface AgentRuntimePort {
     fun register(agent: Agent)
 
     fun definitions(): List<AgentDefinition>
@@ -54,16 +56,10 @@ data class SubagentSpec(
     val instructions: String,
     val modelId: String? = null,
     val toolIds: List<String> = emptyList(),
+    val role: AgentRole? = null,
 )
 
 /** Port for running subagents on behalf of a parent agent. */
 interface SubagentDelegator {
     suspend fun delegate(spec: SubagentSpec, input: AgentRunInput): String
 }
-
-val AGENT_LAYER = LayerDescriptor(
-    id = "agent",
-    title = "Agent Core",
-    summary = "Runs agents and subagents over the model, tool, context, and workspace layers.",
-    status = LayerStatus.CONTRACT_ONLY,
-)

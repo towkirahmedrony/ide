@@ -1,6 +1,7 @@
 package dev.forge.ide.foundation
 
 import dev.forge.ide.agent.AGENT_LAYER
+import dev.forge.ide.agent.AgentModule
 import dev.forge.ide.context.CONTEXT_LAYER
 import dev.forge.ide.core.architecture.ArchitectureModule
 import dev.forge.ide.core.architecture.CORE_LAYER
@@ -28,6 +29,7 @@ data class FoundationState(
     val layers: List<LayerDescriptor>,
     val health: HealthReport,
     val config: ForgeConfig,
+    val services: ServiceContainer,
 )
 
 /**
@@ -53,6 +55,7 @@ object Foundation {
         modules.register(ArchitectureModule(layers))
         modules.register(ToolsModule())
         modules.register(ModelModule())
+        modules.register(AgentModule())
         modules.initialize(services)
 
         val health = HealthMonitor()
@@ -63,7 +66,7 @@ object Foundation {
 
         logger.info("Foundation ready", mapOf("layers" to layers.size, "status" to health.status))
 
-        return FoundationState(layers = layers, health = health, config = config)
+        return FoundationState(layers = layers, health = health, config = config, services = services)
     }
 
     private fun forgeLayers(): List<LayerDescriptor> = listOf(

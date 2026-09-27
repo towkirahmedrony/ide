@@ -21,6 +21,7 @@ data class AgentUiState(
     val input: String = "",
     val activity: AgentActivity = AgentActivity(AgentActivityStatus.IDLE, "Idle"),
     val running: Boolean = false,
+    val currentAgent: String = "Main",
 )
 
 /**
@@ -35,7 +36,7 @@ class AgentViewModel(private val session: AgentSession) : ViewModel() {
                 ChatMessage(
                     id = UUID.randomUUID().toString(),
                     role = ChatRole.SYSTEM,
-                    text = "Agent panel is not wired to a model yet. Send a message to see the mock flow.",
+                    text = "Agent panel talks to the Agent Core. Configure a model provider to run a real turn.",
                 ),
             ),
         ),
@@ -56,6 +57,7 @@ class AgentViewModel(private val session: AgentSession) : ViewModel() {
         uiState = uiState.copy(
             input = "",
             running = true,
+            currentAgent = "Main",
             activity = AgentActivity(AgentActivityStatus.THINKING, "Thinking"),
             messages = uiState.messages +
                 ChatMessage(UUID.randomUUID().toString(), ChatRole.USER, prompt) +
@@ -97,6 +99,11 @@ class AgentViewModel(private val session: AgentSession) : ViewModel() {
             is AgentStreamEvent.Failed -> {
                 appendToMessage(agentMessageId, event.message)
                 setActivity(AgentActivityStatus.ERROR, "Error")
+            }
+
+            is AgentStreamEvent.AgentChanged -> {
+                uiState = uiState.copy(currentAgent = event.label)
+                setActivity(AgentActivityStatus.WAITING, event.label)
             }
         }
     }

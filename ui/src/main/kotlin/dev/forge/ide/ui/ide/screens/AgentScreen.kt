@@ -61,7 +61,11 @@ fun AgentScreen(
     }
 
     Column(modifier = modifier.fillMaxSize().background(ForgeCanvas)) {
-        AgentActivityBar(activity = state.activity, running = state.running)
+        AgentActivityBar(
+            activity = state.activity,
+            running = state.running,
+            currentAgent = state.currentAgent,
+        )
 
         LazyColumn(
             modifier = Modifier.weight(1f).fillMaxWidth(),
@@ -84,7 +88,7 @@ fun AgentScreen(
 }
 
 @Composable
-private fun AgentActivityBar(activity: AgentActivity, running: Boolean) {
+private fun AgentActivityBar(activity: AgentActivity, running: Boolean, currentAgent: String) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -107,7 +111,7 @@ private fun AgentActivityBar(activity: AgentActivity, running: Boolean) {
         }
         Spacer(Modifier.width(10.dp))
         Text(
-            text = "Agent · ${activity.label}",
+            text = "$currentAgent · ${activity.label}",
             style = MaterialTheme.typography.labelSmall,
             color = ForgeInk,
         )

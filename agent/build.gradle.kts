@@ -9,4 +9,13 @@ kotlin {
 
 dependencies {
     api(project(":core"))
+    api(project(":model"))
+    api(project(":tools"))
+    api(libs.kotlinx.coroutines.core)
+
+    testImplementation(kotlin("test"))
+}
+
+tasks.test {
+    useJUnitPlatform()
 }

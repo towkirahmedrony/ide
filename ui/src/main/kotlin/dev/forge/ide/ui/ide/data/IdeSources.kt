@@ -32,6 +32,8 @@ sealed interface AgentStreamEvent {
     data class Completed(val text: String) : AgentStreamEvent
 
     data class Failed(val message: String) : AgentStreamEvent
+
+    data class AgentChanged(val role: String, val label: String) : AgentStreamEvent
 }
 
 /**
