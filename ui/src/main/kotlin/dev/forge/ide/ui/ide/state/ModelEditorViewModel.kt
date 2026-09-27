@@ -176,7 +176,8 @@ class ModelEditorViewModel(
                     val fieldErrors = failure.details["errors"] as? List<*>
                     state = state.copy(
                         saving = false,
-                        errors = fieldErrors?.map { it.toString() } ?: listOf(failure.message),
+                        errors = fieldErrors?.map { it.toString() }
+                            ?: listOf(failure.message ?: "The model could not be saved"),
                     )
                 }
             } catch (cancelled: CancellationException) {

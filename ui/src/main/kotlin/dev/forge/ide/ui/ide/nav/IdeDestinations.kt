@@ -12,6 +12,7 @@ object IdeDestinations {
 
     const val SETTINGS_DETAIL = "settings/{sectionId}"
     const val ARG_SECTION_ID = "sectionId"
+    const val ARG_PRESET_ID = "presetId"
 
     const val ABOUT = "about"
     const val DEVELOPER = "developer"
