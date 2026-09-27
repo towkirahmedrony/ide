@@ -1,11 +1,18 @@
 package dev.forge.ide.agent.ui
 
+import android.util.Log
+import dev.forge.ide.agent.domain.AgentError
+import dev.forge.ide.agent.domain.AgentErrorCode
 import dev.forge.ide.agent.domain.AgentEvent
 import dev.forge.ide.agent.domain.AgentEventSink
 import dev.forge.ide.agent.domain.AgentRole
 import dev.forge.ide.agent.domain.AgentRunRequest
+import dev.forge.ide.agent.domain.AgentStatus
 import dev.forge.ide.agent.orchestrator.AgentOrchestrator
 import dev.forge.ide.model.ModelConfig
+import dev.forge.ide.model.ModelProviderError
+import dev.forge.ide.model.ModelProviderErrorCode
+import dev.forge.ide.ui.ide.data.AgentFailureKind
 import dev.forge.ide.ui.ide.data.AgentSession
 import dev.forge.ide.ui.ide.data.AgentStreamEvent
 import dev.forge.ide.ui.ide.model.AgentActivity
@@ -22,12 +29,17 @@ class OrchestratorAgentSession(
 ) : AgentSession {
 
     override suspend fun run(input: String, onEvent: (AgentStreamEvent) -> Unit) {
-        // No model online means no agent turn. Say so in user terms, and never fall
-        // back to an endpoint the user did not select.
-        if (modelConfig().validate().isNotEmpty()) {
-            onEvent(AgentStreamEvent.Failed(NO_MODEL_ONLINE))
+        val config = modelConfig()
+        if (config.validate().isNotEmpty()) {
+            onEvent(AgentStreamEvent.Failed(NO_MODEL_ONLINE, AgentFailureKind.NOT_CONFIGURED))
             return
         }
+
+        onEvent(
+            AgentStreamEvent.Activity(
+                AgentActivity(AgentActivityStatus.THINKING, "AI responding"),
+            ),
+        )
 
         val sink = AgentEventSink { event ->
             mapEvent(event)?.let(onEvent)
@@ -37,22 +49,26 @@ class OrchestratorAgentSession(
                 prompt = input,
                 workspaceId = workspaceId,
             ),
-            modelConfig = modelConfig(),
+            modelConfig = config,
             sink = sink,
         )
         when (result.status) {
-            dev.forge.ide.agent.domain.AgentStatus.COMPLETED ->
+            AgentStatus.COMPLETED ->
                 onEvent(AgentStreamEvent.Completed(result.summary))
-            dev.forge.ide.agent.domain.AgentStatus.CANCELLED ->
-                onEvent(AgentStreamEvent.Failed("Cancelled"))
+            AgentStatus.CANCELLED ->
+                onEvent(AgentStreamEvent.Failed("Cancelled", AgentFailureKind.CANCELLED))
             else -> {
-                val message = result.errors.firstOrNull()?.message ?: result.summary
-                onEvent(AgentStreamEvent.Failed(message))
+                val error = result.errors.firstOrNull()
+                val message = error?.message ?: result.summary
+                val kind = failureKind(error)
+                Log.e(TAG, "Agent turn failed kind=$kind code=${error?.code} provider=${providerCode(error)}", error?.cause)
+                onEvent(AgentStreamEvent.Failed(message, kind))
             }
         }
     }
 
     private companion object {
+        const val TAG = "ForgeAgent"
         const val NO_MODEL_ONLINE =
             "No model is online. Open Settings → Models, select a model and connect it first."
     }
@@ -60,7 +76,7 @@ class OrchestratorAgentSession(
 
 internal fun mapEvent(event: AgentEvent): AgentStreamEvent? = when (event) {
     is AgentEvent.Thinking -> AgentStreamEvent.Activity(
-        AgentActivity(AgentActivityStatus.THINKING, event.detail ?: "Thinking"),
+        AgentActivity(AgentActivityStatus.THINKING, event.detail ?: "AI responding"),
     )
 
     is AgentEvent.ToolCallStarted -> AgentStreamEvent.Activity(
@@ -80,6 +96,33 @@ internal fun mapEvent(event: AgentEvent): AgentStreamEvent? = when (event) {
     is AgentEvent.OutputDelta -> AgentStreamEvent.Chunk(event.text)
 
     else -> null
+}
+
+internal fun failureKind(error: AgentError?): AgentFailureKind {
+    if (error == null) return AgentFailureKind.UNKNOWN
+    return when (error.code) {
+        AgentErrorCode.TIMEOUT -> AgentFailureKind.TIMEOUT
+        AgentErrorCode.MALFORMED_RESPONSE -> AgentFailureKind.INVALID_RESPONSE
+        AgentErrorCode.NOT_CONFIGURED -> AgentFailureKind.NOT_CONFIGURED
+        AgentErrorCode.CANCELLED -> AgentFailureKind.CANCELLED
+        AgentErrorCode.MODEL_FAILURE -> when (providerCode(error)) {
+            ModelProviderErrorCode.TIMEOUT -> AgentFailureKind.TIMEOUT
+            ModelProviderErrorCode.INVALID_RESPONSE -> AgentFailureKind.INVALID_RESPONSE
+            ModelProviderErrorCode.CONNECTION_FAILED,
+            ModelProviderErrorCode.NETWORK_ERROR,
+            -> AgentFailureKind.CONNECTION
+            else -> AgentFailureKind.UNKNOWN
+        }
+        else -> AgentFailureKind.UNKNOWN
+    }
+}
+
+private fun providerCode(error: AgentError?): ModelProviderErrorCode? {
+    val named = error?.details?.get("providerError")
+    named?.let { raw ->
+        return runCatching { ModelProviderErrorCode.valueOf(raw) }.getOrNull()
+    }
+    return (error?.cause as? ModelProviderError)?.code
 }
 
 private fun displayName(role: AgentRole): String = when (role) {

@@ -31,7 +31,10 @@ sealed interface AgentStreamEvent {
 
     data class Completed(val text: String) : AgentStreamEvent
 
-    data class Failed(val message: String) : AgentStreamEvent
+    data class Failed(
+        val message: String,
+        val kind: AgentFailureKind = AgentFailureKind.UNKNOWN,
+    ) : AgentStreamEvent
 
     data class AgentChanged(val role: String, val label: String) : AgentStreamEvent
 }
@@ -40,6 +43,17 @@ sealed interface AgentStreamEvent {
  * Runs a single agent turn. The mock implementation returns canned output;
  * the real Agent Core will implement this without any UI changes.
  */
+/** Coarse failure category the chat UI can render without crashing. */
+enum class AgentFailureKind {
+    NONE,
+    CONNECTION,
+    TIMEOUT,
+    INVALID_RESPONSE,
+    CANCELLED,
+    NOT_CONFIGURED,
+    UNKNOWN,
+}
+
 interface AgentSession {
     suspend fun run(input: String, onEvent: (AgentStreamEvent) -> Unit)
 }

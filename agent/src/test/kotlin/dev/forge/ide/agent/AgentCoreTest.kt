@@ -16,6 +16,7 @@ import dev.forge.ide.agent.specialized.SpecializedAgentFactory
 import dev.forge.ide.agent.tools.AgentToolBridge
 import dev.forge.ide.model.DefaultModelGateway
 import dev.forge.ide.model.ModelConfig
+import dev.forge.ide.model.ModelProviderErrorCode
 import dev.forge.ide.tools.DefaultToolRegistry
 import dev.forge.ide.tools.DefaultToolRouter
 import dev.forge.ide.tools.ToolCapability
@@ -301,6 +302,56 @@ class AgentCoreTest {
         assertTrue(result.errors.any { it.code == AgentErrorCode.MODEL_FAILURE })
         assertTrue(sink.events.any { it is AgentEvent.Failed })
     }
+
+    @Test
+    fun `model timeout maps to agent timeout`() = runAgent {
+        val result = runFailingLoop(providerError(ModelProviderErrorCode.TIMEOUT, "timed out"))
+        val error = result.errors.single()
+        assertEquals(AgentStatus.FAILED, result.status)
+        assertEquals(AgentErrorCode.TIMEOUT, error.code)
+        assertEquals("timed out", error.message)
+        assertEquals(ModelProviderErrorCode.TIMEOUT.name, error.details["providerError"])
+    }
+
+    @Test
+    fun `invalid model response maps to malformed response`() = runAgent {
+        val result = runFailingLoop(providerError(ModelProviderErrorCode.INVALID_RESPONSE, "bad json"))
+        val error = result.errors.single()
+        assertEquals(AgentErrorCode.MALFORMED_RESPONSE, error.code)
+        assertEquals("bad json", error.message)
+        assertEquals(ModelProviderErrorCode.INVALID_RESPONSE.name, error.details["providerError"])
+    }
+
+    @Test
+    fun `connection refused maps to model failure with provider details`() = runAgent {
+        val result = runFailingLoop(providerError(ModelProviderErrorCode.CONNECTION_FAILED, "refused"))
+        val error = result.errors.single()
+        assertEquals(AgentErrorCode.MODEL_FAILURE, error.code)
+        assertEquals("refused", error.message)
+        assertEquals(ModelProviderErrorCode.CONNECTION_FAILED.name, error.details["providerError"])
+    }
+
+    private suspend fun runFailingLoop(error: Throwable) = AgentLoop(
+        gateway = throwingGateway(error),
+        toolRouter = DefaultToolRouter(DefaultToolRegistry()),
+        bridge = AgentToolBridge(DefaultToolRegistry()),
+    ).run(
+        request = AgentLoopRequest(
+            sessionId = "s",
+            parentSessionId = null,
+            definition = AgentCatalog.MAIN,
+            allowedTools = listOf(AgentProtocol.FINISH_TOOL),
+            permissionLevel = PermissionLevel.READ_ONLY,
+            maxSteps = 3,
+            userPrompt = "go",
+            objective = null,
+            scopedContext = "",
+            workspaceId = null,
+            modelConfig = testConfig(),
+        ),
+        sink = CollectingEventSink(),
+        onCancelled = { false },
+    )
 
     @Test
     fun `invalid model config is rejected by the orchestrator`() = runAgent {

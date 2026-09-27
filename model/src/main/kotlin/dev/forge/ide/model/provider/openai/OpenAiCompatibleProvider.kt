@@ -5,8 +5,11 @@ import dev.forge.ide.model.http.*
 import dev.forge.ide.model.json.*
 import java.io.IOException
 import java.net.ConnectException
+import java.net.NoRouteToHostException
+import java.net.PortUnreachableException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
+import javax.net.ssl.SSLException
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
@@ -31,6 +34,7 @@ class OpenAiCompatibleProvider(
     override suspend fun complete(request: ModelRequest): ModelResponse {
         val response = send(request, buildRequestBody(request, stream = false))
         if (!response.isSuccess) throw httpError(response)
+        if (response.body.isBlank()) throw invalidResponse("Model endpoint returned an empty response")
         return parseCompletion(parseJson(response.body), request)
     }
 
@@ -39,11 +43,17 @@ class OpenAiCompatibleProvider(
         onEvent: (ModelStreamEvent) -> Unit,
     ): ModelResponse {
         val accumulator = StreamAccumulator()
+        val rawBody = StringBuilder()
         onEvent(ModelStreamEvent.Started(request.model, id))
         val response = sendStreaming(request, buildRequestBody(request, stream = true)) { line ->
+            if (rawBody.isNotEmpty()) rawBody.append('\n')
+            rawBody.append(line)
             handleStreamLine(line, accumulator, onEvent)
         }
         if (!response.isSuccess) throw httpError(response)
+        if (accumulator.content.isEmpty() && accumulator.toolCalls().isEmpty() && !accumulator.done) {
+            applyNonStreamFallback(accumulator, rawBody.toString(), request, onEvent)
+        }
         onEvent(ModelStreamEvent.Completed(accumulator.finishReason, accumulator.usage))
         return ModelResponse(
             model = accumulator.model ?: request.model,
@@ -59,7 +69,7 @@ class OpenAiCompatibleProvider(
 
     private suspend fun send(request: ModelRequest, body: String): HttpResponseSpec =
         try {
-            transport.execute(httpRequest(request, body))
+            transport.execute(httpRequest(request, body, stream = false))
         } catch (cancellation: CancellationException) {
             throw cancellation
         } catch (error: Throwable) {
@@ -71,26 +81,33 @@ class OpenAiCompatibleProvider(
         body: String,
         onLine: (String) -> Unit,
     ): HttpResponseSpec = try {
-        transport.executeStreaming(httpRequest(request, body), onLine)
+        transport.executeStreaming(httpRequest(request, body, stream = true), onLine)
     } catch (cancellation: CancellationException) {
         throw cancellation
     } catch (error: Throwable) {
         throw transportError(error)
     }
 
-    private fun httpRequest(request: ModelRequest, body: String): HttpRequestSpec {
+    private fun httpRequest(request: ModelRequest, body: String, stream: Boolean): HttpRequestSpec {
         val headers = LinkedHashMap<String, String>()
         headers["Content-Type"] = "application/json"
-        headers["Accept"] = "application/json"
+        headers["Accept"] = if (stream) {
+            "text/event-stream, application/json"
+        } else {
+            "application/json"
+        }
         request.config.apiKey?.takeIf { it.isNotBlank() }?.let { key ->
             headers["Authorization"] = "Bearer $key"
         }
         request.config.headers.forEach { (name, value) -> headers[name] = value }
+        val timeout = request.config.timeoutMillis?.takeIf { it > 0 }?.toInt()
         return HttpRequestSpec(
             method = "POST",
             url = endpoint(request.config),
             headers = headers,
             body = body,
+            connectTimeoutMillis = timeout ?: CONNECT_TIMEOUT_MILLIS,
+            readTimeoutMillis = timeout ?: READ_TIMEOUT_MILLIS,
         )
     }
 
@@ -99,36 +116,82 @@ class OpenAiCompatibleProvider(
 
     // --- error normalization ----------------------------------------------
 
-    private fun transportError(error: Throwable): ModelProviderError = when (error) {
-        is ModelProviderError -> error
-        is SocketTimeoutException -> ModelProviderError(
-            code = ModelProviderErrorCode.TIMEOUT,
-            message = "Model request timed out",
-            providerId = id,
-            retryable = true,
-            cause = error,
-        )
-        is UnknownHostException, is ConnectException -> ModelProviderError(
-            code = ModelProviderErrorCode.CONNECTION_FAILED,
-            message = "Could not connect to the model endpoint",
-            providerId = id,
-            retryable = true,
-            cause = error,
-        )
-        is IOException -> ModelProviderError(
-            code = ModelProviderErrorCode.NETWORK_ERROR,
-            message = "Network error while contacting the model endpoint",
-            providerId = id,
-            retryable = true,
-            cause = error,
-        )
-        else -> ModelProviderError(
-            code = ModelProviderErrorCode.UNKNOWN,
-            message = error.message ?: "Unexpected model provider error",
-            providerId = id,
-            cause = error,
-        )
+    private fun transportError(error: Throwable): ModelProviderError {
+        val root = unwrap(error)
+        return when {
+            root is ModelProviderError -> root
+            root is SocketTimeoutException || root is java.io.InterruptedIOException -> timeoutError(root)
+            root.javaClass.name.endsWith("NetworkOnMainThreadException") -> ModelProviderError(
+                code = ModelProviderErrorCode.CONNECTION_FAILED,
+                message = "Model request was blocked because network I/O ran on the UI thread",
+                providerId = id,
+                retryable = true,
+                cause = error,
+            )
+            root is UnknownHostException -> ModelProviderError(
+                code = ModelProviderErrorCode.CONNECTION_FAILED,
+                message = "Could not resolve the model endpoint host. The Colab tunnel URL may have expired.",
+                providerId = id,
+                retryable = true,
+                cause = error,
+            )
+            root is ConnectException || root is NoRouteToHostException || root is PortUnreachableException ->
+                connectionFailed(error)
+            root is SSLException -> ModelProviderError(
+                code = ModelProviderErrorCode.CONNECTION_FAILED,
+                message = "Secure connection to the model endpoint failed",
+                providerId = id,
+                retryable = true,
+                cause = error,
+            )
+            root is IOException && isConnectionRefused(root) -> connectionFailed(error)
+            root is IOException -> ModelProviderError(
+                code = ModelProviderErrorCode.NETWORK_ERROR,
+                message = "Network error while contacting the model endpoint",
+                providerId = id,
+                retryable = true,
+                cause = error,
+            )
+            else -> ModelProviderError(
+                code = ModelProviderErrorCode.UNKNOWN,
+                message = root.message ?: "Unexpected model provider error",
+                providerId = id,
+                cause = error,
+            )
+        }
     }
+
+    private fun unwrap(error: Throwable): Throwable {
+        var current = error
+        val seen = HashSet<Throwable>()
+        while (current.cause != null && current.cause !== current && seen.add(current)) {
+            val cause = current.cause ?: break
+            if (cause is ConnectException ||
+                cause is SocketTimeoutException ||
+                cause is UnknownHostException ||
+                cause is SSLException
+            ) {
+                return cause
+            }
+            current = cause
+        }
+        return error
+    }
+
+    private fun isConnectionRefused(error: Throwable): Boolean {
+        val message = error.message.orEmpty().lowercase()
+        return message.contains("connection refused") ||
+            message.contains("failed to connect") ||
+            message.contains("econnrefused")
+    }
+
+    private fun connectionFailed(error: Throwable): ModelProviderError = ModelProviderError(
+        code = ModelProviderErrorCode.CONNECTION_FAILED,
+        message = "Could not connect to the model endpoint. The Colab runtime may be stopped.",
+        providerId = id,
+        retryable = true,
+        cause = error,
+    )
 
     private fun httpError(response: HttpResponseSpec): ModelProviderError {
         val status = response.statusCode
@@ -164,12 +227,26 @@ class OpenAiCompatibleProvider(
         return ProviderErrorInfo(root.stringOrNull("message"), root.stringOrNull("type"))
     }
 
+    private fun timeoutError(error: Throwable): ModelProviderError = ModelProviderError(
+        code = ModelProviderErrorCode.TIMEOUT,
+        message = "The model request timed out. Check that the Colab runtime and tunnel are still running.",
+        providerId = id,
+        retryable = true,
+        cause = error,
+    )
+
     private fun invalidResponse(message: String): ModelProviderError =
         ModelProviderError(ModelProviderErrorCode.INVALID_RESPONSE, message, id)
 
-    private fun parseJson(body: String): JsonObject =
-        runCatching { JsonCodec.parse(body).objectOrNull() }.getOrNull()
-            ?: throw invalidResponse("Model endpoint returned a non-JSON response body")
+    private fun parseJson(body: String): JsonObject {
+        val trimmed = body.trim()
+        if (trimmed.isEmpty()) throw invalidResponse("Model endpoint returned an empty response")
+        val parsed = runCatching { JsonCodec.parse(trimmed) }.getOrElse { error ->
+            throw invalidResponse("Model endpoint returned invalid JSON: ${error.message ?: "parse error"}")
+        }
+        return parsed.objectOrNull()
+            ?: throw invalidResponse("Model endpoint returned a non-object JSON response")
+    }
 
     // --- request building --------------------------------------------------
 
@@ -251,7 +328,7 @@ class OpenAiCompatibleProvider(
         val choices = json.arrayOrNull("choices") ?: throw invalidResponse("Response did not contain 'choices'")
         val choice = choices.firstOrNull()?.objectOrNull() ?: throw invalidResponse("Response contained no choices")
         val message = choice.objectOrNull("message") ?: throw invalidResponse("Choice did not contain a 'message'")
-        val content = message.stringOrNull("content") ?: ""
+        val content = extractMessageContent(message)
         val toolCalls = parseToolCalls(message.arrayOrNull("tool_calls"))
         val finishReason = choice.stringOrNull("finish_reason")?.let { toFinishReason(it) }
         val usage = json.objectOrNull("usage")?.let { parseUsage(it) }
@@ -275,14 +352,19 @@ class OpenAiCompatibleProvider(
             ModelToolCall(
                 id = call.stringOrNull("id") ?: "",
                 name = name,
-                arguments = parseArguments(function.stringOrNull("arguments")),
+                arguments = parseArguments(function["arguments"]),
             )
         }
     }
 
-    private fun parseArguments(raw: String?): JsonObject {
-        if (raw.isNullOrBlank()) return emptyMap()
-        return runCatching { JsonCodec.parse(raw).objectOrNull() }.getOrNull() ?: emptyMap()
+    private fun parseArguments(raw: JsonValue?): JsonObject = when (raw) {
+        null, is JsonValue.Null -> emptyMap()
+        is JsonValue.Obj -> raw.fields
+        is JsonValue.Str -> {
+            if (raw.value.isBlank()) emptyMap()
+            else runCatching { JsonCodec.parse(raw.value).objectOrNull() }.getOrNull() ?: emptyMap()
+        }
+        else -> emptyMap()
     }
 
     private fun parseUsage(json: JsonObject): ModelUsage = ModelUsage(
@@ -324,7 +406,7 @@ class OpenAiCompatibleProvider(
         val choice = choices.firstOrNull()?.objectOrNull() ?: return
         choice.stringOrNull("finish_reason")?.let { accumulator.finishReason = toFinishReason(it) }
         val delta = choice.objectOrNull("delta") ?: return
-        delta.stringOrNull("content")?.let { text ->
+        extractDeltaContent(delta)?.let { text ->
             if (text.isNotEmpty()) {
                 accumulator.content.append(text)
                 onEvent(ModelStreamEvent.TextDelta(text))
@@ -339,6 +421,34 @@ class OpenAiCompatibleProvider(
             val argumentsDelta = function?.stringOrNull("arguments")
             accumulator.appendToolCall(index, callId, name, argumentsDelta)
             onEvent(ModelStreamEvent.ToolCallDelta(index, callId, name, argumentsDelta))
+        }
+    }
+
+    /**
+     * Some OpenAI-compatible Colab servers ignore `stream: true` and return a
+     * normal chat-completions JSON body. Treat that as a completed response
+     * instead of crashing or showing an empty bubble.
+     */
+    private fun applyNonStreamFallback(
+        accumulator: StreamAccumulator,
+        rawBody: String,
+        request: ModelRequest,
+        onEvent: (ModelStreamEvent) -> Unit,
+    ) {
+        val trimmed = rawBody.trim()
+        if (trimmed.isEmpty() || !trimmed.startsWith("{")) return
+        val parsed = runCatching { parseCompletion(parseJson(trimmed), request) }.getOrNull() ?: return
+        accumulator.model = parsed.model
+        accumulator.finishReason = parsed.finishReason
+        accumulator.usage = parsed.usage
+        if (parsed.content.isNotEmpty()) {
+            accumulator.content.append(parsed.content)
+            onEvent(ModelStreamEvent.TextDelta(parsed.content))
+        }
+        parsed.toolCalls.forEachIndexed { index, call ->
+            val encoded = JsonCodec.encode(JsonValue.Obj(call.arguments))
+            accumulator.appendToolCall(index, call.id, call.name, encoded)
+            onEvent(ModelStreamEvent.ToolCallDelta(index, call.id, call.name, encoded))
         }
     }
 
@@ -379,11 +489,45 @@ class OpenAiCompatibleProvider(
         }
     }
 
+    /**
+     * OpenAI-compatible servers (vLLM, llama.cpp, some Colab notebooks) may
+     * return `content` as a string or as a list of text parts.
+     */
+    private fun extractMessageContent(message: JsonObject): String {
+        message["content"]?.let { return jsonText(it) }
+        message["text"]?.let { return jsonText(it) }
+        return ""
+    }
+
+    private fun extractDeltaContent(delta: JsonObject): String? {
+        val value = delta["content"] ?: delta["text"] ?: return null
+        val text = jsonText(value)
+        return text.takeIf { it.isNotEmpty() }
+    }
+
+    private fun jsonText(value: JsonValue): String = when (value) {
+        is JsonValue.Str -> value.value
+        is JsonValue.Num -> value.value.toString()
+        is JsonValue.Bool -> value.value.toString()
+        is JsonValue.Null -> ""
+        is JsonValue.Arr -> value.items.joinToString("") { item ->
+            val obj = item.objectOrNull()
+            when {
+                obj != null -> obj.stringOrNull("text") ?: obj.stringOrNull("content").orEmpty()
+                else -> jsonText(item)
+            }
+        }
+        is JsonValue.Obj -> value.fields.stringOrNull("text")
+            ?: value.fields.stringOrNull("content").orEmpty()
+    }
+
     private class ProviderErrorInfo(val message: String?, val type: String?)
 
     companion object {
         const val DEFAULT_ID: String = "openai-compatible"
         const val DEFAULT_CHAT_PATH: String = "/chat/completions"
+        const val CONNECT_TIMEOUT_MILLIS: Int = 15_000
+        const val READ_TIMEOUT_MILLIS: Int = 120_000
 
         val DEFAULT_CAPABILITIES: ModelCapabilities = ModelCapabilities(
             streaming = true,

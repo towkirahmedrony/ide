@@ -22,6 +22,8 @@ import dev.forge.ide.agent.tools.stringOrNull
 import dev.forge.ide.model.ModelConfig
 import dev.forge.ide.model.ModelGateway
 import dev.forge.ide.model.ModelMessage
+import dev.forge.ide.model.ModelProviderError
+import dev.forge.ide.model.ModelProviderErrorCode
 import dev.forge.ide.model.ModelRequest
 import dev.forge.ide.model.ModelResponse
 import dev.forge.ide.model.ModelStreamEvent
@@ -232,13 +234,7 @@ class AgentLoop(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
-                val agentError = AgentError(
-                    code = AgentErrorCode.MODEL_FAILURE,
-                    message = error.message ?: "Model gateway failed",
-                    role = request.definition.role,
-                    sessionId = request.sessionId,
-                    cause = error,
-                )
+                val agentError = modelFailure(error, request)
                 errors += agentError
                 sink.emit(AgentEvent.Failed(request.sessionId, agentError, clock()))
                 return AgentResult(
@@ -739,6 +735,29 @@ class AgentLoop(
             errors = errors.toList(),
             role = request.definition.role,
             stepStats = stats(startedAt, stepIndex, request.maxSteps, modelCalls, toolCalls, subAgentCalls),
+        )
+    }
+
+    private fun modelFailure(error: Throwable, request: AgentLoopRequest): AgentError {
+        val provider = error as? ModelProviderError
+        val code = when (provider?.code) {
+            ModelProviderErrorCode.TIMEOUT -> AgentErrorCode.TIMEOUT
+            ModelProviderErrorCode.INVALID_RESPONSE -> AgentErrorCode.MALFORMED_RESPONSE
+            ModelProviderErrorCode.CONNECTION_FAILED,
+            ModelProviderErrorCode.NETWORK_ERROR,
+            -> AgentErrorCode.MODEL_FAILURE
+            else -> AgentErrorCode.MODEL_FAILURE
+        }
+        return AgentError(
+            code = code,
+            message = provider?.message ?: error.message ?: "Model gateway failed",
+            role = request.definition.role,
+            sessionId = request.sessionId,
+            cause = error,
+            details = mapOf(
+                "providerError" to (provider?.code?.name ?: error::class.simpleName.orEmpty()),
+                "httpStatus" to (provider?.httpStatus?.toString().orEmpty()),
+            ).filterValues { it.isNotBlank() },
         )
     }
 

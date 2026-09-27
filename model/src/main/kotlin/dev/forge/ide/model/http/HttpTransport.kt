@@ -6,6 +6,8 @@ data class HttpRequestSpec(
     val url: String,
     val headers: Map<String, String> = emptyMap(),
     val body: String? = null,
+    val connectTimeoutMillis: Int? = null,
+    val readTimeoutMillis: Int? = null,
 )
 
 /** A provider-agnostic HTTP response. */
@@ -20,8 +22,10 @@ data class HttpResponseSpec(
 /**
  * Minimal HTTP port. Providers depend on this rather than a concrete client so
  * they can be tested with canned responses and the platform can supply its own
- * transport later. Implementations block; callers are responsible for running
- * them off the main thread.
+ * transport later.
+ *
+ * Implementations may block; they must never run that blocking work on the
+ * Android main thread. Callers may still treat these as suspending functions.
  */
 interface HttpTransport {
     suspend fun execute(request: HttpRequestSpec): HttpResponseSpec

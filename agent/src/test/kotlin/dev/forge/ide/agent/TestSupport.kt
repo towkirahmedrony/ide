@@ -7,6 +7,8 @@ import dev.forge.ide.model.ModelFinishReason
 import dev.forge.ide.model.ModelGateway
 import dev.forge.ide.model.ModelMessage
 import dev.forge.ide.model.ModelProvider
+import dev.forge.ide.model.ModelProviderError
+import dev.forge.ide.model.ModelProviderErrorCode
 import dev.forge.ide.model.ModelRequest
 import dev.forge.ide.model.ModelResponse
 import dev.forge.ide.model.ModelRole
@@ -111,15 +113,25 @@ internal class RecordingTool(
     }
 }
 
-internal fun throwingGateway(): ModelGateway = object : ModelGateway {
-    override fun register(provider: ModelProvider) = Unit
-    override fun unregister(id: String): Boolean = false
-    override fun providers(): List<ModelProvider> = emptyList()
-    override fun provider(id: String): ModelProvider? = null
-    override fun resolve(request: ModelRequest): ModelProvider? = null
-    override fun capabilities(request: ModelRequest): ModelCapabilities = ModelCapabilities()
-    override suspend fun complete(request: ModelRequest): ModelResponse =
-        throw IllegalStateException("gateway down")
-    override suspend fun stream(request: ModelRequest, onEvent: (ModelStreamEvent) -> Unit): ModelResponse =
-        throw IllegalStateException("gateway down")
-}
+internal fun throwingGateway(error: Throwable = IllegalStateException("gateway down")): ModelGateway =
+    object : ModelGateway {
+        override fun register(provider: ModelProvider) = Unit
+        override fun unregister(id: String): Boolean = false
+        override fun providers(): List<ModelProvider> = emptyList()
+        override fun provider(id: String): ModelProvider? = null
+        override fun resolve(request: ModelRequest): ModelProvider? = null
+        override fun capabilities(request: ModelRequest): ModelCapabilities = ModelCapabilities()
+        override suspend fun complete(request: ModelRequest): ModelResponse = throw error
+        override suspend fun stream(request: ModelRequest, onEvent: (ModelStreamEvent) -> Unit): ModelResponse =
+            throw error
+    }
+
+internal fun providerError(
+    code: ModelProviderErrorCode,
+    message: String = code.name.lowercase(),
+): ModelProviderError = ModelProviderError(
+    code = code,
+    message = message,
+    providerId = "test",
+    retryable = true,
+)

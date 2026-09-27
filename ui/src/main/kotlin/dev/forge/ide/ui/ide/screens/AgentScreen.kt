@@ -223,9 +223,14 @@ private fun AgentInputBar(
 
 private fun activityColor(status: AgentActivityStatus): Color = when (status) {
     AgentActivityStatus.IDLE -> ForgeMuted
+    AgentActivityStatus.SENDING -> ForgePeriwinkle
     AgentActivityStatus.THINKING -> ForgePeriwinkle
     AgentActivityStatus.USING_TOOL -> ForgeMint
     AgentActivityStatus.WAITING -> ForgeAmber
     AgentActivityStatus.COMPLETED -> ForgeMint
-    AgentActivityStatus.ERROR -> ForgeDanger
+    AgentActivityStatus.CONNECTION_ERROR,
+    AgentActivityStatus.TIMEOUT,
+    AgentActivityStatus.INVALID_RESPONSE,
+    AgentActivityStatus.ERROR,
+    -> ForgeDanger
 }

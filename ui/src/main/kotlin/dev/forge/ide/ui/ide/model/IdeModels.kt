@@ -55,7 +55,18 @@ data class OpenFile(
     val content: String,
 )
 
-enum class AgentActivityStatus { IDLE, THINKING, USING_TOOL, WAITING, COMPLETED, ERROR }
+enum class AgentActivityStatus {
+    IDLE,
+    SENDING,
+    THINKING,
+    USING_TOOL,
+    WAITING,
+    COMPLETED,
+    CONNECTION_ERROR,
+    TIMEOUT,
+    INVALID_RESPONSE,
+    ERROR,
+}
 
 data class AgentActivity(
     val status: AgentActivityStatus,

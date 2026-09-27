@@ -4,12 +4,14 @@ import dev.forge.ide.model.http.HttpResponseSpec
 import dev.forge.ide.model.json.JsonCodec
 import dev.forge.ide.model.json.JsonObject
 import dev.forge.ide.model.json.JsonValue
+import dev.forge.ide.model.json.arrayOrNull
 import dev.forge.ide.model.json.booleanOrNull
 import dev.forge.ide.model.json.numberOrNull
 import dev.forge.ide.model.json.objectOrNull
 import dev.forge.ide.model.json.stringOrNull
 import dev.forge.ide.model.provider.openai.OpenAiCompatibleProvider
 import java.io.IOException
+import java.net.ConnectException
 import java.net.SocketTimeoutException
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -81,6 +83,55 @@ class OpenAiCompatibleProviderTest {
         assertEquals("http://localhost:8080/v1/chat/completions", transport.lastRequest?.url)
         assertEquals("POST", transport.lastRequest?.method)
         assertEquals("application/json", transport.lastRequest?.headers?.get("Content-Type"))
+        assertEquals("application/json", transport.lastRequest?.headers?.get("Accept"))
+        assertEquals("hi", requestBody(transport).arrayOrNull("messages")?.firstOrNull()?.objectOrNull()?.stringOrNull("content"))
+        assertEquals(OpenAiCompatibleProvider.CONNECT_TIMEOUT_MILLIS, transport.lastRequest?.connectTimeoutMillis)
+        assertEquals(OpenAiCompatibleProvider.READ_TIMEOUT_MILLIS, transport.lastRequest?.readTimeoutMillis)
+    }
+
+    @Test
+    fun `complete honors a per-config timeout`() {
+        val transport = FakeHttpTransport(response = HttpResponseSpec(200, SUCCESS_RESPONSE))
+        val provider = provider(transport)
+
+        runSuspend {
+            provider.complete(
+                request(
+                    openAiConfig().copy(timeoutMillis = 4_000),
+                    ModelMessage.user("hi"),
+                ),
+            )
+        }
+
+        assertEquals(4_000, transport.lastRequest?.connectTimeoutMillis)
+        assertEquals(4_000, transport.lastRequest?.readTimeoutMillis)
+    }
+
+    @Test
+    fun `complete parses content arrays used by some colab servers`() {
+        val transport = FakeHttpTransport(
+            response = HttpResponseSpec(
+                200,
+                """{"choices":[{"message":{"role":"assistant","content":[{"type":"text","text":"Hel"},{"type":"text","text":"lo"}]},"finish_reason":"stop"}]}""",
+            ),
+        )
+        val provider = provider(transport)
+
+        val response = runSuspend { provider.complete(request(openAiConfig(), ModelMessage.user("hi"))) }
+
+        assertEquals("Hello", response.content)
+    }
+
+    @Test
+    fun `complete rejects an empty response body`() {
+        val transport = FakeHttpTransport(response = HttpResponseSpec(200, "   "))
+        val provider = provider(transport)
+
+        val error = assertFailsWith<ModelProviderError> {
+            runSuspend { provider.complete(request(openAiConfig(), ModelMessage.user("hi"))) }
+        }
+
+        assertEquals(ModelProviderErrorCode.INVALID_RESPONSE, error.code)
     }
 
     // --- optional API key --------------------------------------------------
@@ -130,6 +181,22 @@ class OpenAiCompatibleProviderTest {
         assertTrue(events.any { it is ModelStreamEvent.Started })
         assertTrue(events.any { it is ModelStreamEvent.Completed })
         assertTrue(requestBody(transport).booleanOrNull("stream") == true)
+        assertEquals("text/event-stream, application/json", transport.lastRequest?.headers?.get("Accept"))
+    }
+
+    @Test
+    fun `stream falls back to a non-sse openai json body`() {
+        val body = """{"model":"local-model","choices":[{"message":{"role":"assistant","content":"Hello from Colab"},"finish_reason":"stop"}]}"""
+        val transport = FakeHttpTransport(streamLines = listOf(body))
+        val provider = provider(transport)
+        val events = mutableListOf<ModelStreamEvent>()
+
+        val response = runSuspend {
+            provider.stream(request(openAiConfig(stream = true), ModelMessage.user("hi"))) { events += it }
+        }
+
+        assertEquals("Hello from Colab", response.content)
+        assertTrue(events.filterIsInstance<ModelStreamEvent.TextDelta>().any { it.text == "Hello from Colab" })
     }
 
     // --- invalid responses -------------------------------------------------
@@ -230,6 +297,33 @@ class OpenAiCompatibleProviderTest {
         }
 
         assertEquals(ModelProviderErrorCode.TIMEOUT, error.code)
+    }
+
+    @Test
+    fun `connection refused normalizes to a connection failure`() {
+        val transport = FakeHttpTransport()
+        transport.onExecute = { throw ConnectException("Connection refused") }
+        val provider = provider(transport)
+
+        val error = assertFailsWith<ModelProviderError> {
+            runSuspend { provider.complete(request(openAiConfig(), ModelMessage.user("hi"))) }
+        }
+
+        assertEquals(ModelProviderErrorCode.CONNECTION_FAILED, error.code)
+        assertTrue(error.retryable)
+    }
+
+    @Test
+    fun `nested connection failures are unwrapped`() {
+        val transport = FakeHttpTransport()
+        transport.onExecute = { throw IOException("failed to connect", ConnectException("Connection refused")) }
+        val provider = provider(transport)
+
+        val error = assertFailsWith<ModelProviderError> {
+            runSuspend { provider.complete(request(openAiConfig(), ModelMessage.user("hi"))) }
+        }
+
+        assertEquals(ModelProviderErrorCode.CONNECTION_FAILED, error.code)
     }
 
     @Test
