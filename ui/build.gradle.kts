@@ -23,6 +23,7 @@ android {
 
 dependencies {
     api(project(":core"))
+    api(project(":workspace"))
 
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.viewmodel.ktx)

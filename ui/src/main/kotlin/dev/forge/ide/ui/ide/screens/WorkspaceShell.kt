@@ -9,6 +9,7 @@ import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.NavigationBar
@@ -16,6 +17,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
@@ -72,7 +74,7 @@ fun WorkspaceShell(
     val workspaceViewModel: WorkspaceViewModel = viewModel(
         key = "workspace-$workspaceId",
         factory = IdeViewModelFactory {
-            WorkspaceViewModel(workspaceId, dependencies.projects, dependencies.files)
+            WorkspaceViewModel(workspaceId, dependencies.workspaceManager)
         },
     )
     val agentViewModel: AgentViewModel = viewModel(
@@ -100,6 +102,32 @@ fun WorkspaceShell(
         } else {
             onExit()
         }
+    }
+
+    // Never silently discard unsaved edits when switching files.
+    workspaceViewModel.pendingOpenPath?.let { path ->
+        AlertDialog(
+            onDismissRequest = { workspaceViewModel.clearPendingOpen() },
+            title = { Text("Discard unsaved changes?") },
+            text = {
+                Text(
+                    "\"${workspaceViewModel.editorState.file?.name ?: "The open file"}\" has " +
+                        "unsaved changes. Opening $path will discard them.",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        workspaceViewModel.clearPendingOpen()
+                        workspaceViewModel.openFile(path)
+                        innerNavController.navigateToTab(WorkspaceTab.EDITOR)
+                    },
+                ) { Text("Discard") }
+            },
+            dismissButton = {
+                TextButton(onClick = { workspaceViewModel.clearPendingOpen() }) { Text("Keep editing") }
+            },
+        )
     }
 
     Scaffold(
@@ -134,8 +162,12 @@ fun WorkspaceShell(
                     state = workspaceViewModel.filesState,
                     onToggle = workspaceViewModel::toggleDirectory,
                     onOpenFile = { path ->
-                        workspaceViewModel.openFile(path)
-                        innerNavController.navigateToTab(WorkspaceTab.EDITOR)
+                        if (workspaceViewModel.needsDiscardConfirmation(path)) {
+                            workspaceViewModel.stagePendingOpen(path)
+                        } else {
+                            workspaceViewModel.openFile(path)
+                            innerNavController.navigateToTab(WorkspaceTab.EDITOR)
+                        }
                     },
                     onRetry = workspaceViewModel::loadWorkspace,
                 )

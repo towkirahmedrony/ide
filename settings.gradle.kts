@@ -29,4 +29,5 @@ include(":integrations")
 
 // Android-facing layers.
 include(":ui")
+include(":workspace-android")
 include(":app")

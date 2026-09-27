@@ -5,48 +5,114 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import dev.forge.ide.ui.ide.data.ProjectCatalog
+import dev.forge.ide.core.ForgeResult
+import dev.forge.ide.ui.ide.data.WorkspacePicker
 import dev.forge.ide.ui.ide.model.ProjectSummary
+import dev.forge.ide.ui.ide.model.toSummary
+import dev.forge.ide.workspace.WorkspaceId
+import dev.forge.ide.workspace.WorkspaceManager
 import kotlinx.coroutines.launch
 
 data class HomeUiState(
     val loading: Boolean = true,
     val projects: List<ProjectSummary> = emptyList(),
     val error: String? = null,
+    val opening: Boolean = false,
 ) {
     val isEmpty: Boolean get() = !loading && error == null && projects.isEmpty()
 }
 
-/** Drives the Home / Projects screen. */
-class HomeViewModel(private val catalog: ProjectCatalog) : ViewModel() {
+/** Drives the Home / Projects screen against the real workspace runtime. */
+class HomeViewModel(
+    private val manager: WorkspaceManager,
+    private val picker: WorkspacePicker,
+) : ViewModel() {
 
     var uiState by mutableStateOf(HomeUiState())
         private set
+
+    private var restoreAttempted = false
 
     init {
         refresh()
     }
 
     fun refresh() {
-        viewModelScope.launch {
-            uiState = uiState.copy(loading = true, error = null)
-            uiState = runCatching { catalog.recentProjects() }
-                .fold(
-                    onSuccess = { HomeUiState(loading = false, projects = it) },
-                    onFailure = { HomeUiState(loading = false, error = it.message ?: "Failed to load projects") },
-                )
+        viewModelScope.launch { loadRecents() }
+    }
+
+    private suspend fun loadRecents() {
+        uiState = uiState.copy(loading = true, error = null)
+        uiState = when (val result = manager.recent()) {
+            is ForgeResult.Success -> uiState.copy(
+                loading = false,
+                projects = result.value.map { metadata -> metadata.toSummary() },
+                error = null,
+            )
+
+            is ForgeResult.Failure -> uiState.copy(loading = false, error = result.error.userMessage)
         }
     }
 
-    /** Creates a workspace then hands its id back so the UI can open it. */
-    fun createWorkspace(name: String, onCreated: (ProjectSummary) -> Unit) {
+    /** Launches the system folder picker and opens the chosen workspace. */
+    fun pickWorkspace(onOpened: (String) -> Unit) {
+        picker.pick { handle ->
+            if (handle == null) return@pick
+            viewModelScope.launch { openHandle(handle, onOpened) }
+        }
+    }
+
+    /** Reopens a remembered workspace; failures are surfaced to the user. */
+    fun openRecent(id: String, onOpened: (String) -> Unit) {
         viewModelScope.launch {
-            runCatching { catalog.createWorkspace(name) }
-                .onSuccess { project ->
-                    uiState = uiState.copy(projects = uiState.projects + project)
-                    onCreated(project)
+            uiState = uiState.copy(opening = true, error = null)
+            when (val result = manager.openRecent(WorkspaceId(id))) {
+                is ForgeResult.Success -> {
+                    uiState = uiState.copy(opening = false)
+                    onOpened(result.value.workspace.id.value)
                 }
-                .onFailure { uiState = uiState.copy(error = it.message ?: "Could not create workspace") }
+
+                is ForgeResult.Failure -> {
+                    uiState = uiState.copy(opening = false, error = result.error.userMessage)
+                    loadRecents()
+                }
+            }
+        }
+    }
+
+    /** Removes a workspace from the recent list. */
+    fun forget(id: String) {
+        viewModelScope.launch {
+            manager.forget(WorkspaceId(id))
+            loadRecents()
+        }
+    }
+
+    /**
+     * Reopens the last used workspace once per session, so the app returns to
+     * where the user left off. Failures are ignored (the Home screen stays put).
+     */
+    fun restoreLastWorkspace(onRestored: (String) -> Unit) {
+        if (restoreAttempted) return
+        restoreAttempted = true
+        viewModelScope.launch {
+            val result = manager.restoreLastOpened() ?: return@launch
+            if (result is ForgeResult.Success) {
+                onRestored(result.value.workspace.id.value)
+            }
+        }
+    }
+
+    private suspend fun openHandle(handle: String, onOpened: (String) -> Unit) {
+        uiState = uiState.copy(opening = true, error = null)
+        when (val result = manager.open(handle)) {
+            is ForgeResult.Success -> {
+                uiState = uiState.copy(opening = false)
+                onOpened(result.value.workspace.id.value)
+                loadRecents()
+            }
+
+            is ForgeResult.Failure -> uiState = uiState.copy(opening = false, error = result.error.userMessage)
         }
     }
 }

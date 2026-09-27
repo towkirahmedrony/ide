@@ -1,6 +1,7 @@
 package dev.forge.ide.ui.ide
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavType
@@ -43,8 +44,16 @@ fun ForgeIdeApp(
     ) {
         composable(IdeDestinations.HOME) {
             val homeViewModel: HomeViewModel = viewModel(
-                factory = IdeViewModelFactory { HomeViewModel(dependencies.projects) },
+                factory = IdeViewModelFactory {
+                    HomeViewModel(dependencies.workspaceManager, dependencies.workspacePicker)
+                },
             )
+            // Reopen where the user left off once per session.
+            LaunchedEffect(Unit) {
+                homeViewModel.restoreLastWorkspace { workspaceId ->
+                    navController.navigate(IdeDestinations.workspace(workspaceId))
+                }
+            }
             HomeScreen(
                 appName = appName,
                 viewModel = homeViewModel,

@@ -82,8 +82,8 @@ fun FilesScreen(
 
             state.isEmpty -> IdeEmptyState(
                 icon = Icons.Outlined.FolderOff,
-                title = "No files yet",
-                message = "This workspace is empty. The real file explorer arrives with the Workspace Runtime.",
+                title = "This folder is empty",
+                message = "There are no files in this workspace yet.",
                 modifier = Modifier.align(Alignment.Center),
             )
 

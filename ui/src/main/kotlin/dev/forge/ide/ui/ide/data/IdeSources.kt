@@ -1,34 +1,26 @@
 package dev.forge.ide.ui.ide.data
 
 import dev.forge.ide.ui.ide.model.AgentActivity
-import dev.forge.ide.ui.ide.model.FileNode
 import dev.forge.ide.ui.ide.model.GitSnapshot
-import dev.forge.ide.ui.ide.model.ProjectSummary
 import dev.forge.ide.ui.ide.model.TerminalResult
 
 /**
- * Presentation-facing ports for the IDE shell. The UI and its state holders
- * depend only on these contracts; later tasks provide real implementations
- * backed by the Workspace Runtime, Git layer, Agent Core, and Model Gateway.
- * The in-memory mock implementations let the shell be demonstrated today.
+ * Presentation-facing ports for the IDE shell.
+ *
+ * Workspace access is no longer mocked: the UI talks to the
+ * `dev.forge.ide.workspace.WorkspaceManager` domain contract, which is backed by
+ * the Android Storage Access Framework. The remaining ports (agent, terminal,
+ * git) are still stand-ins for layers that land in later tasks.
  */
 
-/** Lists and creates workspaces shown on Home. */
-interface ProjectCatalog {
-    suspend fun recentProjects(): List<ProjectSummary>
-
-    suspend fun createWorkspace(name: String): ProjectSummary
-
-    suspend fun find(workspaceId: String): ProjectSummary?
-}
-
-/** Provides the file tree and file contents for a workspace. */
-interface WorkspaceFileSource {
-    suspend fun fileTree(workspaceId: String): List<FileNode>
-
-    suspend fun readFile(path: String): String
-
-    suspend fun writeFile(path: String, content: String)
+/**
+ * Launches the platform's folder picker.
+ *
+ * The UI only ever sees an opaque handle (or `null` when the user cancels); it
+ * never touches Android storage APIs directly.
+ */
+fun interface WorkspacePicker {
+    fun pick(onPicked: (String?) -> Unit)
 }
 
 /** Incremental events emitted while an agent produces a response. */
