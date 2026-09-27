@@ -1,5 +1,8 @@
 package dev.forge.ide.agent.domain
 
+import dev.forge.ide.model.ModelMessage
+import dev.forge.ide.model.json.JsonObject
+
 data class AgentDefinition(
     val role: AgentRole,
     val name: String,
@@ -70,6 +73,37 @@ data class AgentResult(
     val errors: List<AgentError> = emptyList(),
     val plan: AgentPlan? = null,
     val role: AgentRole = AgentRole.MAIN,
+    /** Cumulative execution accounting; populated by the execution engine. */
+    val stepStats: AgentStepStats = AgentStepStats(),
+    /** Set when the run paused with [AgentStatus.WAITING_FOR_PERMISSION]. */
+    val pendingPermission: PendingPermission? = null,
+    /** Conversation snapshot to restore when resuming a paused run. */
+    val resumeContext: List<ModelMessage> = emptyList(),
+)
+
+/**
+ * Execution accounting for one agent run. Every model call, tool call, and
+ * sub-agent delegation counts against the run's step budget.
+ */
+data class AgentStepStats(
+    val currentStep: Int = 0,
+    val maxSteps: Int = 0,
+    val modelCalls: Int = 0,
+    val toolCalls: Int = 0,
+    val subAgentCalls: Int = 0,
+    val elapsedMillis: Long = 0,
+) {
+    override fun toString(): String =
+        "Step $currentStep / $maxSteps · model: $modelCalls · tools: $toolCalls · sub-agents: $subAgentCalls"
+}
+
+/** A tool call parked while waiting for the user's approval decision. */
+data class PendingPermission(
+    val toolName: String,
+    /** Structured tool arguments, preserved for the eventual execution. */
+    val arguments: JsonObject = emptyMap(),
+    val reason: String,
+    val toolCallId: String,
 )
 
 data class SubAgentRequest(

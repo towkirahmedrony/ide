@@ -17,9 +17,23 @@ enum class AgentStatus {
     PLANNING,
     RUNNING,
     WAITING_FOR_SUBAGENT,
+
+    /** A tool call is parked until the user approves or denies it. */
+    WAITING_FOR_PERMISSION,
+
+    /** Reserved for a future user-input tool; not produced yet. */
+    WAITING_FOR_INPUT,
     COMPLETED,
     CANCELLED,
     FAILED,
+
+    /** The step budget was exhausted; distinct from a generic failure. */
+    MAX_STEPS_REACHED,
+    ;
+
+    /** Terminal states; the execution loop must always end in one of these. */
+    val isTerminal: Boolean
+        get() = this in setOf(COMPLETED, CANCELLED, FAILED, MAX_STEPS_REACHED)
 }
 
 /**

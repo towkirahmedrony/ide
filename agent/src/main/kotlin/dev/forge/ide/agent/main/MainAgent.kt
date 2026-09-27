@@ -12,10 +12,12 @@ import dev.forge.ide.agent.domain.AgentStep
 import dev.forge.ide.agent.domain.AgentTask
 import dev.forge.ide.agent.runtime.AgentLoop
 import dev.forge.ide.agent.runtime.AgentLoopRequest
+import dev.forge.ide.agent.runtime.ResumedPermission
 import dev.forge.ide.agent.runtime.SubAgentInvoker
 import dev.forge.ide.agent.runtime.nowMillis
 import dev.forge.ide.agent.tools.AgentToolBridge
 import dev.forge.ide.model.ModelConfig
+import dev.forge.ide.model.ModelMessage
 
 data class MainAgentRequest(
     val sessionId: String,
@@ -23,6 +25,10 @@ data class MainAgentRequest(
     val context: String = "",
     val modelConfig: ModelConfig,
     val maxSteps: Int? = null,
+    /** Conversation snapshot restored when resuming a permission pause. */
+    val resumeContext: List<ModelMessage> = emptyList(),
+    /** The parked tool call plus the user's decision, when resuming. */
+    val resumePermission: ResumedPermission? = null,
 )
 
 /**
@@ -64,6 +70,8 @@ class MainAgent(
                 scopedContext = request.context,
                 workspaceId = request.task.workspaceId,
                 modelConfig = request.modelConfig,
+                resumeContext = request.resumeContext,
+                resumePermission = request.resumePermission,
             ),
             sink = sink,
             subAgentInvoker = subAgentInvoker,

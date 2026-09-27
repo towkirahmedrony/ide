@@ -16,6 +16,7 @@ import dev.forge.ide.agent.domain.SubAgentResult
 import dev.forge.ide.agent.main.MainAgent
 import dev.forge.ide.agent.main.MainAgentRequest
 import dev.forge.ide.agent.runtime.AgentIds
+import dev.forge.ide.agent.runtime.ResumedPermission
 import dev.forge.ide.agent.runtime.SubAgentInvoker
 import dev.forge.ide.agent.specialized.SpecializedAgentRegistry
 import dev.forge.ide.agent.specialized.unknownSubAgent
@@ -39,6 +40,12 @@ interface AgentOrchestrator {
         sink: AgentEventSink,
     ): AgentResult
 
+    /**
+     * Resumes a session parked in [dev.forge.ide.agent.domain.AgentStatus.WAITING_FOR_PERMISSION]
+     * with the user's approval decision. Returns null when there is nothing to resume.
+     */
+    suspend fun resumePermission(sessionId: String, approved: Boolean, sink: AgentEventSink): AgentResult?
+
     fun session(id: String): AgentSession?
 
     fun sessions(): List<AgentSession>
@@ -57,6 +64,17 @@ class DefaultAgentOrchestrator(
 
     private val cancellations = ConcurrentHashMap<String, Boolean>()
     private val jobs = ConcurrentHashMap<String, Job>()
+
+    /** State needed to re-enter a run that paused for a permission decision. */
+    private class PausedRun(
+        val pending: dev.forge.ide.agent.domain.PendingPermission,
+        val resumeContext: List<dev.forge.ide.model.ModelMessage>,
+        val context: String,
+        val modelConfig: ModelConfig,
+        val timeoutMillis: Long,
+    )
+
+    private val pausedPermissions = ConcurrentHashMap<String, PausedRun>()
 
     override suspend fun run(
         request: AgentRunRequest,
@@ -129,6 +147,15 @@ class DefaultAgentOrchestrator(
                 )
             }
             sessions.update(sessionId) { it.withStatus(result.status, clock()) }
+            if (result.status == AgentStatus.WAITING_FOR_PERMISSION && result.pendingPermission != null) {
+                pausedPermissions[sessionId] = PausedRun(
+                    pending = result.pendingPermission,
+                    resumeContext = result.resumeContext,
+                    context = assembled,
+                    modelConfig = modelConfig,
+                    timeoutMillis = timeout,
+                )
+            }
             result
         } catch (error: TimeoutCancellationException) {
             val agentError = AgentError(
@@ -181,6 +208,102 @@ class DefaultAgentOrchestrator(
         }
     }
 
+    override suspend fun resumePermission(
+        sessionId: String,
+        approved: Boolean,
+        sink: AgentEventSink,
+    ): AgentResult? {
+        val session = sessions.find(sessionId) ?: return null
+        val paused = pausedPermissions.remove(sessionId) ?: return null
+        if (session.status != AgentStatus.WAITING_FOR_PERMISSION) return null
+
+        val modelConfig = paused.modelConfig
+        sessions.update(sessionId) { it.withStatus(AgentStatus.RUNNING, clock()) }
+        val job = coroutineContext[Job]
+        if (job != null) jobs[sessionId] = job
+
+        return try {
+            val result = withTimeout(paused.timeoutMillis) {
+                mainAgent.run(
+                    request = MainAgentRequest(
+                        sessionId = sessionId,
+                        task = session.task,
+                        context = paused.context,
+                        modelConfig = modelConfig,
+                        resumeContext = paused.resumeContext,
+                        resumePermission = ResumedPermission(
+                            toolName = paused.pending.toolName,
+                            arguments = paused.pending.arguments,
+                            reason = paused.pending.reason,
+                            toolCallId = paused.pending.toolCallId,
+                            approved = approved,
+                        ),
+                    ),
+                    sink = sink,
+                    subAgentInvoker = SubAgentInvoker { child ->
+                        runSubAgent(child, modelConfig, sink) { isCancelled(sessionId) || isCancelled(child.sessionId) }
+                    },
+                    onCancelled = { isCancelled(sessionId) },
+                )
+            }
+            sessions.update(sessionId) { it.withStatus(result.status, clock()) }
+            if (result.status == AgentStatus.WAITING_FOR_PERMISSION && result.pendingPermission != null) {
+                pausedPermissions[sessionId] = PausedRun(
+                    pending = result.pendingPermission,
+                    resumeContext = result.resumeContext,
+                    context = paused.context,
+                    modelConfig = modelConfig,
+                    timeoutMillis = paused.timeoutMillis,
+                )
+            }
+            result
+        } catch (error: TimeoutCancellationException) {
+            val agentError = AgentError(
+                code = AgentErrorCode.TIMEOUT,
+                message = "Agent session timed out after ${paused.timeoutMillis}ms",
+                sessionId = sessionId,
+                cause = error,
+            )
+            sessions.update(sessionId) { it.withStatus(AgentStatus.FAILED, clock()) }
+            sink.emit(AgentEvent.Failed(sessionId, agentError, clock()))
+            AgentResult(
+                sessionId = sessionId,
+                status = AgentStatus.FAILED,
+                summary = agentError.message,
+                errors = listOf(agentError),
+            )
+        } catch (cancelled: CancellationException) {
+            sessions.update(sessionId) { it.withStatus(AgentStatus.CANCELLED, clock()) }
+            sink.emit(AgentEvent.Cancelled(sessionId, "Cancelled", clock()))
+            if (isCancelled(sessionId)) {
+                AgentResult(
+                    sessionId = sessionId,
+                    status = AgentStatus.CANCELLED,
+                    summary = "Cancelled",
+                )
+            } else {
+                throw cancelled
+            }
+        } catch (error: Throwable) {
+            val agentError = AgentError(
+                code = AgentErrorCode.UNKNOWN,
+                message = error.message ?: "Agent failed",
+                sessionId = sessionId,
+                cause = error,
+            )
+            sessions.update(sessionId) { it.withStatus(AgentStatus.FAILED, clock()) }
+            sink.emit(AgentEvent.Failed(sessionId, agentError, clock()))
+            AgentResult(
+                sessionId = sessionId,
+                status = AgentStatus.FAILED,
+                summary = agentError.message,
+                errors = listOf(agentError),
+            )
+        } finally {
+            jobs.remove(sessionId)
+        }
+    }
+
     override fun session(id: String): AgentSession? = sessions.find(id)
 
     override fun sessions(): List<AgentSession> = sessions.all()
@@ -189,7 +312,11 @@ class DefaultAgentOrchestrator(
         cancellations[sessionId] = true
         jobs[sessionId]?.cancel()
         sessions.update(sessionId) { current ->
-            if (current.status == AgentStatus.RUNNING || current.status == AgentStatus.WAITING_FOR_SUBAGENT) {
+            if (
+                current.status == AgentStatus.RUNNING ||
+                current.status == AgentStatus.WAITING_FOR_SUBAGENT ||
+                current.status == AgentStatus.WAITING_FOR_PERMISSION
+            ) {
                 current.withStatus(AgentStatus.CANCELLED, clock())
             } else {
                 current

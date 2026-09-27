@@ -9,7 +9,9 @@ import dev.forge.ide.agent.domain.AgentResult
 import dev.forge.ide.agent.domain.AgentRole
 import dev.forge.ide.agent.domain.AgentStatus
 import dev.forge.ide.agent.domain.AgentStep
+import dev.forge.ide.agent.domain.AgentStepStats
 import dev.forge.ide.agent.domain.PermissionLevel
+import dev.forge.ide.agent.domain.PendingPermission
 import dev.forge.ide.agent.domain.SubAgentRequest
 import dev.forge.ide.agent.domain.SubAgentResult
 import dev.forge.ide.agent.domain.ToolActionRecord
@@ -25,8 +27,12 @@ import dev.forge.ide.model.ModelResponse
 import dev.forge.ide.model.ModelStreamEvent
 import dev.forge.ide.model.ModelToolCall
 import dev.forge.ide.model.ModelToolChoice
+import dev.forge.ide.model.json.JsonObject
+import dev.forge.ide.model.json.JsonValue
+import dev.forge.ide.tools.ToolApproval
 import dev.forge.ide.tools.ToolErrorCode
 import dev.forge.ide.tools.ToolExecutionContext
+import dev.forge.ide.tools.ToolExecutionError
 import dev.forge.ide.tools.ToolInput
 import dev.forge.ide.tools.ToolResult
 import dev.forge.ide.tools.ToolRouter
@@ -48,8 +54,40 @@ data class AgentLoopRequest(
     val scopedContext: String,
     val workspaceId: String?,
     val modelConfig: ModelConfig,
+    /** Conversation snapshot to restore when resuming a permission pause. */
+    val resumeContext: List<ModelMessage> = emptyList(),
+    /** Tool call awaiting approval with the user's decision; when present the loop is resuming. */
+    val resumePermission: ResumedPermission? = null,
 )
 
+/**
+ * A parked tool call plus the user's decision, used to resume a run that
+ * stopped in [dev.forge.ide.agent.domain.AgentStatus.WAITING_FOR_PERMISSION].
+ */
+data class ResumedPermission(
+    val toolName: String,
+    val arguments: JsonObject,
+    val reason: String,
+    val toolCallId: String,
+    val approved: Boolean,
+)
+
+/** Outcome of dispatching one tool call requested by the model. */
+internal sealed interface ToolOutcome {
+    /** The tool ran (or failed safely); [resultText] is fed back to the model. */
+    data class Completed(val resultText: String) : ToolOutcome
+
+    /** The permission layer requires the user's decision; the loop pauses. */
+    data class Paused(val pending: PendingPermission) : ToolOutcome
+}
+
+/**
+ * The agent execution loop: model → decision → tool / sub-agent → result →
+ * model again → final answer, with explicit terminal states and a hard step
+ * budget. The model never executes anything directly: every tool call goes
+ * through the [ToolRouter] (scope check → permission → executor) and every
+ * delegation through the [SubAgentInvoker].
+ */
 class AgentLoop(
     private val gateway: ModelGateway,
     private val toolRouter: ToolRouter,
@@ -63,9 +101,15 @@ class AgentLoop(
         subAgentInvoker: SubAgentInvoker? = null,
         onCancelled: () -> Boolean = { false },
     ): AgentResult {
-        val messages = mutableListOf<ModelMessage>()
-        messages += ModelMessage.system(buildSystemPrompt(request))
-        messages += ModelMessage.user(buildUserPrompt(request))
+        val startedAt = clock()
+        val context = BoundedAgentContext()
+        if (request.resumeContext.isNotEmpty()) {
+            // Resuming a run that paused for a permission: restore the saved
+            // conversation instead of a fresh system+user seed.
+            context.restore(request.resumeContext)
+        } else {
+            context.start(buildSystemPrompt(request), buildUserPrompt(request))
+        }
 
         val toolActions = mutableListOf<ToolActionRecord>()
         val findings = mutableListOf<String>()
@@ -74,6 +118,9 @@ class AgentLoop(
         val errors = mutableListOf<AgentError>()
         val steps = mutableListOf<AgentStep>()
         val output = StringBuilder()
+        var modelCalls = 0
+        var toolCalls = 0
+        var subAgentCalls = 0
         var finished: AgentResult? = null
 
         val scopedRouter = ScopedToolRouter(
@@ -102,10 +149,64 @@ class AgentLoop(
             ),
         )
 
+        // When resuming, the parked permission call is re-dispatched first with
+        // the user's decision, before the next model call.
+        request.resumePermission?.let { resumed ->
+            sink.emit(
+                AgentEvent.PermissionResolved(
+                    sessionId = request.sessionId,
+                    toolName = resumed.toolName,
+                    approved = resumed.approved,
+                    timestampMillis = clock(),
+                ),
+            )
+            val outcome = executeScopedTool(
+                request = request,
+                call = ModelToolCall(
+                    id = resumed.toolCallId,
+                    name = resumed.toolName,
+                    arguments = resumed.arguments,
+                ),
+                router = scopedRouter,
+                context = executionContext,
+                sink = sink,
+                toolActions = toolActions,
+                filesInspected = filesInspected,
+                filesChanged = filesChanged,
+                errors = errors,
+                forcedApproval = resumed.approved,
+            )
+            toolCalls += 1
+            // forcedApproval != null means the outcome is always Completed.
+            val resumeText = (outcome as? ToolOutcome.Completed)?.resultText.orEmpty()
+            context.addToolResult(resumed.toolCallId, resumed.toolName, resumeText)
+            sink.emit(
+                AgentEvent.StatsUpdated(
+                    request.sessionId,
+                    stats(startedAt, 0, request.maxSteps, modelCalls, toolCalls, subAgentCalls),
+                    clock(),
+                ),
+            )
+        }
+
         var stepIndex = 0
         while (stepIndex < request.maxSteps) {
             if (onCancelled()) {
-                return cancelled(request, output, findings, filesInspected, filesChanged, toolActions, errors, sink)
+                return cancelled(
+                    request = request,
+                    startedAt = startedAt,
+                    stepIndex = stepIndex,
+                    modelCalls = modelCalls,
+                    toolCalls = toolCalls,
+                    subAgentCalls = subAgentCalls,
+                    output = output,
+                    findings = findings,
+                    filesInspected = filesInspected,
+                    filesChanged = filesChanged,
+                    toolActions = toolActions,
+                    errors = errors,
+                    sink = sink,
+                )
             }
 
             stepIndex += 1
@@ -117,9 +218,16 @@ class AgentLoop(
             )
             steps += step
             sink.emit(AgentEvent.StepProgress(request.sessionId, step, clock()))
+            sink.emit(
+                AgentEvent.StatsUpdated(
+                    request.sessionId,
+                    stats(startedAt, stepIndex, request.maxSteps, modelCalls, toolCalls, subAgentCalls),
+                    clock(),
+                ),
+            )
 
             val response = try {
-                complete(request.modelConfig, messages, toolSpecs, sink, request.sessionId)
+                complete(request.modelConfig, context.bounded(), toolSpecs, sink, request.sessionId)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
@@ -142,8 +250,10 @@ class AgentLoop(
                     toolActions = toolActions.toList(),
                     errors = errors.toList(),
                     role = request.definition.role,
+                    stepStats = stats(startedAt, stepIndex, request.maxSteps, modelCalls, toolCalls, subAgentCalls),
                 )
             }
+            modelCalls += 1
 
             if (response.content.isNotBlank()) {
                 output.append(response.content)
@@ -162,15 +272,30 @@ class AgentLoop(
                     toolActions = toolActions.toList(),
                     errors = errors.toList(),
                     role = request.definition.role,
+                    stepStats = stats(startedAt, stepIndex, request.maxSteps, modelCalls, toolCalls, subAgentCalls),
                 )
                 break
             }
 
-            messages += ModelMessage.assistant(response.content, response.toolCalls)
+            context.addAssistant(response.content, response.toolCalls)
 
             for (call in response.toolCalls) {
                 if (onCancelled()) {
-                    return cancelled(request, output, findings, filesInspected, filesChanged, toolActions, errors, sink)
+                    return cancelled(
+                        request = request,
+                        startedAt = startedAt,
+                        stepIndex = stepIndex,
+                        modelCalls = modelCalls,
+                        toolCalls = toolCalls,
+                        subAgentCalls = subAgentCalls,
+                        output = output,
+                        findings = findings,
+                        filesInspected = filesInspected,
+                        filesChanged = filesChanged,
+                        toolActions = toolActions,
+                        errors = errors,
+                        sink = sink,
+                    )
                 }
                 when (call.name) {
                     AgentProtocol.FINISH_TOOL -> {
@@ -183,11 +308,13 @@ class AgentLoop(
                             toolActions = toolActions,
                             errors = errors,
                             fallback = output.toString().trim(),
+                            stepStats = stats(startedAt, stepIndex, request.maxSteps, modelCalls, toolCalls, subAgentCalls),
                         )
                     }
 
                     AgentProtocol.DELEGATE_TOOL -> {
-                        val result = handleDelegate(
+                        subAgentCalls += 1
+                        val resultText = handleDelegate(
                             request = request,
                             call = call,
                             invoker = subAgentInvoker,
@@ -198,11 +325,11 @@ class AgentLoop(
                             toolActions = toolActions,
                             errors = errors,
                         )
-                        messages += ModelMessage.tool(call.id, result, call.name)
+                        context.addToolResult(call.id, call.name, resultText)
                     }
 
                     else -> {
-                        val resultText = handleTool(
+                        val outcome = handleTool(
                             request = request,
                             call = call,
                             router = scopedRouter,
@@ -213,7 +340,38 @@ class AgentLoop(
                             filesChanged = filesChanged,
                             errors = errors,
                         )
-                        messages += ModelMessage.tool(call.id, resultText, call.name)
+                        when (outcome) {
+                            is ToolOutcome.Paused -> {
+                                // Park the call and end this run in a
+                                // WAITING_FOR_PERMISSION state; the orchestrator
+                                // resumes with the user's decision later.
+                                sink.emit(
+                                    AgentEvent.PermissionRequested(
+                                        sessionId = request.sessionId,
+                                        pending = outcome.pending,
+                                        timestampMillis = clock(),
+                                    ),
+                                )
+                                return AgentResult(
+                                    sessionId = request.sessionId,
+                                    status = AgentStatus.WAITING_FOR_PERMISSION,
+                                    summary = "Waiting for approval to run '${outcome.pending.toolName}'",
+                                    findings = findings.toList(),
+                                    filesInspected = filesInspected.toList(),
+                                    filesChanged = filesChanged.toList(),
+                                    toolActions = toolActions.toList(),
+                                    errors = errors.toList(),
+                                    role = request.definition.role,
+                                    stepStats = stats(startedAt, stepIndex, request.maxSteps, modelCalls, toolCalls, subAgentCalls),
+                                    pendingPermission = outcome.pending,
+                                    resumeContext = context.bounded(),
+                                )
+                            }
+                            is ToolOutcome.Completed -> {
+                                toolCalls += 1
+                                context.addToolResult(call.id, call.name, outcome.resultText)
+                            }
+                        }
                     }
                 }
                 if (finished != null) break
@@ -232,7 +390,7 @@ class AgentLoop(
             sink.emit(AgentEvent.Failed(request.sessionId, agentError, clock()))
             finished = AgentResult(
                 sessionId = request.sessionId,
-                status = AgentStatus.FAILED,
+                status = AgentStatus.MAX_STEPS_REACHED,
                 summary = agentError.message,
                 findings = findings.toList(),
                 filesInspected = filesInspected.toList(),
@@ -240,6 +398,7 @@ class AgentLoop(
                 toolActions = toolActions.toList(),
                 errors = errors.toList(),
                 role = request.definition.role,
+                stepStats = stats(startedAt, stepIndex, request.maxSteps, modelCalls, toolCalls, subAgentCalls),
             )
             return finished
         }
@@ -250,35 +409,11 @@ class AgentLoop(
         return finished
     }
 
-    private suspend fun complete(
-        config: ModelConfig,
-        messages: List<ModelMessage>,
-        tools: List<dev.forge.ide.model.ModelToolSpec>,
-        sink: AgentEventSink,
-        sessionId: String,
-    ): ModelResponse {
-        val request = ModelRequest(
-            config = config,
-            messages = messages,
-            tools = tools,
-            toolChoice = if (tools.isEmpty()) ModelToolChoice.None else ModelToolChoice.Auto,
-        )
-        val capabilities = runCatching { gateway.capabilities(request) }.getOrNull()
-        return if (config.stream && capabilities?.streaming == true) {
-            gateway.stream(request) { event ->
-                if (event is ModelStreamEvent.TextDelta && event.text.isNotEmpty()) {
-                    sink.emit(AgentEvent.OutputDelta(sessionId, event.text, clock()))
-                }
-            }
-        } else {
-            val response = gateway.complete(request)
-            if (response.content.isNotEmpty() && response.toolCalls.isEmpty()) {
-                sink.emit(AgentEvent.OutputDelta(sessionId, response.content, clock()))
-            }
-            response
-        }
-    }
-
+    /**
+     * Executes one tool call strictly through the scoped router: allow-list and
+     * permission-ceiling check, then permission policy, then executor. Tool
+     * failures are captured as data; they never crash the loop.
+     */
     private suspend fun handleTool(
         request: AgentLoopRequest,
         call: ModelToolCall,
@@ -289,7 +424,31 @@ class AgentLoop(
         filesInspected: MutableList<String>,
         filesChanged: MutableList<String>,
         errors: MutableList<AgentError>,
-    ): String {
+    ): ToolOutcome = executeScopedTool(
+        request = request,
+        call = call,
+        router = router,
+        context = context,
+        sink = sink,
+        toolActions = toolActions,
+        filesInspected = filesInspected,
+        filesChanged = filesChanged,
+        errors = errors,
+        forcedApproval = null,
+    )
+
+    private suspend fun executeScopedTool(
+        request: AgentLoopRequest,
+        call: ModelToolCall,
+        router: ToolRouter,
+        context: ToolExecutionContext,
+        sink: AgentEventSink,
+        toolActions: MutableList<ToolActionRecord>,
+        filesInspected: MutableList<String>,
+        filesChanged: MutableList<String>,
+        errors: MutableList<AgentError>,
+        forcedApproval: Boolean? = null,
+    ): ToolOutcome {
         sink.emit(
             AgentEvent.ToolCallStarted(
                 sessionId = request.sessionId,
@@ -298,49 +457,98 @@ class AgentLoop(
                 timestampMillis = clock(),
             ),
         )
-        val result = router.invoke(
-            toolName = call.name,
-            input = ToolInput(bridge.toToolArguments(call.arguments)),
-            context = context,
-        )
-        val record = when (result) {
+        // A denied resume never reaches the tool: the decision is final.
+        if (forcedApproval == false) {
+            val message = "The user denied '${call.name}'"
+            errors += AgentError(
+                code = AgentErrorCode.PERMISSION_DENIED,
+                message = message,
+                role = request.definition.role,
+                sessionId = request.sessionId,
+                details = mapOf("tool" to call.name),
+            )
+            toolActions += ToolActionRecord(call.name, false, message)
+            sink.emit(
+                AgentEvent.ToolCallFinished(
+                    sessionId = request.sessionId,
+                    toolName = call.name,
+                    success = false,
+                    summary = message,
+                    timestampMillis = clock(),
+                ),
+            )
+            return ToolOutcome.Completed("ERROR: $message")
+        }
+        val result = try {
+            router.invoke(
+                toolName = call.name,
+                input = ToolInput(bridge.toToolArguments(call.arguments)),
+                context = if (forcedApproval == true) {
+                    context.copy(approval = ToolApproval.granted("resumed with approval"))
+                } else {
+                    context
+                },
+            )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            // A misbehaving tool must never take down the orchestration.
+            ToolResult.Failure(
+                toolName = call.name,
+                error = ToolExecutionError(
+                    code = ToolErrorCode.EXECUTION_FAILED,
+                    message = error.message ?: "Tool '${call.name}' failed unexpectedly",
+                    toolName = call.name,
+                    cause = error,
+                ),
+            )
+        }
+        val record: ToolActionRecord
+        val resultText: String
+        when (result) {
             is ToolResult.Success -> {
                 val path = result.output.content["path"]?.let { value ->
-                    (value as? dev.forge.ide.tools.JsonValue.Str)?.value
+                    (value as? JsonValue.Str)?.value
                 } ?: call.arguments.stringOrNull("path")
                 path?.let { rememberPath(call.name, it, filesInspected, filesChanged, request.permissionLevel) }
-                ToolActionRecord(
+                record = ToolActionRecord(
                     toolName = call.name,
                     success = true,
                     summary = result.output.displayText ?: "ok",
                     path = path,
                 )
+                resultText = bridge.renderToolOutput(result.output.content, result.output.displayText)
             }
 
             is ToolResult.Failure -> {
+                val code = when (result.error.code) {
+                    ToolErrorCode.PERMISSION_DENIED -> AgentErrorCode.PERMISSION_DENIED
+                    ToolErrorCode.UNKNOWN_TOOL -> AgentErrorCode.TOOL_UNKNOWN
+                    ToolErrorCode.INVALID_ARGUMENTS -> AgentErrorCode.TOOL_ARGUMENTS_INVALID
+                    else -> AgentErrorCode.TOOL_FAILURE
+                }
                 errors += AgentError(
-                    code = if (result.error.code == ToolErrorCode.PERMISSION_DENIED) {
-                        AgentErrorCode.PERMISSION_DENIED
-                    } else {
-                        AgentErrorCode.TOOL_FAILURE
-                    },
+                    code = code,
                     message = result.error.message ?: "Tool '${call.name}' failed",
                     role = request.definition.role,
                     sessionId = request.sessionId,
                     details = mapOf("tool" to call.name),
                 )
-                ToolActionRecord(call.name, false, result.error.message ?: "failed")
+                record = ToolActionRecord(call.name, false, result.error.message ?: "failed")
+                resultText = "ERROR: ${result.error.message}"
             }
 
             is ToolResult.ApprovalRequired -> {
-                errors += AgentError(
-                    code = AgentErrorCode.PERMISSION_DENIED,
-                    message = result.request.reason,
-                    role = request.definition.role,
-                    sessionId = request.sessionId,
-                    details = mapOf("tool" to call.name),
+                // Not an error: the call is parked for the user to decide and
+                // the loop ends in WAITING_FOR_PERMISSION.
+                return ToolOutcome.Paused(
+                    PendingPermission(
+                        toolName = call.name,
+                        arguments = call.arguments,
+                        reason = result.request.reason,
+                        toolCallId = call.id,
+                    ),
                 )
-                ToolActionRecord(call.name, false, result.request.reason)
             }
         }
         toolActions += record
@@ -353,11 +561,7 @@ class AgentLoop(
                 timestampMillis = clock(),
             ),
         )
-        return when (result) {
-            is ToolResult.Success -> bridge.renderToolOutput(result.output.content, result.output.displayText)
-            is ToolResult.Failure -> "ERROR: ${result.error.message}"
-            is ToolResult.ApprovalRequired -> "APPROVAL_REQUIRED: ${result.request.reason}"
-        }
+        return ToolOutcome.Completed(resultText)
     }
 
     private suspend fun handleDelegate(
@@ -421,7 +625,21 @@ class AgentLoop(
                 timestampMillis = clock(),
             ),
         )
-        val result = invoker.invoke(childRequest)
+        val result = try {
+            invoker.invoke(childRequest)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            errors += AgentError(
+                code = AgentErrorCode.SUB_AGENT_FAILURE,
+                message = error.message ?: "Sub-agent '${role.name}' failed",
+                role = role,
+                sessionId = childId,
+                cause = error,
+            )
+            toolActions += ToolActionRecord(AgentProtocol.DELEGATE_TOOL, false, "sub-agent failed")
+            return "ERROR: Sub-agent '${role.name}' failed: ${error.message}"
+        }
         findings += result.findings
         filesInspected += result.filesInspected
         filesChanged += result.filesChanged
@@ -461,6 +679,7 @@ class AgentLoop(
         toolActions: MutableList<ToolActionRecord>,
         errors: MutableList<AgentError>,
         fallback: String,
+        stepStats: AgentStepStats,
     ): AgentResult {
         val extraFindings = AgentProtocol.splitList(call.arguments.stringOrNull(AgentProtocol.ARG_FINDINGS))
         val extraInspected = AgentProtocol.splitList(call.arguments.stringOrNull(AgentProtocol.ARG_FILES_INSPECTED))
@@ -481,11 +700,17 @@ class AgentLoop(
             toolActions = toolActions.toList(),
             errors = errors.toList(),
             role = request.definition.role,
+            stepStats = stepStats,
         )
     }
 
     private fun cancelled(
         request: AgentLoopRequest,
+        startedAt: Long,
+        stepIndex: Int,
+        modelCalls: Int,
+        toolCalls: Int,
+        subAgentCalls: Int,
         output: StringBuilder,
         findings: List<String>,
         filesInspected: List<String>,
@@ -512,8 +737,25 @@ class AgentLoop(
             toolActions = toolActions,
             errors = errors.toList(),
             role = request.definition.role,
+            stepStats = stats(startedAt, stepIndex, request.maxSteps, modelCalls, toolCalls, subAgentCalls),
         )
     }
+
+    private fun stats(
+        startedAt: Long,
+        stepIndex: Int,
+        maxSteps: Int,
+        modelCalls: Int,
+        toolCalls: Int,
+        subAgentCalls: Int,
+    ): AgentStepStats = AgentStepStats(
+        currentStep = stepIndex,
+        maxSteps = maxSteps,
+        modelCalls = modelCalls,
+        toolCalls = toolCalls,
+        subAgentCalls = subAgentCalls,
+        elapsedMillis = clock() - startedAt,
+    )
 
     private fun rememberPath(
         toolName: String,

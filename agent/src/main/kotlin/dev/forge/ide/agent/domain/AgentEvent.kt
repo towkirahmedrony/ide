@@ -68,6 +68,31 @@ sealed interface AgentEvent {
         override val timestampMillis: Long,
     ) : AgentEvent
 
+    data class PermissionRequested(
+        override val sessionId: String,
+        val pending: PendingPermission,
+        override val timestampMillis: Long,
+    ) : AgentEvent
+
+    data class PermissionResolved(
+        override val sessionId: String,
+        val toolName: String,
+        val approved: Boolean,
+        override val timestampMillis: Long,
+    ) : AgentEvent
+
+    data class StatsUpdated(
+        override val sessionId: String,
+        val stats: AgentStepStats,
+        override val timestampMillis: Long,
+    ) : AgentEvent
+
+    data class ContextTruncated(
+        override val sessionId: String,
+        val removedMessages: Int,
+        override val timestampMillis: Long,
+    ) : AgentEvent
+
     data class Completed(
         override val sessionId: String,
         val result: AgentResult,
