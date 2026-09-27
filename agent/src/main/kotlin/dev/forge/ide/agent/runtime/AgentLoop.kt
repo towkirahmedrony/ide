@@ -741,6 +741,39 @@ class AgentLoop(
         )
     }
 
+    /**
+     * Sends one request through the Model Gateway. Provider-agnostic: the
+     * request carries only gateway types (config, messages, tool specs). When
+     * the model config enables streaming, text deltas are surfaced to the UI
+     * as [AgentEvent.OutputDelta] while the final response is still returned
+     * as a single normalized [ModelResponse].
+     */
+    private suspend fun complete(
+        config: ModelConfig,
+        messages: List<ModelMessage>,
+        tools: List<ModelToolSpec>,
+        sink: AgentEventSink,
+        sessionId: String,
+    ): ModelResponse {
+        val request = ModelRequest(config = config, messages = messages, tools = tools)
+        return if (config.stream) {
+            gateway.stream(request) { event ->
+                val delta = event as? ModelStreamEvent.TextDelta
+                if (delta != null && delta.text.isNotEmpty()) {
+                    sink.emit(
+                        AgentEvent.OutputDelta(
+                            sessionId = sessionId,
+                            text = delta.text,
+                            timestampMillis = clock(),
+                        ),
+                    )
+                }
+            }
+        } else {
+            gateway.complete(request)
+        }
+    }
+
     private fun stats(
         startedAt: Long,
         stepIndex: Int,
