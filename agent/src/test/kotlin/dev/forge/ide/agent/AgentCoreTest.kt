@@ -239,7 +239,7 @@ class AgentCoreTest {
             sink = CollectingEventSink(),
             onCancelled = { false },
         )
-        assertEquals(AgentStatus.FAILED, limited.status)
+        assertEquals(AgentStatus.MAX_STEPS_REACHED, limited.status)
         assertTrue(limited.errors.any { it.code == AgentErrorCode.MAX_STEPS_EXCEEDED })
         assertEquals(2, fx.readFile.invocations.size)
     }
