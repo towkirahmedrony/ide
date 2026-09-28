@@ -10,6 +10,7 @@ import com.agentx.app.integrations.connection.Connection
 import com.agentx.app.integrations.connection.ConnectionAuthMethod
 import com.agentx.app.integrations.connection.ConnectionCapabilities
 import com.agentx.app.integrations.connection.ConnectionCapability
+import com.agentx.app.integrations.connection.ConnectionProvider
 import com.agentx.app.integrations.connection.ConnectionType
 import com.agentx.app.integrations.connection.ProviderCapabilityInfo
 import com.agentx.app.integrations.connection.ProviderDescriptor
