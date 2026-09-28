@@ -1,5 +1,6 @@
 package com.agentx.app.ui.ide
 
+import com.agentx.app.codeintel.CodeIntelligence
 import com.agentx.app.context.WorkspaceSelectionState
 import com.agentx.app.integrations.ConnectionManagers
 import com.agentx.app.integrations.connection.ConnectionManager
@@ -39,6 +40,12 @@ data class IdeDependencies(
      * Engine reads the same instance, so the agent sees the user's context.
      */
     val workspaceSelection: WorkspaceSelectionState = WorkspaceSelectionState(),
+    /**
+     * Structural understanding of source files (symbols, outlines). Optional so
+     * previews and tests keep working without one; when absent the editor simply
+     * shows no structure instead of a wrong one.
+     */
+    val codeIntelligence: CodeIntelligence? = null,
     val workspacePicker: WorkspacePicker,
     val agent: AgentSession,
     val terminal: TerminalSession,

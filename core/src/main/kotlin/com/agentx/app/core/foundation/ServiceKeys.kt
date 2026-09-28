@@ -26,4 +26,13 @@ object ServiceKeys {
 
     /** Personal provider setup: Client IDs and callback URIs for this IDE. */
     const val INTEGRATION_SETUP = "forge.integrations.setup"
+
+    /** Structural understanding of source files: languages, syntax trees, symbols. */
+    const val CODE_INTELLIGENCE = "forge.codeintel"
+
+    /**
+     * The parser backend, bindable after boot. The platform attaches the
+     * tree-sitter provider here exactly like the workspace resolver.
+     */
+    const val CODE_INTELLIGENCE_PARSERS = "forge.codeintel.parsers"
 }

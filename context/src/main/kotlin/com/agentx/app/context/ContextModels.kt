@@ -16,6 +16,13 @@ enum class ContextSource {
     /** A file loaded from the open workspace. */
     FILE,
 
+    /**
+     * The *structure* of a file: its declarations, not its text. Produced by the
+     * code intelligence layer, so the agent can reason about a file's shape
+     * without paying for the whole source.
+     */
+    CODE_STRUCTURE,
+
     /** A directory listing from the open workspace. */
     DIRECTORY,
 
@@ -35,6 +42,7 @@ enum class ContextSource {
             USER_MESSAGE -> ContextPriority.CRITICAL
             FILE -> ContextPriority.NORMAL
             TOOL_RESULT -> ContextPriority.NORMAL
+            CODE_STRUCTURE -> ContextPriority.NORMAL
             DIRECTORY -> ContextPriority.LOW
             WORKSPACE_INFO -> ContextPriority.LOW
             CONVERSATION -> ContextPriority.LOW
@@ -179,6 +187,12 @@ object ContextRelevance {
     const val WORKSPACE_INFO = 100.0
     const val DIRECTORY = 80.0
 
+    /**
+     * Structure. Sits just below a file read and above search results: an
+     * outline is cheaper than the source, but the source wins when both fit.
+     */
+    const val CODE_STRUCTURE = 45.0
+
     const val CONVERSATION = 40.0
     const val CONVERSATION_STEP = 2.0
     const val CONVERSATION_MIN = 10.0
@@ -189,6 +203,7 @@ object ContextRelevance {
         ContextSource.USER_MESSAGE -> CURRENT_REQUEST
         ContextSource.AGENT_STATE -> AGENT_STATE
         ContextSource.FILE -> SEARCH_RESULT
+        ContextSource.CODE_STRUCTURE -> CODE_STRUCTURE
         ContextSource.TOOL_RESULT -> TOOL_RESULT_SUCCESS
         ContextSource.DIRECTORY -> DIRECTORY
         ContextSource.WORKSPACE_INFO -> WORKSPACE_INFO

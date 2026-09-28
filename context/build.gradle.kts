@@ -15,6 +15,8 @@ dependencies {
     api(project(":model"))
     // Reuses the Tool System's secret redaction; no second secret policy.
     implementation(project(":tools"))
+    // Structural understanding of files (symbols, outlines) for context items.
+    api(project(":codeintel"))
     api(libs.kotlinx.coroutines.core)
 
     testImplementation(kotlin("test"))

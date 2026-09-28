@@ -9,6 +9,8 @@ import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import com.agentx.app.agent.orchestrator.AgentOrchestrator
 import com.agentx.app.agent.ui.OrchestratorAgentSession
+import com.agentx.app.codeintel.DelegatingSyntaxParserProvider
+import com.agentx.app.codeintel.android.TreeSitterParserProvider
 import com.agentx.app.app.AndroidModelRunnerBrowserHost
 import com.agentx.app.app.rememberAndroidWorkspacePicker
 import com.agentx.app.context.DelegatingWorkspaceContextProvider
@@ -103,6 +105,13 @@ class MainActivity : ComponentActivity() {
             integrationSetup = built.setup,
         )
 
+        // The code intelligence module is registered at boot with a bindable
+        // parser backend; the tree-sitter grammars are attached here. Binding is
+        // lazy per language, so nothing is loaded until a file needs it, and a
+        // grammar that fails to load is reported as unparseable instead of
+        // crashing.
+        (foundation.codeIntelligenceParsers as? DelegatingSyntaxParserProvider)?.bind(TreeSitterParserProvider())
+
         val modelManager = foundation.services.get<ModelManager>(ServiceKeys.MODEL_MANAGER)
         val connectionManager = foundation.services.get<ConnectionManager>(ServiceKeys.CONNECTION_MANAGER)
         val integrationSetup = foundation.services.get<IntegrationSetupManager>(ServiceKeys.INTEGRATION_SETUP)
@@ -174,6 +183,7 @@ class MainActivity : ComponentActivity() {
                     IdeDependencies(
                         workspaceManager = workspaceManager,
                         workspaceSelection = selection,
+                        codeIntelligence = foundation.codeIntelligence,
                         workspacePicker = workspacePicker,
                         agent = OrchestratorAgentSession(
                             orchestrator = checkNotNull(orchestrator) { "Agent orchestrator is not registered" },

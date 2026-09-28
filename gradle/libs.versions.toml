@@ -11,6 +11,10 @@ lifecycle = "2.11.0"
 navigation = "2.10.2"
 coroutines = "1.11.0"
 documentfile = "1.1.0"
+# Android bindings for tree-sitter plus the grammars this build ships. The AARs
+# carry NDK-built libraries for every Android ABI; the desktop JVM bindings do
+# not, which is why this project uses the Android-native ones.
+androidTreeSitter = "4.3.1"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -31,6 +35,14 @@ kotlinx-coroutines-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-cor
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 # Test-only: drives viewModelScope in JVM unit tests.
 kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutines" }
+
+# Code intelligence: tree-sitter runtime and the grammars registered in this build.
+android-tree-sitter = { group = "com.itsaky.androidide.treesitter", name = "android-tree-sitter", version.ref = "androidTreeSitter" }
+android-tree-sitter-kotlin = { group = "com.itsaky.androidide.treesitter", name = "tree-sitter-kotlin", version.ref = "androidTreeSitter" }
+android-tree-sitter-java = { group = "com.itsaky.androidide.treesitter", name = "tree-sitter-java", version.ref = "androidTreeSitter" }
+android-tree-sitter-python = { group = "com.itsaky.androidide.treesitter", name = "tree-sitter-python", version.ref = "androidTreeSitter" }
+android-tree-sitter-json = { group = "com.itsaky.androidide.treesitter", name = "tree-sitter-json", version.ref = "androidTreeSitter" }
+android-tree-sitter-xml = { group = "com.itsaky.androidide.treesitter", name = "tree-sitter-xml", version.ref = "androidTreeSitter" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

@@ -78,6 +78,7 @@ fun WorkspaceShell(
                 workspaceId = workspaceId,
                 manager = dependencies.workspaceManager,
                 selection = dependencies.workspaceSelection,
+                codeIntelligence = dependencies.codeIntelligence,
             )
         },
     )
@@ -185,6 +186,8 @@ fun WorkspaceShell(
                     onSave = workspaceViewModel::save,
                     onBrowseFiles = { innerNavController.navigateToTab(WorkspaceTab.FILES) },
                     dismissStatus = workspaceViewModel::dismissEditorStatus,
+                    structure = workspaceViewModel.structureState,
+                    onCursorMoved = workspaceViewModel::onCursorMoved,
                 )
             }
             composable(WorkspaceTab.AGENT.route) {

@@ -5,6 +5,13 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.agentx.app.codeintel.CodeIntelligence
+import com.agentx.app.codeintel.CodeLanguage
+import com.agentx.app.codeintel.CodeSymbol
+import com.agentx.app.codeintel.FileOutline
+import com.agentx.app.codeintel.OutlineNode
+import com.agentx.app.codeintel.SourceFile
+import com.agentx.app.codeintel.SourcePosition
 import com.agentx.app.core.ForgeResult
 import com.agentx.app.core.logging.ForgeLogger
 import com.agentx.app.core.logging.ForgeLoggers
@@ -26,6 +33,8 @@ import com.agentx.app.workspace.WorkspaceResult
 import com.agentx.app.workspace.WorkspaceSession
 import com.agentx.app.workspace.WorkspaceTreeLoader
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
@@ -78,6 +87,50 @@ data class EditorUiState(
 }
 
 /**
+ * Structure of the file open in the editor.
+ *
+ * [unavailableReason] is set when the file was analysed but no structure could
+ * be produced — an unsupported language, no parser for it in this build, a file
+ * beyond the analysis limits. It is shown as-is, so the editor never implies an
+ * empty file is an unparsed one.
+ */
+data class EditorStructureUiState(
+    val language: CodeLanguage = CodeLanguage.UNKNOWN,
+    val outline: FileOutline? = null,
+    val unavailableReason: String? = null,
+    val analyzing: Boolean = false,
+    val cursorSymbol: CodeSymbol? = null,
+) {
+    val hasOutline: Boolean get() = outline != null && !outline.isEmpty
+
+    val symbolCount: Int get() = outline?.symbolCount ?: 0
+
+    val truncated: Boolean get() = outline?.truncated == true
+
+    val hasSyntaxErrors: Boolean get() = outline?.hasSyntaxErrors == true
+
+    /** Symbols in source order, each with how deep it is nested. */
+    fun flattened(limit: Int = MAX_PANEL_SYMBOLS): List<Pair<Int, CodeSymbol>> {
+        val outline = outline ?: return emptyList()
+        val result = ArrayList<Pair<Int, CodeSymbol>>(minOf(outline.symbolCount, limit))
+
+        fun visit(node: OutlineNode, depth: Int) {
+            if (result.size >= limit) return
+            result += depth to node.symbol
+            node.children.forEach { child -> visit(child, depth + 1) }
+        }
+
+        outline.roots.forEach { root -> visit(root, 0) }
+        return result
+    }
+
+    companion object {
+        /** Rows the editor panel renders; the outline itself is not limited by this. */
+        const val MAX_PANEL_SYMBOLS = 60
+    }
+}
+
+/**
  * State holder for the workspace shell.
  *
  * Reading the tree is delegated to the workspace runtime: only the root folder
@@ -93,6 +146,11 @@ class WorkspaceViewModel(
      * agent's selected file and the newest recently used file.
      */
     private val selection: WorkspaceSelectionState = WorkspaceSelectionState(),
+    /**
+     * Structural understanding of the open file. Optional: without it the editor
+     * has no outline, and it is never simulated.
+     */
+    private val codeIntelligence: CodeIntelligence? = null,
     private val logger: ForgeLogger = ForgeLoggers.create(LogLevel.WARN, baseFields = mapOf("screen" to "files")),
 ) : ViewModel() {
 
@@ -105,6 +163,10 @@ class WorkspaceViewModel(
     var editorState by mutableStateOf(EditorUiState())
         private set
 
+    /** Outline of the file in the editor, for the structure panel. */
+    var structureState by mutableStateOf(EditorStructureUiState())
+        private set
+
     /** Set when the user asked to open a file while the editor had unsaved changes. */
     var pendingOpenPath by mutableStateOf<String?>(null)
         private set
@@ -112,6 +174,9 @@ class WorkspaceViewModel(
     private var session: WorkspaceSession? = null
     private var tree: WorkspaceTreeLoader? = null
     private var rootName: String = ""
+    private var structureJob: Job? = null
+    private var structureRequest: Int = 0
+    private var cursorPosition: SourcePosition? = null
 
     init {
         loadWorkspace()
@@ -210,10 +275,15 @@ class WorkspaceViewModel(
             }
 
             when (outcome) {
-                is WorkspaceFileOpener.Opened.Text -> editorState = EditorUiState(
-                    file = OpenFile(path = outcome.path, name = outcome.name, content = outcome.content),
-                    draft = outcome.content,
-                )
+                is WorkspaceFileOpener.Opened.Text -> {
+                    editorState = EditorUiState(
+                        file = OpenFile(path = outcome.path, name = outcome.name, content = outcome.content),
+                        draft = outcome.content,
+                    )
+                    cursorPosition = null
+                    // First paint analyses immediately; later keystrokes are debounced.
+                    refreshStructure(debounceMillis = 0L)
+                }
 
                 // The open file (if any) is kept: an unreadable file must not
                 // silently discard unsaved edits elsewhere.
@@ -228,6 +298,7 @@ class WorkspaceViewModel(
 
     fun editDraft(text: String) {
         editorState = editorState.copy(draft = text, statusMessage = null)
+        refreshStructure(debounceMillis = STRUCTURE_DEBOUNCE_MILLIS)
     }
 
     fun save() {
@@ -266,6 +337,74 @@ class WorkspaceViewModel(
 
     fun clearPendingOpen() {
         pendingOpenPath = null
+    }
+
+    // --- code structure ----------------------------------------------------
+
+    /**
+     * Reports the caret so the panel can name the symbol it is inside. Lines and
+     * columns are 1-based, exactly as the editor shows them.
+     */
+    fun onCursorMoved(line: Int, column: Int) {
+        cursorPosition = SourcePosition(line.coerceAtLeast(1), column.coerceAtLeast(1))
+        refreshCursorSymbol()
+    }
+
+    /** Re-analyses the open file; used when the structure panel is reopened. */
+    fun refreshStructure() = refreshStructure(debounceMillis = 0L)
+
+    /**
+     * Analyses the editor's current text off the main thread.
+     *
+     * Typing is debounced, cancellation drops work the user has already moved on
+     * from, and the engine reuses the analysis of unchanged content — so the
+     * outline follows the file without re-parsing on every recomposition. Only
+     * the newest request may publish a result, so a slow earlier parse can never
+     * overwrite a newer one.
+     */
+    private fun refreshStructure(debounceMillis: Long) {
+        val intelligence = codeIntelligence ?: return
+        val file = editorState.file
+        if (file == null) {
+            structureJob?.cancel()
+            structureRequest++
+            structureState = EditorStructureUiState()
+            return
+        }
+
+        val content = editorState.draft
+        val request = ++structureRequest
+        structureJob?.cancel()
+        structureState = structureState.copy(analyzing = true)
+        structureJob = viewModelScope.launch {
+            if (debounceMillis > 0L) delay(debounceMillis)
+            val outcome = try {
+                intelligence.parseFile(SourceFile(path = file.path, content = content))
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (cause: Throwable) {
+                logger.error("Analysing a file failed", cause, mapOf("path" to file.path))
+                null
+            }
+            if (request != structureRequest) return@launch
+            structureState = when (outcome) {
+                null -> structureState.copy(analyzing = false)
+                is ForgeResult.Success -> EditorStructureUiState(
+                    language = outcome.value.language,
+                    outline = outcome.value.outline,
+                )
+                is ForgeResult.Failure -> EditorStructureUiState(
+                    language = intelligence.detectLanguage(file.path),
+                    unavailableReason = outcome.error.message,
+                )
+            }
+            refreshCursorSymbol()
+        }
+    }
+
+    private fun refreshCursorSymbol() {
+        val position = cursorPosition ?: return
+        structureState = structureState.copy(cursorSymbol = structureState.outline?.symbolAt(position))
     }
 
     // --- internals ---------------------------------------------------------
@@ -309,6 +448,9 @@ class WorkspaceViewModel(
     }
 
     private companion object {
+        /** Quiet period after the last keystroke before the file is re-analysed. */
+        const val STRUCTURE_DEBOUNCE_MILLIS = 250L
+
         const val UNREADABLE_WORKSPACE =
             "Could not open this workspace. It may have been moved, or access was revoked."
     }

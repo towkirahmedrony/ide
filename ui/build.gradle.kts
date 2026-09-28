@@ -35,6 +35,8 @@ dependencies {
     api(project(":model"))
     // The Connections screen talks to the Connection Manager domain contract.
     api(project(":integrations"))
+    // The editor shows file structure through the code intelligence contract.
+    api(project(":codeintel"))
 
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.viewmodel.ktx)

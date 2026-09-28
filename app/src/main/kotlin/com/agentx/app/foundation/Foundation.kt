@@ -2,6 +2,13 @@ package com.agentx.app.foundation
 
 import com.agentx.app.agent.AGENT_LAYER
 import com.agentx.app.agent.AgentModule
+import com.agentx.app.codeintel.CODE_INTELLIGENCE_LAYER
+import com.agentx.app.codeintel.CodeIntelligence
+import com.agentx.app.codeintel.CodeIntelligenceLimits
+import com.agentx.app.codeintel.CodeIntelligenceModule
+import com.agentx.app.codeintel.DelegatingSyntaxParserProvider
+import com.agentx.app.codeintel.SyntaxParserProvider
+import com.agentx.app.context.CodeStructureContextProvider
 import com.agentx.app.context.CONTEXT_LAYER
 import com.agentx.app.context.ContextModule
 import com.agentx.app.context.DelegatingWorkspaceContextProvider
@@ -35,6 +42,8 @@ import com.agentx.app.model.preset.ModelPresetStore
 import com.agentx.app.model.preset.ModelSecretStore
 import com.agentx.app.model.runtime.RuntimeOutputBuffer
 import com.agentx.app.skills.SKILLS_LAYER
+import com.agentx.app.tools.BuiltinTools
+import com.agentx.app.tools.DelegatingWorkspaceFileSystemResolver
 import com.agentx.app.tools.TOOLS_LAYER
 import com.agentx.app.tools.ToolsModule
 import com.agentx.app.ui.UI_LAYER
@@ -52,6 +61,13 @@ data class FoundationState(
      * workspace resolver.
      */
     val contextWorkspace: WorkspaceContextProvider,
+    /** Structural understanding of source files, shared by the tools and the UI. */
+    val codeIntelligence: CodeIntelligence,
+    /**
+     * The parser backend, bindable after boot. The app attaches the Android
+     * tree-sitter provider here, exactly like the workspace resolver.
+     */
+    val codeIntelligenceParsers: SyntaxParserProvider,
 )
 
 /**
@@ -72,6 +88,8 @@ object Foundation {
         runtimeOutput: RuntimeOutputBuffer = RuntimeOutputBuffer(),
         monitorModelConnections: Boolean = true,
         contextWorkspace: WorkspaceContextProvider = DelegatingWorkspaceContextProvider(),
+        codeIntelligenceParsers: SyntaxParserProvider = DelegatingSyntaxParserProvider(),
+        codeIntelligenceLimits: CodeIntelligenceLimits = CodeIntelligenceLimits.DEFAULT,
     ): FoundationState {
         val logger = ForgeLoggers.create(
             level = config.logLevel,
@@ -83,10 +101,25 @@ object Foundation {
 
         val layers = forgeLayers()
 
+        // Code intelligence is created before the modules that consume it: the
+        // Tool System publishes its tools and the Context Engine publishes file
+        // structure, and neither of them builds a second parser.
+        val toolWorkspaces = DelegatingWorkspaceFileSystemResolver()
+        val codeIntelligence = CodeIntelligenceModule(
+            parsers = codeIntelligenceParsers,
+            limits = codeIntelligenceLimits,
+        )
+
         val modules = ModuleRegistry(logger)
         modules.register(ConfigModule(config))
         modules.register(ArchitectureModule(layers))
-        modules.register(ToolsModule())
+        modules.register(
+            ToolsModule(
+                tools = BuiltinTools.codeIntelligence(toolWorkspaces, codeIntelligence.engine),
+                workspaces = toolWorkspaces,
+            ),
+        )
+        modules.register(codeIntelligence)
         modules.register(ModelModule())
         // Model presets, runners and the active connection live beside the gateway.
         modules.register(
@@ -98,8 +131,20 @@ object Foundation {
             ),
         )
         // The Context Engine is registered before the Agent Core, which reads
-        // it from the container to build its run context.
-        modules.register(ContextModule(workspace = contextWorkspace))
+        // it from the container to build its run context. It receives the
+        // structure of the files a task is about, bounded and redacted like every
+        // other context item.
+        modules.register(
+            ContextModule(
+                workspace = contextWorkspace,
+                providers = listOf(
+                    CodeStructureContextProvider(
+                        codeIntelligence = codeIntelligence.engine,
+                        workspace = contextWorkspace,
+                    ),
+                ),
+            ),
+        )
         // External service connections live beside the tool system; the agent
         // never receives credentials, only authorized capability handles.
         modules.register(
@@ -129,6 +174,8 @@ object Foundation {
             config = config,
             services = services,
             contextWorkspace = contextWorkspace,
+            codeIntelligence = codeIntelligence.engine,
+            codeIntelligenceParsers = codeIntelligenceParsers,
         )
     }
 
@@ -138,6 +185,7 @@ object Foundation {
         AGENT_LAYER,
         TOOLS_LAYER,
         WORKSPACE_LAYER,
+        CODE_INTELLIGENCE_LAYER,
         CONTEXT_LAYER,
         GIT_LAYER,
         SKILLS_LAYER,

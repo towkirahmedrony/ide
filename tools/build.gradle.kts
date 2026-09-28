@@ -10,6 +10,9 @@ kotlin {
 dependencies {
     api(project(":core"))
     api(project(":workspace"))
+    // Code intelligence tools are tools like any other: same registry, same
+    // router, same permission policy.
+    api(project(":codeintel"))
     api(libs.kotlinx.coroutines.core)
 
     testImplementation(kotlin("test"))

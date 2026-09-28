@@ -38,6 +38,14 @@ enum class ForgeErrorCode {
     CONNECTION_OAUTH_FAILED,
     /** Stored credentials are no longer usable and the connection must be re-authorized. */
     CONNECTION_CREDENTIAL_EXPIRED,
+    /** The file is a language this build cannot understand structurally. */
+    CODE_INTEL_UNSUPPORTED_LANGUAGE,
+    /** No parser backend is available for the language on this platform. */
+    CODE_INTEL_PARSER_UNAVAILABLE,
+    /** The file is larger than the code-intelligence limit. */
+    CODE_INTEL_FILE_TOO_LARGE,
+    /** A parser failed on the file (never a syntax error: those are partial results). */
+    CODE_INTEL_PARSE_FAILED,
     UNKNOWN,
 }
 

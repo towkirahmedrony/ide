@@ -121,9 +121,11 @@ dependencies {
     implementation(project(":git"))
     implementation(project(":skills"))
     implementation(project(":integrations"))
+    implementation(project(":codeintel"))
 
     // Android-facing layers.
     implementation(project(":ui"))
+    implementation(project(":codeintel-android"))
     implementation(project(":workspace-android"))
     implementation(project(":model-android"))
     implementation(project(":integrations-android"))

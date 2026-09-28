@@ -26,9 +26,11 @@ include(":context")
 include(":git")
 include(":skills")
 include(":integrations")
+include(":codeintel")
 
 // Android-facing layers.
 include(":ui")
+include(":codeintel-android")
 include(":workspace-android")
 include(":model-android")
 include(":integrations-android")

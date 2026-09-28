@@ -1,5 +1,15 @@
 package com.agentx.app.ui.ide.state
 
+import com.agentx.app.codeintel.CodeLanguage
+import com.agentx.app.codeintel.DefaultCodeIntelligence
+import com.agentx.app.codeintel.InMemorySyntaxNode
+import com.agentx.app.codeintel.InMemorySyntaxTree
+import com.agentx.app.codeintel.ParseRequest
+import com.agentx.app.codeintel.SourcePosition
+import com.agentx.app.codeintel.SyntaxParseResult
+import com.agentx.app.codeintel.SyntaxParser
+import com.agentx.app.codeintel.SyntaxParserProvider
+import com.agentx.app.codeintel.SyntaxTree
 import com.agentx.app.core.failure
 import com.agentx.app.core.success
 import com.agentx.app.ui.ide.model.DirectoryLoadState
@@ -280,4 +290,139 @@ class WorkspaceViewModelTest {
         assertEquals(2, fileSystem.listCount(WorkspacePath.ROOT))
         assertEquals(1, fileSystem.listCount("app"))
     }
+
+    // --- code structure -----------------------------------------------------
+
+    @Test
+    fun `the outline follows the file opened in the editor`() {
+        val viewModel = structureViewModel()
+
+        viewModel.openFile("app/src/main/Main.kt")
+
+        val structure = viewModel.structureState
+        assertEquals(CodeLanguage.KOTLIN, structure.language)
+        assertNull(structure.unavailableReason)
+        assertEquals(1, structure.symbolCount)
+        assertTrue(structure.hasOutline)
+        assertEquals(listOf(0 to "Main"), structure.flattened().map { it.first to it.second.name })
+    }
+
+    @Test
+    fun `a file this build cannot parse says why instead of showing an empty outline`() {
+        val viewModel = structureViewModel()
+
+        viewModel.openFile("README.md")
+
+        val structure = viewModel.structureState
+        assertEquals(CodeLanguage.MARKDOWN, structure.language)
+        assertNull(structure.outline)
+        assertNotNull(structure.unavailableReason)
+        assertTrue(!structure.hasOutline)
+    }
+
+    @Test
+    fun `the caret reports the symbol it is inside`() {
+        val viewModel = structureViewModel()
+        viewModel.openFile("app/src/main/Main.kt")
+
+        viewModel.onCursorMoved(1, 1)
+        assertEquals("Main", viewModel.structureState.cursorSymbol?.name)
+
+        viewModel.onCursorMoved(90, 1)
+        assertNull(viewModel.structureState.cursorSymbol)
+    }
+
+    @Test
+    fun `editing marks the structure as being re-analysed`() {
+        val viewModel = structureViewModel()
+        viewModel.openFile("app/src/main/Main.kt")
+
+        viewModel.editDraft("class Changed")
+
+        assertTrue(viewModel.structureState.analyzing)
+    }
+
+    @Test
+    fun `without code intelligence the editor has no structure and does not fail`() {
+        val (viewModel, _) = viewModel()
+
+        viewModel.openFile("app/src/main/Main.kt")
+
+        assertNull(viewModel.structureState.outline)
+        assertNull(viewModel.structureState.unavailableReason)
+    }
+
+    /**
+     * The same workspace runtime as [viewModel], with the real code intelligence
+     * engine on top of an in-memory Kotlin tree.
+     */
+    private fun structureViewModel(): WorkspaceViewModel {
+        val fileSystem = RecordingFileSystem(InMemoryWorkspaceFileSystem(projectFiles))
+        val workspace = DefaultWorkspace(
+            metadata = WorkspaceMetadata(
+                id = WorkspaceId(workspaceId),
+                name = "project",
+                displayLocation = "content://test/project",
+                persisted = true,
+            ),
+            fileSystem = fileSystem,
+        )
+        val manager = DefaultWorkspaceManager(
+            backend = FixedWorkspaceBackend(workspace),
+            store = InMemoryWorkspaceMetadataStore(),
+        )
+        runBlocking { manager.open(workspaceId) }
+        return WorkspaceViewModel(
+            workspaceId,
+            manager,
+            codeIntelligence = DefaultCodeIntelligence(
+                parsers = KotlinOnlyParserProvider(),
+                dispatcher = Dispatchers.Unconfined,
+            ),
+        )
+    }
 }
+
+/** Provider that answers for Kotlin with a one-class tree. */
+private class KotlinOnlyParserProvider : SyntaxParserProvider {
+
+    override fun supportedLanguages(): Set<CodeLanguage> = setOf(CodeLanguage.KOTLIN)
+
+    override fun parserFor(language: CodeLanguage): SyntaxParser? {
+        if (language != CodeLanguage.KOTLIN) return null
+        return object : SyntaxParser {
+            override val language: CodeLanguage get() = CodeLanguage.KOTLIN
+
+            override fun parse(request: ParseRequest): SyntaxParseResult =
+                SyntaxParseResult.Success(mainTree())
+        }
+    }
+}
+
+/** `class Main` on the first two lines, so symbol-at-caret is easy to assert. */
+private fun mainTree(): SyntaxTree = InMemorySyntaxTree(
+    language = CodeLanguage.KOTLIN,
+    root = InMemorySyntaxNode(
+        type = "source_file",
+        text = "source",
+        start = SourcePosition(1, 1),
+        end = SourcePosition(2, 1),
+        children = listOf(
+            InMemorySyntaxNode(
+                type = "class_declaration",
+                text = "class Main {",
+                start = SourcePosition(1, 1),
+                end = SourcePosition(2, 1),
+                children = listOf(
+                    InMemorySyntaxNode(
+                        type = "type_identifier",
+                        text = "Main",
+                        start = SourcePosition(1, 7),
+                        end = SourcePosition(1, 11),
+                    ),
+                ),
+                fields = mapOf("name" to 0),
+            ),
+        ),
+    ),
+)
