@@ -95,7 +95,7 @@ class SymbolExtractionTest {
 
         assertEquals("client", parsed.outline.symbolAt(SourcePosition(5, 3))?.name)
         assertEquals("getUser", parsed.outline.symbolAt(SourcePosition(7, 10))?.name)
-        assertEquals("updateUser", parsed.outline.symbolAt(SourcePosition(10, 12))?.name)
+        assertEquals("updateUser", parsed.outline.symbolAt(SourcePosition(10, 5))?.name)
         // Outside every declaration there is no symbol, not a wrong one.
         assertNull(parsed.outline.symbolAt(SourcePosition(400, 1)))
     }

@@ -23,7 +23,8 @@ class TreeSitterBackendTest {
         assertEquals(1 to 8, map.positionOf(7).let { it.line to it.column })
         assertEquals(2 to 1, map.positionOf(8).let { it.line to it.column })
         assertEquals(2 to 3, map.positionOf(10).let { it.line to it.column })
-        assertEquals(4 to 1, map.positionOf(20).let { it.line to it.column })
+        assertEquals(4 to 1, map.positionOf(19).let { it.line to it.column })
+        assertEquals(4 to 2, map.positionOf(20).let { it.line to it.column })
     }
 
     @Test
