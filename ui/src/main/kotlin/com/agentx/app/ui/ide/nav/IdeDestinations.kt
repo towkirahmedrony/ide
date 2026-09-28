@@ -29,6 +29,10 @@ object IdeDestinations {
     /** Saved external-service connections. */
     const val CONNECTIONS = "connections"
 
+    /** One service, in full: capabilities, connect/manage and its agent tools. */
+    const val SERVICE_DETAILS = "connections/service/{type}"
+    const val ARG_SERVICE_TYPE = "type"
+
     const val CONNECTION_EDITOR = "connections/editor/{connectionId}"
     const val ARG_CONNECTION_ID = "connectionId"
 
@@ -43,6 +47,11 @@ object IdeDestinations {
 
     fun modelRunner(presetId: String): String = "models/runner/$presetId"
 
-    fun connectionEditor(connectionId: String? = null): String =
-        "connections/editor/${connectionId ?: NEW_CONNECTION}"
+    fun serviceDetails(type: String): String = "connections/service/$type"
+
+    /** The editor can start on a pre-selected service, e.g. adding an MCP server. */
+    fun connectionEditor(connectionId: String? = null, type: String? = null): String {
+        val base = "connections/editor/${connectionId ?: NEW_CONNECTION}"
+        return if (type.isNullOrBlank()) base else "$base?$ARG_SERVICE_TYPE=$type"
+    }
 }

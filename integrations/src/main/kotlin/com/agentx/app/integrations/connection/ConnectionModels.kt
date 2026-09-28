@@ -74,12 +74,13 @@ enum class ConnectionType(
  */
 enum class ConnectionStatus(val displayName: String) {
     NOT_CONNECTED("Not connected"),
-    AUTHORIZING("Authorizing"),
+    AUTHORIZING("Waiting for authorization"),
+    VERIFYING("Verifying"),
     CONNECTING("Connecting"),
     CONNECTED("Connected"),
-    EXPIRED("Expired"),
+    EXPIRED("Connection expired"),
     DISCONNECTED("Disconnected"),
-    ERROR("Error"),
+    ERROR("Connection error"),
     ;
 
     /** True when the connection has usable credentials. */
@@ -87,6 +88,12 @@ enum class ConnectionStatus(val displayName: String) {
 
     /** True while the provider's authorization page is open or being handled. */
     val isAuthorizing: Boolean get() = this == AUTHORIZING
+
+    /** True while the app is working on the connection (authorizing, verifying, probing). */
+    val isBusy: Boolean get() = this == AUTHORIZING || this == VERIFYING || this == CONNECTING
+
+    /** True when the user has to act again: reconnect, re-authorize or fix a setting. */
+    val needsUserAction: Boolean get() = this == EXPIRED || this == ERROR || this == NOT_CONNECTED
 }
 
 /**
@@ -371,52 +378,4 @@ data class ConnectionTestResult(
             testedAtMillis = now,
         )
     }
-}
-
-/** Why a tool was refused a connection. Safe to surface to the agent. */
-enum class ConnectionAuthorizationFailure(val message: String) {
-    NOT_FOUND("No connection matches the requested type"),
-    DISABLED("The matching connection is disabled"),
-    MISSING_CAPABILITY("The connection does not declare the required capability"),
-    MISSING_CREDENTIAL("The connection has no stored credential"),
-    NOT_AUTHORIZED("The connection is not authorized for this tool"),
-    /** The stored grant is no longer usable; the user must re-authorize. */
-    EXPIRED("The connection credentials expired and must be re-authorized"),
-    /** OAuth authorization has not finished yet. */
-    AUTHORIZING("The connection is waiting for the user to approve access"),
-}
-
-/**
- * What the Connections page needs to offer an OAuth-first connection for a
- * service, including why OAuth is unavailable when it is.
- */
-data class ConnectionOAuthAvailability(
-    val type: ConnectionType,
-    val displayName: String,
-    val oauthSupported: Boolean,
-    /** True when this build has the provider's client id and redirect URI. */
-    val configured: Boolean,
-    /** True when an authorization is currently in flight for this service. */
-    val authorizing: Boolean = false,
-    val unavailableReason: String? = null,
-) {
-    /** True when the page may offer a "Connect" button. */
-    val canAuthorize: Boolean get() = oauthSupported && configured && !authorizing
-}
-
-/**
- * Structured refusal returned when a tool cannot be given a connection.
- * Contains no secrets.
- */
-data class ConnectionAuthorizationError(
-    val failure: ConnectionAuthorizationFailure,
-    val type: ConnectionType,
-    val capability: ConnectionCapability,
-    val connectionId: ConnectionId? = null,
-    val detail: String? = null,
-) {
-    val message: String get() = detail ?: failure.message
-
-    override fun toString(): String =
-        "ConnectionAuthorizationError(failure=${failure.name}, type=${type.name}, capability=${capability.id})"
 }

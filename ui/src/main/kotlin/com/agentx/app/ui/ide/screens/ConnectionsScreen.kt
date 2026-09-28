@@ -1,277 +1,378 @@
 package com.agentx.app.ui.ide.screens
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Hub
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.Code
+import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material3.AlertDialog
+import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.agentx.app.integrations.connection.Connection
 import com.agentx.app.integrations.connection.ConnectionManagerState
 import com.agentx.app.integrations.connection.ConnectionStatus
+import com.agentx.app.integrations.connection.ConnectionType
+import com.agentx.app.integrations.connection.InstalledTool
+import com.agentx.app.integrations.connection.ProviderAvailability
+import com.agentx.app.integrations.connection.ProviderDescriptor
 import com.agentx.app.ui.ide.components.IdeCard
-import com.agentx.app.ui.ide.components.IdeDot
-import com.agentx.app.ui.ide.components.IdeEmptyState
-import com.agentx.app.ui.ide.components.IdeLabelValue
 import com.agentx.app.ui.ide.components.IdeSectionLabel
 import com.agentx.app.ui.ide.components.IdeSpacer
 import com.agentx.app.ui.ide.components.IdeStatusPill
 import com.agentx.app.ui.ide.components.IdeTopBar
 import com.agentx.app.ui.theme.ForgeAmber
+import com.agentx.app.ui.theme.ForgeBorder
 import com.agentx.app.ui.theme.ForgeCanvas
 import com.agentx.app.ui.theme.ForgeDanger
 import com.agentx.app.ui.theme.ForgeInk
 import com.agentx.app.ui.theme.ForgeMint
 import com.agentx.app.ui.theme.ForgeMuted
 import com.agentx.app.ui.theme.ForgePeriwinkle
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import com.agentx.app.ui.theme.ForgeSurface
+import com.agentx.app.ui.theme.ForgeSurfaceVariant
 
 /**
- * Connections: saved external services and what can be done with each one.
+ * The Connections page: the central place where a service is connected and the
+ * agent gains its tools.
  *
- * Credentials are never shown. Testing an unsupported type reports that the
- * test is not implemented — it never claims to be connected.
+ * It is a short list of services rather than a settings form. Each card states
+ * what the service gives the agent, whether it is connected and who it is
+ * connected as, and offers the single action that makes sense: Connect, Manage,
+ * Reconnect or Add Server. Credentials are never rendered.
  */
 @Composable
 fun ConnectionsScreen(
     state: ConnectionManagerState,
-    busyConnectionId: String?,
+    providers: List<ProviderAvailability>,
+    descriptors: List<ProviderDescriptor>,
+    tools: List<InstalledTool>,
+    busyKey: String?,
     message: String?,
     credentialsPersistent: Boolean,
     onBack: () -> Unit,
-    onAddConnection: () -> Unit,
-    onEdit: (String) -> Unit,
-    onTest: (String) -> Unit,
-    onSetEnabled: (String, Boolean) -> Unit,
-    onDelete: (String) -> Unit,
-    onRefresh: () -> Unit,
+    onOpenService: (ConnectionType) -> Unit,
+    onConnect: (ConnectionType) -> Unit,
+    onReconnect: (String) -> Unit,
+    onCancelAuthorization: (String) -> Unit,
+    onDisconnect: (String) -> Unit,
     onDismissMessage: () -> Unit,
-    modifier: Modifier = Modifier,
+    onRefresh: () -> Unit,
 ) {
-    var pendingDelete by remember { mutableStateOf<Connection?>(null) }
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(ForgeCanvas),
+    ) {
+        IdeTopBar(
+            title = "Connections",
+            subtitle = "Connect services and give your AI agent access to the tools it needs.",
+            onBack = onBack,
+            actions = {
+                IconButton(onClick = onRefresh) {
+                    Icon(
+                        imageVector = Icons.Filled.Refresh,
+                        contentDescription = "Refresh connections",
+                        tint = ForgeMuted,
+                    )
+                }
+            },
+        )
 
-    Scaffold(
-        modifier = modifier.fillMaxSize(),
-        containerColor = ForgeCanvas,
-        topBar = {
-            IdeTopBar(
-                title = "Connections",
-                subtitle = "External services",
-                onBack = onBack,
-                actions = {
-                    IconButton(onClick = onRefresh) {
-                        Icon(Icons.Filled.Refresh, contentDescription = "Reload connections")
-                    }
-                },
-            )
-        },
-    ) { padding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
                 .verticalScroll(rememberScrollState())
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+                .padding(horizontal = 20.dp, vertical = 16.dp),
         ) {
             if (!credentialsPersistent) {
                 IdeCard {
-                    IdeSectionLabel("Credentials")
-                    IdeSpacer(6)
                     Text(
-                        text = "Encrypted storage is unavailable on this device, so a token or API key " +
-                            "is kept only until the app is closed.",
+                        text = "Secure storage is unavailable on this device, so credentials cannot be " +
+                            "stored securely. Connections will not survive leaving the app.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = ForgeAmber,
                     )
                 }
+                IdeSpacer(12)
             }
 
-            when {
-                state.loading -> Box(
-                    modifier = Modifier.fillMaxWidth().padding(32.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    CircularProgressIndicator(color = ForgeMint)
-                }
-
-                state.isEmpty -> IdeEmptyState(
-                    icon = Icons.Filled.Hub,
-                    title = "No connections yet",
-                    message = "Add a GitHub, Supabase, MCP or custom API connection. " +
-                        "The agent cannot use a service until a tool requests it.",
-                    actionLabel = "Add Connection",
-                    onAction = onAddConnection,
-                )
-
-                else -> {
-                    state.connections.forEach { connection ->
-                        ConnectionCard(
-                            connection = connection,
-                            busy = busyConnectionId == connection.id.value,
-                            onEdit = { onEdit(connection.id.value) },
-                            onTest = { onTest(connection.id.value) },
-                            onSetEnabled = { enabled -> onSetEnabled(connection.id.value, enabled) },
-                            onDelete = { pendingDelete = connection },
+            message?.let { text ->
+                IdeCard {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = text,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = ForgeInk,
+                            modifier = Modifier.weight(1f),
                         )
+                        TextButton(onClick = onDismissMessage) { Text("Dismiss") }
                     }
-                    IdeSpacer(4)
-                    Button(onClick = onAddConnection, modifier = Modifier.fillMaxWidth()) {
-                        Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("Add Connection")
-                    }
-                    IdeSpacer(8)
                 }
+                IdeSpacer(12)
             }
-        }
-    }
 
-    message?.let { text ->
-        AlertDialog(
-            onDismissRequest = onDismissMessage,
-            title = { Text("Connection") },
-            text = { Text(text) },
-            confirmButton = { TextButton(onClick = onDismissMessage) { Text("OK") } },
-        )
-    }
+            IdeSectionLabel("Services")
+            IdeSpacer(8)
 
-    pendingDelete?.let { connection ->
-        AlertDialog(
-            onDismissRequest = { pendingDelete = null },
-            title = { Text("Remove connection?") },
-            text = { Text("\"${connection.displayName}\" and its saved credential will be removed.") },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        pendingDelete = null
-                        onDelete(connection.id.value)
+            orderProviders(providers).forEach { availability ->
+                val descriptor = descriptors.firstOrNull { it.type == availability.type }
+                val connection = state.ofType(availability.type).firstOrNull { it.enabled }
+                    ?: state.ofType(availability.type).firstOrNull()
+                ServiceCard(
+                    availability = availability,
+                    descriptor = descriptor,
+                    connection = connection,
+                    enabledTools = tools.count { it.provider == availability.type && it.enabled },
+                    busy = busyKey == availability.type.name || busyKey == connection?.id?.value,
+                    onOpen = { onOpenService(availability.type) },
+                    onPrimaryAction = {
+                        when {
+                            connection == null -> onConnect(availability.type)
+                            connection.status == ConnectionStatus.CONNECTED -> onOpenService(availability.type)
+                            connection.status.isAuthorizing -> onCancelAuthorization(connection.id.value)
+                            else -> onReconnect(connection.id.value)
+                        }
                     },
-                ) { Text("Remove") }
-            },
-            dismissButton = {
-                TextButton(onClick = { pendingDelete = null }) { Text("Cancel") }
-            },
-        )
+                    onDisconnect = connection
+                        ?.takeIf { it.status == ConnectionStatus.CONNECTED || it.hasCredential }
+                        ?.let { { onDisconnect(it.id.value) } },
+                )
+                IdeSpacer(12)
+            }
+
+            IdeSpacer(4)
+            Text(
+                text = "The agent only receives the access you approve on the provider's own page. " +
+                    "Tokens stay in the platform's secure storage and are never shown here.",
+                style = MaterialTheme.typography.bodySmall,
+                color = ForgeMuted,
+            )
+        }
     }
 }
 
 @Composable
-private fun ConnectionCard(
-    connection: Connection,
+private fun ServiceCard(
+    availability: ProviderAvailability,
+    descriptor: ProviderDescriptor?,
+    connection: Connection?,
+    enabledTools: Int,
     busy: Boolean,
-    onEdit: () -> Unit,
-    onTest: () -> Unit,
-    onSetEnabled: (Boolean) -> Unit,
-    onDelete: () -> Unit,
+    onOpen: () -> Unit,
+    onPrimaryAction: () -> Unit,
+    onDisconnect: (() -> Unit)?,
 ) {
-    IdeCard {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            IdeDot(statusColor(connection.status))
-            Column(modifier = Modifier.weight(1f).padding(start = 10.dp)) {
+    val status = connection?.status ?: ConnectionStatus.NOT_CONNECTED
+    val connected = status == ConnectionStatus.CONNECTED
+
+    IdeCard(modifier = Modifier.clickable(onClick = onOpen)) {
+        Row(verticalAlignment = Alignment.Top) {
+            ServiceIcon(availability.type)
+            IdeSpacerW(12)
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = availability.displayName,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = ForgeInk,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    IdeSpacerW(8)
+                    IdeStatusPill(text = status.displayName, color = statusColor(status))
+                }
+                IdeSpacer(4)
                 Text(
-                    text = connection.displayName,
-                    style = MaterialTheme.typography.titleMedium,
-                    color = ForgeInk,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    text = connection.type.displayName,
-                    style = MaterialTheme.typography.labelSmall,
+                    text = descriptor?.description ?: availability.description,
+                    style = MaterialTheme.typography.bodyMedium,
                     color = ForgeMuted,
                 )
-            }
-            IdeStatusPill(connection.status.displayName, statusColor(connection.status))
-            IconButton(onClick = onEdit) {
-                Icon(Icons.Filled.Edit, contentDescription = "Edit connection", tint = ForgeMuted)
-            }
-            IconButton(onClick = onDelete) {
-                Icon(Icons.Filled.Delete, contentDescription = "Remove connection", tint = ForgeMuted)
+                val labels = descriptor?.capabilities.orEmpty().map { it.label }
+                if (labels.isNotEmpty()) {
+                    IdeSpacer(8)
+                    CapabilityStrip(labels = labels.take(MAX_CARD_CAPABILITIES), more = labels.size - MAX_CARD_CAPABILITIES)
+                }
+                accountLine(status, connection, enabledTools)?.let { detail ->
+                    IdeSpacer(8)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        when (status) {
+                            ConnectionStatus.CONNECTED -> Icon(
+                                imageVector = Icons.Filled.CheckCircle,
+                                contentDescription = null,
+                                tint = ForgeMint,
+                                modifier = Modifier.size(14.dp),
+                            )
+
+                            ConnectionStatus.ERROR, ConnectionStatus.EXPIRED -> Icon(
+                                imageVector = Icons.Filled.ErrorOutline,
+                                contentDescription = null,
+                                tint = ForgeDanger,
+                                modifier = Modifier.size(14.dp),
+                            )
+
+                            else -> Unit
+                        }
+                        IdeSpacerW(6)
+                        Text(
+                            text = detail,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (connected) ForgeMint else ForgeMuted,
+                        )
+                    }
+                }
             }
         }
 
-        IdeSpacer(8)
-        IdeLabelValue("Service", connection.type.displayName)
-        IdeLabelValue("Enabled", if (connection.enabled) "Yes" else "No")
-        connection.config.endpoint?.let { IdeLabelValue("Endpoint", it) }
-        IdeLabelValue("Authentication", connection.config.authMethod.displayName)
-        IdeLabelValue(
-            "Capabilities",
-            connection.capabilities.joinToString(", ") { it.id }.ifBlank { "None" },
-        )
-        IdeLabelValue("Last test", formatTested(connection.lastTestedAtMillis))
-
-        connection.statusMessage?.let { message ->
-            IdeSpacer(6)
-            Text(
-                text = message,
-                style = MaterialTheme.typography.bodyMedium,
-                color = if (connection.status == ConnectionStatus.ERROR) ForgeDanger else ForgeMuted,
-            )
-        }
-
-        if (busy) {
-            IdeSpacer(10)
-            CircularProgressIndicator(color = ForgeMint, modifier = Modifier.size(18.dp))
-        }
-
-        IdeSpacer(10)
+        IdeSpacer(12)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = onTest, enabled = !busy && connection.enabled) { Text("Test") }
-            OutlinedButton(onClick = { onSetEnabled(!connection.enabled) }, enabled = !busy) {
-                Text(if (connection.enabled) "Disable" else "Enable")
+            Button(
+                onClick = onPrimaryAction,
+                enabled = !busy && availability.registered,
+            ) {
+                Text(primaryLabel(availability, status, connected))
+            }
+            onDisconnect?.let { disconnect ->
+                OutlinedButton(onClick = disconnect, enabled = !busy) { Text("Disconnect") }
+            }
+        }
+
+        if (availability.registered && availability.supportsHostedAuthorization && !availability.configured) {
+            availability.unavailableReason?.let { reason ->
+                IdeSpacer(8)
+                Text(text = reason, style = MaterialTheme.typography.bodySmall, color = ForgeAmber)
+            }
+        }
+        if (!availability.registered) {
+            availability.unavailableReason?.let { reason ->
+                IdeSpacer(8)
+                Text(text = reason, style = MaterialTheme.typography.bodySmall, color = ForgeAmber)
             }
         }
     }
 }
 
-private fun formatTested(millis: Long?): String {
-    if (millis == null || millis <= 0L) return "Never"
-    return SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date(millis))
+@Composable
+private fun ServiceIcon(type: ConnectionType) {
+    val icon: ImageVector = when (type) {
+        ConnectionType.GITHUB -> Icons.Filled.Code
+        ConnectionType.SUPABASE -> Icons.Filled.Storage
+        ConnectionType.MCP_SERVER -> Icons.Filled.Extension
+        ConnectionType.CUSTOM_API -> Icons.Filled.Cloud
+    }
+    Box(
+        modifier = Modifier
+            .size(36.dp)
+            .background(ForgeSurfaceVariant, RoundedCornerShape(10.dp))
+            .border(1.dp, ForgeBorder, RoundedCornerShape(10.dp)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(imageVector = icon, contentDescription = null, tint = ForgePeriwinkle)
+    }
 }
 
-private fun statusColor(status: ConnectionStatus): Color = when (status) {
+@Composable
+private fun CapabilityStrip(labels: List<String>, more: Int) {
+    if (labels.isEmpty()) return
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        labels.forEach { label ->
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = ForgeInk,
+                modifier = Modifier
+                    .background(ForgeSurfaceVariant, RoundedCornerShape(6.dp))
+                    .border(1.dp, ForgeBorder, RoundedCornerShape(6.dp))
+                    .padding(horizontal = 6.dp, vertical = 3.dp),
+            )
+        }
+        if (more > 0) {
+            Text(
+                text = "+$more",
+                style = MaterialTheme.typography.labelSmall,
+                color = ForgeMuted,
+                modifier = Modifier
+                    .background(ForgeSurface, RoundedCornerShape(6.dp))
+                    .padding(horizontal = 6.dp, vertical = 3.dp),
+            )
+        }
+    }
+}
+
+/** Services in the order the product presents them. */
+internal fun orderProviders(providers: List<ProviderAvailability>): List<ProviderAvailability> {
+    val order = listOf(ConnectionType.GITHUB, ConnectionType.SUPABASE, ConnectionType.MCP_SERVER)
+    return providers.sortedBy { availability ->
+        order.indexOf(availability.type).takeIf { it >= 0 } ?: order.size
+    }
+}
+
+internal fun primaryLabel(
+    availability: ProviderAvailability,
+    status: ConnectionStatus,
+    connected: Boolean,
+): String = when {
+    !availability.registered -> "Unavailable"
+    connected -> "Manage"
+    status.isAuthorizing -> "Cancel"
+    status == ConnectionStatus.EXPIRED || status == ConnectionStatus.ERROR -> "Reconnect"
+    availability.supportsHostedAuthorization -> "Connect"
+    else -> "Add Server"
+}
+
+/** The one-line detail under a card: who is connected, or what is missing. */
+private fun accountLine(
+    status: ConnectionStatus,
+    connection: Connection?,
+    enabledTools: Int,
+): String? = when (status) {
+    ConnectionStatus.CONNECTED -> listOfNotNull(
+        connection?.accountLabel ?: "Connected",
+        enabledTools.takeIf { it > 0 }?.let { "$it tools available to the agent" },
+    ).joinToString(" · ")
+
+    ConnectionStatus.AUTHORIZING -> "Finish authorizing in your browser"
+    ConnectionStatus.VERIFYING -> "Verifying with the provider"
+    ConnectionStatus.ERROR, ConnectionStatus.EXPIRED -> connection?.statusMessage
+    else -> connection?.statusMessage
+}
+
+internal fun statusColor(status: ConnectionStatus): Color = when (status) {
     ConnectionStatus.CONNECTED -> ForgeMint
-    // In-flight states: waiting on the provider's authorization page or on a probe.
-    ConnectionStatus.AUTHORIZING -> ForgePeriwinkle
-    ConnectionStatus.CONNECTING -> ForgePeriwinkle
+    ConnectionStatus.AUTHORIZING, ConnectionStatus.VERIFYING, ConnectionStatus.CONNECTING -> ForgePeriwinkle
     ConnectionStatus.ERROR -> ForgeDanger
-    ConnectionStatus.EXPIRED -> ForgeAmber
-    ConnectionStatus.DISCONNECTED -> ForgeAmber
+    ConnectionStatus.EXPIRED, ConnectionStatus.DISCONNECTED -> ForgeAmber
     ConnectionStatus.NOT_CONNECTED -> ForgeMuted
 }
+
+private const val MAX_CARD_CAPABILITIES = 3
+
+/** Human-readable timestamp for "expires at" details. Never shows a credential. */
+internal fun formatTimestamp(millis: Long): String =
+    java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(java.util.Date(millis))

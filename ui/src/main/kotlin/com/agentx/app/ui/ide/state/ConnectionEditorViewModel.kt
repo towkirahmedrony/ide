@@ -101,6 +101,7 @@ data class ConnectionEditorState(
                 mcpTransport = transport,
                 mcpCommand = connection.config.metadata[META_COMMAND].orEmpty(),
                 oauthSupported = connection.type.oauthSupported,
+                oauthConfigured = false,
                 // An existing OAuth connection keeps the OAuth entry point visible.
                 manualCredentials = connection.config.authMethod.isManualCredential,
             )
@@ -296,11 +297,12 @@ class ConnectionEditorViewModel(
         }
     }
 
-    /** Fills the OAuth section from the manager's availability for the type. */
+    /** Fills the OAuth section from the provider availability for the type. */
     private fun applyAvailability(state: ConnectionEditorState): ConnectionEditorState {
-        val availability = manager.oauthAvailability().firstOrNull { it.type == state.type }
+        val availability = manager.providerAvailability().firstOrNull { it.type == state.type }
+        val hosted = availability?.supportsHostedAuthorization ?: state.type.oauthSupported
         return state.copy(
-            oauthSupported = availability?.oauthSupported ?: state.type.oauthSupported,
+            oauthSupported = hosted,
             oauthConfigured = availability?.configured == true,
             oauthUnavailableReason = availability?.unavailableReason,
         )

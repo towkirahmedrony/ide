@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- The model gateway talks to the configured model endpoint, and the Model
-         Runner browser loads the notebook the runtime lives in. -->
+    <!-- The model gateway talks to the configured model endpoint, the Model
+         Runner browser loads the notebook the runtime lives in, and OAuth
+         authorization pages are opened in the user's own browser. -->
     <uses-permission android:name="android.permission.INTERNET" />
 
     <application
@@ -11,13 +12,43 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.AgentX">
 
+        <!--
+            singleTask so a redirect that arrives while the app is running reaches
+            onNewIntent instead of opening a second task.
+
+            The OAuth redirect is registered twice: a private app scheme, which
+            needs no domain, and an https deep link for deployments that own the
+            callback domain. Only the redirect URI registered with the provider is
+            used, so both stay inert until one of them is configured.
+        -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTask"
             android:theme="@style/Theme.AgentX">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:host="${oauthRedirectHost}"
+                    android:pathPrefix="${oauthRedirectPath}"
+                    android:scheme="${oauthRedirectScheme}" />
+            </intent-filter>
+
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:host="${oauthHttpsHost}"
+                    android:pathPrefix="${oauthRedirectPath}"
+                    android:scheme="https" />
             </intent-filter>
         </activity>
 

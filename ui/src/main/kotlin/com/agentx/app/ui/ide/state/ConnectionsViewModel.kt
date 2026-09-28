@@ -8,24 +8,29 @@ import androidx.lifecycle.viewModelScope
 import com.agentx.app.core.ForgeError
 import com.agentx.app.core.ForgeResult
 import com.agentx.app.core.errorOrNull
-import com.agentx.app.core.valueOrNull
+import com.agentx.app.integrations.connection.AuthorizationStart
+import com.agentx.app.integrations.connection.Connection
 import com.agentx.app.integrations.connection.ConnectionId
 import com.agentx.app.integrations.connection.ConnectionManager
 import com.agentx.app.integrations.connection.ConnectionManagerState
-import com.agentx.app.integrations.connection.ConnectionOAuthAvailability
+import com.agentx.app.integrations.connection.ConnectionStatus
 import com.agentx.app.integrations.connection.ConnectionType
+import com.agentx.app.integrations.connection.InstalledTool
+import com.agentx.app.integrations.connection.ProviderAvailability
+import com.agentx.app.integrations.connection.ProviderDescriptor
 import com.agentx.app.ui.ide.data.OAuthBrowserLauncher
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
 /**
- * Connections page state.
+ * State for the Connections page and the service details screen.
  *
- * Lifecycle and credential handling live in the [ConnectionManager]; this holder
- * turns user intent into manager calls and opens the provider's authorization
- * page. It never sees a token: the callback is completed by the manager, and the
- * credentials stay in secure storage.
+ * Every lifecycle and credential decision belongs to the [ConnectionManager]; this
+ * holder turns user intent into manager calls, opens the provider's authorization
+ * page in the user's browser, and mirrors connection state into what the page
+ * shows. It never receives a credential: the redirect is completed by the manager
+ * and the tokens stay in secure storage.
  */
 class ConnectionsViewModel(
     private val manager: ConnectionManager,
@@ -34,14 +39,25 @@ class ConnectionsViewModel(
 
     val state: StateFlow<ConnectionManagerState> = manager.state
 
-    var availability by mutableStateOf(manager.oauthAvailability())
+    var providers by mutableStateOf(manager.providerAvailability())
         private set
 
-    var busyConnectionId by mutableStateOf<String?>(null)
+    var descriptors by mutableStateOf(manager.providerDescriptors())
+        private set
+
+    var tools by mutableStateOf(manager.tools())
+        private set
+
+    /** Connection id (or type name) with an operation in flight. */
+    var busyKey by mutableStateOf<String?>(null)
         private set
 
     /** The connection whose authorization page is open, if any. */
     var awaitingAuthorizationId by mutableStateOf<String?>(null)
+        private set
+
+    /** Set when a connection recently reached CONNECTED, for the details screen. */
+    var lastConnectedId by mutableStateOf<String?>(null)
         private set
 
     var message by mutableStateOf<String?>(null)
@@ -52,48 +68,68 @@ class ConnectionsViewModel(
     init {
         viewModelScope.launch { manager.refresh() }
         viewModelScope.launch {
-            manager.state.collect { availability = manager.oauthAvailability() }
-        }
-        viewModelScope.launch {
-            manager.state.collect { snapshot ->
-                if (awaitingAuthorizationId != null &&
-                    snapshot.connections.firstOrNull { it.id.value == awaitingAuthorizationId }?.status?.isAuthorizing != true
-                ) {
-                    // The manager settled the attempt (connected, denied, cancelled).
-                    awaitingAuthorizationId = null
-                }
-            }
+            manager.state.collect { refreshDerived() }
         }
     }
 
-    /** Starts the OAuth flow for a service the user has not connected yet. */
+    // --- Lookups used by both screens ---------------------------------------
+
+    fun availabilityOf(type: ConnectionType): ProviderAvailability =
+        providers.firstOrNull { it.type == type } ?: ProviderAvailability(
+            type = type,
+            displayName = type.displayName,
+            description = type.description,
+            registered = false,
+            configured = false,
+            authMethods = emptyList(),
+            unavailableReason = "No provider is registered for ${type.displayName} in this build.",
+        )
+
+    fun descriptorOf(type: ConnectionType): ProviderDescriptor? = descriptors.firstOrNull { it.type == type }
+
+    /** The connection the page treats as "the" connection for a service. */
+    fun connectionOf(type: ConnectionType, snapshot: ConnectionManagerState): Connection? =
+        snapshot.ofType(type).firstOrNull { it.enabled } ?: snapshot.ofType(type).firstOrNull()
+
+    fun toolsOf(type: ConnectionType): List<InstalledTool> = tools.filter { it.provider == type }
+
+    /** True while this service is between "connect" and a settled state. */
+    fun isAuthorizing(connection: Connection?): Boolean =
+        connection?.status == ConnectionStatus.AUTHORIZING ||
+            (connection != null && awaitingAuthorizationId == connection.id.value)
+
+    fun isBusy(key: String): Boolean = busyKey == key
+
+    // --- Actions ------------------------------------------------------------
+
+    /** Starts the connection flow for a service the user has not connected yet. */
     fun connect(type: ConnectionType) {
-        if (busyConnectionId != null) return
-        busyConnectionId = type.name
+        if (busyKey != null) return
+        busyKey = type.name
         viewModelScope.launch {
             try {
                 when (val result = manager.connect(type)) {
-                    is ForgeResult.Success -> openAuthorization(result.value.connectionId.value, result.value.authorizationUrl)
-                    is ForgeResult.Failure -> message = result.error.message ?: "The authorization could not be started"
+                    is ForgeResult.Success -> handleStart(type.name, result.value)
+                    is ForgeResult.Failure -> message = result.error.message ?: failedToStart(type)
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
-                message = error.message ?: "The authorization could not be started"
+                message = error.message ?: failedToStart(type)
             } finally {
-                busyConnectionId = null
+                busyKey = null
             }
         }
     }
 
-    /** Re-runs authorization for an existing connection (reconnect / expired). */
+    /** Re-runs authorization for an existing connection (reconnect / re-authorize). */
     fun reconnect(id: String) {
-        if (busyConnectionId != null) return
-        busyConnectionId = id
+        if (busyKey != null) return
+        busyKey = id
         viewModelScope.launch {
             try {
                 when (val result = manager.beginAuthorization(ConnectionId(id))) {
-                    is ForgeResult.Success -> openAuthorization(id, result.value.authorizationUrl)
+                    is ForgeResult.Success -> handleStart(id, result.value)
                     is ForgeResult.Failure -> message = result.error.message ?: "The authorization could not be started"
                 }
             } catch (cancelled: CancellationException) {
@@ -101,7 +137,7 @@ class ConnectionsViewModel(
             } catch (error: Throwable) {
                 message = error.message ?: "The authorization could not be started"
             } finally {
-                busyConnectionId = null
+                busyKey = null
             }
         }
     }
@@ -110,10 +146,9 @@ class ConnectionsViewModel(
 
     fun disconnect(id: String) = operate(id) { manager.disconnect(ConnectionId(it)) }
 
-    fun test(id: String) = operate(id) { manager.testConnection(ConnectionId(it)) }
+    fun verify(id: String) = operate(id) { manager.testConnection(ConnectionId(it)) }
 
-    fun setEnabled(id: String, enabled: Boolean) =
-        operate(id) { manager.setEnabled(ConnectionId(it), enabled) }
+    fun setEnabled(id: String, enabled: Boolean) = operate(id) { manager.setEnabled(ConnectionId(it), enabled) }
 
     fun delete(id: String) = operate(id) { manager.removeConnection(ConnectionId(it)) }
 
@@ -125,45 +160,70 @@ class ConnectionsViewModel(
         message = null
     }
 
+    fun acknowledgeConnected() {
+        lastConnectedId = null
+    }
+
+    // --- Internals ----------------------------------------------------------
+
+    private fun refreshDerived() {
+        providers = manager.providerAvailability()
+        descriptors = manager.providerDescriptors()
+        tools = manager.tools()
+        val awaiting = awaitingAuthorizationId
+        if (awaiting != null && manager.state.value.connection(ConnectionId(awaiting))?.status?.isAuthorizing != true) {
+            // The manager settled the attempt: connected, denied, cancelled or expired.
+            awaitingAuthorizationId = null
+        }
+    }
+
+    private suspend fun handleStart(key: String, start: AuthorizationStart) {
+        when (start) {
+            is AuthorizationStart.OpenUrl -> openAuthorization(key, start)
+            // No hosted page: the service is configured through the app's own form.
+            is AuthorizationStart.ManualFormRequired -> {
+                awaitingAuthorizationId = null
+                message = start.reason
+            }
+        }
+    }
+
     /**
      * Opens the provider's page. When no browser is available the attempt is
-     * abandoned instead of leaving the connection stuck in "authorizing".
+     * abandoned instead of leaving the connection stuck waiting.
      */
-    private suspend fun openAuthorization(connectionId: String, url: String) {
-        if (browser.launch(url)) {
-            awaitingAuthorizationId = connectionId
+    private suspend fun openAuthorization(key: String, start: AuthorizationStart.OpenUrl) {
+        if (browser.launch(start.authorizationUrl)) {
+            awaitingAuthorizationId = start.connectionId.value
             return
         }
         awaitingAuthorizationId = null
-        manager.cancelAuthorization(ConnectionId(connectionId))
+        manager.cancelAuthorization(start.connectionId)
         message = "No browser is available to open the authorization page."
     }
 
     private fun operate(id: String, block: suspend (String) -> ForgeResult<*, ForgeError>) {
-        if (busyConnectionId != null) return
-        busyConnectionId = id
+        if (busyKey != null) return
+        busyKey = id
         viewModelScope.launch {
             try {
                 val failure = block(id).errorOrNull()
-                if (failure != null) message = failure.message
+                if (failure != null) {
+                    message = failure.message
+                } else {
+                    val connection = manager.connection(ConnectionId(id))
+                    if (connection?.status == ConnectionStatus.CONNECTED) lastConnectedId = id
+                }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
                 message = error.message ?: "The connection operation failed"
             } finally {
-                busyConnectionId = null
+                busyKey = null
             }
         }
     }
 
-    /** Availability entry for [type], used by the editor's OAuth-first section. */
-    fun availabilityOf(type: ConnectionType): ConnectionOAuthAvailability = manager.oauthAvailability()
-        .firstOrNull { it.type == type }
-        ?: ConnectionOAuthAvailability(
-            type = type,
-            displayName = type.displayName,
-            oauthSupported = type.oauthSupported,
-            configured = false,
-            unavailableReason = "OAuth is not available for ${type.displayName}.",
-        )
+    private fun failedToStart(type: ConnectionType): String =
+        "The ${type.displayName} authorization could not be started"
 }

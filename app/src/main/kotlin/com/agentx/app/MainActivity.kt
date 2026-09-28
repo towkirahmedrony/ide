@@ -1,5 +1,6 @@
 package com.agentx.app
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -13,9 +14,19 @@ import com.agentx.app.app.rememberAndroidWorkspacePicker
 import com.agentx.app.context.DelegatingWorkspaceContextProvider
 import com.agentx.app.context.WorkspaceRuntimeContextProvider
 import com.agentx.app.context.WorkspaceSelectionState
+import com.agentx.app.core.config.ForgeConfig
+import com.agentx.app.core.config.ForgeConfigLoader
+import com.agentx.app.core.config.OAuthConfig
+import com.agentx.app.core.config.OAuthProviderConfig
 import com.agentx.app.core.foundation.ServiceKeys
 import com.agentx.app.foundation.ConnectionManagerToolAuthorizer
 import com.agentx.app.foundation.Foundation
+import com.agentx.app.foundation.IntegrationToolSynchronizer
+import com.agentx.app.integrations.providers.ConnectionProviders
+import com.agentx.app.integrations.oauth.UrlConnectionOAuthHttpClient
+import com.agentx.app.oauth.IntentOAuthBrowserLauncher
+import com.agentx.app.tools.ToolRegistry
+import com.agentx.app.ui.ide.data.OAuthCallbackInbox
 import com.agentx.app.model.ModelConfig
 import com.agentx.app.model.manager.ModelManager
 import com.agentx.app.integrations.android.KeystoreConnectionSecretStore
@@ -35,10 +46,24 @@ import com.agentx.app.ui.theme.ForgeTheme
 import com.agentx.app.workspace.DefaultWorkspaceManager
 import com.agentx.app.workspace.android.SafWorkspaceBackend
 import com.agentx.app.workspace.android.SharedPreferencesWorkspaceMetadataStore
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 
 class MainActivity : ComponentActivity() {
 
     private lateinit var modelRunnerBrowser: AndroidModelRunnerBrowserHost
+
+    /**
+     * OAuth redirects are published here by [onCreate]/[onNewIntent] and consumed
+     * by the UI, which completes the authorization through the Connection Manager.
+     * The URI holds an authorization code, so it stays in memory only.
+     */
+    private val oauthCallbacks = OAuthCallbackInbox()
+
+    private var toolSynchronizer: IntegrationToolSynchronizer? = null
+    private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -52,16 +77,38 @@ class MainActivity : ComponentActivity() {
         // The core foundation boots once: health + layers, model presets, runners
         // and the active connection. Its status is surfaced from Settings → About →
         // Developer information.
+        val oauthConfig = buildOAuthConfig()
         val foundation = Foundation.boot(
+            config = ForgeConfig(oauth = oauthConfig),
             presetStore = SharedPreferencesModelPresetStore(applicationContext),
             secretStore = KeystoreModelSecretStore(applicationContext),
             connectionStore = SharedPreferencesConnectionStore(applicationContext),
             connectionSecretStore = KeystoreConnectionSecretStore(applicationContext),
             runtimeOutput = runtimeOutput,
+            // Official providers, configured from the build. Missing client ids are
+            // reported in the Connections page instead of failing at connect time.
+            connectionProviders = ConnectionProviders.fromConfig(
+                config = oauthConfig,
+                http = UrlConnectionOAuthHttpClient(),
+            ),
         )
 
         val modelManager = foundation.services.get<ModelManager>(ServiceKeys.MODEL_MANAGER)
         val connectionManager = foundation.services.get<ConnectionManager>(ServiceKeys.CONNECTION_MANAGER)
+
+        // Provider tools are installed while a connection provides what they need and
+        // removed when it is disconnected.
+        val registry = foundation.services.get<ToolRegistry>(ServiceKeys.TOOL_REGISTRY)
+        if (connectionManager != null && registry != null) {
+            toolSynchronizer = IntegrationToolSynchronizer(
+                manager = connectionManager,
+                registry = registry,
+                scope = backgroundScope,
+            ).also { it.start() }
+        }
+
+        // A redirect that started the app has to be handled as soon as the UI is up.
+        intent?.data?.toString()?.let(oauthCallbacks::publish)
 
         // Android cannot run foreground network monitoring forever, so the manager
         // is told when the app is actually visible and re-checks on return.
@@ -124,6 +171,8 @@ class MainActivity : ComponentActivity() {
                         git = MockGitRepository(),
                         modelManager = checkNotNull(modelManager) { "Model manager is not registered" },
                         connectionManager = checkNotNull(connectionManager) { "Connection manager is not registered" },
+                        oauthBrowser = IntentOAuthBrowserLauncher(applicationContext),
+                        oauthCallbacks = oauthCallbacks,
                         modelRunnerBrowser = modelRunnerBrowser,
                         modelRuntimeOutput = runtimeOutput,
                     )
@@ -147,11 +196,47 @@ class MainActivity : ComponentActivity() {
         outState.putBundle(KEY_RUNNER_STATE, browserState)
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        // Duplicate deliveries are handled downstream: the Connection Manager's
+        // pending authorization is single-use, so a replay cannot exchange twice.
+        intent.data?.toString()?.let(oauthCallbacks::publish)
+    }
+
     override fun onDestroy() {
+        toolSynchronizer?.stop()
+        backgroundScope.cancel()
         // The WebView holds this activity, so it is always released here; its page
         // state was saved above and cookies survive in the WebView store.
         modelRunnerBrowser.release()
         super.onDestroy()
+    }
+
+    /**
+     * OAuth configuration for this build.
+     *
+     * Client ids and redirect URIs are public values that the app owner registers
+     * with each provider; the exchange broker URL points at the server that holds
+     * the client secret, which is never part of the APK.
+     */
+    private fun buildOAuthConfig(): OAuthConfig {
+        val redirectUri = "${BuildConfig.OAUTH_REDIRECT_SCHEME}://${BuildConfig.OAUTH_REDIRECT_HOST}" +
+            BuildConfig.OAUTH_REDIRECT_PATH
+        return OAuthConfig(
+            github = OAuthProviderConfig(
+                clientId = BuildConfig.OAUTH_GITHUB_CLIENT_ID,
+                redirectUri = redirectUri,
+                exchangeBrokerUrl = BuildConfig.OAUTH_GITHUB_BROKER_URL.takeIf { it.isNotBlank() },
+                scopes = ForgeConfigLoader.parseScopes(BuildConfig.OAUTH_GITHUB_SCOPES),
+            ),
+            supabase = OAuthProviderConfig(
+                clientId = BuildConfig.OAUTH_SUPABASE_CLIENT_ID,
+                redirectUri = redirectUri,
+                exchangeBrokerUrl = BuildConfig.OAUTH_SUPABASE_BROKER_URL.takeIf { it.isNotBlank() },
+                scopes = ForgeConfigLoader.parseScopes(BuildConfig.OAUTH_SUPABASE_SCOPES),
+            ),
+        )
     }
 
     private companion object {

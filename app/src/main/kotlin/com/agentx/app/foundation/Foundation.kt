@@ -20,6 +20,7 @@ import com.agentx.app.core.module.ModuleRegistry
 import com.agentx.app.git.GIT_LAYER
 import com.agentx.app.integrations.INTEGRATIONS_LAYER
 import com.agentx.app.integrations.IntegrationsModule
+import com.agentx.app.integrations.connection.ConnectionProviderRegistry
 import com.agentx.app.integrations.connection.ConnectionSecretStore
 import com.agentx.app.integrations.connection.ConnectionStore
 import com.agentx.app.integrations.connection.InMemoryConnectionSecretStore
@@ -65,6 +66,7 @@ object Foundation {
         secretStore: ModelSecretStore = InMemoryModelSecretStore(),
         connectionStore: ConnectionStore = InMemoryConnectionStore(),
         connectionSecretStore: ConnectionSecretStore = InMemoryConnectionSecretStore(),
+        connectionProviders: ConnectionProviderRegistry = ConnectionProviderRegistry.EMPTY,
         runtimeOutput: RuntimeOutputBuffer = RuntimeOutputBuffer(),
         monitorModelConnections: Boolean = true,
         contextWorkspace: WorkspaceContextProvider = DelegatingWorkspaceContextProvider(),
@@ -102,6 +104,7 @@ object Foundation {
             IntegrationsModule(
                 connectionStore = connectionStore,
                 secretStore = connectionSecretStore,
+                providers = connectionProviders,
             ),
         )
         modules.register(AgentModule())

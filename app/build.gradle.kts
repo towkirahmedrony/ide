@@ -50,6 +50,63 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
+    }
+
+    // OAuth client configuration. Client **secrets** are never read here and never
+    // ship in the APK: the authorization code is exchanged by the broker URL below.
+    // Owners override these with Gradle properties or environment variables.
+    defaultConfig {
+        fun oauthValue(property: String, environment: String, fallback: String): String =
+            (providers.gradleProperty(property).orNull
+                ?: providers.environmentVariable(environment).orNull
+                ?: fallback)
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+
+        val redirectScheme = oauthValue("agentx.oauth.scheme", "AGENTX_OAUTH_SCHEME", "agentx")
+        val redirectHost = oauthValue("agentx.oauth.host", "AGENTX_OAUTH_HOST", "oauth")
+        val redirectPath = oauthValue("agentx.oauth.path", "AGENTX_OAUTH_PATH", "/callback")
+        val httpsHost = oauthValue("agentx.oauth.httpsHost", "AGENTX_OAUTH_HTTPS_HOST", "oauth.agentx.app")
+
+        manifestPlaceholders["oauthRedirectScheme"] = redirectScheme
+        manifestPlaceholders["oauthRedirectHost"] = redirectHost
+        manifestPlaceholders["oauthRedirectPath"] = redirectPath
+        manifestPlaceholders["oauthHttpsHost"] = httpsHost
+
+        buildConfigField("String", "OAUTH_REDIRECT_SCHEME", "\"$redirectScheme\"")
+        buildConfigField("String", "OAUTH_REDIRECT_HOST", "\"$redirectHost\"")
+        buildConfigField("String", "OAUTH_REDIRECT_PATH", "\"$redirectPath\"")
+        buildConfigField(
+            "String",
+            "OAUTH_GITHUB_CLIENT_ID",
+            "\"${oauthValue("agentx.oauth.github.clientId", "AGENTX_OAUTH_GITHUB_CLIENT_ID", "")}\"",
+        )
+        buildConfigField(
+            "String",
+            "OAUTH_GITHUB_BROKER_URL",
+            "\"${oauthValue("agentx.oauth.github.brokerUrl", "AGENTX_OAUTH_GITHUB_BROKER_URL", "")}\"",
+        )
+        buildConfigField(
+            "String",
+            "OAUTH_GITHUB_SCOPES",
+            "\"${oauthValue("agentx.oauth.github.scopes", "AGENTX_OAUTH_GITHUB_SCOPES", "repo")}\"",
+        )
+        buildConfigField(
+            "String",
+            "OAUTH_SUPABASE_CLIENT_ID",
+            "\"${oauthValue("agentx.oauth.supabase.clientId", "AGENTX_OAUTH_SUPABASE_CLIENT_ID", "")}\"",
+        )
+        buildConfigField(
+            "String",
+            "OAUTH_SUPABASE_BROKER_URL",
+            "\"${oauthValue("agentx.oauth.supabase.brokerUrl", "AGENTX_OAUTH_SUPABASE_BROKER_URL", "")}\"",
+        )
+        buildConfigField(
+            "String",
+            "OAUTH_SUPABASE_SCOPES",
+            "\"${oauthValue("agentx.oauth.supabase.scopes", "AGENTX_OAUTH_SUPABASE_SCOPES", "projects:read")}\"",
+        )
     }
 }
 

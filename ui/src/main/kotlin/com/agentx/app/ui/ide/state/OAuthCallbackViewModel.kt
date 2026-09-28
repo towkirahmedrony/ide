@@ -7,6 +7,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.agentx.app.core.errorOrNull
 import com.agentx.app.integrations.connection.ConnectionManager
+import com.agentx.app.integrations.connection.ConnectionStatus
+import com.agentx.app.integrations.connection.ConnectionType
 import com.agentx.app.ui.ide.data.OAuthCallbackInbox
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
@@ -30,8 +32,11 @@ class OAuthCallbackViewModel(
     var busy by mutableStateOf(false)
         private set
 
-    /** True once a redirect has been handled and Connections should be shown. */
-    var returnToConnections by mutableStateOf(false)
+    /**
+     * The service the user was authorizing, once its redirect has been handled, so
+     * the app can return to that service's details screen.
+     */
+    var returnToType by mutableStateOf<ConnectionType?>(null)
         private set
 
     /** Guards against handling the same redirect twice in one process. */
@@ -46,7 +51,7 @@ class OAuthCallbackViewModel(
     }
 
     fun acknowledgeReturn() {
-        returnToConnections = false
+        returnToType = null
     }
 
     fun dismissMessage() {
@@ -59,6 +64,11 @@ class OAuthCallbackViewModel(
         inbox.clear()
 
         busy = true
+        // Which service is waiting decides where the user is returned to; it is read
+        // before the redirect is handled, because completing it settles that state.
+        val awaiting = manager.state.value.connections
+            .firstOrNull { it.status == ConnectionStatus.AUTHORIZING }
+            ?.type
         try {
             val failure = manager.completeAuthorization(uri).errorOrNull()
             message = failure?.message
@@ -70,7 +80,7 @@ class OAuthCallbackViewModel(
             message = error.message ?: "The authorization could not be completed"
         } finally {
             busy = false
-            returnToConnections = true
+            returnToType = awaiting
         }
     }
 }

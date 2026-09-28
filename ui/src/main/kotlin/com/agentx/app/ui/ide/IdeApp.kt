@@ -3,7 +3,10 @@ package com.agentx.app.ui.ide
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -18,6 +21,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.agentx.app.core.architecture.LayerDescriptor
 import com.agentx.app.core.health.HealthReport
+import com.agentx.app.integrations.connection.ConnectionType
 import com.agentx.app.ui.ide.components.IdeEmptyState
 import com.agentx.app.ui.ide.components.IdeTopBar
 import com.agentx.app.ui.ide.nav.IdeDestinations
@@ -30,6 +34,7 @@ import com.agentx.app.ui.ide.screens.ModelEditorScreen
 import com.agentx.app.ui.ide.screens.ModelRunnerScreen
 import com.agentx.app.ui.ide.screens.ModelsScreen
 import com.agentx.app.ui.ide.screens.SettingsDetailScreen
+import com.agentx.app.ui.ide.screens.ServiceDetailsScreen
 import com.agentx.app.ui.ide.screens.SettingsScreen
 import com.agentx.app.ui.ide.screens.SettingsSection
 import com.agentx.app.ui.ide.screens.WorkspaceShell
@@ -40,6 +45,7 @@ import com.agentx.app.ui.ide.state.IdeViewModelFactory
 import com.agentx.app.ui.ide.state.ModelEditorViewModel
 import com.agentx.app.ui.ide.state.ModelRunnerViewModel
 import com.agentx.app.ui.ide.state.ModelsViewModel
+import com.agentx.app.ui.ide.state.OAuthCallbackViewModel
 import com.agentx.app.ui.theme.ForgeCanvas
 
 /**
@@ -56,6 +62,32 @@ fun ForgeIdeApp(
     health: HealthReport? = null,
 ) {
     val navController = rememberNavController()
+
+    // A provider redirect is completed above the navigation graph, so it is handled
+    // wherever the user happens to be, and then returns them to the service they
+    // were connecting. The redirect itself carries only a code; state and PKCE are
+    // validated by the Connection Manager, and a replayed code cannot reach here.
+    val oauthCallbackViewModel: OAuthCallbackViewModel = viewModel(
+        key = "oauth-callback",
+        factory = IdeViewModelFactory {
+            OAuthCallbackViewModel(dependencies.connectionManager, dependencies.oauthCallbacks)
+        },
+    )
+    LaunchedEffect(oauthCallbackViewModel.returnToType) {
+        val type = oauthCallbackViewModel.returnToType ?: return@LaunchedEffect
+        navController.navigate(IdeDestinations.serviceDetails(type.name)) { launchSingleTop = true }
+        oauthCallbackViewModel.acknowledgeReturn()
+    }
+    oauthCallbackViewModel.message?.let { text ->
+        AlertDialog(
+            onDismissRequest = oauthCallbackViewModel::dismissMessage,
+            title = { Text("Authorization") },
+            text = { Text(text) },
+            confirmButton = {
+                TextButton(onClick = oauthCallbackViewModel::dismissMessage) { Text("OK") }
+            },
+        )
+    }
 
     NavHost(
         navController = navController,
@@ -257,25 +289,67 @@ fun ForgeIdeApp(
         }
 
         composable(IdeDestinations.CONNECTIONS) {
-             val connectionsViewModel: ConnectionsViewModel = viewModel(
-                 factory = IdeViewModelFactory {
-                     ConnectionsViewModel(dependencies.connectionManager, dependencies.oauthBrowser)
-                 },
-             )
+            val connectionsViewModel: ConnectionsViewModel = viewModel(
+                key = "connections",
+                factory = IdeViewModelFactory {
+                    ConnectionsViewModel(dependencies.connectionManager, dependencies.oauthBrowser)
+                },
+            )
             val connectionsState by connectionsViewModel.state.collectAsState()
             ConnectionsScreen(
                 state = connectionsState,
-                busyConnectionId = connectionsViewModel.busyConnectionId,
+                providers = connectionsViewModel.providers,
+                descriptors = connectionsViewModel.descriptors,
+                tools = connectionsViewModel.tools,
+                busyKey = connectionsViewModel.busyKey,
                 message = connectionsViewModel.message,
                 credentialsPersistent = connectionsViewModel.credentialsPersistent,
                 onBack = { navController.popBackStack() },
-                onAddConnection = { navController.navigate(IdeDestinations.connectionEditor()) },
-                onEdit = { id -> navController.navigate(IdeDestinations.connectionEditor(id)) },
-                onTest = connectionsViewModel::test,
-                onSetEnabled = connectionsViewModel::setEnabled,
-                onDelete = connectionsViewModel::delete,
-                onRefresh = connectionsViewModel::refresh,
+                onOpenService = { type -> navController.navigate(IdeDestinations.serviceDetails(type.name)) },
+                onConnect = connectionsViewModel::connect,
+                onReconnect = connectionsViewModel::reconnect,
+                onCancelAuthorization = connectionsViewModel::cancelAuthorization,
+                onDisconnect = connectionsViewModel::disconnect,
                 onDismissMessage = connectionsViewModel::dismissMessage,
+                onRefresh = connectionsViewModel::refresh,
+            )
+        }
+
+        composable(
+            route = IdeDestinations.SERVICE_DETAILS,
+            arguments = listOf(navArgument(IdeDestinations.ARG_SERVICE_TYPE) { type = NavType.StringType }),
+        ) { entry ->
+            val rawType = entry.arguments?.getString(IdeDestinations.ARG_SERVICE_TYPE)
+            val type = ConnectionType.entries.firstOrNull { it.name == rawType } ?: ConnectionType.GITHUB
+            // A redirect can land here before the list is refreshed; the manager is the
+            // source of truth, so the details screen always reads live state.
+            val detailsViewModel: ConnectionsViewModel = viewModel(
+                key = "connections",
+                factory = IdeViewModelFactory {
+                    ConnectionsViewModel(dependencies.connectionManager, dependencies.oauthBrowser)
+                },
+            )
+            val detailsState by detailsViewModel.state.collectAsState()
+            val connection = detailsViewModel.connectionOf(type, detailsState)
+            ServiceDetailsScreen(
+                type = type,
+                availability = detailsViewModel.availabilityOf(type),
+                descriptor = detailsViewModel.descriptorOf(type),
+                connection = connection,
+                tools = detailsViewModel.toolsOf(type),
+                busy = detailsViewModel.isBusy(connection?.id?.value ?: type.name),
+                authorizing = detailsViewModel.isAuthorizing(connection),
+                onBack = { navController.popBackStack() },
+                onConnect = { detailsViewModel.connect(type) },
+                onReconnect = { connection?.let { detailsViewModel.reconnect(it.id.value) } },
+                onCancelAuthorization = { connection?.let { detailsViewModel.cancelAuthorization(it.id.value) } },
+                onDisconnect = { connection?.let { detailsViewModel.disconnect(it.id.value) } },
+                onVerify = { connection?.let { detailsViewModel.verify(it.id.value) } },
+                onManage = {
+                    navController.navigate(
+                        IdeDestinations.connectionEditor(connection?.id?.value, type.name),
+                    )
+                },
             )
         }
 
