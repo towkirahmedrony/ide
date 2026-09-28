@@ -255,11 +255,16 @@ class ToolSystemFoundationTest {
         }
         assertEquals(ToolErrorCode.PERMISSION_DENIED, assertIs<ToolResult.Failure>(writeDenied).error.code)
 
+        // Writing is medium risk: it parks for approval before it ever runs.
+        val writeInput = ToolInput(mapOf("path" to Json.of("docs/note.txt"), "content" to Json.of("saved")))
+        val pending = runSuspend { router.invoke("write_file", writeInput, writeCtx) }
+        assertEquals("write_file", assertIs<ToolResult.ApprovalRequired>(pending).toolName)
+
         val written = runSuspend {
             router.invoke(
                 "write_file",
-                ToolInput(mapOf("path" to Json.of("docs/note.txt"), "content" to Json.of("saved"))),
-                writeCtx,
+                writeInput,
+                writeCtx.copy(approval = ToolApproval.granted("approved in test")),
             )
         }
         assertIs<ToolResult.Success>(written)

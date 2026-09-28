@@ -18,12 +18,26 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import java.util.UUID
 
+/**
+ * A tool call parked until the user approves or denies it. Everything here is
+ * plain presentation data: the UI never sees model or tool types directly.
+ */
+data class PermissionPrompt(
+    val sessionId: String,
+    val toolCallId: String,
+    val toolName: String,
+    val detail: String,
+    val requiredPermission: String,
+    val reason: String,
+)
+
 data class AgentUiState(
     val messages: List<ChatMessage> = emptyList(),
     val input: String = "",
     val activity: AgentActivity = AgentActivity(AgentActivityStatus.IDLE, "Idle"),
     val running: Boolean = false,
     val currentAgent: String = "Main",
+    val pendingPermission: PermissionPrompt? = null,
 )
 
 /**
@@ -67,6 +81,7 @@ class AgentViewModel(
             input = "",
             running = true,
             currentAgent = "Main",
+            pendingPermission = null,
             activity = AgentActivity(AgentActivityStatus.SENDING, "Sending"),
             messages = uiState.messages +
                 ChatMessage(UUID.randomUUID().toString(), ChatRole.USER, prompt) +
@@ -92,13 +107,58 @@ class AgentViewModel(
         }
     }
 
+    /** Answers a parked tool call and continues the paused turn. */
+    fun respondToPermission(approved: Boolean) {
+        val prompt = uiState.pendingPermission ?: return
+        if (uiState.running) return
+
+        val agentMessageId = UUID.randomUUID().toString()
+        uiState = uiState.copy(
+            running = true,
+            pendingPermission = null,
+            activity = AgentActivity(
+                AgentActivityStatus.SENDING,
+                if (approved) "Permission granted" else "Permission denied",
+            ),
+            messages = uiState.messages +
+                ChatMessage(
+                    UUID.randomUUID().toString(),
+                    ChatRole.SYSTEM,
+                    if (approved) "Approved ${prompt.toolName}" else "Denied ${prompt.toolName}",
+                ) +
+                ChatMessage(agentMessageId, ChatRole.AGENT, "", streaming = true),
+        )
+
+        job = viewModelScope.launch {
+            try {
+                session.resolvePermission(
+                    sessionId = prompt.sessionId,
+                    approved = approved,
+                    onEvent = { event -> handleEvent(agentMessageId, event) },
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                Log.e(TAG, "Agent permission resume failed", error)
+                handleEvent(
+                    agentMessageId,
+                    AgentStreamEvent.Failed(userFacingError(error), AgentFailureKind.UNKNOWN),
+                )
+            } finally {
+                finalizeMessage(agentMessageId)
+                dropEmptyAgentPlaceholder(agentMessageId)
+                uiState = uiState.copy(running = false)
+            }
+        }
+    }
+
     fun stop() {
         if (!uiState.running) return
         job?.cancel()
         job = null
         appendSystem("Generation stopped by user.")
         setActivity(AgentActivityStatus.IDLE, "Stopped")
-        uiState = uiState.copy(running = false)
+        uiState = uiState.copy(running = false, pendingPermission = null)
     }
 
     private fun handleEvent(agentMessageId: String, event: AgentStreamEvent) {
@@ -113,6 +173,7 @@ class AgentViewModel(
             is AgentStreamEvent.Completed -> {
                 setMessageText(agentMessageId, event.text)
                 setActivity(AgentActivityStatus.COMPLETED, "Completed")
+                uiState = uiState.copy(pendingPermission = null)
             }
 
             is AgentStreamEvent.Failed -> {
@@ -120,6 +181,7 @@ class AgentViewModel(
                     setMessageText(agentMessageId, event.message)
                 }
                 setActivity(statusFor(event.kind), labelFor(event.kind))
+                uiState = uiState.copy(pendingPermission = null)
             }
 
             is AgentStreamEvent.AgentChanged -> {
@@ -127,17 +189,34 @@ class AgentViewModel(
                 setActivity(AgentActivityStatus.WAITING, event.label)
             }
 
+            is AgentStreamEvent.ToolRequested -> {
+                appendToolMessage(event.toolName, event.detail)
+                setActivity(AgentActivityStatus.USING_TOOL, "Using tool · ${event.toolName}")
+            }
+
             is AgentStreamEvent.ToolRunning ->
                 setActivity(AgentActivityStatus.USING_TOOL, "Using tool · ${event.toolName}")
 
             is AgentStreamEvent.ToolFinished -> {
+                finishToolMessage(event.toolName, event.success, event.summary)
                 val status = if (event.success) AgentActivityStatus.TOOL_SUCCESS else AgentActivityStatus.TOOL_FAILURE
                 val prefix = if (event.success) "Tool ok" else "Tool failed"
                 setActivity(status, "$prefix · ${event.toolName}")
             }
 
-            is AgentStreamEvent.PermissionRequired ->
+            is AgentStreamEvent.PermissionRequired -> {
+                uiState = uiState.copy(
+                    pendingPermission = PermissionPrompt(
+                        sessionId = event.sessionId,
+                        toolCallId = event.toolCallId,
+                        toolName = event.toolName,
+                        detail = event.detail,
+                        requiredPermission = event.requiredPermission,
+                        reason = event.reason,
+                    ),
+                )
                 setActivity(AgentActivityStatus.PERMISSION_REQUIRED, "Permission required · ${event.toolName}")
+            }
         }
     }
 
@@ -159,6 +238,39 @@ class AgentViewModel(
                 if (message.id == id) message.copy(text = text) else message
             },
         )
+    }
+
+    /** Adds a tool entry to the transcript as soon as the model requests it. */
+    private fun appendToolMessage(toolName: String, detail: String) {
+        val header = buildString {
+            append("▶ ").append(toolName)
+            if (detail.isNotBlank() && detail != "(no arguments)") append(" · ").append(detail)
+        }
+        uiState = uiState.copy(
+            messages = uiState.messages + ChatMessage(
+                id = UUID.randomUUID().toString(),
+                role = ChatRole.TOOL,
+                text = header,
+                streaming = true,
+                toolName = toolName,
+            ),
+        )
+    }
+
+    /** Attaches the outcome to the matching in-flight tool entry. */
+    private fun finishToolMessage(toolName: String, success: Boolean, summary: String) {
+        val index = uiState.messages.indexOfLast { message ->
+            message.role == ChatRole.TOOL && message.toolName == toolName && message.streaming
+        }
+        if (index < 0) return
+        val marker = if (success) "✔" else "✖"
+        val updated = uiState.messages.toMutableList()
+        val message = updated[index]
+        updated[index] = message.copy(
+            text = message.text + "\n" + "$marker " + summary.ifBlank { toolName },
+            streaming = false,
+        )
+        uiState = uiState.copy(messages = updated)
     }
 
     private fun finalizeMessage(id: String) {

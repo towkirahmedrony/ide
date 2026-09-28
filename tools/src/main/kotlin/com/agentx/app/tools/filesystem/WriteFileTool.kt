@@ -50,7 +50,9 @@ class WriteFileTool(
             ),
         ),
         output = ToolOutputSpec(description = "Written path and byte count."),
-        permission = ToolPermissionDecision.ALLOW,
+        // Editing a file is medium risk: the router pauses for the user's
+        // approval (WAITING_FOR_PERMISSION) instead of writing automatically.
+        permission = ToolPermissionDecision.ASK,
         capabilities = setOf(ToolCapability.MUTATING, ToolCapability.FILESYSTEM),
         category = ToolCategory.FILESYSTEM,
         requiredPermissions = setOf(ToolPermissionLevel.WORKSPACE_WRITE),

@@ -76,13 +76,15 @@ data class AgentActivity(
     val label: String,
 )
 
-enum class ChatRole { USER, AGENT, SYSTEM }
+enum class ChatRole { USER, AGENT, SYSTEM, TOOL }
 
 data class ChatMessage(
     val id: String,
     val role: ChatRole,
     val text: String,
     val streaming: Boolean = false,
+    /** Set for [ChatRole.TOOL] entries so results can be matched to their call. */
+    val toolName: String? = null,
 )
 
 enum class TerminalLineKind { INPUT, OUTPUT, ERROR, SYSTEM }

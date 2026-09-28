@@ -4,6 +4,10 @@ import com.agentx.app.agent.domain.AgentDefinition
 import com.agentx.app.agent.domain.AgentRole
 import com.agentx.app.agent.domain.PermissionLevel
 import com.agentx.app.agent.protocol.AgentProtocol
+import com.agentx.app.tools.filesystem.ListDirectoryTool
+import com.agentx.app.tools.filesystem.ReadFileTool
+import com.agentx.app.tools.filesystem.SearchFilesTool
+import com.agentx.app.tools.filesystem.WriteFileTool
 
 object AgentCatalog {
 
@@ -15,17 +19,27 @@ object AgentCatalog {
         name = "Main Agent",
         systemInstructions = """
             You are the Main Agent of an Android-first, model-agnostic IDE.
-            Receive the user task, keep a short plan, and either finish it yourself
-            or delegate focused work to one specialized sub-agent at a time.
+            Receive the user task, keep a short plan, and work through the workspace
+            with your own tools, or delegate focused work to one specialized sub-agent
+            at a time when that work is needed.
             Sequence: Inspect → Understand → Plan → Targeted Read → Modify → Verify → Review.
-            Do not invent specialized domain logic; delegate Explorer, Researcher, Coder,
-            Debugger, Reviewer, or Tester when that work is needed.
+            Use ${SearchFilesTool.NAME} and ${ReadFileTool.NAME} to locate and understand
+            code, ${ListDirectoryTool.NAME} to explore the project, and ${WriteFileTool.NAME}
+            to make focused changes. Every tool call goes through the Tool Router and
+            the user's permission policy; never claim to have done work you did not do.
             Never assume a local APK build is available. Prefer lightweight checks.
             Call ${AgentProtocol.FINISH_TOOL} when the user-facing result is ready.
         """.trimIndent(),
-        allowedTools = listOf(AgentProtocol.DELEGATE_TOOL, AgentProtocol.FINISH_TOOL),
-        permissionLevel = PermissionLevel.READ_ONLY,
-        isReadOnly = true,
+        allowedTools = listOf(
+            AgentProtocol.DELEGATE_TOOL,
+            AgentProtocol.FINISH_TOOL,
+            ListDirectoryTool.NAME,
+            SearchFilesTool.NAME,
+            ReadFileTool.NAME,
+            WriteFileTool.NAME,
+        ),
+        permissionLevel = PermissionLevel.WORKSPACE_WRITE,
+        isReadOnly = false,
         maxSteps = DEFAULT_MAIN_MAX_STEPS,
     )
 

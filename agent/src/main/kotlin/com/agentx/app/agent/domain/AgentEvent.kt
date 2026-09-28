@@ -1,5 +1,7 @@
 package com.agentx.app.agent.domain
 
+import com.agentx.app.model.json.JsonObject
+
 sealed interface AgentEvent {
     val sessionId: String
     val timestampMillis: Long
@@ -47,10 +49,33 @@ sealed interface AgentEvent {
         override val timestampMillis: Long,
     ) : AgentEvent
 
+    /**
+     * The model asked for a tool. Emitted as soon as a structured tool call is
+     * parsed, before it is validated, authorized, or routed; [arguments] are the
+     * raw model arguments so the UI can show what was requested.
+     */
+    data class ToolRequested(
+        override val sessionId: String,
+        val toolCallId: String,
+        val toolName: String,
+        val role: AgentRole,
+        val arguments: JsonObject = emptyMap(),
+        override val timestampMillis: Long,
+    ) : AgentEvent
+
     data class ToolCallStarted(
         override val sessionId: String,
         val toolName: String,
         val role: AgentRole,
+        override val timestampMillis: Long,
+    ) : AgentEvent
+
+    /** A resolved, authorized tool call is about to execute. */
+    data class ToolProgress(
+        override val sessionId: String,
+        val toolCallId: String,
+        val toolName: String,
+        val detail: String,
         override val timestampMillis: Long,
     ) : AgentEvent
 
@@ -62,12 +87,22 @@ sealed interface AgentEvent {
         override val timestampMillis: Long,
     ) : AgentEvent
 
+    /** A tool call ended without completing because the run was cancelled. */
+    data class ToolCancelled(
+        override val sessionId: String,
+        val toolCallId: String,
+        val toolName: String,
+        val reason: String,
+        override val timestampMillis: Long,
+    ) : AgentEvent
+
     data class OutputDelta(
         override val sessionId: String,
         val text: String,
         override val timestampMillis: Long,
     ) : AgentEvent
 
+    /** A tool call is parked until the user decides; the run is paused. */
     data class PermissionRequested(
         override val sessionId: String,
         val pending: PendingPermission,

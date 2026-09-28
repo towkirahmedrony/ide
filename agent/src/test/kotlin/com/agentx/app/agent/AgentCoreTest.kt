@@ -12,17 +12,29 @@ import com.agentx.app.agent.domain.SubAgentRequest
 import com.agentx.app.agent.protocol.AgentProtocol
 import com.agentx.app.agent.runtime.AgentLoop
 import com.agentx.app.agent.runtime.AgentLoopRequest
+import com.agentx.app.agent.runtime.ResumedPermission
 import com.agentx.app.agent.specialized.SpecializedAgentFactory
 import com.agentx.app.agent.tools.AgentToolBridge
 import com.agentx.app.model.DefaultModelGateway
 import com.agentx.app.model.ModelConfig
 import com.agentx.app.model.ModelProviderErrorCode
+import com.agentx.app.model.ModelRole
 import com.agentx.app.tools.DefaultToolRegistry
 import com.agentx.app.tools.DefaultToolRouter
+import com.agentx.app.tools.Tool
 import com.agentx.app.tools.ToolCapability
+import com.agentx.app.tools.ToolDefinition
+import com.agentx.app.tools.ToolErrorCode
+import com.agentx.app.tools.ToolExecutionContext
+import com.agentx.app.tools.ToolExecutionError
+import com.agentx.app.tools.ToolInput
+import com.agentx.app.tools.ToolOutput
+import com.agentx.app.tools.ToolPermissionDecision
+import com.agentx.app.tools.ToolPermissionLevel
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class AgentCoreTest {
@@ -435,4 +447,338 @@ class AgentCoreTest {
             AgentProtocol.ARG_OBJECTIVE to task,
         ),
     )
+
+    // --- tool execution loop ----------------------------------------------
+
+    private fun agentRequest(
+        allowedTools: List<String>,
+        permissionLevel: PermissionLevel = PermissionLevel.READ_ONLY,
+        maxSteps: Int = 4,
+        workspaceId: String? = null,
+    ): AgentLoopRequest = AgentLoopRequest(
+        sessionId = "s",
+        parentSessionId = null,
+        definition = AgentCatalog.MAIN,
+        allowedTools = allowedTools,
+        permissionLevel = permissionLevel,
+        maxSteps = maxSteps,
+        userPrompt = "go",
+        objective = null,
+        scopedContext = "",
+        workspaceId = workspaceId,
+        modelConfig = testConfig(),
+    )
+
+    private fun loopOver(registry: DefaultToolRegistry, provider: ScriptedModelProvider): AgentLoop {
+        val gateway = DefaultModelGateway().also { it.register(provider) }
+        return AgentLoop(gateway, DefaultToolRouter(registry), AgentToolBridge(registry))
+    }
+
+    @Test
+    fun `tool result is added to the model context before the next call`() = runAgent {
+        val fx = Fixtures()
+        val provider = ScriptedModelProvider(
+            mapOf(
+                AgentRole.MAIN to mutableListOf(
+                    response("", toolCall("read_file", "path" to "Auth.kt", id = "c1")),
+                    response("", toolCall(AgentProtocol.FINISH_TOOL, AgentProtocol.ARG_SUMMARY to "ok")),
+                ),
+            ),
+        )
+        loopOver(fx.registry, provider).run(
+            request = agentRequest(listOf("read_file", AgentProtocol.FINISH_TOOL)),
+            sink = CollectingEventSink(),
+            onCancelled = { false },
+        )
+
+        assertEquals(2, provider.requests.size)
+        val continuation = provider.requests[1].messages
+        assertTrue(continuation.any { it.role == ModelRole.ASSISTANT && it.toolCalls.any { call -> call.id == "c1" } })
+        val toolMessage = continuation.single { it.role == ModelRole.TOOL }
+        assertEquals("c1", toolMessage.toolCallId)
+        assertTrue(toolMessage.content.contains("Auth.kt"))
+    }
+
+    @Test
+    fun `multiple tool calls in one response all execute and continue`() = runAgent {
+        val fx = Fixtures()
+        val provider = ScriptedModelProvider(
+            mapOf(
+                AgentRole.MAIN to mutableListOf(
+                    response(
+                        "",
+                        toolCall("read_file", "path" to "a.kt", id = "c1"),
+                        toolCall("read_file", "path" to "b.kt", id = "c2"),
+                    ),
+                    response("", toolCall(AgentProtocol.FINISH_TOOL, AgentProtocol.ARG_SUMMARY to "done")),
+                ),
+            ),
+        )
+        val result = loopOver(fx.registry, provider).run(
+            request = agentRequest(listOf("read_file", AgentProtocol.FINISH_TOOL)),
+            sink = CollectingEventSink(),
+            onCancelled = { false },
+        )
+
+        assertEquals(AgentStatus.COMPLETED, result.status)
+        assertEquals(2, fx.readFile.invocations.size)
+        assertEquals(listOf("a.kt", "b.kt"), fx.readFile.invocations.map { it.string("path") })
+        assertEquals(2, provider.requests[1].messages.count { it.role == ModelRole.TOOL })
+    }
+
+    @Test
+    fun `unknown tool returns a structured error the model can recover from`() = runAgent {
+        val fx = Fixtures()
+        val provider = ScriptedModelProvider(
+            mapOf(
+                AgentRole.MAIN to mutableListOf(
+                    response("", toolCall("ghost_tool", id = "g1")),
+                    response("", toolCall(AgentProtocol.FINISH_TOOL, AgentProtocol.ARG_SUMMARY to "recovered")),
+                ),
+            ),
+        )
+        val result = loopOver(fx.registry, provider).run(
+            request = agentRequest(listOf("ghost_tool", AgentProtocol.FINISH_TOOL)),
+            sink = CollectingEventSink(),
+            onCancelled = { false },
+        )
+
+        assertEquals(AgentStatus.COMPLETED, result.status)
+        assertTrue(result.errors.any { it.code == AgentErrorCode.TOOL_UNKNOWN })
+        val toolMessage = provider.requests[1].messages.single { it.role == ModelRole.TOOL }
+        assertTrue(toolMessage.content.startsWith("ERROR:"))
+    }
+
+    @Test
+    fun `tool failure is reported to the model and the loop recovers`() = runAgent {
+        val broken = object : Tool {
+            override val definition = ToolDefinition(
+                name = "broken",
+                description = "Always fails",
+                capabilities = setOf(ToolCapability.READ_ONLY, ToolCapability.FILESYSTEM),
+            )
+
+            override suspend fun execute(input: ToolInput, context: ToolExecutionContext): ToolOutput =
+                throw ToolExecutionError(ToolErrorCode.EXECUTION_FAILED, "disk melted", "broken")
+        }
+        val registry = DefaultToolRegistry().also { it.register(broken) }
+        val provider = ScriptedModelProvider(
+            mapOf(
+                AgentRole.MAIN to mutableListOf(
+                    response("", toolCall("broken", id = "b1")),
+                    response("", toolCall(AgentProtocol.FINISH_TOOL, AgentProtocol.ARG_SUMMARY to "recovered")),
+                ),
+            ),
+        )
+        val result = loopOver(registry, provider).run(
+            request = agentRequest(listOf("broken", AgentProtocol.FINISH_TOOL)),
+            sink = CollectingEventSink(),
+            onCancelled = { false },
+        )
+
+        assertEquals(AgentStatus.COMPLETED, result.status)
+        assertTrue(result.errors.any { it.code == AgentErrorCode.TOOL_FAILURE })
+        assertTrue(provider.requests[1].messages.single { it.role == ModelRole.TOOL }.content.contains("disk melted"))
+    }
+
+    @Test
+    fun `tool lifecycle events are emitted in order`() = runAgent {
+        val fx = Fixtures()
+        val provider = ScriptedModelProvider(
+            mapOf(
+                AgentRole.MAIN to mutableListOf(
+                    response("", toolCall("read_file", "path" to "Auth.kt", id = "c1")),
+                    response("", toolCall(AgentProtocol.FINISH_TOOL, AgentProtocol.ARG_SUMMARY to "ok")),
+                ),
+            ),
+        )
+        val sink = CollectingEventSink()
+        loopOver(fx.registry, provider).run(
+            request = agentRequest(listOf("read_file", AgentProtocol.FINISH_TOOL)),
+            sink = sink,
+            onCancelled = { false },
+        )
+
+        val requested = assertNotNull(sink.events.filterIsInstance<AgentEvent.ToolRequested>().firstOrNull())
+        assertEquals("read_file", requested.toolName)
+        assertEquals("c1", requested.toolCallId)
+        assertTrue(sink.events.any { it is AgentEvent.ToolCallStarted && it.toolName == "read_file" })
+        assertTrue(sink.events.any { it is AgentEvent.ToolProgress && it.toolName == "read_file" })
+        assertTrue(sink.events.any { it is AgentEvent.ToolCallFinished && it.toolName == "read_file" && it.success })
+    }
+
+    @Test
+    fun `permission required pauses the run and resumes when approved`() = runAgent {
+        val guarded = RecordingTool(
+            name = "guarded_write",
+            capabilities = setOf(ToolCapability.MUTATING, ToolCapability.FILESYSTEM),
+            permission = ToolPermissionDecision.ASK,
+            requiredPermissions = setOf(ToolPermissionLevel.WORKSPACE_WRITE),
+        )
+        val registry = DefaultToolRegistry().also { it.register(guarded) }
+        val provider = ScriptedModelProvider(
+            mapOf(
+                AgentRole.MAIN to mutableListOf(
+                    response("", toolCall("guarded_write", "path" to "a.kt", id = "c1")),
+                    response("", toolCall(AgentProtocol.FINISH_TOOL, AgentProtocol.ARG_SUMMARY to "done")),
+                ),
+            ),
+        )
+        val loop = loopOver(registry, provider)
+        val allowed = listOf("guarded_write", AgentProtocol.FINISH_TOOL)
+        val sink = CollectingEventSink()
+
+        val paused = loop.run(
+            request = agentRequest(allowed, PermissionLevel.WORKSPACE_WRITE),
+            sink = sink,
+            onCancelled = { false },
+        )
+
+        assertEquals(AgentStatus.WAITING_FOR_PERMISSION, paused.status)
+        val pending = assertNotNull(paused.pendingPermission)
+        assertEquals("guarded_write", pending.toolName)
+        assertEquals("c1", pending.toolCallId)
+        assertTrue(pending.requiredPermissions.contains("WORKSPACE_WRITE"))
+        assertTrue(guarded.invocations.isEmpty(), "the tool must not run before approval")
+        assertTrue(sink.events.any { it is AgentEvent.PermissionRequested })
+
+        val resumed = loop.run(
+            request = agentRequest(allowed, PermissionLevel.WORKSPACE_WRITE).copy(
+                resumeContext = paused.resumeContext,
+                resumePermission = ResumedPermission(
+                    toolName = pending.toolName,
+                    arguments = pending.arguments,
+                    reason = pending.reason,
+                    toolCallId = pending.toolCallId,
+                    approved = true,
+                ),
+            ),
+            sink = CollectingEventSink(),
+            onCancelled = { false },
+        )
+
+        assertEquals(AgentStatus.COMPLETED, resumed.status)
+        assertEquals(1, guarded.invocations.size)
+        assertEquals("a.kt", guarded.invocations.single().string("path"))
+    }
+
+    @Test
+    fun `denied permission never runs the tool`() = runAgent {
+        val guarded = RecordingTool(
+            name = "guarded_write",
+            capabilities = setOf(ToolCapability.MUTATING, ToolCapability.FILESYSTEM),
+            permission = ToolPermissionDecision.ASK,
+            requiredPermissions = setOf(ToolPermissionLevel.WORKSPACE_WRITE),
+        )
+        val registry = DefaultToolRegistry().also { it.register(guarded) }
+        val provider = ScriptedModelProvider(
+            mapOf(
+                AgentRole.MAIN to mutableListOf(
+                    response("", toolCall("guarded_write", "path" to "a.kt", id = "c1")),
+                    response("", toolCall(AgentProtocol.FINISH_TOOL, AgentProtocol.ARG_SUMMARY to "stopped")),
+                ),
+            ),
+        )
+        val loop = loopOver(registry, provider)
+        val allowed = listOf("guarded_write", AgentProtocol.FINISH_TOOL)
+        val paused = loop.run(
+            request = agentRequest(allowed, PermissionLevel.WORKSPACE_WRITE),
+            sink = CollectingEventSink(),
+            onCancelled = { false },
+        )
+        val pending = assertNotNull(paused.pendingPermission)
+
+        val resumed = loop.run(
+            request = agentRequest(allowed, PermissionLevel.WORKSPACE_WRITE).copy(
+                resumeContext = paused.resumeContext,
+                resumePermission = ResumedPermission(
+                    toolName = pending.toolName,
+                    arguments = pending.arguments,
+                    reason = pending.reason,
+                    toolCallId = pending.toolCallId,
+                    approved = false,
+                ),
+            ),
+            sink = CollectingEventSink(),
+            onCancelled = { false },
+        )
+
+        assertTrue(guarded.invocations.isEmpty(), "a denied tool must never execute")
+        assertTrue(resumed.errors.any { it.code == AgentErrorCode.PERMISSION_DENIED })
+        assertEquals(AgentStatus.COMPLETED, resumed.status)
+    }
+
+    // --- Main Agent real workflow -----------------------------------------
+
+    @Test
+    fun `main agent inspects the workspace with its own tools`() = runAgent {
+        val search = RecordingTool("search_files", setOf(ToolCapability.READ_ONLY, ToolCapability.FILESYSTEM))
+        val read = RecordingTool("read_file", setOf(ToolCapability.READ_ONLY, ToolCapability.FILESYSTEM))
+        val registry = DefaultToolRegistry().also {
+            it.register(search)
+            it.register(read)
+        }
+        val provider = ScriptedModelProvider(
+            mapOf(
+                AgentRole.MAIN to mutableListOf(
+                    response("", toolCall("search_files", "query" to "auth", id = "s1")),
+                    response("", toolCall("read_file", "path" to "Auth.kt", id = "r1")),
+                    response(
+                        "",
+                        toolCall(
+                            AgentProtocol.FINISH_TOOL,
+                            AgentProtocol.ARG_SUMMARY to "Auth lives in Auth.kt",
+                            AgentProtocol.ARG_FILES_INSPECTED to "Auth.kt",
+                        ),
+                    ),
+                ),
+            ),
+        )
+        val runtime = AgentModule.assemble(DefaultModelGateway().also { it.register(provider) }, registry, DefaultToolRouter(registry))
+
+        val result = runtime.orchestrator.run(
+            request = AgentRunRequest(prompt = "Find where authentication is implemented."),
+            modelConfig = testConfig(),
+            sink = CollectingEventSink(),
+        )
+
+        assertEquals(AgentStatus.COMPLETED, result.status)
+        assertEquals(1, search.invocations.size)
+        assertEquals(1, read.invocations.size)
+        assertTrue(result.filesInspected.contains("Auth.kt"))
+    }
+
+    @Test
+    fun `main agent changes a file through the tool router`() = runAgent {
+        val read = RecordingTool("read_file", setOf(ToolCapability.READ_ONLY, ToolCapability.FILESYSTEM))
+        val write = RecordingTool(
+            name = "write_file",
+            capabilities = setOf(ToolCapability.MUTATING, ToolCapability.FILESYSTEM),
+            requiredPermissions = setOf(ToolPermissionLevel.WORKSPACE_WRITE),
+        )
+        val registry = DefaultToolRegistry().also {
+            it.register(read)
+            it.register(write)
+        }
+        val provider = ScriptedModelProvider(
+            mapOf(
+                AgentRole.MAIN to mutableListOf(
+                    response("", toolCall("read_file", "path" to "Auth.kt", id = "r1")),
+                    response("", toolCall("write_file", "path" to "Auth.kt", "content" to "fixed", id = "w1")),
+                    response("", toolCall(AgentProtocol.FINISH_TOOL, AgentProtocol.ARG_SUMMARY to "Patched Auth.kt")),
+                ),
+            ),
+        )
+        val runtime = AgentModule.assemble(DefaultModelGateway().also { it.register(provider) }, registry, DefaultToolRouter(registry))
+
+        val result = runtime.orchestrator.run(
+            request = AgentRunRequest(prompt = "Change Auth.kt"),
+            modelConfig = testConfig(),
+            sink = CollectingEventSink(),
+        )
+
+        assertEquals(AgentStatus.COMPLETED, result.status)
+        assertEquals(1, write.invocations.size)
+        assertTrue(result.filesChanged.contains("Auth.kt"))
+    }
 }

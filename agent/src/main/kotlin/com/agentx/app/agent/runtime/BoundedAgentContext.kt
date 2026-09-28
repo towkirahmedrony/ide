@@ -1,6 +1,7 @@
 package com.agentx.app.agent.runtime
 
 import com.agentx.app.model.ModelMessage
+import com.agentx.app.model.ModelRole
 import com.agentx.app.model.ModelToolCall
 
 /**
@@ -41,6 +42,11 @@ class BoundedAgentContext(
     }
 
     fun addToolResult(callId: String, toolName: String, content: String) {
+        // A tool result is only ever appended once per tool call: resuming a
+        // paused run or a repeated model call must not duplicate context.
+        if (callId.isNotBlank() && messages.any { it.role == ModelRole.TOOL && it.toolCallId == callId }) {
+            return
+        }
         messages += ModelMessage.tool(callId, fit(content), toolName)
     }
 

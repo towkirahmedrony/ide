@@ -27,6 +27,7 @@ import com.agentx.app.tools.ToolOutput
 import com.agentx.app.tools.ToolParameter
 import com.agentx.app.tools.ToolParameterType
 import com.agentx.app.tools.ToolPermissionDecision
+import com.agentx.app.tools.ToolPermissionLevel
 import kotlinx.coroutines.runBlocking
 
 internal fun <T> runAgent(block: suspend () -> T): T = runBlocking { block() }
@@ -58,9 +59,13 @@ internal class ScriptedModelProvider(
 
     val completeCalls = mutableListOf<AgentRole>()
 
+    /** Every request the agent loop sent, in order, for continuation assertions. */
+    val requests = mutableListOf<ModelRequest>()
+
     override fun capabilities(modelId: String): ModelCapabilities = ModelCapabilities(toolCalling = true)
 
     override suspend fun complete(request: ModelRequest): ModelResponse {
+        requests += request
         val role = detectRole(request.messages)
         completeCalls += role
         val queue = scripts[role] ?: return response("no script for $role")
@@ -84,6 +89,7 @@ internal class RecordingTool(
     name: String,
     private val capabilities: Set<ToolCapability>,
     permission: ToolPermissionDecision = ToolPermissionDecision.ALLOW,
+    private val requiredPermissions: Set<ToolPermissionLevel> = emptySet(),
 ) : Tool {
     val invocations = mutableListOf<ToolInput>()
 
@@ -98,6 +104,7 @@ internal class RecordingTool(
         ),
         permission = permission,
         capabilities = capabilities,
+        requiredPermissions = requiredPermissions,
     )
 
     override suspend fun execute(input: ToolInput, context: ToolExecutionContext): ToolOutput {

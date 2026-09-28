@@ -104,6 +104,8 @@ data class PendingPermission(
     val arguments: JsonObject = emptyMap(),
     val reason: String,
     val toolCallId: String,
+    /** Permission levels the tool needs, shown in the approval prompt. */
+    val requiredPermissions: Set<String> = emptySet(),
 )
 
 data class SubAgentRequest(

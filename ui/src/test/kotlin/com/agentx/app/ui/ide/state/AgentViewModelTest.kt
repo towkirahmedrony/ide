@@ -17,6 +17,8 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -165,6 +167,48 @@ class AgentViewModelTest {
         assertFalse(viewModel.uiState.running)
     }
 
+    @Test
+    fun `tool activity is visible in the transcript`() {
+        val session = ScriptedAgentSession { _, onEvent ->
+            onEvent(AgentStreamEvent.ToolRequested("search_files", "query=auth"))
+            onEvent(AgentStreamEvent.ToolFinished("search_files", true, "2 matches"))
+            onEvent(AgentStreamEvent.Completed("Found it"))
+        }
+        val viewModel = AgentViewModel(session)
+
+        viewModel.onInputChange("find auth")
+        viewModel.send()
+
+        val tool = viewModel.uiState.messages.single { it.role == ChatRole.TOOL }
+        assertEquals("search_files", tool.toolName)
+        assertTrue(tool.text.contains("query=auth"))
+        assertTrue(tool.text.contains("2 matches"))
+        assertFalse(tool.streaming)
+    }
+
+    @Test
+    fun `permission prompt is shown and resolved from the chat`() {
+        val session = PermissionAgentSession()
+        val viewModel = AgentViewModel(session)
+
+        viewModel.onInputChange("edit config")
+        viewModel.send()
+
+        val prompt = assertNotNull(viewModel.uiState.pendingPermission)
+        assertEquals("write_file", prompt.toolName)
+        assertEquals("session-1", prompt.sessionId)
+        assertTrue(prompt.detail.contains("config.yaml"))
+        assertEquals("WORKSPACE_WRITE", prompt.requiredPermission)
+        assertFalse(viewModel.uiState.running)
+
+        viewModel.respondToPermission(true)
+
+        val after = viewModel.uiState
+        assertNull(after.pendingPermission)
+        assertFalse(after.running)
+        assertEquals("Config updated", after.messages.last { it.role == ChatRole.AGENT }.text)
+    }
+
     private fun failingViewModel(kind: AgentFailureKind, message: String): AgentViewModel {
         val session = ScriptedAgentSession { _, onEvent ->
             onEvent(AgentStreamEvent.Failed(message, kind))
@@ -177,6 +221,35 @@ class AgentViewModelTest {
     ) : AgentSession {
         override suspend fun run(input: String, onEvent: (AgentStreamEvent) -> Unit, workspaceId: String?) {
             block(input, onEvent)
+        }
+    }
+
+    /** A session that parks on a permission request, then continues when resolved. */
+    private class PermissionAgentSession : AgentSession {
+        override suspend fun run(input: String, onEvent: (AgentStreamEvent) -> Unit, workspaceId: String?) {
+            onEvent(AgentStreamEvent.Activity(AgentActivity(AgentActivityStatus.THINKING, "AI responding")))
+            onEvent(
+                AgentStreamEvent.PermissionRequired(
+                    toolName = "write_file",
+                    reason = "Tool 'write_file' requires approval",
+                    sessionId = "session-1",
+                    toolCallId = "call-1",
+                    detail = "path=config.yaml",
+                    requiredPermission = "WORKSPACE_WRITE",
+                ),
+            )
+        }
+
+        override suspend fun resolvePermission(
+            sessionId: String,
+            approved: Boolean,
+            onEvent: (AgentStreamEvent) -> Unit,
+        ) {
+            assertEquals("session-1", sessionId)
+            assertTrue(approved)
+            onEvent(AgentStreamEvent.ToolRequested("write_file", "path=config.yaml"))
+            onEvent(AgentStreamEvent.ToolFinished("write_file", true, "Wrote config.yaml"))
+            onEvent(AgentStreamEvent.Completed("Config updated"))
         }
     }
 }

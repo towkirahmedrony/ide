@@ -296,6 +296,18 @@ class AgentLoop(
                         sink = sink,
                     )
                 }
+                // Structured tool call straight from the Model Gateway: the raw
+                // request is surfaced before any validation or routing happens.
+                sink.emit(
+                    AgentEvent.ToolRequested(
+                        sessionId = request.sessionId,
+                        toolCallId = call.id,
+                        toolName = call.name,
+                        role = request.definition.role,
+                        arguments = call.arguments,
+                        timestampMillis = clock(),
+                    ),
+                )
                 when (call.name) {
                     AgentProtocol.FINISH_TOOL -> {
                         finished = finishFromCall(
@@ -478,6 +490,16 @@ class AgentLoop(
             )
             return ToolOutcome.Completed("ERROR: $message")
         }
+        // The call cleared the scope and permission layers; it is about to execute.
+        sink.emit(
+            AgentEvent.ToolProgress(
+                sessionId = request.sessionId,
+                toolCallId = call.id,
+                toolName = call.name,
+                detail = "Running ${call.name}",
+                timestampMillis = clock(),
+            ),
+        )
         val result = try {
             router.invoke(
                 toolName = call.name,
@@ -489,6 +511,17 @@ class AgentLoop(
                 },
             )
         } catch (cancelled: CancellationException) {
+            // A tool interrupted mid-flight is reported as cancelled, then the
+            // cancellation is re-thrown so the orchestrator can finish the run.
+            sink.emit(
+                AgentEvent.ToolCancelled(
+                    sessionId = request.sessionId,
+                    toolCallId = call.id,
+                    toolName = call.name,
+                    reason = "Cancelled",
+                    timestampMillis = clock(),
+                ),
+            )
             throw cancelled
         } catch (error: Throwable) {
             // A misbehaving tool must never take down the orchestration.
@@ -548,20 +581,38 @@ class AgentLoop(
                         arguments = call.arguments,
                         reason = result.request.reason,
                         toolCallId = call.id,
+                        requiredPermissions = bridge.definitionsFor(listOf(call.name))
+                            .firstOrNull()
+                            ?.requiredPermissions
+                            ?.map { it.name }
+                            ?.toSet()
+                            .orEmpty(),
                     ),
                 )
             }
         }
         toolActions += record
-        sink.emit(
-            AgentEvent.ToolCallFinished(
-                sessionId = request.sessionId,
-                toolName = call.name,
-                success = record.success,
-                summary = record.summary,
-                timestampMillis = clock(),
-            ),
-        )
+        if (result is ToolResult.Failure && result.error.code == ToolErrorCode.CANCELLED) {
+            sink.emit(
+                AgentEvent.ToolCancelled(
+                    sessionId = request.sessionId,
+                    toolCallId = call.id,
+                    toolName = call.name,
+                    reason = record.summary,
+                    timestampMillis = clock(),
+                ),
+            )
+        } else {
+            sink.emit(
+                AgentEvent.ToolCallFinished(
+                    sessionId = request.sessionId,
+                    toolName = call.name,
+                    success = record.success,
+                    summary = record.summary,
+                    timestampMillis = clock(),
+                ),
+            )
+        }
         return ToolOutcome.Completed(resultText)
     }
 

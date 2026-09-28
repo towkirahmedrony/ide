@@ -18,11 +18,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Button
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -37,6 +37,7 @@ import com.agentx.app.ui.ide.model.ChatMessage
 import com.agentx.app.ui.ide.model.ChatRole
 import com.agentx.app.ui.ide.state.AgentUiState
 import com.agentx.app.ui.ide.state.AgentViewModel
+import com.agentx.app.ui.ide.state.PermissionPrompt
 import com.agentx.app.ui.theme.ForgeAmber
 import com.agentx.app.ui.theme.ForgeCanvas
 import com.agentx.app.ui.theme.ForgeDanger
@@ -76,6 +77,13 @@ fun AgentScreen(
             items(state.messages, key = { it.id }) { message ->
                 ChatBubble(message)
             }
+        }
+
+        state.pendingPermission?.let { prompt ->
+            PermissionPromptCard(
+                prompt = prompt,
+                onDecision = viewModel::respondToPermission,
+            )
         }
 
         AgentInputBar(
@@ -170,6 +178,84 @@ private fun ChatBubble(message: ChatMessage) {
                 )
             }
         }
+
+        // Tool activity is shown inline so the conversation records what the
+        // agent actually did, not just what it said.
+        ChatRole.TOOL -> Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Start,
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(0.9f)
+                    .background(ForgeSurfaceVariant.copy(alpha = 0.7f), RoundedCornerShape(10.dp))
+                    .padding(10.dp),
+            ) {
+                Text(
+                    text = message.text,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (message.streaming) ForgeMint else ForgeMuted,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PermissionPromptCard(
+    prompt: PermissionPrompt,
+    onDecision: (Boolean) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(ForgeAmber.copy(alpha = 0.12f))
+            .padding(12.dp),
+    ) {
+        Text(
+            text = "Permission required",
+            style = MaterialTheme.typography.labelLarge,
+            color = ForgeAmber,
+        )
+        Spacer(Modifier.size(6.dp))
+        Text(
+            text = prompt.toolName,
+            style = MaterialTheme.typography.bodyMedium,
+            color = ForgeInk,
+        )
+        if (prompt.detail.isNotBlank()) {
+            Spacer(Modifier.size(2.dp))
+            Text(
+                text = prompt.detail,
+                style = MaterialTheme.typography.bodySmall,
+                color = ForgeMuted,
+            )
+        }
+        if (prompt.requiredPermission.isNotBlank()) {
+            Spacer(Modifier.size(2.dp))
+            Text(
+                text = "Requires: ${prompt.requiredPermission}",
+                style = MaterialTheme.typography.labelSmall,
+                color = ForgeMuted,
+            )
+        }
+        if (prompt.reason.isNotBlank()) {
+            Spacer(Modifier.size(2.dp))
+            Text(
+                text = prompt.reason,
+                style = MaterialTheme.typography.labelSmall,
+                color = ForgeMuted,
+            )
+        }
+        Spacer(Modifier.size(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Button(onClick = { onDecision(true) }, modifier = Modifier.weight(1f)) {
+                Text("Allow")
+            }
+            Button(onClick = { onDecision(false) }, modifier = Modifier.weight(1f)) {
+                Text("Deny")
+            }
+        }
     }
 }
 
@@ -180,6 +266,7 @@ private fun AgentInputBar(
     onSend: () -> Unit,
     onStop: () -> Unit,
 ) {
+    val awaitingPermission = state.pendingPermission != null
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -190,10 +277,12 @@ private fun AgentInputBar(
             value = state.input,
             onValueChange = onInputChange,
             modifier = Modifier.fillMaxWidth(),
-            enabled = !state.running,
+            enabled = !state.running && !awaitingPermission,
             minLines = 1,
             maxLines = 5,
-            placeholder = { Text("Describe a task for the agent…") },
+            placeholder = {
+                Text(if (awaitingPermission) "Answer the permission request above…" else "Describe a task for the agent…")
+            },
         )
         Spacer(Modifier.size(10.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -209,7 +298,7 @@ private fun AgentInputBar(
             } else {
                 Button(
                     onClick = onSend,
-                    enabled = state.input.isNotBlank(),
+                    enabled = state.input.isNotBlank() && !awaitingPermission,
                     modifier = Modifier.weight(1f),
                 ) {
                     Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null)

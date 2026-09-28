@@ -38,11 +38,26 @@ sealed interface AgentStreamEvent {
 
     data class AgentChanged(val role: String, val label: String) : AgentStreamEvent
 
+    /** The model asked for a tool; emitted before it runs. */
+    data class ToolRequested(val toolName: String, val detail: String) : AgentStreamEvent
+
     data class ToolRunning(val toolName: String) : AgentStreamEvent
 
     data class ToolFinished(val toolName: String, val success: Boolean, val summary: String) : AgentStreamEvent
 
-    data class PermissionRequired(val toolName: String, val reason: String) : AgentStreamEvent
+    /**
+     * A tool call is parked until the user decides. Carries everything the
+     * approval prompt needs: which tool, what it would do, and the permission
+     * it requires.
+     */
+    data class PermissionRequired(
+        val toolName: String,
+        val reason: String,
+        val sessionId: String = "",
+        val toolCallId: String = "",
+        val detail: String = "",
+        val requiredPermission: String = "",
+    ) : AgentStreamEvent
 }
 
 /**
@@ -62,6 +77,16 @@ enum class AgentFailureKind {
 
 interface AgentSession {
     suspend fun run(input: String, onEvent: (AgentStreamEvent) -> Unit, workspaceId: String? = null)
+
+    /**
+     * Answers a pending permission request and lets the parked run continue.
+     * Sessions that never pause for permission keep the default no-op.
+     */
+    suspend fun resolvePermission(
+        sessionId: String,
+        approved: Boolean,
+        onEvent: (AgentStreamEvent) -> Unit,
+    ) = Unit
 }
 
 /** Executes shell commands for a workspace. Mocked until the runtime exists. */
