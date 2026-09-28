@@ -7,8 +7,9 @@ import com.agentx.app.integrations.connection.ConnectionAuthMethod
 import com.agentx.app.integrations.connection.ConnectionCapabilities
 import com.agentx.app.integrations.connection.ConnectionConfig
 import com.agentx.app.integrations.connection.ConnectionDraft
+import com.agentx.app.integrations.connection.ConnectionCredentialGateway
 import com.agentx.app.integrations.connection.ConnectionId
-import com.agentx.app.integrations.connection.ConnectionManagers
+import com.agentx.app.integrations.ConnectionManagers
 import com.agentx.app.integrations.connection.ConnectionStatus
 import com.agentx.app.integrations.connection.ConnectionType
 import com.agentx.app.integrations.connection.InMemoryConnectionSecretStore
@@ -118,7 +119,7 @@ class ConnectionFlowTest {
         harness.begin()
         val result = harness.manager.completeAuthorization("agentx://oauth/callback?code=abc&state=forged")
 
-        val error = result.errorOrNullCompat()
+        val error = result.failureOrNull()
         assertNotNull(error)
         assertEquals(
             "STATE_MISMATCH",
@@ -137,7 +138,7 @@ class ConnectionFlowTest {
         assertEquals(ConnectionStatus.CONNECTED, first.valueOrNull()?.status)
 
         val second = harness.manager.completeAuthorization(callback)
-        assertEquals("STATE_REPLAY", second.errorOrNullCompat()?.details?.get("reason"))
+        assertEquals("STATE_REPLAY", second.failureOrNull()?.details?.get("reason"))
         // Still exactly one grant, still connected through the first callback.
         assertEquals(ConnectionStatus.CONNECTED, harness.connection().status)
         assertEquals(1, harness.provider.exchangeCount)
@@ -154,7 +155,7 @@ class ConnectionFlowTest {
             ),
         )
 
-        val failure = result.errorOrNullCompat()
+        val failure = result.failureOrNull()
         assertNotNull(failure)
         assertTrue(failure.message.contains("denied", ignoreCase = true), failure.message)
         val connection = harness.connection()
@@ -168,7 +169,7 @@ class ConnectionFlowTest {
         val state = harness.begin()
         val result = harness.manager.completeAuthorization(harness.callback(state))
 
-        assertNotNull(result.errorOrNullCompat())
+        assertNotNull(result.failureOrNull())
         assertNull(harness.storedCredential())
         assertEquals(ConnectionStatus.ERROR, harness.connection().status)
     }
@@ -179,7 +180,7 @@ class ConnectionFlowTest {
         val state = harness.begin()
         val result = harness.manager.completeAuthorization(harness.callback(state))
 
-        assertNotNull(result.errorOrNullCompat())
+        assertNotNull(result.failureOrNull())
         assertEquals(ConnectionStatus.ERROR, harness.connection().status)
         assertNull(harness.storedCredential(), "unverified credentials are not kept")
     }
@@ -198,7 +199,7 @@ class ConnectionFlowTest {
         val refusal = harness.manager.authorize(ConnectionType.GITHUB, ConnectionCapabilities.REPOSITORY_WRITE)
         assertEquals(
             "MISSING_CAPABILITY",
-            refusal.errorOrNullCompat()?.failure?.name,
+            refusal.failureOrNull()?.failure?.name,
         )
     }
 
@@ -225,7 +226,7 @@ class ConnectionFlowTest {
     fun `authorizing an unknown service reports a missing connection`() = runBlocking {
         val harness = harness()
         val result = harness.manager.authorize(ConnectionType.SUPABASE, ConnectionCapabilities.DATABASE_READ)
-        assertEquals("NOT_FOUND", result.errorOrNullCompat()?.failure?.name)
+        assertEquals("NOT_FOUND", result.failureOrNull()?.failure?.name)
     }
 
     // --- Expiry, refresh and disconnect -------------------------------------
@@ -238,13 +239,13 @@ class ConnectionFlowTest {
         val connection = harness.connection()
         assertEquals(ConnectionStatus.CONNECTED, connection.status)
 
-        val lent = harness.manager.withCredential(connection.id) { token -> token }
-        assertNotNull(lent.errorOrNullCompat(), "an unusable grant is never lent out")
+        val lent = harness.credentials.withCredential(connection.id) { token -> token }
+        assertNotNull(lent.failureOrNull(), "an unusable grant is never lent out")
         assertEquals(ConnectionStatus.EXPIRED, harness.connection().status)
         assertEquals(
             "EXPIRED",
             harness.manager.authorize(ConnectionType.GITHUB, ConnectionCapabilities.REPOSITORY_READ)
-                .errorOrNullCompat()?.failure?.name,
+                .failureOrNull()?.failure?.name,
         )
     }
 
@@ -253,7 +254,7 @@ class ConnectionFlowTest {
         val harness = harness(refreshable = true, expiresInSeconds = 10)
         harness.completeAuthorization()
 
-        val lent = harness.manager.withCredential(harness.connection().id) { token -> token }
+        val lent = harness.credentials.withCredential(harness.connection().id) { token -> token }
         assertEquals("refreshed-access-token", lent.valueOrNull(), "the call sees the refreshed token")
         assertTrue(harness.provider.refreshCount == 1)
 
@@ -285,7 +286,7 @@ class ConnectionFlowTest {
         val harness = harness()
         val connection = harness.completeAuthorization()
 
-        val seen = harness.manager.withCredential(connection.id) { token -> token }
+        val seen = harness.credentials.withCredential(connection.id) { token -> token }
         assertEquals(accessToken, seen.valueOrNull())
 
         val authorized = harness.manager
@@ -377,11 +378,18 @@ class ConnectionFlowTest {
             ioDispatcher = Dispatchers.Unconfined,
             providers = ConnectionProviders.registryOf(GitHubConnectionProvider(provider, flow, clock)),
         )
-        return Harness(manager = manager, provider = provider, secrets = secretStore, clock = clock)
+        return Harness(
+            manager = manager,
+            credentials = manager as ConnectionCredentialGateway,
+            provider = provider,
+            secrets = secretStore,
+            clock = clock,
+        )
     }
 
     private class Harness(
         val manager: com.agentx.app.integrations.connection.ConnectionManager,
+        val credentials: ConnectionCredentialGateway,
         val provider: FakeOAuthProvider,
         val secrets: InMemoryConnectionSecretStore,
         val clock: () -> Long,
@@ -427,7 +435,7 @@ class ConnectionFlowTest {
             val state = begin()
             val result = manager.completeAuthorization(callback(state))
             val connection = result.valueOrNull()
-            assertNotNull(connection, "authorization should complete: ${result.errorOrNullCompat()?.message}")
+            assertNotNull(connection, "authorization should complete: ${result.failureOrNull()?.message}")
             return connection
         }
 
@@ -439,9 +447,13 @@ class ConnectionFlowTest {
 
 private const val CONNECTION_ID = "c-fixed"
 
-/** Reads a failure without importing the core helper twice. */
-private fun <T> com.agentx.app.core.ForgeResult<T, com.agentx.app.core.ForgeError>.errorOrNullCompat():
-    com.agentx.app.core.ForgeError? = (this as? com.agentx.app.core.ForgeResult.Failure)?.error
+/**
+ * Reads the failure of any typed result. Authorizing a connection fails with a
+ * [com.agentx.app.integrations.connection.ConnectionAuthorizationError] rather than a
+ * [com.agentx.app.core.ForgeError], so the reader stays generic.
+ */
+private fun <T, E> com.agentx.app.core.ForgeResult<T, E>.failureOrNull(): E? =
+    (this as? com.agentx.app.core.ForgeResult.Failure)?.error
 
 /**
  * A fake GitHub-shaped OAuth provider.
