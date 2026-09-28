@@ -54,7 +54,6 @@ class CodeStructureContextProvider(
 
             val DEFAULT = Limits()
         }
-        }
     }
 
     override val id: String = "code-structure"
