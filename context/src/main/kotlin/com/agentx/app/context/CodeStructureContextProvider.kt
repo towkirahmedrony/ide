@@ -117,7 +117,7 @@ class CodeStructureContextProvider(
         // room for it keeps the finished item inside the character limit.
         val bounded = ContextTruncator.truncate(
             redacted,
-            (limits.maxCharsPerFile - TRUNCATION_MARKER_RESERVE).coerceAtLeast(1),
+            (limits.maxCharsPerFile - Limits.TRUNCATION_MARKER_RESERVE).coerceAtLeast(1),
         )
         val name = WorkspacePath.name(path).ifEmpty { path }
         val now = clock()
