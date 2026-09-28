@@ -99,7 +99,7 @@ class CodeIntelligenceToolsTest {
         assertEquals(4.0, output.content.numberOrNull("count"))
         assertEquals(4, output.content["symbols"]?.arrayOrNull()?.size)
         assertTrue(output.displayText.orEmpty().contains("class UserRepository"))
-        assertTrue(output.displayText.orEmpty().contains("method getUser()"))
+        assertTrue(output.displayText.orEmpty().contains("method UserRepository.getUser()"))
     }
 
     @Test
