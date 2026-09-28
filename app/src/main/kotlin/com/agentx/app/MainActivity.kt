@@ -10,6 +10,9 @@ import com.agentx.app.agent.orchestrator.AgentOrchestrator
 import com.agentx.app.agent.ui.OrchestratorAgentSession
 import com.agentx.app.app.AndroidModelRunnerBrowserHost
 import com.agentx.app.app.rememberAndroidWorkspacePicker
+import com.agentx.app.context.DelegatingWorkspaceContextProvider
+import com.agentx.app.context.WorkspaceRuntimeContextProvider
+import com.agentx.app.context.WorkspaceSelectionState
 import com.agentx.app.core.foundation.ServiceKeys
 import com.agentx.app.foundation.Foundation
 import com.agentx.app.model.ModelConfig
@@ -83,8 +86,15 @@ class MainActivity : ComponentActivity() {
                         is DelegatingWorkspaceFileSystemResolver ->
                             resolver.bind(WorkspaceManagerFileSystemResolver(workspaceManager))
                     }
+                    // The Context Engine is pointed at the same live workspace, so
+                    // it can see the selected and recently used files.
+                    val selection = WorkspaceSelectionState()
+                    (foundation.contextWorkspace as? DelegatingWorkspaceContextProvider)?.bind(
+                        WorkspaceRuntimeContextProvider(manager = workspaceManager, selection = selection),
+                    )
                     IdeDependencies(
                         workspaceManager = workspaceManager,
+                        workspaceSelection = selection,
                         workspacePicker = workspacePicker,
                         agent = OrchestratorAgentSession(
                             orchestrator = checkNotNull(orchestrator) { "Agent orchestrator is not registered" },

@@ -1,5 +1,6 @@
 package com.agentx.app.ui.ide
 
+import com.agentx.app.context.WorkspaceSelectionState
 import com.agentx.app.model.manager.ModelManager
 import com.agentx.app.model.manager.ModelManagers
 import com.agentx.app.model.runtime.RuntimeOutputBuffer
@@ -26,6 +27,11 @@ import com.agentx.app.workspace.WorkspaceManager
  */
 data class IdeDependencies(
     val workspaceManager: WorkspaceManager,
+    /**
+     * Which file the editor has open and what was used recently. The Context
+     * Engine reads the same instance, so the agent sees the user's context.
+     */
+    val workspaceSelection: WorkspaceSelectionState = WorkspaceSelectionState(),
     val workspacePicker: WorkspacePicker,
     val agent: AgentSession,
     val terminal: TerminalSession,
@@ -41,6 +47,7 @@ data class IdeDependencies(
             val runtimeOutput = RuntimeOutputBuffer()
             return IdeDependencies(
                 workspaceManager = mockWorkspaceManager(),
+                workspaceSelection = WorkspaceSelectionState(),
                 workspacePicker = mockWorkspacePicker(),
                 agent = MockAgentSession(),
                 terminal = MockTerminalSession(),

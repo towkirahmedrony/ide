@@ -3,6 +3,9 @@ package com.agentx.app.foundation
 import com.agentx.app.agent.AGENT_LAYER
 import com.agentx.app.agent.AgentModule
 import com.agentx.app.context.CONTEXT_LAYER
+import com.agentx.app.context.ContextModule
+import com.agentx.app.context.DelegatingWorkspaceContextProvider
+import com.agentx.app.context.WorkspaceContextProvider
 import com.agentx.app.core.architecture.ArchitectureModule
 import com.agentx.app.core.architecture.CORE_LAYER
 import com.agentx.app.core.architecture.LayerDescriptor
@@ -36,6 +39,12 @@ data class FoundationState(
     val health: HealthReport,
     val config: ForgeConfig,
     val services: ServiceContainer,
+    /**
+     * The Context Engine's workspace port. It is created at boot and pointed at
+     * the live Workspace Runtime by the app, exactly like the Tool System's
+     * workspace resolver.
+     */
+    val contextWorkspace: WorkspaceContextProvider,
 )
 
 /**
@@ -51,6 +60,7 @@ object Foundation {
         secretStore: ModelSecretStore = InMemoryModelSecretStore(),
         runtimeOutput: RuntimeOutputBuffer = RuntimeOutputBuffer(),
         monitorModelConnections: Boolean = true,
+        contextWorkspace: WorkspaceContextProvider = DelegatingWorkspaceContextProvider(),
     ): FoundationState {
         val logger = ForgeLoggers.create(
             level = config.logLevel,
@@ -76,6 +86,9 @@ object Foundation {
                 monitorEnabled = monitorModelConnections,
             ),
         )
+        // The Context Engine is registered before the Agent Core, which reads
+        // it from the container to build its run context.
+        modules.register(ContextModule(workspace = contextWorkspace))
         modules.register(AgentModule())
         modules.initialize(services)
 
@@ -88,7 +101,13 @@ object Foundation {
 
         logger.info("Foundation ready", mapOf("layers" to layers.size, "status" to health.status))
 
-        return FoundationState(layers = layers, health = health, config = config, services = services)
+        return FoundationState(
+            layers = layers,
+            health = health,
+            config = config,
+            services = services,
+            contextWorkspace = contextWorkspace,
+        )
     }
 
     private fun forgeLayers(): List<LayerDescriptor> = listOf(

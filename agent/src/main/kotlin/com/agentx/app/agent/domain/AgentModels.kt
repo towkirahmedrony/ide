@@ -1,5 +1,6 @@
 package com.agentx.app.agent.domain
 
+import com.agentx.app.context.ContextBudget
 import com.agentx.app.model.ModelMessage
 import com.agentx.app.model.json.JsonObject
 
@@ -151,14 +152,14 @@ data class AgentRunRequest(
     val sessionId: String? = null,
     val workspaceId: String? = null,
     val timeoutMillis: Long? = null,
+    /** Context the caller already assembled and wants included verbatim. */
     val context: String = "",
+    /** Files the user explicitly pointed at, most relevant first. */
+    val mentionedFiles: List<String> = emptyList(),
+    /** The selected/open file in the editor. */
+    val selectedFile: String? = null,
+    /** Prior conversation turns, oldest first. */
+    val conversation: List<ModelMessage> = emptyList(),
+    /** Limits applied to the context the Context Engine builds. */
+    val contextBudget: ContextBudget = ContextBudget.DEFAULT,
 )
-
-data class AgentContext(
-    val workspaceId: String? = null,
-    val snippets: List<String> = emptyList(),
-)
-
-fun interface AgentContextSource {
-    suspend fun assemble(query: String, workspaceId: String?): AgentContext
-}

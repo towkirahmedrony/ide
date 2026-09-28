@@ -9,6 +9,7 @@ object ServiceKeys {
     const val TOOL_ROUTER = "forge.tools.router"
     const val TOOL_PERMISSION_POLICY = "forge.tools.permissionPolicy"
     const val TOOL_WORKSPACE_RESOLVER = "forge.tools.workspaceResolver"
+    const val CONTEXT_ENGINE = "forge.context.engine"
     const val MODEL_GATEWAY = "forge.model.gateway"
     const val MODEL_MANAGER = "forge.model.manager"
     const val AGENT_ORCHESTRATOR = "forge.agent.orchestrator"

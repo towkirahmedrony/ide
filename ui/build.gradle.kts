@@ -29,6 +29,8 @@ android {
 dependencies {
     api(project(":core"))
     api(project(":workspace"))
+    // The Files page publishes the editor selection to the Context Engine.
+    api(project(":context"))
     // The Models screen talks to the Model Manager domain contract directly.
     api(project(":model"))
 

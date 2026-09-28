@@ -10,6 +10,7 @@ import com.agentx.app.core.logging.ForgeLogger
 import com.agentx.app.core.logging.ForgeLoggers
 import com.agentx.app.core.logging.LogLevel
 import com.agentx.app.core.success
+import com.agentx.app.context.WorkspaceSelectionState
 import com.agentx.app.ui.ide.model.DirectoryLoadState
 import com.agentx.app.ui.ide.model.FileNode
 import com.agentx.app.ui.ide.model.FileNodeKind
@@ -87,6 +88,11 @@ data class EditorUiState(
 class WorkspaceViewModel(
     private val workspaceId: String,
     private val manager: WorkspaceManager,
+    /**
+     * Shared with the Context Engine: the file this editor opens becomes the
+     * agent's selected file and the newest recently used file.
+     */
+    private val selection: WorkspaceSelectionState = WorkspaceSelectionState(),
     private val logger: ForgeLogger = ForgeLoggers.create(LogLevel.WARN, baseFields = mapOf("screen" to "files")),
 ) : ViewModel() {
 
@@ -190,6 +196,9 @@ class WorkspaceViewModel(
     fun openFile(path: String) {
         val active = session ?: return
         filesState = filesState.copy(selectedPath = path, focusedPath = WorkspacePath.parent(path))
+        // Recorded before the read, so the agent's context reflects what the
+        // user is looking at even if the file turns out to be unreadable.
+        selection.openFile(path)
         viewModelScope.launch {
             val outcome = try {
                 WorkspaceFileOpener(active.fileSystem).open(path)

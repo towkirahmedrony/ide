@@ -16,6 +16,7 @@ import com.agentx.app.agent.runtime.ResumedPermission
 import com.agentx.app.agent.runtime.SubAgentInvoker
 import com.agentx.app.agent.runtime.nowMillis
 import com.agentx.app.agent.tools.AgentToolBridge
+import com.agentx.app.context.ContextBudget
 import com.agentx.app.model.ModelConfig
 import com.agentx.app.model.ModelMessage
 
@@ -25,6 +26,8 @@ data class MainAgentRequest(
     val context: String = "",
     val modelConfig: ModelConfig,
     val maxSteps: Int? = null,
+    /** Limits applied to the run's conversation and tool-result context. */
+    val contextBudget: ContextBudget = ContextBudget.DEFAULT,
     /** Conversation snapshot restored when resuming a permission pause. */
     val resumeContext: List<ModelMessage> = emptyList(),
     /** The parked tool call plus the user's decision, when resuming. */
@@ -70,6 +73,7 @@ class MainAgent(
                 scopedContext = request.context,
                 workspaceId = request.task.workspaceId,
                 modelConfig = request.modelConfig,
+                contextBudget = request.contextBudget,
                 resumeContext = request.resumeContext,
                 resumePermission = request.resumePermission,
             ),

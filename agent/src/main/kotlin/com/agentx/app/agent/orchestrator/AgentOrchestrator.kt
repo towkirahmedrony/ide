@@ -1,6 +1,5 @@
 package com.agentx.app.agent.orchestrator
 
-import com.agentx.app.agent.domain.AgentContextSource
 import com.agentx.app.agent.domain.AgentError
 import com.agentx.app.agent.domain.AgentErrorCode
 import com.agentx.app.agent.domain.AgentEvent
@@ -20,6 +19,9 @@ import com.agentx.app.agent.runtime.ResumedPermission
 import com.agentx.app.agent.runtime.SubAgentInvoker
 import com.agentx.app.agent.specialized.SpecializedAgentRegistry
 import com.agentx.app.agent.specialized.unknownSubAgent
+import com.agentx.app.context.ContextBudget
+import com.agentx.app.context.ContextEngine
+import com.agentx.app.context.ContextRequest
 import com.agentx.app.model.ModelConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -57,7 +59,8 @@ class DefaultAgentOrchestrator(
     private val mainAgent: MainAgent,
     private val specialized: SpecializedAgentRegistry,
     private val sessions: AgentSessionStore = InMemoryAgentSessionStore(),
-    private val contextSource: AgentContextSource? = null,
+    /** Supplies the workspace, conversation and tool-result context of a task. */
+    private val contextEngine: ContextEngine? = null,
     private val defaultTimeoutMillis: Long = DEFAULT_TIMEOUT_MILLIS,
     private val clock: () -> Long = { System.currentTimeMillis() },
 ) : AgentOrchestrator {
@@ -72,6 +75,7 @@ class DefaultAgentOrchestrator(
         val context: String,
         val modelConfig: ModelConfig,
         val timeoutMillis: Long,
+        val contextBudget: ContextBudget,
     )
 
     private val pausedPermissions = ConcurrentHashMap<String, PausedRun>()
@@ -130,7 +134,7 @@ class DefaultAgentOrchestrator(
         if (job != null) jobs[sessionId] = job
 
         return try {
-            val assembled = assembleContext(request)
+            val assembled = assembleContext(request, sessionId)
             val result = withTimeout(timeout) {
                 mainAgent.run(
                     request = MainAgentRequest(
@@ -138,6 +142,7 @@ class DefaultAgentOrchestrator(
                         task = task,
                         context = assembled,
                         modelConfig = modelConfig,
+                        contextBudget = request.contextBudget,
                     ),
                     sink = sink,
                     subAgentInvoker = SubAgentInvoker { child ->
@@ -154,6 +159,7 @@ class DefaultAgentOrchestrator(
                     context = assembled,
                     modelConfig = modelConfig,
                     timeoutMillis = timeout,
+                    contextBudget = request.contextBudget,
                 )
             }
             result
@@ -205,6 +211,9 @@ class DefaultAgentOrchestrator(
             )
         } finally {
             jobs.remove(sessionId)
+            // The engine's per-run items are only needed while the run is live;
+            // dropping them keeps a long-lived app from accumulating them.
+            contextEngine?.clearSession(sessionId)
         }
     }
 
@@ -230,6 +239,7 @@ class DefaultAgentOrchestrator(
                         task = session.task,
                         context = paused.context,
                         modelConfig = modelConfig,
+                        contextBudget = paused.contextBudget,
                         resumeContext = paused.resumeContext,
                         resumePermission = ResumedPermission(
                             toolName = paused.pending.toolName,
@@ -254,6 +264,7 @@ class DefaultAgentOrchestrator(
                     context = paused.context,
                     modelConfig = modelConfig,
                     timeoutMillis = paused.timeoutMillis,
+                    contextBudget = paused.contextBudget,
                 )
             }
             result
@@ -301,6 +312,7 @@ class DefaultAgentOrchestrator(
             )
         } finally {
             jobs.remove(sessionId)
+            contextEngine?.clearSession(sessionId)
         }
     }
 
@@ -372,12 +384,31 @@ class DefaultAgentOrchestrator(
         return result
     }
 
-    private suspend fun assembleContext(request: AgentRunRequest): String {
+    /**
+     * Asks the Context Engine for the supporting context of this task: workspace
+     * information, the files that matter, earlier conversation and tool results.
+     *
+     * The prompt itself is deliberately not echoed here — it is already the user
+     * message of the run — and nothing in the loop talks to the engine directly.
+     * A missing engine simply means "no supporting context", never a failure.
+     */
+    private suspend fun assembleContext(request: AgentRunRequest, sessionId: String): String {
         val parts = mutableListOf<String>()
         if (request.context.isNotBlank()) parts += request.context
-        val extra = contextSource?.assemble(request.prompt, request.workspaceId)
-        extra?.snippets?.forEach { if (it.isNotBlank()) parts += it }
-        extra?.workspaceId?.let { parts += "workspaceId=$it" }
+        val engine = contextEngine ?: return parts.joinToString("\n\n")
+        val assembled = engine.buildContext(
+            ContextRequest(
+                task = request.prompt,
+                sessionId = sessionId,
+                workspaceId = request.workspaceId,
+                includeTask = false,
+                mentionedFiles = request.mentionedFiles,
+                selectedFile = request.selectedFile,
+                conversation = request.conversation,
+                budget = request.contextBudget,
+            ),
+        )
+        if (assembled.text.isNotBlank()) parts += assembled.text
         return parts.joinToString("\n\n")
     }
 

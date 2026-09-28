@@ -11,7 +11,9 @@ import com.agentx.app.agent.domain.AgentRunRequest
 import com.agentx.app.agent.domain.AgentStatus
 import com.agentx.app.agent.domain.PendingPermission
 import com.agentx.app.agent.orchestrator.AgentOrchestrator
+import com.agentx.app.context.ContextBudget
 import com.agentx.app.model.ModelConfig
+import com.agentx.app.model.ModelMessage
 import com.agentx.app.model.ModelProviderError
 import com.agentx.app.model.ModelProviderErrorCode
 import com.agentx.app.model.json.JsonObject
@@ -31,6 +33,17 @@ class OrchestratorAgentSession(
     private val modelConfig: () -> ModelConfig,
     private val workspaceId: String? = null,
 ) : AgentSession {
+
+    /**
+     * Compact record of previous turns, oldest first. It is handed to the
+     * Context Engine on every run, which is what gives a follow-up request the
+     * current task, earlier decisions, tool activity and progress. It is
+     * bounded here and budgeted again by the engine.
+     */
+    private val conversation = mutableListOf<ModelMessage>()
+
+    /** Same ceiling the Context Engine applies to conversation context. */
+    private val conversationLimit = ContextBudget.DEFAULT.maxConversationMessages
 
     override suspend fun run(input: String, onEvent: (AgentStreamEvent) -> Unit, workspaceId: String?) {
         val config = modelConfig()
@@ -52,11 +65,31 @@ class OrchestratorAgentSession(
             request = AgentRunRequest(
                 prompt = input,
                 workspaceId = workspaceId ?: this.workspaceId,
+                conversation = conversation.toList(),
             ),
             modelConfig = config,
             sink = sink,
         )
+        record(input, result)
         emitOutcome(result, sessionId = null, onEvent = onEvent)
+    }
+
+    /**
+     * Remembers this turn for the next one: the request, the outcome, and a
+     * compact line of what the agent actually did with its tools. Nothing is
+     * stored beyond the conversation budget, and nothing is persisted.
+     */
+    private fun record(input: String, result: AgentResult) {
+        conversation += ModelMessage.user(input.trim())
+        val tools = result.toolActions.joinToString("; ") { action ->
+            "${action.toolName}${if (action.success) "" else " (failed)"}: ${action.summary}"
+        }
+        val body = buildString {
+            append(result.summary.trim())
+            if (tools.isNotBlank()) append("\n[tools: ").append(tools).append(']')
+        }
+        conversation += ModelMessage.assistant(body.take(MAX_ENTRY_CHARS))
+        while (conversation.size > conversationLimit) conversation.removeAt(0)
     }
 
     override suspend fun resolvePermission(
@@ -117,6 +150,9 @@ class OrchestratorAgentSession(
         const val TAG = "ForgeAgent"
         const val NO_MODEL_ONLINE =
             "No model is online. Open Settings → Models, select a model and connect it first."
+
+        /** Upper bound for one recorded turn; the engine trims the rest. */
+        const val MAX_ENTRY_CHARS = 1_000
     }
 }
 

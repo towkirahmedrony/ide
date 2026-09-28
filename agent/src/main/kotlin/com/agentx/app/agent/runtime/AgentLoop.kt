@@ -19,6 +19,9 @@ import com.agentx.app.agent.protocol.AgentProtocol
 import com.agentx.app.agent.tools.AgentToolBridge
 import com.agentx.app.agent.tools.intOrNull
 import com.agentx.app.agent.tools.stringOrNull
+import com.agentx.app.context.ContextBudget
+import com.agentx.app.context.RunContextFactory
+import com.agentx.app.context.ToolContextStatus
 import com.agentx.app.model.ModelConfig
 import com.agentx.app.model.ModelGateway
 import com.agentx.app.model.ModelMessage
@@ -58,6 +61,8 @@ data class AgentLoopRequest(
     val scopedContext: String,
     val workspaceId: String?,
     val modelConfig: ModelConfig,
+    /** Limits applied to the run's conversation and tool-result context. */
+    val contextBudget: ContextBudget = ContextBudget.DEFAULT,
     /** Conversation snapshot to restore when resuming a permission pause. */
     val resumeContext: List<ModelMessage> = emptyList(),
     /** Tool call awaiting approval with the user's decision; when present the loop is resuming. */
@@ -79,7 +84,12 @@ data class ResumedPermission(
 /** Outcome of dispatching one tool call requested by the model. */
 internal sealed interface ToolOutcome {
     /** The tool ran (or failed safely); [resultText] is fed back to the model. */
-    data class Completed(val resultText: String) : ToolOutcome
+    data class Completed(
+        val resultText: String,
+        /** Related path, when the tool reported one. */
+        val path: String? = null,
+        val success: Boolean = false,
+    ) : ToolOutcome
 
     /** The permission layer requires the user's decision; the loop pauses. */
     data class Paused(val pending: PendingPermission) : ToolOutcome
@@ -97,6 +107,8 @@ class AgentLoop(
     private val toolRouter: ToolRouter,
     private val bridge: AgentToolBridge,
     private val clock: () -> Long = { System.currentTimeMillis() },
+    /** Supplies the conversation/tool-result context for one run. */
+    private val runContexts: RunContextFactory = RunContextFactory.default(),
 ) {
 
     suspend fun run(
@@ -106,7 +118,10 @@ class AgentLoop(
         onCancelled: () -> Boolean = { false },
     ): AgentResult {
         val startedAt = clock()
-        val context = BoundedAgentContext()
+        // Conversation and tool-result context are built by the Context Engine;
+        // the loop only drives them. [context.messages] is the budgeted,
+        // model-ready form of that context.
+        val context = runContexts.create(request.sessionId, request.contextBudget)
         if (request.resumeContext.isNotEmpty()) {
             // Resuming a run that paused for a permission: restore the saved
             // conversation instead of a fresh system+user seed.
@@ -183,8 +198,14 @@ class AgentLoop(
             )
             toolCalls += 1
             // forcedApproval != null means the outcome is always Completed.
-            val resumeText = (outcome as? ToolOutcome.Completed)?.resultText.orEmpty()
-            context.addToolResult(resumed.toolCallId, resumed.toolName, resumeText)
+            val resumedOutcome = outcome as? ToolOutcome.Completed
+            context.addToolResult(
+                callId = resumed.toolCallId,
+                toolName = resumed.toolName,
+                content = resumedOutcome?.resultText.orEmpty(),
+                path = resumedOutcome?.path,
+                status = statusOf(resumedOutcome?.success == true),
+            )
             sink.emit(
                 AgentEvent.StatsUpdated(
                     request.sessionId,
@@ -232,7 +253,7 @@ class AgentLoop(
             )
 
             val response = try {
-                complete(request.modelConfig, context.bounded(), toolSpecs, sink, request.sessionId)
+                complete(request.modelConfig, context.messages(), toolSpecs, sink, request.sessionId)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
@@ -325,7 +346,7 @@ class AgentLoop(
 
                     AgentProtocol.DELEGATE_TOOL -> {
                         subAgentCalls += 1
-                        val resultText = handleDelegate(
+                        val delegated = handleDelegate(
                             request = request,
                             call = call,
                             invoker = subAgentInvoker,
@@ -336,7 +357,13 @@ class AgentLoop(
                             toolActions = toolActions,
                             errors = errors,
                         )
-                        context.addToolResult(call.id, call.name, resultText)
+                        context.addToolResult(
+                            callId = call.id,
+                            toolName = call.name,
+                            content = delegated.resultText,
+                            path = delegated.path,
+                            status = statusOf(delegated.success),
+                        )
                     }
 
                     else -> {
@@ -375,12 +402,18 @@ class AgentLoop(
                                     role = request.definition.role,
                                     stepStats = stats(startedAt, stepIndex, request.maxSteps, modelCalls, toolCalls, subAgentCalls),
                                     pendingPermission = outcome.pending,
-                                    resumeContext = context.bounded(),
+                                    resumeContext = context.messages(),
                                 )
                             }
                             is ToolOutcome.Completed -> {
                                 toolCalls += 1
-                                context.addToolResult(call.id, call.name, outcome.resultText)
+                                context.addToolResult(
+                                    callId = call.id,
+                                    toolName = call.name,
+                                    content = outcome.resultText,
+                                    path = outcome.path,
+                                    status = statusOf(outcome.success),
+                                )
                             }
                         }
                     }
@@ -488,7 +521,7 @@ class AgentLoop(
                     timestampMillis = clock(),
                 ),
             )
-            return ToolOutcome.Completed("ERROR: $message")
+            return ToolOutcome.Completed("ERROR: $message", success = false)
         }
         // The call cleared the scope and permission layers; it is about to execute.
         sink.emit(
@@ -613,7 +646,7 @@ class AgentLoop(
                 ),
             )
         }
-        return ToolOutcome.Completed(resultText)
+        return ToolOutcome.Completed(resultText, path = record.path, success = record.success)
     }
 
     private suspend fun handleDelegate(
@@ -626,7 +659,7 @@ class AgentLoop(
         filesChanged: MutableList<String>,
         toolActions: MutableList<ToolActionRecord>,
         errors: MutableList<AgentError>,
-    ): String {
+    ): ToolOutcome.Completed {
         if (request.definition.role != AgentRole.MAIN) {
             val message = "Only the Main Agent may delegate"
             errors += AgentError(
@@ -635,10 +668,10 @@ class AgentLoop(
                 role = request.definition.role,
                 sessionId = request.sessionId,
             )
-            return "ERROR: $message"
+            return ToolOutcome.Completed("ERROR: $message", success = false)
         }
         if (invoker == null) {
-            return "ERROR: No sub-agent invoker is configured"
+            return ToolOutcome.Completed("ERROR: No sub-agent invoker is configured", success = false)
         }
         val role = AgentProtocol.parseRole(call.arguments.stringOrNull(AgentProtocol.ARG_ROLE))
         if (role == null || role == AgentRole.MAIN) {
@@ -649,12 +682,15 @@ class AgentLoop(
                 role = request.definition.role,
                 sessionId = request.sessionId,
             )
-            return "ERROR: $message"
+            return ToolOutcome.Completed("ERROR: $message", success = false)
         }
         val task = call.arguments.stringOrNull(AgentProtocol.ARG_TASK).orEmpty()
         val objective = call.arguments.stringOrNull(AgentProtocol.ARG_OBJECTIVE).orEmpty()
         if (task.isBlank() || objective.isBlank()) {
-            return "ERROR: Delegation requires task and objective"
+            return ToolOutcome.Completed(
+                "ERROR: Delegation requires task and objective",
+                success = false,
+            )
         }
         val childId = AgentIds.newId()
         val childRequest = SubAgentRequest(
@@ -690,7 +726,10 @@ class AgentLoop(
                 cause = error,
             )
             toolActions += ToolActionRecord(AgentProtocol.DELEGATE_TOOL, false, "sub-agent failed")
-            return "ERROR: Sub-agent '${role.name}' failed: ${error.message}"
+            return ToolOutcome.Completed(
+                "ERROR: Sub-agent '${role.name}' failed: ${error.message}",
+                success = false,
+            )
         }
         findings += result.findings
         filesInspected += result.filesInspected
@@ -712,7 +751,7 @@ class AgentLoop(
                 timestampMillis = clock(),
             ),
         )
-        return buildString {
+        val rendered = buildString {
             append("status=${result.status}\n")
             append("summary=${result.summary}\n")
             if (result.findings.isNotEmpty()) append("findings:\n").append(result.findings.joinToString("\n")).append('\n')
@@ -720,7 +759,16 @@ class AgentLoop(
             if (result.filesChanged.isNotEmpty()) append("filesChanged=").append(result.filesChanged.joinToString(",")).append('\n')
             if (result.errors.isNotEmpty()) append("errors=").append(result.errors.joinToString { it.message }).append('\n')
         }
+        return ToolOutcome.Completed(
+            resultText = rendered,
+            path = result.filesChanged.firstOrNull() ?: result.filesInspected.firstOrNull(),
+            success = result.status == AgentStatus.COMPLETED,
+        )
     }
+
+    /** Maps a tool outcome onto the status the Context Engine records for it. */
+    private fun statusOf(success: Boolean): ToolContextStatus =
+        if (success) ToolContextStatus.SUCCESS else ToolContextStatus.FAILURE
 
     private fun finishFromCall(
         request: AgentLoopRequest,
