@@ -131,7 +131,7 @@ private class Materializer(
         var fields: MutableMap<String, Int>? = null
 
         for (index in 0 until childCount) {
-            val child = node.child(index) ?: continue
+            val child = node.getChild(index) ?: continue
             if (child.isNull || !child.isNamed) continue
             val target = children ?: ArrayList<SyntaxNode>(4).also { children = it }
             node.getFieldNameForChild(index)?.let { field ->
