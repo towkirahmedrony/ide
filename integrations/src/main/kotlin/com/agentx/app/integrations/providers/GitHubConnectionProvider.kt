@@ -71,6 +71,11 @@ class GitHubConnectionProvider(
     /** The account handle shown as "@username" after connecting. */
     override fun handleFor(connection: Connection): String = connection.displayName
 
+    /**
+     * The tools GitHub would contribute. Every entry is `implemented = false`: the
+     * connection and capability gating is complete, but the service calls are not
+     * written yet, so a tool is never installed that could not run.
+     */
     override fun toolCatalog(): ProviderToolCatalog = ProviderToolCatalog(
         provider = ConnectionType.GITHUB,
         tools = listOf(
@@ -81,7 +86,7 @@ class GitHubConnectionProvider(
                 requiredCapability = ConnectionCapabilities.REPOSITORY_READ,
                 category = ProviderToolCategory.REPOSITORY_READ,
                 mutating = false,
-                implemented = true,
+                implemented = false,
             ),
             ProviderToolSpec(
                 toolName = "github.get_repository",
@@ -90,7 +95,7 @@ class GitHubConnectionProvider(
                 requiredCapability = ConnectionCapabilities.REPOSITORY_READ,
                 category = ProviderToolCategory.REPOSITORY_READ,
                 mutating = false,
-                implemented = true,
+                implemented = false,
             ),
             ProviderToolSpec(
                 toolName = "github.get_file",
@@ -99,7 +104,7 @@ class GitHubConnectionProvider(
                 requiredCapability = ConnectionCapabilities.REPOSITORY_READ,
                 category = ProviderToolCategory.REPOSITORY_READ,
                 mutating = false,
-                implemented = true,
+                implemented = false,
             ),
             ProviderToolSpec(
                 toolName = "github.list_branches",
@@ -108,7 +113,7 @@ class GitHubConnectionProvider(
                 requiredCapability = ConnectionCapabilities.REPOSITORY_READ,
                 category = ProviderToolCategory.REPOSITORY_READ,
                 mutating = false,
-                implemented = true,
+                implemented = false,
             ),
             ProviderToolSpec(
                 toolName = "github.create_commit",

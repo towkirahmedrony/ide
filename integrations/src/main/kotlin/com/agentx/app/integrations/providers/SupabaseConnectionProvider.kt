@@ -75,7 +75,7 @@ class SupabaseConnectionProvider(
                 requiredCapability = ConnectionCapabilities.PROJECT_METADATA,
                 category = ProviderToolCategory.PROJECT_METADATA,
                 mutating = false,
-                implemented = true,
+                implemented = false,
             ),
             ProviderToolSpec(
                 toolName = "supabase.get_project",
@@ -84,7 +84,7 @@ class SupabaseConnectionProvider(
                 requiredCapability = ConnectionCapabilities.PROJECT_METADATA,
                 category = ProviderToolCategory.PROJECT_METADATA,
                 mutating = false,
-                implemented = true,
+                implemented = false,
             ),
             ProviderToolSpec(
                 toolName = "supabase.inspect_database",

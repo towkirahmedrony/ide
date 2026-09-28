@@ -205,22 +205,45 @@ class ConnectionFlowTest {
     }
 
     @Test
-    fun `provider tools are installed only while the connection provides them`() = runBlocking {
+    fun `tool availability follows the connection and the granted capability`() = runBlocking {
         val harness = harness(scopes = setOf(GitHubOAuthProvider.SCOPE_PUBLIC_REPO))
-        harness.connect(capabilities = setOf(ConnectionCapabilities.REPOSITORY_READ))
-        harness.completeAuthorization()
 
-        val enabled = harness.manager.enabledToolNames()
-        assertTrue("github.get_repository" in enabled, "read tools are available: $enabled")
-        assertFalse("github.create_commit" in enabled, "write tools are not granted implicitly")
-        assertFalse(
-            harness.manager.tools().any { it.toolName == "github.create_commit" && it.enabled },
-            "a write tool is never enabled without the capability",
+        // Nothing is connected yet: every tool says so.
+        assertTrue(
+            harness.manager.tools().all { !it.enabled && it.reason?.contains("Connect GitHub") == true },
+            "unconnected providers offer nothing to the agent",
         )
 
-        val connection = harness.connection()
+        harness.connect(capabilities = setOf(ConnectionCapabilities.REPOSITORY_READ))
+        val connection = harness.completeAuthorization()
+
+        val tools = harness.manager.tools().associateBy { it.toolName }
+        val read = tools.getValue("github.get_repository")
+        val write = tools.getValue("github.create_commit")
+
+        // The read tool passed the connection and capability gates; it is still not
+        // enabled, because its service call is not written in this build.
+        assertTrue(
+            read.reason?.contains("not enabled in this build") == true,
+            "a tool whose call is missing never reports enabled: ${read.reason}",
+        )
+        assertNull(read.connectionId?.let { null }, "sanity")
+
+        // A write capability the account did not grant is refused for that reason.
+        assertTrue(
+            write.reason?.contains("does not grant") == true,
+            "a write tool is refused on capability grounds: ${write.reason}",
+        )
+        assertFalse(write.enabled, "connecting never enables a write tool implicitly")
+
+        // No tool is ever advertised as runnable while its call is missing.
+        assertTrue(harness.manager.enabledToolNames().isEmpty())
+
         harness.manager.disconnect(connection.id)
-        assertTrue(harness.manager.enabledToolNames().isEmpty(), "disconnect removes the provider tools")
+        assertTrue(
+            harness.manager.tools().all { !it.enabled },
+            "disconnect leaves nothing enabled",
+        )
     }
 
     @Test
