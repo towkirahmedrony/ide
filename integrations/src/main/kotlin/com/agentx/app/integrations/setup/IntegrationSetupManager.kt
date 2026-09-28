@@ -58,12 +58,7 @@ class IntegrationSetupManager(
         connection: Connection? = null,
     ): ProviderSetupSnapshot {
         val resolved = resolvedClient(type)
-        val validation = validatePersonalSetup(
-            type = type,
-            clientId = resolved.clientId,
-            callbackUri = callbacks.uriFor(type),
-            brokerUrl = resolved.exchangeBrokerUrl,
-        )
+        val validation = validationFor(type, resolved.clientId, resolved.exchangeBrokerUrl)
         return ProviderSetupSnapshot(
             type = type,
             lifecycle = integrationLifecycleOf(configured = validation.complete, connection = connection),
@@ -78,12 +73,27 @@ class IntegrationSetupManager(
 
     fun validation(type: ConnectionType): SetupValidation {
         val resolved = resolvedClient(type)
-        return validatePersonalSetup(
+        return validationFor(type, resolved.clientId, resolved.exchangeBrokerUrl)
+    }
+
+    /**
+     * Only the services with a personal OAuth app need a Client ID. A service the
+     * user describes in the app (MCP, custom API) is configured as soon as it is
+     * registered, so it is never held back by a form it does not have.
+     */
+    private fun validationFor(
+        type: ConnectionType,
+        clientId: String,
+        brokerUrl: String?,
+    ): SetupValidation = if (usesPersonalOAuthSetup(type)) {
+        validatePersonalSetup(
             type = type,
-            clientId = resolved.clientId,
+            clientId = clientId,
             callbackUri = callbacks.uriFor(type),
-            brokerUrl = resolved.exchangeBrokerUrl,
+            brokerUrl = brokerUrl,
         )
+    } else {
+        SetupValidation(type = type)
     }
 
     /**
@@ -113,7 +123,10 @@ class IntegrationSetupManager(
             callbackUri = callbacks.uriFor(type),
             brokerUrl = trimmedBroker,
         )
-        if (trimmedId.isBlank()) {
+        // A half-configured provider would show as configured and then fail at the
+        // provider, so an incomplete setup is refused with the reason instead of
+        // being saved.
+        if (!check.complete) {
             return failure(
                 connectionFailure(
                     code = ForgeErrorCode.CONNECTION_INVALID,

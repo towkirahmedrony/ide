@@ -38,6 +38,7 @@ import com.agentx.app.integrations.connection.ProviderDescriptor
 import com.agentx.app.integrations.setup.IntegrationLifecycle
 import com.agentx.app.integrations.setup.ProviderSetupGuide
 import com.agentx.app.integrations.setup.ProviderSetupSnapshot
+import com.agentx.app.integrations.setup.usesPersonalOAuthSetup
 import com.agentx.app.ui.ide.components.IdeCard
 import com.agentx.app.ui.ide.components.IdeDivider
 import com.agentx.app.ui.ide.components.IdeSectionLabel
@@ -325,6 +326,15 @@ private fun ActionRow(
                 )
             }
 
+            // A service the user describes in the app (MCP, custom API) has no
+            // provider page to authorize on, so the action adds the service instead
+            // of opening a browser authorization that cannot exist.
+            !usesPersonalOAuthSetup(availability.type) -> {
+                Button(onClick = onManage, enabled = !busy) {
+                    Text(if (availability.type == ConnectionType.MCP_SERVER) "Add Server" else "Add Connection")
+                }
+            }
+
             !canConnect -> {
                 Text(
                     text = availability.unavailableReason
@@ -499,10 +509,14 @@ private fun HowToCard(guide: ProviderSetupGuide) {
             )
             IdeSpacer(4)
         }
-        if (guide.developerSettingsUrl != null && guide.developerSettingsLabel != null) {
+        // Read once into locals: the guide lives in another module, so its
+        // properties cannot be smart-cast.
+        val developerUrl = guide.developerSettingsUrl
+        val developerLabel = guide.developerSettingsLabel
+        if (developerUrl != null && developerLabel != null) {
             IdeSpacer(6)
-            TextButton(onClick = { uriHandler.openUri(guide.developerSettingsUrl) }) {
-                Text(guide.developerSettingsLabel)
+            TextButton(onClick = { uriHandler.openUri(developerUrl) }) {
+                Text(developerLabel)
             }
         }
         guide.notes.forEach { note ->

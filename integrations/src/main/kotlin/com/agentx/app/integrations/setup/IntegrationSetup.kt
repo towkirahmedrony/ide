@@ -262,6 +262,18 @@ fun PersonalOAuthSetup.toClientConfig(redirectUri: String, fallback: OAuthProvid
         configuredScopes = scopes.ifEmpty { fallback.scopes },
     )
 
+/**
+ * True for the services this build authorizes through a personal OAuth app — one
+ * whose Client ID the owner registers in the provider's console.
+ *
+ * Other services have no provider console to register an app in: an MCP server or
+ * a custom API is described by the user in this app. They are therefore never
+ * "not configured" for a missing Client ID, and their primary action is adding
+ * the service rather than opening a browser authorization that does not exist.
+ */
+fun usesPersonalOAuthSetup(type: ConnectionType): Boolean =
+    type == ConnectionType.GITHUB || type == ConnectionType.SUPABASE
+
 fun validatePersonalSetup(
     type: ConnectionType,
     clientId: String,

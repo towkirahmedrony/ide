@@ -45,6 +45,7 @@ import com.agentx.app.integrations.connection.ProviderAvailability
 import com.agentx.app.integrations.connection.ProviderDescriptor
 import com.agentx.app.integrations.setup.IntegrationLifecycle
 import com.agentx.app.integrations.setup.ProviderSetupSnapshot
+import com.agentx.app.integrations.setup.usesPersonalOAuthSetup
 import com.agentx.app.ui.ide.components.IdeCard
 import com.agentx.app.ui.ide.components.IdeSectionLabel
 import com.agentx.app.ui.ide.components.IdeSpacer
@@ -162,6 +163,11 @@ fun ConnectionsScreen(
                         val snapshot = setupOf(availability.type, connection)
                         when {
                             snapshot?.lifecycle == IntegrationLifecycle.NOT_CONFIGURED ->
+                                onOpenService(availability.type)
+                            // A service with no provider-console OAuth app is added on
+                            // its own page: starting a browser authorization for it
+                            // would have no page to open.
+                            !usesPersonalOAuthSetup(availability.type) ->
                                 onOpenService(availability.type)
                             connection == null -> onConnect(availability.type)
                             connection.status == ConnectionStatus.CONNECTED -> onOpenService(availability.type)
@@ -356,6 +362,8 @@ internal fun primaryLabel(
     status.isAuthorizing -> "Cancel"
     status == ConnectionStatus.EXPIRED || status == ConnectionStatus.ERROR -> "Reconnect"
     setup?.lifecycle == IntegrationLifecycle.NOT_CONFIGURED -> "Set Up"
+    !usesPersonalOAuthSetup(availability.type) ->
+        if (availability.type == ConnectionType.MCP_SERVER) "Add Server" else "Add Connection"
     availability.supportsHostedAuthorization || setup?.canConnect == true -> "Connect"
     else -> "Add Server"
 }
