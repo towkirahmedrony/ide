@@ -49,7 +49,11 @@ class CodeStructureContextProvider(
         val maxCharsPerFile: Int = 1_200,
     ) {
         companion object {
+            /** Room reserved for the truncation marker appended by the truncator. */
+            internal const val TRUNCATION_MARKER_RESERVE = 80
+
             val DEFAULT = Limits()
+        }
         }
     }
 
@@ -109,7 +113,13 @@ class CodeStructureContextProvider(
 
         val rendered = renderOutline(outline)
         if (rendered.isBlank()) return null
-        val bounded = ContextTruncator.truncate(SecretRedactor.redactText(rendered), limits.maxCharsPerFile)
+        val redacted = SecretRedactor.redactText(rendered)
+        // The truncator appends a marker that reports what was dropped; reserving
+        // room for it keeps the finished item inside the character limit.
+        val bounded = ContextTruncator.truncate(
+            redacted,
+            (limits.maxCharsPerFile - TRUNCATION_MARKER_RESERVE).coerceAtLeast(1),
+        )
         val name = WorkspacePath.name(path).ifEmpty { path }
         val now = clock()
 
