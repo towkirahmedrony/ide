@@ -196,7 +196,7 @@ class PersonalIntegrationSetupTest {
 
         val error = assertNotNull(result.errorOrNull())
         assertEquals(ForgeErrorCode.CONNECTION_INVALID, error.code)
-        assertTrue(error.message.contains("not configured", ignoreCase = true))
+        assertTrue(error.message.orEmpty().contains("not configured", ignoreCase = true))
         assertNull(store.load(ConnectionType.GITHUB))
         assertFalse(built.github.client.isConfigured)
     }
@@ -207,7 +207,7 @@ class PersonalIntegrationSetupTest {
 
         val error = assertNotNull(result.errorOrNull())
         assertEquals(ForgeErrorCode.CONNECTION_INVALID, error.code)
-        assertTrue(error.message.contains("broker", ignoreCase = true))
+        assertTrue(error.message.orEmpty().contains("broker", ignoreCase = true))
         assertNull(store.load(ConnectionType.GITHUB), "a half-configured provider is never stored")
         assertEquals(IntegrationLifecycle.NOT_CONFIGURED, setup.snapshot(ConnectionType.GITHUB).lifecycle)
     }
