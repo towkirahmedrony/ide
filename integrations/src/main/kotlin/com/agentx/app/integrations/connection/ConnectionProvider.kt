@@ -88,6 +88,15 @@ interface ConnectionProvider {
     /** True when [payload] is close to expiry and should be refreshed. */
     fun needsRefresh(connection: Connection, payload: String): Boolean = false
 
+    /**
+     * The usable credential for a service call.
+     *
+     * The stored payload is opaque to the manager; the provider turns it into the
+     * value its API expects (an access token). The result is only ever passed into
+     * [ConnectionCredentialGateway.withCredential]'s lambda.
+     */
+    fun credential(connection: Connection, payload: String): String = payload
+
     /** Releases the grant at the provider, when the provider supports that. */
     suspend fun revoke(connection: Connection, payload: String): ProviderRevocation
 

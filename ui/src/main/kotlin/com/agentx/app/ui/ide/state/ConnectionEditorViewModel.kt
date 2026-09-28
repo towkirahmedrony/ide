@@ -8,6 +8,7 @@ import androidx.lifecycle.viewModelScope
 import com.agentx.app.core.ForgeResult
 import com.agentx.app.core.errorOrNull
 import com.agentx.app.core.valueOrNull
+import com.agentx.app.integrations.connection.AuthorizationStart
 import com.agentx.app.integrations.connection.Connection
 import com.agentx.app.integrations.connection.ConnectionAuthMethod
 import com.agentx.app.integrations.connection.ConnectionCapabilities
@@ -220,18 +221,29 @@ class ConnectionEditorViewModel(
                 val connection = persist()
                 if (connection == null) return@launch
                 when (val started = manager.beginAuthorization(connection.id)) {
-                    is ForgeResult.Success -> {
-                        val opened = browser.launch(started.value.authorizationUrl)
-                        if (opened) {
-                            state = state.copy(saving = false, awaitingAuthorization = true)
-                        } else {
-                            manager.cancelAuthorization(connection.id)
-                            state = state.copy(
-                                saving = false,
-                                awaitingAuthorization = false,
-                                errors = listOf("No browser is available to open the authorization page."),
-                            )
+                    is ForgeResult.Success -> when (val start = started.value) {
+                        is AuthorizationStart.OpenUrl -> {
+                            val opened = browser.launch(start.authorizationUrl)
+                            state = if (opened) {
+                                state.copy(saving = false, awaitingAuthorization = true)
+                            } else {
+                                manager.cancelAuthorization(connection.id)
+                                state.copy(
+                                    saving = false,
+                                    awaitingAuthorization = false,
+                                    errors = listOf("No browser is available to open the authorization page."),
+                                )
+                            }
                         }
+
+                        // No hosted page: the form the user is looking at collects the
+                        // credential, and it is verified before anything is stored.
+                        is AuthorizationStart.ManualFormRequired -> state = state.copy(
+                            saving = false,
+                            awaitingAuthorization = false,
+                            manualCredentials = true,
+                            errors = listOf(start.reason),
+                        )
                     }
 
                     is ForgeResult.Failure -> state = state.copy(

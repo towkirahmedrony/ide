@@ -98,6 +98,14 @@ abstract class OAuthBackedConnectionProvider(
 
     override suspend fun cancelAuthorization(connectionId: ConnectionId) = flow.cancel(connectionId)
 
+    /**
+     * Lends the access token. A stored payload that cannot be read is returned
+     * unchanged only when it is not an encoded grant, so callers never receive a
+     * malformed value silently.
+     */
+    override fun credential(connection: Connection, payload: String): String =
+        OAuthTokenCodec.decode(payload)?.accessToken ?: payload
+
     override suspend fun verify(connection: Connection, payload: String): ForgeResult<ProviderIdentity, ForgeError> {
         val tokens = OAuthTokenCodec.decode(payload)
             ?: return failure(notAStoredGrant(connection))

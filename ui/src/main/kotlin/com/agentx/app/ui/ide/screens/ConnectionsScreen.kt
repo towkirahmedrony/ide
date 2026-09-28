@@ -46,6 +46,7 @@ import com.agentx.app.integrations.connection.ProviderDescriptor
 import com.agentx.app.ui.ide.components.IdeCard
 import com.agentx.app.ui.ide.components.IdeSectionLabel
 import com.agentx.app.ui.ide.components.IdeSpacer
+import com.agentx.app.ui.ide.components.IdeSpacerW
 import com.agentx.app.ui.ide.components.IdeStatusPill
 import com.agentx.app.ui.ide.components.IdeTopBar
 import com.agentx.app.ui.theme.ForgeAmber

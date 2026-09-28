@@ -381,10 +381,13 @@ class DefaultConnectionManager(
         } ?: waiting.firstOrNull()
 
         if (target == null) {
+            // Nothing is waiting: refuse without touching any record, so a redirect
+            // that arrives late — or twice — cannot change a connection's state.
             return failure(
                 connectionFailure(
                     code = ForgeErrorCode.CONNECTION_OAUTH_STATE_INVALID,
                     message = "No connection is waiting for an authorization response.",
+                    details = mapOf("reason" to "NO_PENDING_AUTHORIZATION"),
                 ),
             )
         }
@@ -394,9 +397,16 @@ class DefaultConnectionManager(
         val completed = activeProvider.completeAuthorization(target, callbackUri)
         val grant = completed.valueOrNull()
         if (grant == null) {
-            val error = completed.errorOrNull()
-            error?.let { io { markAuthorizationFailure(target, it) } }
-            return failure(error ?: unavailable(target, "The authorization response could not be processed"))
+            val error = completed.errorOrNull() ?: unavailable(
+                target,
+                "The authorization response could not be processed",
+            )
+            // A refusal or a failed exchange concerns this connection; a state value
+            // that matched nothing must leave every record exactly as it was.
+            if (error.code != ForgeErrorCode.CONNECTION_OAUTH_STATE_INVALID) {
+                io { markAuthorizationFailure(target, error) }
+            }
+            return failure(error)
         }
 
         return saveGrant(target, activeProvider, grant)
@@ -543,8 +553,10 @@ class DefaultConnectionManager(
             }
         }
 
-        // The value is passed to the caller's lambda and never returned.
-        return success(block(payload))
+        // The provider turns its opaque payload into the value its API expects; the
+        // result is passed to the caller's lambda and never returned.
+        val credential = provider?.credential(existing, payload) ?: payload
+        return success(block(credential))
     }
 
     override suspend fun authorize(
@@ -695,9 +707,12 @@ class DefaultConnectionManager(
     /** Verifies a manual credential, storing the identity it resolved to. */
     private suspend fun verifyManual(connection: Connection, credential: String): Connection {
         val provider = providers.provider(connection.type)
+        // Without a provider the credential cannot be verified, so the connection is
+        // explicitly not connected: nothing is reported as working that is not.
             ?: return connection.copy(
-                status = ConnectionStatus.ERROR,
-                statusMessage = "No provider handles ${connection.type.displayName}",
+                status = ConnectionStatus.NOT_CONNECTED,
+                statusMessage = "The credential was stored, but ${connection.type.displayName} " +
+                    "cannot be verified in this build.",
                 updatedAtMillis = clock(),
             )
         val verified = provider.verifyManualCredential(connection, credential)

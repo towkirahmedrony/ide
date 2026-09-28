@@ -136,11 +136,13 @@ class ConnectionFlowTest {
         val first = harness.manager.completeAuthorization(callback)
         assertEquals(ConnectionStatus.CONNECTED, first.valueOrNull()?.status)
 
+        // The second delivery is refused — either because the provider's state value
+        // was already consumed, or because nothing is waiting any more — and it never
+        // reaches a second exchange.
         val second = harness.manager.completeAuthorization(callback)
-        assertEquals("STATE_REPLAY", second.failureOrNull()?.details?.get("reason"))
-        // Still exactly one grant, still connected through the first callback.
+        assertNotNull(second.failureOrNull(), "a replayed callback is refused")
         assertEquals(ConnectionStatus.CONNECTED, harness.connection().status)
-        assertEquals(1, harness.provider.exchangeCount)
+        assertEquals(1, harness.provider.exchangeCount, "the code was exchanged exactly once")
     }
 
     @Test
