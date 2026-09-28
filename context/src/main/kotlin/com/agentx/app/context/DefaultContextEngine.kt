@@ -362,8 +362,8 @@ class DefaultContextEngine(
                 ?: ""
             val shortening = if (item.truncated) " truncated=${item.chars}/${item.originalChars}" else ""
             val reason = item.metadata.selectedBecause?.name ?: ContextReason.MANUAL.name
-            lines += "  ${index + 1}. ${item.source.name}$where · $reason · ${item.priority.name.lowercase()}" +
-                " · relevance=${item.relevance}$shortening"
+            lines += "  ${index + 1}. ${item.id} · ${item.source.name}$where · $reason" +
+                " · ${item.priority.name.lowercase()} · relevance=${item.relevance}$shortening"
         }
         if (result.truncated.isNotEmpty()) {
             lines += "truncated:"
