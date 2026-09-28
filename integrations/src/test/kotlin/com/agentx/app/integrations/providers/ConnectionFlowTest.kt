@@ -58,10 +58,9 @@ class ConnectionFlowTest {
     @Test
     fun `connect opens the provider page and does not mark anything connected`() = runBlocking {
         val harness = harness()
-        val start = harness.connect()
+        harness.connect()
 
-        assertTrue(start is AuthorizationStart.OpenUrl)
-        val url = (start as AuthorizationStart.OpenUrl).authorizationUrl
+        val url = harness.lastAuthorizationUrl
         assertTrue(url.startsWith("https://github.test/authorize"), "the official page is opened: $url")
 
         val parameters = OAuthQueryParameters.parse(url)
@@ -156,8 +155,8 @@ class ConnectionFlowTest {
         )
 
         val failure = result.failureOrNull()
-        assertNotNull(failure)
-        assertTrue(failure.message.contains("denied", ignoreCase = true), failure.message)
+        val message = failure?.message.orEmpty()
+        assertTrue(message.contains("denied", ignoreCase = true), message)
         val connection = harness.connection()
         assertEquals(ConnectionStatus.NOT_CONNECTED, connection.status)
         assertNull(connection.credentialRef, "a refusal stores nothing")
@@ -417,6 +416,7 @@ class ConnectionFlowTest {
             }
             val start = manager.connect(ConnectionType.GITHUB).valueOrNull()
             assertNotNull(start, "the authorization should start")
+            assertTrue(start is AuthorizationStart.OpenUrl, "GitHub has a hosted authorization page")
             lastAuthorizationUrl = (start as AuthorizationStart.OpenUrl).authorizationUrl
         }
 
