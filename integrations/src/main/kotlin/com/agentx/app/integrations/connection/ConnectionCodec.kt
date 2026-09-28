@@ -24,6 +24,13 @@ object ConnectionCodec {
     const val FIELD_CREDENTIAL_REF = "credentialRef"
     const val FIELD_CREATED = "createdAtMillis"
     const val FIELD_UPDATED = "updatedAtMillis"
+    const val FIELD_GRANTED_SCOPES = "grantedScopes"
+    const val FIELD_ACCOUNT_LABEL = "accountLabel"
+    const val FIELD_CREDENTIALS_EXPIRE_AT = "credentialsExpireAtMillis"
+    const val FIELD_REFRESHABLE = "refreshable"
+
+    /** Status name saved before OAuth-first connections existed. */
+    const val LEGACY_STATUS_NOT_CONFIGURED = "NOT_CONFIGURED"
 
     fun encode(connection: Connection): Map<String, String> {
         val fields = LinkedHashMap<String, String>()
@@ -42,6 +49,12 @@ object ConnectionCodec {
         connection.statusMessage?.let { fields[FIELD_STATUS_MESSAGE] = it }
         connection.lastTestedAtMillis?.let { fields[FIELD_LAST_TESTED] = it.toString() }
         connection.credentialRef?.let { fields[FIELD_CREDENTIAL_REF] = it }
+        if (connection.grantedScopes.isNotEmpty()) {
+            fields[FIELD_GRANTED_SCOPES] = connection.grantedScopes.sorted().joinToString(",")
+        }
+        connection.accountLabel?.let { fields[FIELD_ACCOUNT_LABEL] = it }
+        connection.credentialsExpireAtMillis?.let { fields[FIELD_CREDENTIALS_EXPIRE_AT] = it.toString() }
+        if (connection.refreshable) fields[FIELD_REFRESHABLE] = "true"
         fields[FIELD_CREATED] = connection.createdAtMillis.toString()
         fields[FIELD_UPDATED] = connection.updatedAtMillis.toString()
         return fields
@@ -54,8 +67,7 @@ object ConnectionCodec {
         val auth = fromName(ConnectionAuthMethod.entries, fields[FIELD_AUTH_METHOD])
             ?: type.defaultAuthMethod
         val capabilities = decodeCapabilities(fields[FIELD_CAPABILITIES], type)
-        val status = fromName(ConnectionStatus.entries, fields[FIELD_STATUS])
-            ?: ConnectionStatus.NOT_CONFIGURED
+        val status = decodeStatus(fields[FIELD_STATUS])
         return Connection(
             id = ConnectionId(id),
             displayName = displayName,
@@ -72,10 +84,31 @@ object ConnectionCodec {
             statusMessage = fields[FIELD_STATUS_MESSAGE]?.takeIf { it.isNotBlank() },
             lastTestedAtMillis = fields[FIELD_LAST_TESTED]?.toLongOrNull(),
             credentialRef = fields[FIELD_CREDENTIAL_REF]?.takeIf { it.isNotBlank() },
+            grantedScopes = decodeScopes(fields[FIELD_GRANTED_SCOPES]),
+            accountLabel = fields[FIELD_ACCOUNT_LABEL]?.takeIf { it.isNotBlank() },
+            credentialsExpireAtMillis = fields[FIELD_CREDENTIALS_EXPIRE_AT]?.toLongOrNull(),
+            refreshable = fields[FIELD_REFRESHABLE]?.toBooleanStrictOrNull() ?: false,
             createdAtMillis = fields[FIELD_CREATED]?.toLongOrNull() ?: 0L,
             updatedAtMillis = fields[FIELD_UPDATED]?.toLongOrNull() ?: 0L,
         )
     }
+
+    /**
+     * Reads a stored status. Records written before the OAuth-first model used
+     * `NOT_CONFIGURED`, which means exactly what [ConnectionStatus.NOT_CONNECTED]
+     * means now; an unreadable value never becomes "connected".
+     */
+    private fun decodeStatus(raw: String?): ConnectionStatus {
+        if (raw == LEGACY_STATUS_NOT_CONFIGURED) return ConnectionStatus.NOT_CONNECTED
+        return fromName(ConnectionStatus.entries, raw) ?: ConnectionStatus.NOT_CONNECTED
+    }
+
+    private fun decodeScopes(raw: String?): Set<String> = raw
+        ?.split(',')
+        ?.map { it.trim() }
+        ?.filter { it.isNotEmpty() }
+        ?.toSet()
+        .orEmpty()
 
     private fun decodeCapabilities(raw: String?, type: ConnectionType): Set<ConnectionCapability> {
         if (raw.isNullOrBlank()) return ConnectionCapabilities.defaultsFor(type)

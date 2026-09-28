@@ -257,9 +257,11 @@ fun ForgeIdeApp(
         }
 
         composable(IdeDestinations.CONNECTIONS) {
-            val connectionsViewModel: ConnectionsViewModel = viewModel(
-                factory = IdeViewModelFactory { ConnectionsViewModel(dependencies.connectionManager) },
-            )
+             val connectionsViewModel: ConnectionsViewModel = viewModel(
+                 factory = IdeViewModelFactory {
+                     ConnectionsViewModel(dependencies.connectionManager, dependencies.oauthBrowser)
+                 },
+             )
             val connectionsState by connectionsViewModel.state.collectAsState()
             ConnectionsScreen(
                 state = connectionsState,
@@ -286,7 +288,11 @@ fun ForgeIdeApp(
             val editorViewModel: ConnectionEditorViewModel = viewModel(
                 key = "connection-editor-${raw.orEmpty()}",
                 factory = IdeViewModelFactory {
-                    ConnectionEditorViewModel(dependencies.connectionManager, connectionId)
+                    ConnectionEditorViewModel(
+                        manager = dependencies.connectionManager,
+                        connectionId = connectionId,
+                        browser = dependencies.oauthBrowser,
+                    )
                 },
             )
             val editorState = editorViewModel.state

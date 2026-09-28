@@ -267,8 +267,11 @@ private fun formatTested(millis: Long?): String {
 
 private fun statusColor(status: ConnectionStatus): Color = when (status) {
     ConnectionStatus.CONNECTED -> ForgeMint
+    // In-flight states: waiting on the provider's authorization page or on a probe.
+    ConnectionStatus.AUTHORIZING -> ForgePeriwinkle
     ConnectionStatus.CONNECTING -> ForgePeriwinkle
     ConnectionStatus.ERROR -> ForgeDanger
+    ConnectionStatus.EXPIRED -> ForgeAmber
     ConnectionStatus.DISCONNECTED -> ForgeAmber
-    ConnectionStatus.NOT_CONFIGURED -> ForgeMuted
+    ConnectionStatus.NOT_CONNECTED -> ForgeMuted
 }

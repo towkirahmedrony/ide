@@ -28,6 +28,16 @@ enum class ForgeErrorCode {
     CONNECTION_UNAUTHORIZED,
     /** The connection type has no tester implementation yet. */
     CONNECTION_TEST_UNSUPPORTED,
+    /** The provider has no OAuth support, or this build is not configured for it. */
+    CONNECTION_OAUTH_UNAVAILABLE,
+    /** The user refused the authorization request at the provider. */
+    CONNECTION_OAUTH_DENIED,
+    /** The callback matched no pending authorization (state mismatch, replay or expiry). */
+    CONNECTION_OAUTH_STATE_INVALID,
+    /** The authorization code could not be exchanged, or the grant could not be validated. */
+    CONNECTION_OAUTH_FAILED,
+    /** Stored credentials are no longer usable and the connection must be re-authorized. */
+    CONNECTION_CREDENTIAL_EXPIRED,
     UNKNOWN,
 }
 

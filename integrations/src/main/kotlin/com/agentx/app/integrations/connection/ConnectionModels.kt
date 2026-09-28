@@ -20,6 +20,10 @@ value class ConnectionId(val value: String) {
  *
  * These are type tags only. Service-specific APIs (GitHub, Supabase, MCP) are
  * implemented in later tasks; this layer never talks to those APIs.
+ *
+ * [oauthSupported] is true when an official OAuth provider exists for the type.
+ * OAuth is then the preferred method and [defaultAuthMethod] is
+ * [ConnectionAuthMethod.OAUTH]; manual credentials stay available as a fallback.
  */
 enum class ConnectionType(
     val displayName: String,
@@ -27,20 +31,23 @@ enum class ConnectionType(
     val defaultCapabilities: Set<ConnectionCapability>,
     val requiresEndpoint: Boolean,
     val defaultAuthMethod: ConnectionAuthMethod,
+    val oauthSupported: Boolean = false,
 ) {
     GITHUB(
         displayName = "GitHub",
         description = "GitHub repositories, pull requests and issues.",
         defaultCapabilities = ConnectionCapabilities.GITHUB,
         requiresEndpoint = false,
-        defaultAuthMethod = ConnectionAuthMethod.ACCESS_TOKEN,
+        defaultAuthMethod = ConnectionAuthMethod.OAUTH,
+        oauthSupported = true,
     ),
     SUPABASE(
         displayName = "Supabase",
         description = "Supabase projects, database, storage and metadata.",
         defaultCapabilities = ConnectionCapabilities.SUPABASE,
         requiresEndpoint = true,
-        defaultAuthMethod = ConnectionAuthMethod.API_KEY,
+        defaultAuthMethod = ConnectionAuthMethod.OAUTH,
+        oauthSupported = true,
     ),
     MCP_SERVER(
         displayName = "MCP server",
@@ -59,21 +66,36 @@ enum class ConnectionType(
 }
 
 /**
- * Lifecycle of a saved connection. A type that has no tester must never report
- * [CONNECTED]; it stays [NOT_CONFIGURED] or [DISCONNECTED] until a real tester
- * exists.
+ * Lifecycle of a saved connection.
+ *
+ * OAuth connections move `NOT_CONNECTED → AUTHORIZING → CONNECTED`, and fall to
+ * [EXPIRED] when their credentials stop working. A type that has no tester, or a
+ * connection whose authorization never completed, must never report [CONNECTED].
  */
 enum class ConnectionStatus(val displayName: String) {
-    NOT_CONFIGURED("Not configured"),
-    DISCONNECTED("Disconnected"),
+    NOT_CONNECTED("Not connected"),
+    AUTHORIZING("Authorizing"),
     CONNECTING("Connecting"),
     CONNECTED("Connected"),
+    EXPIRED("Expired"),
+    DISCONNECTED("Disconnected"),
     ERROR("Error"),
+    ;
+
+    /** True when the connection has usable credentials. */
+    val isConnected: Boolean get() = this == CONNECTED
+
+    /** True while the provider's authorization page is open or being handled. */
+    val isAuthorizing: Boolean get() = this == AUTHORIZING
 }
 
 /**
- * How the user authenticates with the external service. This is a data contract
- * for the form and the secret store; OAuth is represented but not performed.
+ * How the user authenticates with the external service.
+ *
+ * [OAUTH] is the preferred method for every service that supports it: the user
+ * approves access on the provider's own page and the app stores the resulting
+ * tokens. [API_KEY] and [ACCESS_TOKEN] remain available as manual fallbacks for
+ * services without OAuth, and [NONE] for open services.
  */
 enum class ConnectionAuthMethod(val displayName: String, val requiresSecret: Boolean) {
     OAUTH("OAuth", requiresSecret = false),
@@ -81,6 +103,11 @@ enum class ConnectionAuthMethod(val displayName: String, val requiresSecret: Boo
     ACCESS_TOKEN("Access token", requiresSecret = true),
     USERNAME_PASSWORD("Username and password", requiresSecret = true),
     NONE("None", requiresSecret = false),
+    ;
+
+    /** True for the manual credential methods, which are a fallback only. */
+    val isManualCredential: Boolean
+        get() = this == API_KEY || this == ACCESS_TOKEN || this == USERNAME_PASSWORD
 }
 
 /**
@@ -182,16 +209,33 @@ data class Connection(
     val config: ConnectionConfig = ConnectionConfig(),
     val capabilities: Set<ConnectionCapability> = ConnectionCapabilities.defaultsFor(type),
     val enabled: Boolean = true,
-    val status: ConnectionStatus = ConnectionStatus.NOT_CONFIGURED,
+    val status: ConnectionStatus = ConnectionStatus.NOT_CONNECTED,
     val statusMessage: String? = null,
     val lastTestedAtMillis: Long? = null,
     val credentialRef: String? = null,
+    /**
+     * Scopes the provider actually granted. Capabilities are derived from this
+     * set, so a connection never claims access the authorization did not give it.
+     */
+    val grantedScopes: Set<String> = emptySet(),
+    /** Non-secret label of the authorized account, when the provider reports one. */
+    val accountLabel: String? = null,
+    /** When the stored credentials stop working, when the provider reports it. */
+    val credentialsExpireAtMillis: Long? = null,
+    /** True when the provider issued a refresh token for this connection. */
+    val refreshable: Boolean = false,
     val createdAtMillis: Long = 0L,
     val updatedAtMillis: Long = 0L,
 ) {
     val hasCredential: Boolean get() = !credentialRef.isNullOrBlank()
 
     val isConfigured: Boolean get() = validate().isEmpty()
+
+    /** True when this connection is authorized through OAuth. */
+    val usesOAuth: Boolean get() = config.authMethod == ConnectionAuthMethod.OAUTH
+
+    /** True when the connection is authorized and its credentials are usable. */
+    val isConnected: Boolean get() = status == ConnectionStatus.CONNECTED && hasCredential
 
     /**
      * Returns every configuration problem found; an empty list means the
@@ -200,7 +244,10 @@ data class Connection(
     fun validate(): List<String> {
         val errors = mutableListOf<String>()
         if (displayName.isBlank()) errors += "Name must not be blank"
-        if (type.requiresEndpoint && config.endpoint.isNullOrBlank()) {
+        // OAuth connections reach the provider's own API, so no user-supplied
+        // endpoint is needed; the manual methods still require one when the
+        // service has no fixed base URL.
+        if (type.requiresEndpoint && !usesOAuth && config.endpoint.isNullOrBlank()) {
             errors += "An endpoint or base URL is required for ${type.displayName}"
         }
         config.endpoint?.takeIf { it.isNotBlank() }?.let { url ->
@@ -225,6 +272,8 @@ data class Connection(
             endpoint = config.endpoint,
             authMethod = config.authMethod,
             credentialRef = credentialRef,
+            status = status,
+            accountLabel = accountLabel,
         )
 
     companion object {
@@ -246,6 +295,9 @@ data class AuthorizedConnection(
     val endpoint: String? = null,
     val authMethod: ConnectionAuthMethod = ConnectionAuthMethod.NONE,
     val credentialRef: String? = null,
+    val status: ConnectionStatus = ConnectionStatus.NOT_CONNECTED,
+    /** Non-secret account label. Never a token. */
+    val accountLabel: String? = null,
 ) {
     override fun toString(): String =
         "AuthorizedConnection(id=$id, type=${type.name}, capabilities=${capabilities.map { it.id }})"
@@ -270,26 +322,36 @@ data class ConnectionDraft(
         existing: Connection?,
         credentialRef: String?,
         now: Long,
-        status: ConnectionStatus = existing?.status ?: ConnectionStatus.NOT_CONFIGURED,
+        status: ConnectionStatus = existing?.status ?: ConnectionStatus.NOT_CONNECTED,
         statusMessage: String? = existing?.statusMessage,
         lastTestedAtMillis: Long? = existing?.lastTestedAtMillis,
-    ): Connection = Connection(
-        id = id,
-        displayName = displayName.trim(),
-        type = type,
-        config = config.copy(
-            endpoint = config.endpoint?.trim()?.takeIf { it.isNotBlank() },
-            username = config.username?.trim()?.takeIf { it.isNotBlank() },
-        ),
-        capabilities = capabilities.ifEmpty { ConnectionCapabilities.defaultsFor(type) },
-        enabled = enabled,
-        status = if (existing != null && existing.type == type) status else ConnectionStatus.NOT_CONFIGURED,
-        statusMessage = if (existing != null && existing.type == type) statusMessage else null,
-        lastTestedAtMillis = if (existing != null && existing.type == type) lastTestedAtMillis else null,
-        credentialRef = credentialRef,
-        createdAtMillis = existing?.createdAtMillis ?: now,
-        updatedAtMillis = now,
-    )
+    ): Connection {
+        val sameType = existing != null && existing.type == type
+        val keepsGrant = sameType && config.authMethod == ConnectionAuthMethod.OAUTH
+        return Connection(
+            id = id,
+            displayName = displayName.trim(),
+            type = type,
+            config = config.copy(
+                endpoint = config.endpoint?.trim()?.takeIf { it.isNotBlank() },
+                username = config.username?.trim()?.takeIf { it.isNotBlank() },
+            ),
+            capabilities = capabilities.ifEmpty { ConnectionCapabilities.defaultsFor(type) },
+            enabled = enabled,
+            status = if (sameType) status else ConnectionStatus.NOT_CONNECTED,
+            statusMessage = if (sameType) statusMessage else null,
+            lastTestedAtMillis = if (sameType) lastTestedAtMillis else null,
+            credentialRef = credentialRef,
+            // Switching a connection to a manual method drops the OAuth grant:
+            // stale scopes must never describe the new credentials.
+            grantedScopes = if (keepsGrant) existing.grantedScopes else emptySet(),
+            accountLabel = if (keepsGrant) existing.accountLabel else null,
+            credentialsExpireAtMillis = if (keepsGrant) existing.credentialsExpireAtMillis else null,
+            refreshable = keepsGrant && existing.refreshable,
+            createdAtMillis = existing?.createdAtMillis ?: now,
+            updatedAtMillis = now,
+        )
+    }
 }
 
 /** Result of probing a connection. Never reports connected for unsupported types. */
@@ -318,6 +380,28 @@ enum class ConnectionAuthorizationFailure(val message: String) {
     MISSING_CAPABILITY("The connection does not declare the required capability"),
     MISSING_CREDENTIAL("The connection has no stored credential"),
     NOT_AUTHORIZED("The connection is not authorized for this tool"),
+    /** The stored grant is no longer usable; the user must re-authorize. */
+    EXPIRED("The connection credentials expired and must be re-authorized"),
+    /** OAuth authorization has not finished yet. */
+    AUTHORIZING("The connection is waiting for the user to approve access"),
+}
+
+/**
+ * What the Connections page needs to offer an OAuth-first connection for a
+ * service, including why OAuth is unavailable when it is.
+ */
+data class ConnectionOAuthAvailability(
+    val type: ConnectionType,
+    val displayName: String,
+    val oauthSupported: Boolean,
+    /** True when this build has the provider's client id and redirect URI. */
+    val configured: Boolean,
+    /** True when an authorization is currently in flight for this service. */
+    val authorizing: Boolean = false,
+    val unavailableReason: String? = null,
+) {
+    /** True when the page may offer a "Connect" button. */
+    val canAuthorize: Boolean get() = oauthSupported && configured && !authorizing
 }
 
 /**

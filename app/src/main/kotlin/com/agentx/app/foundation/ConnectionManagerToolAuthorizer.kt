@@ -77,6 +77,8 @@ private fun ConnectionAuthorizationError.toToolError(
         ConnectionAuthorizationFailure.MISSING_CAPABILITY -> ToolConnectionDenial.MISSING_CAPABILITY
         ConnectionAuthorizationFailure.MISSING_CREDENTIAL -> ToolConnectionDenial.MISSING_CREDENTIAL
         ConnectionAuthorizationFailure.NOT_AUTHORIZED -> ToolConnectionDenial.NOT_AUTHORIZED
+        ConnectionAuthorizationFailure.AUTHORIZING -> ToolConnectionDenial.AUTHORIZING
+        ConnectionAuthorizationFailure.EXPIRED -> ToolConnectionDenial.CREDENTIAL_EXPIRED
     },
     type = requirement.type,
     capability = requirement.capability,

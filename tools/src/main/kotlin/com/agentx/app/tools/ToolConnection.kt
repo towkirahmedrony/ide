@@ -83,6 +83,12 @@ enum class ToolConnectionDenial {
     MISSING_CAPABILITY,
     MISSING_CREDENTIAL,
     NOT_AUTHORIZED,
+
+    /** The user has not finished approving access on the provider's page. */
+    AUTHORIZING,
+
+    /** The stored grant expired; the user must reconnect the service. */
+    CREDENTIAL_EXPIRED,
 }
 
 data class ToolConnectionAuthorizationError(

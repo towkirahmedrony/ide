@@ -17,4 +17,10 @@ object ServiceKeys {
     const val CONNECTION_MANAGER = "forge.integrations.connectionManager"
     const val INTEGRATION_REGISTRY = "forge.integrations.registry"
     const val TOOL_CONNECTION_AUTHORIZER = "forge.tools.connectionAuthorizer"
+
+    /** OAuth providers this build can authorize against. */
+    const val OAUTH_PROVIDER_REGISTRY = "forge.integrations.oauthProviders"
+
+    /** Hands a credential to a service client without exposing it to the agent. */
+    const val CONNECTION_CREDENTIAL_GATEWAY = "forge.integrations.credentialGateway"
 }

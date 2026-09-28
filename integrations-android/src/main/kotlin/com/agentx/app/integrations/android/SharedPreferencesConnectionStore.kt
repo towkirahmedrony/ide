@@ -74,6 +74,10 @@ class SharedPreferencesConnectionStore(
             ConnectionCodec.FIELD_STATUS_MESSAGE,
             ConnectionCodec.FIELD_LAST_TESTED,
             ConnectionCodec.FIELD_CREDENTIAL_REF,
+            ConnectionCodec.FIELD_GRANTED_SCOPES,
+            ConnectionCodec.FIELD_ACCOUNT_LABEL,
+            ConnectionCodec.FIELD_CREDENTIALS_EXPIRE_AT,
+            ConnectionCodec.FIELD_REFRESHABLE,
             ConnectionCodec.FIELD_CREATED,
             ConnectionCodec.FIELD_UPDATED,
         )

@@ -157,16 +157,30 @@ fun ConnectionEditorScreen(
                 onSelect = { method -> onEdit { it.copy(authMethod = method) } },
             )
 
-            if (state.oauthUnavailable) {
+            if (state.showOAuthSection) {
                 IdeCard {
                     IdeSectionLabel("OAuth")
                     IdeSpacer(6)
                     Text(
-                        text = "OAuth is not implemented yet. Choose another method or save the " +
-                            "connection without testing it.",
+                        text = when {
+                            state.canAuthorizeWithOAuth ->
+                                "${state.type.displayName} is authorized on ${state.type.displayName}'s own " +
+                                    "page. Manual credentials are only a fallback."
+
+                            else -> state.oauthUnavailableReason
+                                ?: "OAuth is not available for ${state.type.displayName} in this build."
+                        },
                         style = MaterialTheme.typography.bodyMedium,
                         color = ForgeMuted,
                     )
+                    if (state.awaitingAuthorization) {
+                        IdeSpacer(6)
+                        Text(
+                            text = "Waiting for you to approve access in the browser…",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = ForgeInk,
+                        )
+                    }
                 }
             }
 

@@ -56,7 +56,7 @@ class ConnectionManagerTest {
         val created = addGithub()
         assertEquals(listOf("Work GitHub"), manager.state.value.connections.map { it.displayName })
         assertEquals(ConnectionType.GITHUB, created.type)
-        assertEquals(ConnectionStatus.NOT_CONFIGURED, created.status)
+        assertEquals(ConnectionStatus.NOT_CONNECTED, created.status)
 
         val updated = assertNotNull(
             manager.updateConnection(
@@ -160,7 +160,7 @@ class ConnectionManagerTest {
     @Test
     fun `status moves through connecting then disconnected for unimplemented tests`() = runBlocking {
         val created = addGithub()
-        assertEquals(ConnectionStatus.NOT_CONFIGURED, created.status)
+        assertEquals(ConnectionStatus.NOT_CONNECTED, created.status)
         manager.testConnection(created.id)
         assertEquals(ConnectionStatus.DISCONNECTED, manager.status(created.id))
     }
@@ -260,7 +260,7 @@ class ConnectionManagerTest {
         assertEquals("stdio", mcp.config.transport)
         assertEquals("npx fake-mcp", mcp.config.command)
         assertEquals(ConnectionCapabilities.MCP, created.capabilities)
-        assertEquals(ConnectionStatus.NOT_CONFIGURED, created.status)
+        assertEquals(ConnectionStatus.NOT_CONNECTED, created.status)
     }
 }
 
