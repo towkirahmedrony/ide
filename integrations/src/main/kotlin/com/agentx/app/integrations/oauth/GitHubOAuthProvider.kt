@@ -24,11 +24,21 @@ import com.agentx.app.integrations.connection.ConnectionType
  * follows the same broker/direct strategy.
  */
 class GitHubOAuthProvider(
-    override val client: OAuthClientConfig,
+    client: OAuthClientConfig,
     private val http: OAuthHttpClient,
     private val clock: () -> Long = System::currentTimeMillis,
     private val authorizationEndpoint: String = AUTHORIZATION_ENDPOINT,
 ) : OAuthProvider {
+
+    @Volatile
+    private var liveClient: OAuthClientConfig = client
+
+    override val client: OAuthClientConfig get() = liveClient
+
+    /** Hot-applies a personal Client ID / redirect URI. Never a client secret. */
+    fun replaceClient(next: OAuthClientConfig) {
+        liveClient = next
+    }
 
     override val descriptor: OAuthProviderDescriptor = OAuthProviderDescriptor(
         type = ConnectionType.GITHUB,
@@ -49,7 +59,7 @@ class GitHubOAuthProvider(
     private val exchange = OAuthTokenExchange(
         descriptor = descriptor,
         http = http,
-        client = client,
+        clientProvider = { liveClient },
         clock = clock,
     )
 

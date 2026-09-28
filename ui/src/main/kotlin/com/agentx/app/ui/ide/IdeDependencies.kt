@@ -3,6 +3,8 @@ package com.agentx.app.ui.ide
 import com.agentx.app.context.WorkspaceSelectionState
 import com.agentx.app.integrations.ConnectionManagers
 import com.agentx.app.integrations.connection.ConnectionManager
+import com.agentx.app.integrations.setup.InMemoryIntegrationSetupStore
+import com.agentx.app.integrations.setup.IntegrationSetupManager
 import com.agentx.app.model.manager.ModelManager
 import com.agentx.app.model.manager.ModelManagers
 import com.agentx.app.model.runtime.RuntimeOutputBuffer
@@ -43,6 +45,8 @@ data class IdeDependencies(
     val git: GitRepository,
     val modelManager: ModelManager,
     val connectionManager: ConnectionManager,
+    /** Personal Client ID / callback setup for this IDE. Optional in previews. */
+    val integrationSetup: IntegrationSetupManager? = null,
     /** Opens the provider's authorization page for OAuth-first connections. */
     val oauthBrowser: OAuthBrowserLauncher = NoOpOAuthBrowserLauncher,
     /**
@@ -70,6 +74,7 @@ data class IdeDependencies(
                     monitorEnabled = false,
                 ),
                 connectionManager = ConnectionManagers.create(),
+                integrationSetup = IntegrationSetupManager(store = InMemoryIntegrationSetupStore()),
                 oauthBrowser = NoOpOAuthBrowserLauncher,
                 oauthCallbacks = OAuthCallbackInbox(),
                 modelRunnerBrowser = MockModelRunnerBrowser(),

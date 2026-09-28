@@ -113,6 +113,15 @@ class SupabaseConnectionProvider(
                 mutating = false,
                 implemented = false,
             ),
+            ProviderToolSpec(
+                toolName = "supabase.platform_info",
+                title = "Platform information",
+                description = "Reads organization and platform metadata. Declared, not enabled in this build.",
+                requiredCapability = ConnectionCapabilities.PROJECT_METADATA,
+                category = ProviderToolCategory.PROJECT_METADATA,
+                mutating = false,
+                implemented = false,
+            ),
         ),
     )
 

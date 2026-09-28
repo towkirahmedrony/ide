@@ -13,6 +13,7 @@ import com.agentx.app.integrations.connection.DefaultConnectionManager
 import com.agentx.app.integrations.connection.DispatchingConnectionTester
 import com.agentx.app.integrations.connection.InMemoryConnectionSecretStore
 import com.agentx.app.integrations.connection.InMemoryConnectionStore
+import com.agentx.app.integrations.setup.IntegrationSetupManager
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 
@@ -30,6 +31,7 @@ class IntegrationsModule(
     private val tester: ConnectionTester = DispatchingConnectionTester(),
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val providers: ConnectionProviderRegistry = ConnectionProviderRegistry.EMPTY,
+    private val setup: IntegrationSetupManager? = null,
 ) : ForgeModule {
 
     override val id: String = "integrations"
@@ -49,6 +51,7 @@ class IntegrationsModule(
         context.services.register(ServiceKeys.CONNECTION_CREDENTIAL_GATEWAY, created)
         context.services.register(ServiceKeys.CONNECTION_PROVIDER_REGISTRY, providers)
         context.services.register(ServiceKeys.INTEGRATION_REGISTRY, registry)
+        setup?.let { context.services.register(ServiceKeys.INTEGRATION_SETUP, it) }
     }
 }
 

@@ -18,6 +18,9 @@ import com.agentx.app.integrations.connection.ConnectionType
 import com.agentx.app.integrations.connection.InstalledTool
 import com.agentx.app.integrations.connection.ProviderAvailability
 import com.agentx.app.integrations.connection.ProviderDescriptor
+import com.agentx.app.integrations.setup.IntegrationSetupManager
+import com.agentx.app.integrations.setup.ProviderSetupGuide
+import com.agentx.app.integrations.setup.ProviderSetupSnapshot
 import com.agentx.app.ui.ide.data.OAuthBrowserLauncher
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.StateFlow
@@ -35,6 +38,7 @@ import kotlinx.coroutines.launch
 class ConnectionsViewModel(
     private val manager: ConnectionManager,
     private val browser: OAuthBrowserLauncher,
+    private val setup: IntegrationSetupManager? = null,
 ) : ViewModel() {
 
     val state: StateFlow<ConnectionManagerState> = manager.state
@@ -65,10 +69,19 @@ class ConnectionsViewModel(
 
     val credentialsPersistent: Boolean get() = manager.credentialsPersistent
 
+    var setupBusy by mutableStateOf(false)
+        private set
+
     init {
         viewModelScope.launch { manager.refresh() }
+        viewModelScope.launch { setup?.refresh() }
         viewModelScope.launch {
             manager.state.collect { refreshDerived() }
+        }
+        setup?.let { source ->
+            viewModelScope.launch {
+                source.state.collect { refreshDerived() }
+            }
         }
     }
 
@@ -92,6 +105,63 @@ class ConnectionsViewModel(
         snapshot.ofType(type).firstOrNull { it.enabled } ?: snapshot.ofType(type).firstOrNull()
 
     fun toolsOf(type: ConnectionType): List<InstalledTool> = tools.filter { it.provider == type }
+
+    fun setupOf(type: ConnectionType, connection: Connection? = null): ProviderSetupSnapshot? =
+        setup?.snapshot(type, connection)
+
+    fun guideOf(type: ConnectionType): ProviderSetupGuide? = setup?.guide(type)
+
+    fun callbackUri(type: ConnectionType): String = setup?.callbackUri(type).orEmpty()
+
+    fun saveSetup(
+        type: ConnectionType,
+        clientId: String,
+        exchangeBrokerUrl: String? = null,
+    ) {
+        val manager = setup ?: return
+        if (setupBusy) return
+        setupBusy = true
+        viewModelScope.launch {
+            try {
+                when (val result = manager.saveSetup(type, clientId, exchangeBrokerUrl)) {
+                    is ForgeResult.Success -> {
+                        refreshDerived()
+                        message = "${type.displayName} Client ID saved. This does not connect the account."
+                    }
+                    is ForgeResult.Failure -> message = result.error.message
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                message = error.message ?: "The Client ID could not be saved"
+            } finally {
+                setupBusy = false
+            }
+        }
+    }
+
+    fun clearSetup(type: ConnectionType) {
+        val manager = setup ?: return
+        if (setupBusy) return
+        setupBusy = true
+        viewModelScope.launch {
+            try {
+                when (val result = manager.clearSetup(type)) {
+                    is ForgeResult.Success -> {
+                        refreshDerived()
+                        message = "${type.displayName} Client ID cleared."
+                    }
+                    is ForgeResult.Failure -> message = result.error.message
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                message = error.message ?: "The Client ID could not be cleared"
+            } finally {
+                setupBusy = false
+            }
+        }
+    }
 
     /** True while this service is between "connect" and a settled state. */
     fun isAuthorizing(connection: Connection?): Boolean =
@@ -153,7 +223,11 @@ class ConnectionsViewModel(
     fun delete(id: String) = operate(id) { manager.removeConnection(ConnectionId(it)) }
 
     fun refresh() {
-        viewModelScope.launch { manager.refresh() }
+        viewModelScope.launch {
+            manager.refresh()
+            setup?.refresh()
+            refreshDerived()
+        }
     }
 
     fun dismissMessage() {

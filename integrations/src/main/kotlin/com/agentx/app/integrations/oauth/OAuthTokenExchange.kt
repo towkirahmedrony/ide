@@ -18,9 +18,11 @@ package com.agentx.app.integrations.oauth
 class OAuthTokenExchange(
     private val descriptor: OAuthProviderDescriptor,
     private val http: OAuthHttpClient,
-    private val client: OAuthClientConfig,
+    private val clientProvider: () -> OAuthClientConfig,
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
+
+    private val client: OAuthClientConfig get() = clientProvider()
 
     suspend fun exchangeCode(code: String, codeVerifier: String?, redirectUri: String): OAuthTokenResult {
         val parameters = buildMap {

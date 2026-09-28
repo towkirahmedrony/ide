@@ -66,10 +66,12 @@ class McpConnectionProvider(
             ConnectionAuthMethod.NONE,
             ConnectionAuthMethod.API_KEY,
             ConnectionAuthMethod.ACCESS_TOKEN,
+            ConnectionAuthMethod.OAUTH,
         ),
         requiresEndpoint = true,
-        authorizationNote = "Use an API key or token only when the server requires one; " +
-            "servers that support OAuth are authorized through the server's own page.",
+        authorizationNote = "Use an API key or token only when the server requires one. " +
+            "Servers that advertise OAuth are authorized on the server's own page; " +
+            "this build does not execute MCP traffic yet.",
     )
 
     override fun authMethods(): Set<ConnectionAuthMethod> = descriptor.authMethods.toSet()

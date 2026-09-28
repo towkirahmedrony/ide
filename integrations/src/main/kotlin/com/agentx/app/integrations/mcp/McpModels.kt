@@ -121,6 +121,8 @@ data class McpConnection(
 
 const val META_TRANSPORT: String = "mcp.transport"
 const val META_COMMAND: String = "mcp.command"
+const val META_AUTH: String = "mcp.auth"
+const val META_SERVER_NAME: String = "mcp.server_name"
 
 /** Builds the non-secret [ConnectionConfig] for an MCP server. */
 fun mcpConnectionConfig(
@@ -128,12 +130,15 @@ fun mcpConnectionConfig(
     endpoint: String? = null,
     command: String? = null,
     authMethod: ConnectionAuthMethod = ConnectionAuthMethod.NONE,
+    serverName: String? = null,
 ): ConnectionConfig = ConnectionConfig(
     endpoint = endpoint?.takeIf { it.isNotBlank() },
     authMethod = authMethod,
     metadata = buildMap {
         put(META_TRANSPORT, transport.wireName)
+        put(META_AUTH, authMethod.name)
         command?.takeIf { it.isNotBlank() }?.let { put(META_COMMAND, it) }
+        serverName?.takeIf { it.isNotBlank() }?.let { put(META_SERVER_NAME, it) }
     },
 )
 

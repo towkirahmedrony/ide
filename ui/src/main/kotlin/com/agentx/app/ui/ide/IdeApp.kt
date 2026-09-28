@@ -292,7 +292,11 @@ fun ForgeIdeApp(
             val connectionsViewModel: ConnectionsViewModel = viewModel(
                 key = "connections",
                 factory = IdeViewModelFactory {
-                    ConnectionsViewModel(dependencies.connectionManager, dependencies.oauthBrowser)
+                    ConnectionsViewModel(
+                        manager = dependencies.connectionManager,
+                        browser = dependencies.oauthBrowser,
+                        setup = dependencies.integrationSetup,
+                    )
                 },
             )
             val connectionsState by connectionsViewModel.state.collectAsState()
@@ -304,6 +308,7 @@ fun ForgeIdeApp(
                 busyKey = connectionsViewModel.busyKey,
                 message = connectionsViewModel.message,
                 credentialsPersistent = connectionsViewModel.credentialsPersistent,
+                setupOf = { type, connection -> connectionsViewModel.setupOf(type, connection) },
                 onBack = { navController.popBackStack() },
                 onOpenService = { type -> navController.navigate(IdeDestinations.serviceDetails(type.name)) },
                 onConnect = connectionsViewModel::connect,
@@ -326,7 +331,11 @@ fun ForgeIdeApp(
             val detailsViewModel: ConnectionsViewModel = viewModel(
                 key = "connections",
                 factory = IdeViewModelFactory {
-                    ConnectionsViewModel(dependencies.connectionManager, dependencies.oauthBrowser)
+                    ConnectionsViewModel(
+                        manager = dependencies.connectionManager,
+                        browser = dependencies.oauthBrowser,
+                        setup = dependencies.integrationSetup,
+                    )
                 },
             )
             val detailsState by detailsViewModel.state.collectAsState()
@@ -337,14 +346,21 @@ fun ForgeIdeApp(
                 descriptor = detailsViewModel.descriptorOf(type),
                 connection = connection,
                 tools = detailsViewModel.toolsOf(type),
+                setup = detailsViewModel.setupOf(type, connection),
+                guide = detailsViewModel.guideOf(type),
                 busy = detailsViewModel.isBusy(connection?.id?.value ?: type.name),
                 authorizing = detailsViewModel.isAuthorizing(connection),
+                setupBusy = detailsViewModel.setupBusy,
                 onBack = { navController.popBackStack() },
                 onConnect = { detailsViewModel.connect(type) },
                 onReconnect = { connection?.let { detailsViewModel.reconnect(it.id.value) } },
                 onCancelAuthorization = { connection?.let { detailsViewModel.cancelAuthorization(it.id.value) } },
                 onDisconnect = { connection?.let { detailsViewModel.disconnect(it.id.value) } },
                 onVerify = { connection?.let { detailsViewModel.verify(it.id.value) } },
+                onSaveSetup = { clientId, broker ->
+                    detailsViewModel.saveSetup(type, clientId, broker)
+                },
+                onClearSetup = { detailsViewModel.clearSetup(type) },
                 onManage = {
                     navController.navigate(
                         IdeDestinations.connectionEditor(connection?.id?.value, type.name),

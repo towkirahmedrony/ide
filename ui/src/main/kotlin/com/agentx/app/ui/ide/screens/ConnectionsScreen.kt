@@ -43,6 +43,8 @@ import com.agentx.app.integrations.connection.ConnectionType
 import com.agentx.app.integrations.connection.InstalledTool
 import com.agentx.app.integrations.connection.ProviderAvailability
 import com.agentx.app.integrations.connection.ProviderDescriptor
+import com.agentx.app.integrations.setup.IntegrationLifecycle
+import com.agentx.app.integrations.setup.ProviderSetupSnapshot
 import com.agentx.app.ui.ide.components.IdeCard
 import com.agentx.app.ui.ide.components.IdeSectionLabel
 import com.agentx.app.ui.ide.components.IdeSpacer
@@ -78,6 +80,7 @@ fun ConnectionsScreen(
     busyKey: String?,
     message: String?,
     credentialsPersistent: Boolean,
+    setupOf: (ConnectionType, Connection?) -> ProviderSetupSnapshot? = { _, _ -> null },
     onBack: () -> Unit,
     onOpenService: (ConnectionType) -> Unit,
     onConnect: (ConnectionType) -> Unit,
@@ -151,11 +154,15 @@ fun ConnectionsScreen(
                     availability = availability,
                     descriptor = descriptor,
                     connection = connection,
+                    setup = setupOf(availability.type, connection),
                     enabledTools = tools.count { it.provider == availability.type && it.enabled },
                     busy = busyKey == availability.type.name || busyKey == connection?.id?.value,
                     onOpen = { onOpenService(availability.type) },
                     onPrimaryAction = {
+                        val snapshot = setupOf(availability.type, connection)
                         when {
+                            snapshot?.lifecycle == IntegrationLifecycle.NOT_CONFIGURED ->
+                                onOpenService(availability.type)
                             connection == null -> onConnect(availability.type)
                             connection.status == ConnectionStatus.CONNECTED -> onOpenService(availability.type)
                             connection.status.isAuthorizing -> onCancelAuthorization(connection.id.value)
@@ -185,6 +192,7 @@ private fun ServiceCard(
     availability: ProviderAvailability,
     descriptor: ProviderDescriptor?,
     connection: Connection?,
+    setup: ProviderSetupSnapshot?,
     enabledTools: Int,
     busy: Boolean,
     onOpen: () -> Unit,
@@ -193,6 +201,9 @@ private fun ServiceCard(
 ) {
     val status = connection?.status ?: ConnectionStatus.NOT_CONNECTED
     val connected = status == ConnectionStatus.CONNECTED
+    val lifecycle = setup?.lifecycle
+    val pillText = lifecycle?.displayName ?: status.displayName
+    val pillColor = lifecycle?.let { lifecycleColor(it) } ?: statusColor(status)
 
     IdeCard(modifier = Modifier.clickable(onClick = onOpen)) {
         Row(verticalAlignment = Alignment.Top) {
@@ -207,7 +218,7 @@ private fun ServiceCard(
                         fontWeight = FontWeight.SemiBold,
                     )
                     IdeSpacerW(8)
-                    IdeStatusPill(text = status.displayName, color = statusColor(status))
+                    IdeStatusPill(text = pillText, color = pillColor)
                 }
                 IdeSpacer(4)
                 Text(
@@ -220,7 +231,7 @@ private fun ServiceCard(
                     IdeSpacer(8)
                     CapabilityStrip(labels = labels.take(MAX_CARD_CAPABILITIES), more = labels.size - MAX_CARD_CAPABILITIES)
                 }
-                accountLine(status, connection, enabledTools)?.let { detail ->
+                accountLine(status, connection, enabledTools, setup)?.let { detail ->
                     IdeSpacer(8)
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         when (status) {
@@ -257,7 +268,7 @@ private fun ServiceCard(
                 onClick = onPrimaryAction,
                 enabled = !busy && availability.registered,
             ) {
-                Text(primaryLabel(availability, status, connected))
+                Text(primaryLabel(availability, status, connected, setup))
             }
             onDisconnect?.let { disconnect ->
                 OutlinedButton(onClick = disconnect, enabled = !busy) { Text("Disconnect") }
@@ -338,12 +349,14 @@ internal fun primaryLabel(
     availability: ProviderAvailability,
     status: ConnectionStatus,
     connected: Boolean,
+    setup: ProviderSetupSnapshot? = null,
 ): String = when {
     !availability.registered -> "Unavailable"
     connected -> "Manage"
     status.isAuthorizing -> "Cancel"
     status == ConnectionStatus.EXPIRED || status == ConnectionStatus.ERROR -> "Reconnect"
-    availability.supportsHostedAuthorization -> "Connect"
+    setup?.lifecycle == IntegrationLifecycle.NOT_CONFIGURED -> "Set Up"
+    availability.supportsHostedAuthorization || setup?.canConnect == true -> "Connect"
     else -> "Add Server"
 }
 
@@ -352,16 +365,26 @@ private fun accountLine(
     status: ConnectionStatus,
     connection: Connection?,
     enabledTools: Int,
-): String? = when (status) {
-    ConnectionStatus.CONNECTED -> listOfNotNull(
+    setup: ProviderSetupSnapshot? = null,
+): String? = when {
+    setup?.lifecycle == IntegrationLifecycle.NOT_CONFIGURED ->
+        "Client ID required. Open this service to set it up."
+    status == ConnectionStatus.CONNECTED -> listOfNotNull(
         connection?.accountLabel ?: "Connected",
         enabledTools.takeIf { it > 0 }?.let { "$it tools available to the agent" },
     ).joinToString(" · ")
-
-    ConnectionStatus.AUTHORIZING -> "Finish authorizing in your browser"
-    ConnectionStatus.VERIFYING -> "Verifying with the provider"
-    ConnectionStatus.ERROR, ConnectionStatus.EXPIRED -> connection?.statusMessage
+    status == ConnectionStatus.AUTHORIZING -> "Finish authorizing in your browser"
+    status == ConnectionStatus.VERIFYING -> "Verifying with the provider"
+    status == ConnectionStatus.ERROR || status == ConnectionStatus.EXPIRED -> connection?.statusMessage
     else -> connection?.statusMessage
+}
+
+internal fun lifecycleColor(lifecycle: IntegrationLifecycle): Color = when (lifecycle) {
+    IntegrationLifecycle.CONNECTED -> ForgeMint
+    IntegrationLifecycle.AUTHORIZING, IntegrationLifecycle.VERIFYING -> ForgePeriwinkle
+    IntegrationLifecycle.ERROR -> ForgeDanger
+    IntegrationLifecycle.EXPIRED, IntegrationLifecycle.DISCONNECTED, IntegrationLifecycle.NOT_CONFIGURED -> ForgeAmber
+    IntegrationLifecycle.READY_TO_CONNECT -> ForgeMuted
 }
 
 internal fun statusColor(status: ConnectionStatus): Color = when (status) {

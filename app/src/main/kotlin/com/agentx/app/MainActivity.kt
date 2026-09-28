@@ -22,8 +22,11 @@ import com.agentx.app.core.foundation.ServiceKeys
 import com.agentx.app.foundation.ConnectionManagerToolAuthorizer
 import com.agentx.app.foundation.Foundation
 import com.agentx.app.foundation.IntegrationToolSynchronizer
+import com.agentx.app.integrations.android.SharedPreferencesIntegrationSetupStore
+import com.agentx.app.integrations.oauth.OAuthCallbackAuthority
 import com.agentx.app.integrations.providers.ConnectionProviders
 import com.agentx.app.integrations.oauth.UrlConnectionOAuthHttpClient
+import com.agentx.app.integrations.setup.IntegrationSetupManager
 import com.agentx.app.oauth.IntentOAuthBrowserLauncher
 import com.agentx.app.tools.ToolRegistry
 import com.agentx.app.ui.ide.data.OAuthCallbackInbox
@@ -78,6 +81,16 @@ class MainActivity : ComponentActivity() {
         // and the active connection. Its status is surfaced from Settings → About →
         // Developer information.
         val oauthConfig = buildOAuthConfig()
+        val callbacks = OAuthCallbackAuthority.from(
+            scheme = BuildConfig.OAUTH_REDIRECT_SCHEME,
+            host = BuildConfig.OAUTH_REDIRECT_HOST,
+        )
+        val built = ConnectionProviders.fromConfig(
+            config = oauthConfig,
+            http = UrlConnectionOAuthHttpClient(),
+            callbacks = callbacks,
+            setupStore = SharedPreferencesIntegrationSetupStore(applicationContext),
+        )
         val foundation = Foundation.boot(
             config = ForgeConfig(oauth = oauthConfig),
             presetStore = SharedPreferencesModelPresetStore(applicationContext),
@@ -85,16 +98,16 @@ class MainActivity : ComponentActivity() {
             connectionStore = SharedPreferencesConnectionStore(applicationContext),
             connectionSecretStore = KeystoreConnectionSecretStore(applicationContext),
             runtimeOutput = runtimeOutput,
-            // Official providers, configured from the build. Missing client ids are
-            // reported in the Connections page instead of failing at connect time.
-            connectionProviders = ConnectionProviders.fromConfig(
-                config = oauthConfig,
-                http = UrlConnectionOAuthHttpClient(),
-            ),
+            connectionProviders = built.registry,
+            integrationSetup = built.setup,
         )
 
         val modelManager = foundation.services.get<ModelManager>(ServiceKeys.MODEL_MANAGER)
         val connectionManager = foundation.services.get<ConnectionManager>(ServiceKeys.CONNECTION_MANAGER)
+        val integrationSetup = foundation.services.get<IntegrationSetupManager>(ServiceKeys.INTEGRATION_SETUP)
+        integrationSetup?.let { manager ->
+            backgroundScope.launch { manager.refresh() }
+        }
 
         // Provider tools are installed while a connection provides what they need and
         // removed when it is disconnected.
@@ -171,6 +184,7 @@ class MainActivity : ComponentActivity() {
                         git = MockGitRepository(),
                         modelManager = checkNotNull(modelManager) { "Model manager is not registered" },
                         connectionManager = checkNotNull(connectionManager) { "Connection manager is not registered" },
+                        integrationSetup = integrationSetup,
                         oauthBrowser = IntentOAuthBrowserLauncher(applicationContext),
                         oauthCallbacks = oauthCallbacks,
                         modelRunnerBrowser = modelRunnerBrowser,

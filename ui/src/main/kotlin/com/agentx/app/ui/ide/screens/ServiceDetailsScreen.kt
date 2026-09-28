@@ -10,9 +10,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -22,6 +24,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.agentx.app.integrations.connection.Connection
@@ -32,9 +35,11 @@ import com.agentx.app.integrations.connection.InstalledTool
 import com.agentx.app.integrations.connection.ProviderAvailability
 import com.agentx.app.integrations.connection.ProviderCapabilityInfo
 import com.agentx.app.integrations.connection.ProviderDescriptor
+import com.agentx.app.integrations.setup.IntegrationLifecycle
+import com.agentx.app.integrations.setup.ProviderSetupGuide
+import com.agentx.app.integrations.setup.ProviderSetupSnapshot
 import com.agentx.app.ui.ide.components.IdeCard
 import com.agentx.app.ui.ide.components.IdeDivider
-import com.agentx.app.ui.ide.components.IdeLabelValue
 import com.agentx.app.ui.ide.components.IdeSectionLabel
 import com.agentx.app.ui.ide.components.IdeSpacer
 import com.agentx.app.ui.ide.components.IdeSpacerW
@@ -62,20 +67,28 @@ fun ServiceDetailsScreen(
     descriptor: ProviderDescriptor?,
     connection: Connection?,
     tools: List<InstalledTool>,
+    setup: ProviderSetupSnapshot? = null,
+    guide: ProviderSetupGuide? = null,
     busy: Boolean,
     authorizing: Boolean,
+    setupBusy: Boolean = false,
     onBack: () -> Unit,
     onConnect: () -> Unit,
     onReconnect: () -> Unit,
     onCancelAuthorization: () -> Unit,
     onDisconnect: () -> Unit,
     onVerify: () -> Unit,
+    onSaveSetup: (clientId: String, brokerUrl: String?) -> Unit = { _, _ -> },
+    onClearSetup: () -> Unit = {},
     onManage: () -> Unit,
 ) {
     var confirmDisconnect by remember { mutableStateOf(false) }
     val status = connection?.status ?: ConnectionStatus.NOT_CONNECTED
     val connected = status == ConnectionStatus.CONNECTED
     val granted = connection?.capabilities.orEmpty()
+    val lifecycle = setup?.lifecycle
+    val pillText = lifecycle?.displayName ?: statusLabel(status, connected)
+    val pillColor = lifecycle?.let { lifecycleColor(it) } ?: statusColor(status)
 
     Column(
         modifier = Modifier
@@ -98,7 +111,7 @@ fun ServiceDetailsScreen(
                     fontWeight = FontWeight.SemiBold,
                 )
                 IdeSpacerW(10)
-                IdeStatusPill(text = statusLabel(status, connected), color = statusColor(status))
+                IdeStatusPill(text = pillText, color = pillColor)
             }
 
             IdeSpacer(8)
@@ -124,6 +137,21 @@ fun ServiceDetailsScreen(
                         color = ForgeAmber,
                     )
                 }
+            }
+
+            if (setup != null && type != ConnectionType.MCP_SERVER && type != ConnectionType.CUSTOM_API) {
+                IdeSpacer(16)
+                SetupCard(
+                    setup = setup,
+                    busy = setupBusy,
+                    onSave = onSaveSetup,
+                    onClear = onClearSetup,
+                )
+            }
+
+            guide?.let { instructions ->
+                IdeSpacer(16)
+                HowToCard(guide = instructions)
             }
 
             IdeSpacer(16)
@@ -206,6 +234,8 @@ fun ServiceDetailsScreen(
                 connected = connected,
                 busy = busy,
                 authorizing = authorizing,
+                canConnect = setup?.canConnect != false &&
+                    lifecycle != IntegrationLifecycle.NOT_CONFIGURED,
                 onConnect = onConnect,
                 onReconnect = onReconnect,
                 onCancelAuthorization = onCancelAuthorization,
@@ -250,6 +280,7 @@ private fun ActionRow(
     connected: Boolean,
     busy: Boolean,
     authorizing: Boolean,
+    canConnect: Boolean,
     onConnect: () -> Unit,
     onReconnect: () -> Unit,
     onCancelAuthorization: () -> Unit,
@@ -294,22 +325,13 @@ private fun ActionRow(
                 )
             }
 
-            availability.supportsHostedAuthorization && !availability.configured -> {
+            !canConnect -> {
                 Text(
                     text = availability.unavailableReason
-                        ?: "This build is not configured for ${availability.displayName} authorization.",
+                        ?: "Save a Client ID above, then connect ${availability.displayName}.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = ForgeAmber,
                 )
-                IdeSpacer(8)
-                Text(
-                    text = "You can still add a personal access token, which is verified with the " +
-                        "provider before it is stored.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = ForgeMuted,
-                )
-                IdeSpacer(8)
-                OutlinedButton(onClick = onManage, enabled = !busy) { Text("Use API key / token") }
             }
 
             else -> {
@@ -380,6 +402,118 @@ private fun ToolRow(tool: InstalledTool) {
 private fun statusLabel(status: ConnectionStatus, connected: Boolean): String = when {
     connected -> "Connected"
     else -> status.displayName
+}
+
+@Composable
+private fun SetupCard(
+    setup: ProviderSetupSnapshot,
+    busy: Boolean,
+    onSave: (clientId: String, brokerUrl: String?) -> Unit,
+    onClear: () -> Unit,
+) {
+    var clientId by remember(setup.clientId) { mutableStateOf(setup.clientId) }
+    var broker by remember(setup.exchangeBrokerUrl) { mutableStateOf(setup.exchangeBrokerUrl.orEmpty()) }
+    IdeSectionLabel("Integration setup")
+    IdeSpacer(8)
+    IdeCard {
+        Text(
+            text = "Client ID is a public value. A client secret is never stored here.",
+            style = MaterialTheme.typography.bodySmall,
+            color = ForgeMuted,
+        )
+        IdeSpacer(10)
+        Text(
+            text = "Callback URL",
+            style = MaterialTheme.typography.labelSmall,
+            color = ForgeMuted,
+        )
+        IdeSpacer(4)
+        SelectionContainer {
+            Text(
+                text = setup.callbackUri,
+                style = MaterialTheme.typography.bodyMedium,
+                color = ForgeInk,
+            )
+        }
+        IdeSpacer(10)
+        OutlinedTextField(
+            value = clientId,
+            onValueChange = { clientId = it },
+            label = { Text("Client ID") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+        )
+        IdeSpacer(8)
+        OutlinedTextField(
+            value = broker,
+            onValueChange = { broker = it },
+            label = { Text("Exchange broker URL (optional)") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+        )
+        IdeSpacer(10)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = { onSave(clientId, broker.takeIf { it.isNotBlank() }) },
+                enabled = !busy && clientId.isNotBlank(),
+            ) { Text("Save Client ID") }
+            if (setup.clientIdConfigured) {
+                OutlinedButton(onClick = onClear, enabled = !busy) { Text("Clear") }
+            }
+        }
+        if (!setup.validation.complete) {
+            IdeSpacer(8)
+            Text(
+                text = setup.validation.summary,
+                style = MaterialTheme.typography.bodySmall,
+                color = ForgeAmber,
+            )
+        }
+    }
+}
+
+@Composable
+private fun HowToCard(guide: ProviderSetupGuide) {
+    val uriHandler = LocalUriHandler.current
+    IdeSectionLabel("How to set up")
+    IdeSpacer(8)
+    IdeCard {
+        Text(
+            text = guide.title,
+            style = MaterialTheme.typography.titleSmall,
+            color = ForgeInk,
+            fontWeight = FontWeight.SemiBold,
+        )
+        IdeSpacer(4)
+        Text(
+            text = guide.summary,
+            style = MaterialTheme.typography.bodyMedium,
+            color = ForgeMuted,
+        )
+        IdeSpacer(10)
+        guide.steps.forEach { step ->
+            Text(
+                text = "${step.number}. ${step.text}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = ForgeInk,
+            )
+            IdeSpacer(4)
+        }
+        if (guide.developerSettingsUrl != null && guide.developerSettingsLabel != null) {
+            IdeSpacer(6)
+            TextButton(onClick = { uriHandler.openUri(guide.developerSettingsUrl) }) {
+                Text(guide.developerSettingsLabel)
+            }
+        }
+        guide.notes.forEach { note ->
+            IdeSpacer(4)
+            Text(
+                text = note,
+                style = MaterialTheme.typography.bodySmall,
+                color = ForgeMuted,
+            )
+        }
+    }
 }
 
 private fun declaredCapabilities(type: ConnectionType): List<ProviderCapabilityInfo> =

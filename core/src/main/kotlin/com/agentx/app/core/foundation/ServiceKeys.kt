@@ -23,4 +23,7 @@ object ServiceKeys {
 
     /** Hands a credential to a service client without exposing it to the agent. */
     const val CONNECTION_CREDENTIAL_GATEWAY = "forge.integrations.credentialGateway"
+
+    /** Personal provider setup: Client IDs and callback URIs for this IDE. */
+    const val INTEGRATION_SETUP = "forge.integrations.setup"
 }
