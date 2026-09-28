@@ -85,7 +85,7 @@ class ProviderTool(
             put("provider", entry.connectionType.name.lowercase())
             put("implemented", entry.implemented.toString())
             put("mutating", entry.mutating.toString())
-            put("capability", entry.connectionCapability.name.lowercase())
+            put("capability", entry.connectionCapability.id.lowercase())
         },
         connectionRequirement = ToolConnectionRequirement(
             type = entry.connectionType,

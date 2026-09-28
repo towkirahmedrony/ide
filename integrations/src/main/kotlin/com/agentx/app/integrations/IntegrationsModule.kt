@@ -5,12 +5,11 @@ import com.agentx.app.core.module.ForgeModule
 import com.agentx.app.core.module.ModuleContext
 import com.agentx.app.integrations.connection.ConnectionCredentialGateway
 import com.agentx.app.integrations.connection.ConnectionManager
-import com.agentx.app.integrations.connection.ConnectionManagers
 import com.agentx.app.integrations.connection.ConnectionProviderRegistry
 import com.agentx.app.integrations.connection.ConnectionSecretStore
 import com.agentx.app.integrations.connection.ConnectionStore
 import com.agentx.app.integrations.connection.ConnectionTester
-import com.agentx.app.integrations.connection.DefaultIntegrationRegistry
+import com.agentx.app.integrations.connection.DefaultConnectionManager
 import com.agentx.app.integrations.connection.DispatchingConnectionTester
 import com.agentx.app.integrations.connection.InMemoryConnectionSecretStore
 import com.agentx.app.integrations.connection.InMemoryConnectionStore
@@ -73,4 +72,16 @@ object ConnectionManagers {
         idFactory = idFactory,
         ioDispatcher = ioDispatcher,
     )
+}
+
+/** In-memory [IntegrationRegistry] used until later tasks register live integrations. */
+class DefaultIntegrationRegistry : IntegrationRegistry {
+
+    private val items = LinkedHashMap<String, Integration>()
+
+    override fun register(integration: Integration) {
+        items[integration.descriptor.id] = integration
+    }
+
+    override fun descriptors(): List<IntegrationDescriptor> = items.values.map { it.descriptor }
 }
