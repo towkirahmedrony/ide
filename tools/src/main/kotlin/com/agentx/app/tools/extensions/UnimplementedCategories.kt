@@ -3,6 +3,9 @@ package com.agentx.app.tools.extensions
 import com.agentx.app.tools.Tool
 import com.agentx.app.tools.ToolCapability
 import com.agentx.app.tools.ToolCategory
+import com.agentx.app.tools.ToolConnectionCapability
+import com.agentx.app.tools.ToolConnectionRequirement
+import com.agentx.app.tools.ToolConnectionType
 import com.agentx.app.tools.ToolDefinition
 import com.agentx.app.tools.ToolErrorCode
 import com.agentx.app.tools.ToolExecutionContext
@@ -85,3 +88,59 @@ class McpToolStub : UnavailableCategoryTool(
     capabilities = setOf(ToolCapability.NETWORK),
     required = setOf(ToolPermissionLevel.NETWORK),
 )
+
+/**
+ * Future GitHub tool. Requires a GITHUB connection with repository_read.
+ * Not registered and not implemented in this task.
+ */
+class GitHubToolStub : Tool {
+    override val definition = ToolDefinition(
+        name = "github",
+        description = "Reserved for GitHub. Requires a GitHub connection with repository_read.",
+        permission = ToolPermissionDecision.DENY,
+        capabilities = setOf(ToolCapability.NETWORK, ToolCapability.GIT),
+        category = ToolCategory.GIT,
+        requiredPermissions = setOf(ToolPermissionLevel.NETWORK),
+        metadata = mapOf("implemented" to "false"),
+        connectionRequirement = ToolConnectionRequirement(
+            type = ToolConnectionType.GITHUB,
+            capability = ToolConnectionCapability.REPOSITORY_READ,
+        ),
+    )
+
+    override suspend fun execute(input: ToolInput, context: ToolExecutionContext): ToolOutput {
+        throw ToolExecutionError(
+            code = ToolErrorCode.PERMISSION_DENIED,
+            message = "'${definition.name}' is not enabled yet",
+            toolName = definition.name,
+        )
+    }
+}
+
+/**
+ * Future Supabase tool. Requires a SUPABASE connection with database_read.
+ * Not registered and not implemented in this task.
+ */
+class SupabaseToolStub : Tool {
+    override val definition = ToolDefinition(
+        name = "supabase",
+        description = "Reserved for Supabase. Requires a Supabase connection with database_read.",
+        permission = ToolPermissionDecision.DENY,
+        capabilities = setOf(ToolCapability.NETWORK),
+        category = ToolCategory.OTHER,
+        requiredPermissions = setOf(ToolPermissionLevel.NETWORK),
+        metadata = mapOf("implemented" to "false"),
+        connectionRequirement = ToolConnectionRequirement(
+            type = ToolConnectionType.SUPABASE,
+            capability = ToolConnectionCapability.DATABASE_READ,
+        ),
+    )
+
+    override suspend fun execute(input: ToolInput, context: ToolExecutionContext): ToolOutput {
+        throw ToolExecutionError(
+            code = ToolErrorCode.PERMISSION_DENIED,
+            message = "'${definition.name}' is not enabled yet",
+            toolName = definition.name,
+        )
+    }
+}

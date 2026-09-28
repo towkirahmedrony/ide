@@ -14,4 +14,7 @@ object ServiceKeys {
     const val MODEL_MANAGER = "forge.model.manager"
     const val AGENT_ORCHESTRATOR = "forge.agent.orchestrator"
     const val AGENT_REGISTRY = "forge.agent.registry"
+    const val CONNECTION_MANAGER = "forge.integrations.connectionManager"
+    const val INTEGRATION_REGISTRY = "forge.integrations.registry"
+    const val TOOL_CONNECTION_AUTHORIZER = "forge.tools.connectionAuthorizer"
 }

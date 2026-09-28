@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Handyman
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Security
@@ -52,6 +53,7 @@ enum class SettingsSection(
     val icon: ImageVector,
 ) {
     MODEL("model", "Models", "Saved models, runners and the active connection", Icons.Filled.Memory),
+    CONNECTIONS("connections", "Connections", "External services the agent may use through tools", Icons.Filled.Hub),
     AGENT("agent", "Agent", "Instructions, autonomy and generation limits", Icons.Filled.AutoAwesome),
     TOOLS("tools", "Tools", "Enable or disable agent tools", Icons.Filled.Handyman),
     PERMISSIONS("permissions", "Permissions", "Allow, ask or deny per capability", Icons.Filled.Security),

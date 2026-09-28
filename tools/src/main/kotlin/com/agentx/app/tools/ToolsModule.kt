@@ -13,6 +13,7 @@ class ToolsModule(
     private val tools: List<Tool> = emptyList(),
     private val policy: ToolPermissionPolicy = ToolPermissionPolicy.default(),
     private val workspaces: WorkspaceFileSystemResolver = DelegatingWorkspaceFileSystemResolver(),
+    private val connections: ToolConnectionAuthorizer = DelegatingToolConnectionAuthorizer(),
 ) : ForgeModule {
 
     private val registry = DefaultToolRegistry()
@@ -24,8 +25,12 @@ class ToolsModule(
         BuiltinTools.filesystem(resolver).forEach(registry::register)
         tools.forEach(registry::register)
         context.services.register(ServiceKeys.TOOL_REGISTRY, registry)
-        context.services.register(ServiceKeys.TOOL_ROUTER, DefaultToolRouter(registry, policy))
+        context.services.register(
+            ServiceKeys.TOOL_ROUTER,
+            DefaultToolRouter(registry = registry, policy = policy, connections = connections),
+        )
         context.services.register(ServiceKeys.TOOL_PERMISSION_POLICY, policy)
         context.services.register(ServiceKeys.TOOL_WORKSPACE_RESOLVER, resolver)
+        context.services.register(ServiceKeys.TOOL_CONNECTION_AUTHORIZER, connections)
     }
 }

@@ -16,6 +16,18 @@ enum class ForgeErrorCode {
     MODEL_OPERATION_FAILED,
     /** No runner is registered for the preset's provider type. */
     MODEL_RUNNER_UNAVAILABLE,
+    /** A connection failed validation. */
+    CONNECTION_INVALID,
+    /** No connection exists for the requested id. */
+    CONNECTION_NOT_FOUND,
+    /** A connection with the same identity already exists. */
+    CONNECTION_DUPLICATE,
+    /** A connection lifecycle operation did not succeed. */
+    CONNECTION_OPERATION_FAILED,
+    /** A tool requested a connection that is missing, disabled, or unauthorized. */
+    CONNECTION_UNAUTHORIZED,
+    /** The connection type has no tester implementation yet. */
+    CONNECTION_TEST_UNSUPPORTED,
     UNKNOWN,
 }
 

@@ -107,6 +107,12 @@ data class ToolDefinition(
     val metadata: Map<String, String> = emptyMap(),
     val category: ToolCategory = ToolCategory.OTHER,
     val requiredPermissions: Set<ToolPermissionLevel> = emptySet(),
+    /**
+     * External connection a future tool may require. The Connection Manager
+     * verifies type, enabled state, capability and credential presence; the
+     * tool never receives the secret.
+     */
+    val connectionRequirement: ToolConnectionRequirement? = null,
 ) {
     init {
         require(name.isNotBlank()) { "Tool name must not be blank" }

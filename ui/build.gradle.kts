@@ -33,6 +33,8 @@ dependencies {
     api(project(":context"))
     // The Models screen talks to the Model Manager domain contract directly.
     api(project(":model"))
+    // The Connections screen talks to the Connection Manager domain contract.
+    api(project(":integrations"))
 
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.viewmodel.ktx)

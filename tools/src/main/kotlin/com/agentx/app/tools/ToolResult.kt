@@ -12,6 +12,7 @@ enum class ToolErrorCode {
     TIMEOUT,
     CANCELLED,
     WORKSPACE_UNAVAILABLE,
+    CONNECTION_UNAUTHORIZED,
 }
 
 /**

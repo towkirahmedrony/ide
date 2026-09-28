@@ -19,6 +19,11 @@ import com.agentx.app.core.logging.ForgeLoggers
 import com.agentx.app.core.module.ModuleRegistry
 import com.agentx.app.git.GIT_LAYER
 import com.agentx.app.integrations.INTEGRATIONS_LAYER
+import com.agentx.app.integrations.IntegrationsModule
+import com.agentx.app.integrations.connection.ConnectionSecretStore
+import com.agentx.app.integrations.connection.ConnectionStore
+import com.agentx.app.integrations.connection.InMemoryConnectionSecretStore
+import com.agentx.app.integrations.connection.InMemoryConnectionStore
 import com.agentx.app.model.MODEL_LAYER
 import com.agentx.app.model.ModelModule
 import com.agentx.app.model.manager.ModelRuntimeModule
@@ -58,6 +63,8 @@ object Foundation {
         config: ForgeConfig = ForgeConfig(),
         presetStore: ModelPresetStore = InMemoryModelPresetStore(),
         secretStore: ModelSecretStore = InMemoryModelSecretStore(),
+        connectionStore: ConnectionStore = InMemoryConnectionStore(),
+        connectionSecretStore: ConnectionSecretStore = InMemoryConnectionSecretStore(),
         runtimeOutput: RuntimeOutputBuffer = RuntimeOutputBuffer(),
         monitorModelConnections: Boolean = true,
         contextWorkspace: WorkspaceContextProvider = DelegatingWorkspaceContextProvider(),
@@ -89,6 +96,14 @@ object Foundation {
         // The Context Engine is registered before the Agent Core, which reads
         // it from the container to build its run context.
         modules.register(ContextModule(workspace = contextWorkspace))
+        // External service connections live beside the tool system; the agent
+        // never receives credentials, only authorized capability handles.
+        modules.register(
+            IntegrationsModule(
+                connectionStore = connectionStore,
+                secretStore = connectionSecretStore,
+            ),
+        )
         modules.register(AgentModule())
         modules.initialize(services)
 
@@ -97,6 +112,7 @@ object Foundation {
             .register { moduleCheck(modules, services) }
             .register { architectureCheck(layers) }
             .register { modelCheck(services) }
+            .register { connectionsCheck(services) }
             .run()
 
         logger.info("Foundation ready", mapOf("layers" to layers.size, "status" to health.status))

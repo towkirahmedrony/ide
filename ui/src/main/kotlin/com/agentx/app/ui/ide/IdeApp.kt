@@ -22,6 +22,8 @@ import com.agentx.app.ui.ide.components.IdeEmptyState
 import com.agentx.app.ui.ide.components.IdeTopBar
 import com.agentx.app.ui.ide.nav.IdeDestinations
 import com.agentx.app.ui.ide.screens.AboutScreen
+import com.agentx.app.ui.ide.screens.ConnectionEditorScreen
+import com.agentx.app.ui.ide.screens.ConnectionsScreen
 import com.agentx.app.ui.ide.screens.DeveloperScreen
 import com.agentx.app.ui.ide.screens.HomeScreen
 import com.agentx.app.ui.ide.screens.ModelEditorScreen
@@ -31,6 +33,8 @@ import com.agentx.app.ui.ide.screens.SettingsDetailScreen
 import com.agentx.app.ui.ide.screens.SettingsScreen
 import com.agentx.app.ui.ide.screens.SettingsSection
 import com.agentx.app.ui.ide.screens.WorkspaceShell
+import com.agentx.app.ui.ide.state.ConnectionEditorViewModel
+import com.agentx.app.ui.ide.state.ConnectionsViewModel
 import com.agentx.app.ui.ide.state.HomeViewModel
 import com.agentx.app.ui.ide.state.IdeViewModelFactory
 import com.agentx.app.ui.ide.state.ModelEditorViewModel
@@ -101,6 +105,7 @@ fun ForgeIdeApp(
                     val route = when (section) {
                         // The Model section is the Model Manager, not a placeholder.
                         SettingsSection.MODEL -> IdeDestinations.MODELS
+                        SettingsSection.CONNECTIONS -> IdeDestinations.CONNECTIONS
                         SettingsSection.ABOUT -> IdeDestinations.ABOUT
                         else -> IdeDestinations.settingsDetail(section.id)
                     }
@@ -248,6 +253,52 @@ fun ForgeIdeApp(
                 onDismissMessage = runnerViewModel::dismissMessage,
                 onCreateView = { runnerViewModel.createView(notebookUrl, preset.tunnel.marker) },
                 onSessionDetached = { runnerViewModel.onSessionAttached(false) },
+            )
+        }
+
+        composable(IdeDestinations.CONNECTIONS) {
+            val connectionsViewModel: ConnectionsViewModel = viewModel(
+                factory = IdeViewModelFactory { ConnectionsViewModel(dependencies.connectionManager) },
+            )
+            val connectionsState by connectionsViewModel.state.collectAsState()
+            ConnectionsScreen(
+                state = connectionsState,
+                busyConnectionId = connectionsViewModel.busyConnectionId,
+                message = connectionsViewModel.message,
+                credentialsPersistent = connectionsViewModel.credentialsPersistent,
+                onBack = { navController.popBackStack() },
+                onAddConnection = { navController.navigate(IdeDestinations.connectionEditor()) },
+                onEdit = { id -> navController.navigate(IdeDestinations.connectionEditor(id)) },
+                onTest = connectionsViewModel::test,
+                onSetEnabled = connectionsViewModel::setEnabled,
+                onDelete = connectionsViewModel::delete,
+                onRefresh = connectionsViewModel::refresh,
+                onDismissMessage = connectionsViewModel::dismissMessage,
+            )
+        }
+
+        composable(
+            route = IdeDestinations.CONNECTION_EDITOR,
+            arguments = listOf(navArgument(IdeDestinations.ARG_CONNECTION_ID) { type = NavType.StringType }),
+        ) { entry ->
+            val raw = entry.arguments?.getString(IdeDestinations.ARG_CONNECTION_ID)
+            val connectionId = raw?.takeIf { it.isNotBlank() && it != IdeDestinations.NEW_CONNECTION }
+            val editorViewModel: ConnectionEditorViewModel = viewModel(
+                key = "connection-editor-${raw.orEmpty()}",
+                factory = IdeViewModelFactory {
+                    ConnectionEditorViewModel(dependencies.connectionManager, connectionId)
+                },
+            )
+            val editorState = editorViewModel.state
+            LaunchedEffect(editorState.saved) {
+                if (editorState.saved) navController.popBackStack()
+            }
+            ConnectionEditorScreen(
+                state = editorState,
+                onBack = { navController.popBackStack() },
+                onEdit = editorViewModel::edit,
+                onSave = editorViewModel::save,
+                onRemoveCredential = editorViewModel::removeStoredCredential,
             )
         }
 

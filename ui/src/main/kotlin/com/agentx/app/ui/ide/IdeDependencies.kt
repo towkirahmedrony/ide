@@ -1,6 +1,8 @@
 package com.agentx.app.ui.ide
 
 import com.agentx.app.context.WorkspaceSelectionState
+import com.agentx.app.integrations.ConnectionManagers
+import com.agentx.app.integrations.connection.ConnectionManager
 import com.agentx.app.model.manager.ModelManager
 import com.agentx.app.model.manager.ModelManagers
 import com.agentx.app.model.runtime.RuntimeOutputBuffer
@@ -37,6 +39,7 @@ data class IdeDependencies(
     val terminal: TerminalSession,
     val git: GitRepository,
     val modelManager: ModelManager,
+    val connectionManager: ConnectionManager,
     val modelRunnerBrowser: ModelRunnerBrowserHost,
     /** Captured model-runtime output; shared with the manager's endpoint discovery. */
     val modelRuntimeOutput: RuntimeOutputBuffer,
@@ -56,6 +59,7 @@ data class IdeDependencies(
                     runtimeOutput = runtimeOutput,
                     monitorEnabled = false,
                 ),
+                connectionManager = ConnectionManagers.create(),
                 modelRunnerBrowser = MockModelRunnerBrowser(),
                 modelRuntimeOutput = runtimeOutput,
             )

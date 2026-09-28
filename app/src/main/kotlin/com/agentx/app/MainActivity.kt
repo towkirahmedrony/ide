@@ -14,12 +14,17 @@ import com.agentx.app.context.DelegatingWorkspaceContextProvider
 import com.agentx.app.context.WorkspaceRuntimeContextProvider
 import com.agentx.app.context.WorkspaceSelectionState
 import com.agentx.app.core.foundation.ServiceKeys
+import com.agentx.app.foundation.ConnectionManagerToolAuthorizer
 import com.agentx.app.foundation.Foundation
 import com.agentx.app.model.ModelConfig
 import com.agentx.app.model.manager.ModelManager
+import com.agentx.app.integrations.android.KeystoreConnectionSecretStore
+import com.agentx.app.integrations.android.SharedPreferencesConnectionStore
+import com.agentx.app.integrations.connection.ConnectionManager
 import com.agentx.app.model.android.KeystoreModelSecretStore
 import com.agentx.app.model.android.SharedPreferencesModelPresetStore
 import com.agentx.app.model.runtime.RuntimeOutputBuffer
+import com.agentx.app.tools.DelegatingToolConnectionAuthorizer
 import com.agentx.app.tools.DelegatingWorkspaceFileSystemResolver
 import com.agentx.app.tools.WorkspaceManagerFileSystemResolver
 import com.agentx.app.ui.ide.ForgeIdeApp
@@ -50,10 +55,13 @@ class MainActivity : ComponentActivity() {
         val foundation = Foundation.boot(
             presetStore = SharedPreferencesModelPresetStore(applicationContext),
             secretStore = KeystoreModelSecretStore(applicationContext),
+            connectionStore = SharedPreferencesConnectionStore(applicationContext),
+            connectionSecretStore = KeystoreConnectionSecretStore(applicationContext),
             runtimeOutput = runtimeOutput,
         )
 
         val modelManager = foundation.services.get<ModelManager>(ServiceKeys.MODEL_MANAGER)
+        val connectionManager = foundation.services.get<ConnectionManager>(ServiceKeys.CONNECTION_MANAGER)
 
         // Android cannot run foreground network monitoring forever, so the manager
         // is told when the app is actually visible and re-checks on return.
@@ -86,6 +94,16 @@ class MainActivity : ComponentActivity() {
                         is DelegatingWorkspaceFileSystemResolver ->
                             resolver.bind(WorkspaceManagerFileSystemResolver(workspaceManager))
                     }
+                    when (
+                        val authorizer = foundation.services.get<Any>(ServiceKeys.TOOL_CONNECTION_AUTHORIZER)
+                    ) {
+                        is DelegatingToolConnectionAuthorizer ->
+                            authorizer.bind(
+                                ConnectionManagerToolAuthorizer(
+                                    checkNotNull(connectionManager) { "Connection manager is not registered" },
+                                ),
+                            )
+                    }
                     // The Context Engine is pointed at the same live workspace, so
                     // it can see the selected and recently used files.
                     val selection = WorkspaceSelectionState()
@@ -105,6 +123,7 @@ class MainActivity : ComponentActivity() {
                         terminal = MockTerminalSession(),
                         git = MockGitRepository(),
                         modelManager = checkNotNull(modelManager) { "Model manager is not registered" },
+                        connectionManager = checkNotNull(connectionManager) { "Connection manager is not registered" },
                         modelRunnerBrowser = modelRunnerBrowser,
                         modelRuntimeOutput = runtimeOutput,
                     )

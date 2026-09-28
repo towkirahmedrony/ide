@@ -46,6 +46,15 @@ internal fun modelCheck(services: ServiceContainer): HealthCheckResult {
     )
 }
 
+internal fun connectionsCheck(services: ServiceContainer): HealthCheckResult {
+    val hasManager = services.has(ServiceKeys.CONNECTION_MANAGER)
+    return HealthCheckResult(
+        name = "connections",
+        status = if (hasManager) HealthStatus.HEALTHY else HealthStatus.UNHEALTHY,
+        message = "manager=${if (hasManager) "ready" else "missing"}",
+    )
+}
+
 internal fun architectureCheck(layers: List<LayerDescriptor>): HealthCheckResult {
     val ids = layers.map { it.id }
     val valid = ids.isNotEmpty() && ids.size == ids.toSet().size

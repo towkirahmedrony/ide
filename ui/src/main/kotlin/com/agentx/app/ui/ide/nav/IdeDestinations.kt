@@ -26,6 +26,15 @@ object IdeDestinations {
     /** Sentinel for "the user is adding a model" in [MODEL_EDITOR]. */
     const val NEW_MODEL = "new"
 
+    /** Saved external-service connections. */
+    const val CONNECTIONS = "connections"
+
+    const val CONNECTION_EDITOR = "connections/editor/{connectionId}"
+    const val ARG_CONNECTION_ID = "connectionId"
+
+    /** Sentinel for "the user is adding a connection" in [CONNECTION_EDITOR]. */
+    const val NEW_CONNECTION = "new"
+
     fun workspace(workspaceId: String): String = "workspace/$workspaceId"
 
     fun settingsDetail(sectionId: String): String = "settings/$sectionId"
@@ -33,4 +42,7 @@ object IdeDestinations {
     fun modelEditor(presetId: String? = null): String = "models/editor/${presetId ?: NEW_MODEL}"
 
     fun modelRunner(presetId: String): String = "models/runner/$presetId"
+
+    fun connectionEditor(connectionId: String? = null): String =
+        "connections/editor/${connectionId ?: NEW_CONNECTION}"
 }

@@ -28,6 +28,7 @@ class DefaultToolRouter(
     private val registry: ToolRegistry,
     private val policy: ToolPermissionPolicy = ToolPermissionPolicy.default(),
     private val executor: ToolExecutor = DefaultToolExecutor(),
+    private val connections: ToolConnectionAuthorizer = MissingToolConnectionAuthorizer,
 ) : ToolRouter {
 
     override suspend fun invoke(
@@ -68,6 +69,27 @@ class DefaultToolRouter(
                     ),
                 ),
             )
+        }
+
+        val requirement = tool.definition.connectionRequirement
+        if (requirement != null) {
+            val authorization = connections.authorize(requirement, connectionId = null)
+            if (authorization is ToolConnectionAuthorization.Denied) {
+                val error = authorization.error
+                return ToolResult.Failure(
+                    toolName = toolName,
+                    error = ToolExecutionError(
+                        code = ToolErrorCode.CONNECTION_UNAUTHORIZED,
+                        message = error.message,
+                        toolName = toolName,
+                        details = mapOf(
+                            "denial" to Json.of(error.denial.name),
+                            "type" to Json.of(error.type.name),
+                            "capability" to Json.of(error.capability.id),
+                        ),
+                    ),
+                )
+            }
         }
 
         val permission = policy.evaluate(ToolPermissionRequest(tool.definition, input, executionContext))

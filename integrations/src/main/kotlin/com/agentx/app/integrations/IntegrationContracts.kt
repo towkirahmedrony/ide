@@ -76,6 +76,6 @@ interface IntegrationRegistry {
 val INTEGRATIONS_LAYER = LayerDescriptor(
     id = "integrations",
     title = "Integrations",
-    summary = "Connects MCP servers, web search, and browser sessions to the tool system.",
-    status = LayerStatus.CONTRACT_ONLY,
+    summary = "Manages external service connections and credentials for the tool system.",
+    status = LayerStatus.ACTIVE,
 )
