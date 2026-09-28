@@ -3,6 +3,7 @@ package com.agentx.app.integrations.connection
 import com.agentx.app.core.ForgeError
 import com.agentx.app.core.ForgeErrorCode
 import com.agentx.app.core.ForgeResult
+import com.agentx.app.core.errorOrNull
 import com.agentx.app.core.failure
 import com.agentx.app.core.success
 import com.agentx.app.core.valueOrNull
