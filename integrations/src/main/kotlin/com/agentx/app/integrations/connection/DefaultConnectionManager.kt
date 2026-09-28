@@ -467,7 +467,13 @@ class DefaultConnectionManager(
         val provider = providers.provider(existing.type)
             ?: return failure(unavailable(existing, "No provider handles ${existing.type.displayName}."))
 
-        return verifyStored(existing, provider, ref)
+        // Verifying re-checks the grant with the provider (refreshing it first when
+        // needed) and only then reports the connection as connected again.
+        val verified = verifyStored(existing, provider, ref)
+        val failure = verified.errorOrNull()
+        if (failure != null) return failure(failure)
+        val refreshed = io { store.load() }.firstOrNull { it.id == id } ?: existing
+        return success(refreshed)
     }
 
     override fun status(id: ConnectionId): ConnectionStatus? = mutableState.value.connection(id)?.status

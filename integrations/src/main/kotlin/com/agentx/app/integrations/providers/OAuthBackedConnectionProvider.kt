@@ -180,7 +180,12 @@ abstract class OAuthBackedConnectionProvider(
     override suspend fun revoke(connection: Connection, payload: String): ProviderRevocation {
         val tokens = OAuthTokenCodec.decode(payload)
             ?: return ProviderRevocation(supported = false, revoked = false, message = "No stored grant")
-        return oauthProvider.revoke(tokens)
+        val revocation = oauthProvider.revoke(tokens)
+        return ProviderRevocation(
+            supported = revocation.supported,
+            revoked = revocation.revoked,
+            message = revocation.message,
+        )
     }
 
     /**
