@@ -40,13 +40,18 @@
                     android:scheme="${oauthRedirectScheme}" />
             </intent-filter>
 
+            <!--
+                No path prefix: each service has its own callback path
+                (github, supabase, mcp, ...), so restricting the filter to one
+                path would drop every redirect except that one. The host is a
+                domain the owner dedicates to this app's callbacks.
+            -->
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data
                     android:host="${oauthHttpsHost}"
-                    android:pathPrefix="${oauthRedirectPath}"
                     android:scheme="https" />
             </intent-filter>
         </activity>
