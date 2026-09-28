@@ -613,7 +613,7 @@ class AgentCoreTest {
             name = "guarded_write",
             capabilities = setOf(ToolCapability.MUTATING, ToolCapability.FILESYSTEM),
             permission = ToolPermissionDecision.ASK,
-            requiredPermissions = setOf(ToolPermissionLevel.WORKSPACE_WRITE),
+            required = setOf(ToolPermissionLevel.WORKSPACE_WRITE),
         )
         val registry = DefaultToolRegistry().also { it.register(guarded) }
         val provider = ScriptedModelProvider(
@@ -668,7 +668,7 @@ class AgentCoreTest {
             name = "guarded_write",
             capabilities = setOf(ToolCapability.MUTATING, ToolCapability.FILESYSTEM),
             permission = ToolPermissionDecision.ASK,
-            requiredPermissions = setOf(ToolPermissionLevel.WORKSPACE_WRITE),
+            required = setOf(ToolPermissionLevel.WORKSPACE_WRITE),
         )
         val registry = DefaultToolRegistry().also { it.register(guarded) }
         val provider = ScriptedModelProvider(
@@ -754,7 +754,7 @@ class AgentCoreTest {
         val write = RecordingTool(
             name = "write_file",
             capabilities = setOf(ToolCapability.MUTATING, ToolCapability.FILESYSTEM),
-            requiredPermissions = setOf(ToolPermissionLevel.WORKSPACE_WRITE),
+            required = setOf(ToolPermissionLevel.WORKSPACE_WRITE),
         )
         val registry = DefaultToolRegistry().also {
             it.register(read)

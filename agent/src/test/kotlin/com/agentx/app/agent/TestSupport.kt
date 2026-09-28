@@ -89,7 +89,7 @@ internal class RecordingTool(
     name: String,
     private val capabilities: Set<ToolCapability>,
     permission: ToolPermissionDecision = ToolPermissionDecision.ALLOW,
-    private val requiredPermissions: Set<ToolPermissionLevel> = emptySet(),
+    required: Set<ToolPermissionLevel> = emptySet(),
 ) : Tool {
     val invocations = mutableListOf<ToolInput>()
 
@@ -104,7 +104,7 @@ internal class RecordingTool(
         ),
         permission = permission,
         capabilities = capabilities,
-        requiredPermissions = requiredPermissions,
+        requiredPermissions = required,
     )
 
     override suspend fun execute(input: ToolInput, context: ToolExecutionContext): ToolOutput {
