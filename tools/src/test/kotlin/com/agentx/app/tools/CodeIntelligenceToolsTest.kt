@@ -97,7 +97,7 @@ class CodeIntelligenceToolsTest {
 
         assertEquals("Kotlin", output.content.stringOrNull("language"))
         assertEquals(4.0, output.content.numberOrNull("count"))
-        assertEquals(4, output.content.arrayOrNull("symbols")?.size)
+        assertEquals(4, output.content["symbols"]?.arrayOrNull()?.size)
         assertTrue(output.displayText.orEmpty().contains("class UserRepository"))
         assertTrue(output.displayText.orEmpty().contains("method getUser()"))
     }
@@ -114,7 +114,7 @@ class CodeIntelligenceToolsTest {
         assertEquals(2.0, output.content.numberOrNull("count"))
         assertEquals(
             listOf("getUser", "updateUser"),
-            output.content.arrayOrNull("symbols").orEmpty()
+            output.content["symbols"]?.arrayOrNull().orEmpty()
                 .mapNotNull { it.objectOrNull()?.stringOrNull("name") },
         )
     }
