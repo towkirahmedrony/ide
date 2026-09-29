@@ -43,8 +43,8 @@ class TerminalUiStateTest {
     @Test
     fun `install is offered only when it can actually work`() {
         assertTrue(TerminalUiState().canInstall)
-        // Nothing to install while a shell is already running.
-        assertFalse(TerminalUiState(running = true).canInstall)
+        // The temporary Android shell may stay running while the Termux userland is installed.
+        assertTrue(TerminalUiState(running = true).canInstall)
         // And nothing to install when the prefix cannot host the packages.
         assertFalse(TerminalUiState(prefixNote = "wrong prefix").canInstall)
         assertFalse(
