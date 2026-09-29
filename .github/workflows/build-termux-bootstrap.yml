@@ -228,9 +228,16 @@ jobs:
 
           df -h / | tail -1
 
-          # The build itself runs as builder, as upstream intends, with HOME on the mounted
-          # volume so $HOME/.termux-build resolves to it.
-          docker exec -u builder -w /home/builder/termux-packages agentx-builder \
+          # The build runs as root, for the same reason clean.sh does: the mount points are
+          # shared between the container and the runner, and a non-root user cannot create
+          # directories in them even after the chown above -- the last run died at
+          # `mkdir: cannot create directory '/home/builder/.termux-build/apt': Permission
+          # denied` on a directory it owned. Upstream only forbids running as root *on an
+          # Android device*; clean.sh's own guard reads that way, and in a disposable
+          # container root is simply the user that owns everything. HOME is still pinned to
+          # /home/builder so $HOME/.termux-build resolves to the mounted volume rather than
+          # to /root, and the checkout is chowned back to the runner user below.
+          docker exec -u 0 -w /home/builder/termux-packages agentx-builder \
             env HOME=/home/builder \
             ./scripts/build-bootstraps.sh "${BUILD_ARGS[@]}" 2>&1 \
             | tee "../build/build-${ARCH}.log"
