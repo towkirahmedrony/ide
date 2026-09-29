@@ -67,6 +67,14 @@ ANDROID10_ONLY_EXECUTABLES = {
     "proot": "proot, which replaces apt/command-not-found in this variant",
 }
 
+# The only two relaxations of the ELF checks in the whole verifier, both scoped to the exact
+# files and to the android10 variant. proot deliberately ships a 32-bit loader beside the
+# 64-bit one in an x86_64 tree -- it exists to trace 32-bit processes -- and neither loader is
+# a program that gets launched through the prefix, so neither carries a RUNPATH. Nothing else
+# is exempt: every other ELF file must match the architecture and carry the prefix RUNPATH.
+ANDROID10_PROOT_32BIT_LOADERS = {"libexec/proot/loader32"}
+ANDROID10_PROOT_LOADERS_WITHOUT_RUNPATH = {"libexec/proot/loader", "libexec/proot/loader32"}
+
 NORMAL_ONLY_FILES = {
     "etc/apt/sources.list": "apt package sources",
     "var/lib/dpkg/status": "dpkg installed-package database",
@@ -403,6 +411,7 @@ def main() -> int:
         machine_mismatch: list[str] = []
         bad_interpreter: list[str] = []
         bad_runpath: list[str] = []
+        variant_exceptions_used: list[str] = []
         bad_shebang: list[str] = []
         unresolved_needed: dict[str, set[str]] = collections.defaultdict(set)
 
@@ -438,6 +447,10 @@ def main() -> int:
                 expected_class, expected_machine = ELF_MACHINES[args.arch]
                 if not klass or not machine:
                     machine_mismatch.append(f"{relative}: readelf -h produced no Class/Machine")
+                elif android10 and relative in ANDROID10_PROOT_32BIT_LOADERS:
+                    # Scoped exception, recorded below so it is visible in the manifest rather
+                    # than silent. Everything else still has to match args.arch.
+                    variant_exceptions_used.append(f"{relative}: intentionally ELF32 in an x86_64 archive")
                 elif klass.group(1) != expected_class or machine.group(1).strip() != expected_machine:
                     machine_mismatch.append(
                         f"{relative}: {klass.group(1)}/{machine.group(1).strip()} "
@@ -473,7 +486,10 @@ def main() -> int:
                 # Executables must carry the prefix runpath; plain shared libraries in
                 # lib/ legitimately have none (libc++_shared.so is the only one upstream).
                 if not runpaths and relative.startswith(("bin/", "libexec/")):
-                    bad_runpath.append(f"{relative}: no RUNPATH")
+                    if android10 and relative in ANDROID10_PROOT_LOADERS_WITHOUT_RUNPATH:
+                        variant_exceptions_used.append(f"{relative}: intentionally without RUNPATH")
+                    else:
+                        bad_runpath.append(f"{relative}: no RUNPATH")
                 for value in runpaths:
                     for single in value.split(":"):
                         if single and single != runpath_expected:
@@ -638,6 +654,7 @@ def main() -> int:
             "schema": 1,
             "profile": args.profile,
             "variant": variant,
+            "variantExceptions": sorted(set(variant_exceptions_used)),
             "androidAbi": abi,
             "termuxArch": args.arch,
             "assetName": os.path.basename(args.zip),
