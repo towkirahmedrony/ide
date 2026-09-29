@@ -72,6 +72,22 @@ ANDROID10_ONLY_EXECUTABLES = {
 # 64-bit one in an x86_64 tree -- it exists to trace 32-bit processes -- and neither loader is
 # a program that gets launched through the prefix, so neither carries a RUNPATH. Nothing else
 # is exempt: every other ELF file must match the architecture and carry the prefix RUNPATH.
+# The bundled-helper class, the one com.termux reference that is not app identity.
+#
+# bin/am and bin/termux-reset launch the TermuxAm helper apk by class name through
+# app_process. That class lives in the apk the termux-am package builds from termux/TermuxAm
+# and bundles at libexec/termux-am/am.apk; the literal sits in two upstream files
+# (packages/termux-am/am-libexec-packaged and termux-tools' scripts/termux-reset.in), and no
+# build variable rebrands it. It is not the AgentX or the Termux app package: the app has no
+# termuxam component at all, and upstream already substitutes ${TERMUX_APP_PACKAGE} into the
+# helper's FakeContext.java, so the app the helper talks to is already com.agentx.app.
+#
+# Scoped to these two paths, this exact string, and the android10 variant. The subtraction is
+# per-file and residual: anything else com.termux-shaped left in the file still fails, so the
+# general identity scan is not weakened.
+BUNDLED_TERMU_XAM_CLASS = "com.termux.termuxam.Am"
+ANDROID10_BUNDLED_HELPER_CLASS_FILES = {"bin/am", "bin/termux-reset"}
+
 ANDROID10_PROOT_32BIT_LOADERS = {"libexec/proot/loader32"}
 ANDROID10_PROOT_LOADERS_WITHOUT_RUNPATH = {"libexec/proot/loader", "libexec/proot/loader32"}
 
@@ -566,15 +582,29 @@ def main() -> int:
         #      ships the string in material that does not affect this prefix. Reported.
         official_name = "com.termux"
         buckets = {"path": [], "bin": [], "other": []}
+        helper_class_hits: list[str] = []
         for entry in com_termux:
             with open(os.path.join(work, entry), "rb") as handle:
                 blob = handle.read()
             if b"data/data/" + official_name.encode() in blob:
                 buckets["path"].append(entry)
             elif is_executable_path(entry) and entry.startswith("bin/"):
-                buckets["bin"].append(entry)
+                remaining = blob
+                if android10 and entry in ANDROID10_BUNDLED_HELPER_CLASS_FILES:
+                    occurrences = remaining.count(BUNDLED_TERMU_XAM_CLASS.encode())
+                    if occurrences:
+                        remaining = remaining.replace(BUNDLED_TERMU_XAM_CLASS.encode(), b"")
+                        helper_class_hits.append(
+                            f"{entry}: {occurrences}x {BUNDLED_TERMU_XAM_CLASS} "
+                            "(class of the bundled TermuxAm helper apk, not app identity)"
+                        )
+                # Whatever survives the subtraction decides. A file that carries the helper
+                # class and any real identity reference is still a violation.
+                if b"com.termux" in remaining:
+                    buckets["bin"].append(entry)
             else:
                 buckets["other"].append(entry)
+        variant_exceptions_used.extend(helper_class_hits)
 
         def scan(check: str, entries: list[str], message: str) -> None:
             if not entries:
