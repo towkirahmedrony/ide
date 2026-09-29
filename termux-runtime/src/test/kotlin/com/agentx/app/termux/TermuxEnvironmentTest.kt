@@ -115,6 +115,8 @@ class TermuxEnvironmentTest {
         )
         assertTrue(body.contains("HOME=/data/data/com.agentx.app/files/home\n"))
         assertTrue(body.contains("GREETING=\"hello world\"\n"))
-        assertTrue(body.contains("EMPTY=\n"))
+        // An empty value is written as EMPTY="", which is unambiguous when the file is sourced.
+        assertTrue(body.contains("EMPTY=\"\"\n"))
+        assertFalse(body.contains("EMPTY=\n"))
     }
 }

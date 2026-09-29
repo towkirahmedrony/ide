@@ -223,7 +223,7 @@ fun TerminalScreen(
             altDown = altDown.value,
             onToggleControl = { controlDown.value = !controlDown.value },
             onToggleAlt = { altDown.value = !altDown.value },
-            onKey = { bytes -> viewModel.send(bytes()) },
+            onKey = { key -> viewModel.send(key.bytes()) },
         )
     }
 }
