@@ -141,6 +141,26 @@ fun main() {
     )
     check("the catalog test's URL rule accepts an immutable release URL", urlIsAcceptable(ready.url!!))
 
+    println("TermuxBootstrapArchive: link paths are created inside the staging prefix")
+    // This is what TermuxBootstrapInstaller installs: the tree is unpacked into
+    // usr-staging and renamed to usr afterwards, so the created link paths are rooted at
+    // the STAGING prefix even though the manifest's absolute target names the final one.
+    val stagingBase = java.io.File(staging).canonicalPath
+    check(
+        "bare-name link lands under staging",
+        TermuxBootstrapArchive.resolveSymlink(staging, "./bin/ls") == "$stagingBase/bin/ls",
+    )
+    check(
+        "relative link lands under staging",
+        TermuxBootstrapArchive.resolveSymlink(staging, "./include/ncursesw/term.h") ==
+            "$stagingBase/include/ncursesw/term.h",
+    )
+    check(
+        "absolute-target link lands under staging",
+        TermuxBootstrapArchive.resolveSymlink(staging, "./share/pacman/keyrings/mradityaalok.gpg") ==
+            "$stagingBase/share/pacman/keyrings/mradityaalok.gpg",
+    )
+
     println("")
     println("checks: $checks, failures: $failures")
     if (failures > 0) throw AssertionError("$failures check(s) failed")

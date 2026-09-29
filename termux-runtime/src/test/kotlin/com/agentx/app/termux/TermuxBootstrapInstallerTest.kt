@@ -228,12 +228,20 @@ class TermuxBootstrapInstallerTest {
         val result = installer(paths, posix, entry, archive).provision()
         val installed = assertIs<TermuxProvisioning.Installed>(result)
         assertEquals(3, installed.symlinks)
+
+        // The links are created inside the staging prefix, because the whole tree is
+        // unpacked there and then renamed to `usr` in one move. A relative target such as
+        // `../term.h` therefore still resolves after the rename, and the absolute target
+        // below -- written against the final prefix, as upstream writes it -- is dangling
+        // while staged and resolves once the rename has happened. resolveSymlink
+        // canonicalises, so the expected base is the canonical staging path.
+        val staging = File(paths.stagingPrefix).canonicalPath
         assertEquals(
             listOf(
-                "coreutils" to "${paths.prefix}/bin/ls",
-                "../term.h" to "${paths.prefix}/include/ncursesw/term.h",
+                "coreutils" to "$staging/bin/ls",
+                "../term.h" to "$staging/include/ncursesw/term.h",
                 "${paths.prefix}/share/termux-keyring/mradityaalok.gpg" to
-                    "${paths.prefix}/share/pacman/keyrings/mradityaalok.gpg",
+                    "$staging/share/pacman/keyrings/mradityaalok.gpg",
             ),
             posix.links,
         )
