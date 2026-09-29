@@ -16,11 +16,11 @@ package com.agentx.app.termux
 sealed interface TermuxPrefixSupport {
 
     /** Official bootstrap and `pkg`/`apt` into [prefix] will work. */
-    data class Supported(val prefix: String, val official: Boolean) : TermuxPrefixSupport
+    data class Supported(override val prefix: String, val official: Boolean) : TermuxPrefixSupport
 
     /** A real Termux userspace cannot be installed into [prefix]. */
     data class Unsupported(
-        val prefix: String,
+        override val prefix: String,
         val reason: String,
         val remedy: String,
     ) : TermuxPrefixSupport

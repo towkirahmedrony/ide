@@ -10,7 +10,10 @@ package com.agentx.app.termux
 sealed interface TermuxWorkspaceBinding {
 
     /** The shell can `cd` straight into [path]. */
-    data class Direct(val path: String, val displayLocation: String) : TermuxWorkspaceBinding
+    data class Direct(
+        val path: String,
+        override val displayLocation: String,
+    ) : TermuxWorkspaceBinding
 
     /**
      * The workspace was materialised under the Termux home at [termuxPath].
@@ -18,10 +21,17 @@ sealed interface TermuxWorkspaceBinding {
      * [source] is the SAF location it was mirrored from. The mirror is a copy: commands run
      * against it and do **not** write back to the original tree, which is why the UI labels it.
      */
-    data class Mirrored(val termuxPath: String, val source: String) : TermuxWorkspaceBinding
+    data class Mirrored(
+        val termuxPath: String,
+        val source: String,
+        override val displayLocation: String,
+    ) : TermuxWorkspaceBinding
 
     /** No shell-usable location exists for this workspace. */
-    data class Unavailable(val reason: String, val displayLocation: String) : TermuxWorkspaceBinding
+    data class Unavailable(
+        val reason: String,
+        override val displayLocation: String,
+    ) : TermuxWorkspaceBinding
 
     val displayLocation: String
 }
@@ -74,7 +84,11 @@ object TermuxWorkspaceBindings {
 
         val mirror = mirrorPath(paths, workspaceId)
         if (isDirectory(mirror)) {
-            return TermuxWorkspaceBinding.Mirrored(termuxPath = mirror, source = shown.ifBlank { "mirrored workspace" })
+            return TermuxWorkspaceBinding.Mirrored(
+                termuxPath = mirror,
+                source = shown.ifBlank { "mirrored workspace" },
+                displayLocation = shown.ifBlank { mirror },
+            )
         }
 
         return TermuxWorkspaceBinding.Unavailable(
