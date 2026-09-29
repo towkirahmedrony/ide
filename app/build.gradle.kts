@@ -45,6 +45,12 @@ android {
         }
     }
 
+    // This app is distributed as a sideloaded APK while the embedded Termux runtime requires
+    // targetSdk 28. AGP's Play-policy lint would otherwise reject the artifact before packaging.
+    lint {
+        disable += "ExpiredTargetSdkVersion"
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
