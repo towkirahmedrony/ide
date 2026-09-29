@@ -117,10 +117,11 @@ class TermuxBootstrapCatalogTest {
 
     @Test
     fun `an entry is available only with a real digest url size and file count`() {
-        val pending = assertNotNull(TermuxBootstrapCatalog.forAbi("arm64-v8a"))
+        // arm64 is now published; use an ABI that is still pending for this shape test.
+        val pending = assertNotNull(TermuxBootstrapCatalog.forAbi("armeabi-v7a"))
         assertFalse(pending.available)
         val ready = pending.copy(
-            url = "https://example.invalid/bootstrap-aarch64.zip",
+            url = "https://example.invalid/bootstrap-arm.zip",
             sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
             archiveSizeBytes = 12L,
             fileCount = 4,

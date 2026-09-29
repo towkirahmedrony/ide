@@ -109,10 +109,11 @@ class TermuxBootstrapInstallerTest {
     fun `pending catalog entries fail before any download`() {
         val paths = tempPaths()
         val posix = RecordingPosix()
-        val pending = TermuxBootstrapCatalog.forAbi("arm64-v8a")!!
+        // arm64 is now published; this test must exercise an ABI that remains pending.
+        val pending = TermuxBootstrapCatalog.forAbi("armeabi-v7a")!!
         val installer = TermuxBootstrapInstaller(
             paths = paths,
-            supportedAbis = listOf("arm64-v8a"),
+            supportedAbis = listOf("armeabi-v7a"),
             download = { _, _, _ -> error("must not download") },
             prefixSupport = { TermuxPrefixSupport.Supported(it.prefix, official = false) },
             matchPrefixes = { runtime, artifact ->
@@ -123,7 +124,7 @@ class TermuxBootstrapInstallerTest {
         )
         val result = installer.provision()
         val unavailable = assertIs<TermuxProvisioning.ArtifactUnavailable>(result)
-        assertEquals("arm64-v8a", unavailable.abi)
+        assertEquals("armeabi-v7a", unavailable.abi)
         assertTrue(unavailable.reason.contains("No custom AgentX bootstrap is available yet"))
         assertFalse(File(paths.prefix).exists())
     }
