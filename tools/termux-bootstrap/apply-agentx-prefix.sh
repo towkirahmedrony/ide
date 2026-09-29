@@ -175,3 +175,40 @@ esac
 
 say ""
 say "ok: $TERMUX_PACKAGES_DIR is configured for $AGENTX_PREFIX"
+
+# ---------------------------------------------------------------------------
+# Per-package build tweaks.
+#
+# Each patches/<package>.extra-args file holds extra configure arguments for that one package.
+# They are appended to the package's TERMUX_PKG_EXTRA_CONFIGURE_ARGS rather than applied as a
+# source patch, because the two failures worth fixing this way are detection failures: a probe
+# that answers "yes" against the NDK sysroot while the Bionic symbol it implies does not exist.
+# Appending is visible (the header below is greppable) and it is the mechanism the packages
+# themselves already use for Bionic gaps.
+# ---------------------------------------------------------------------------
+tweaks_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/patches"
+if [ -d "$tweaks_dir" ]; then
+    shopt -s nullglob
+    for tweak in "$tweaks_dir"/*.extra-args; do
+        package="$(basename "$tweak" .extra-args)"
+        build_sh="$TERMUX_PACKAGES_DIR/packages/$package/build.sh"
+        [ -f "$build_sh" ] || { echo "ERROR: $tweak exists but $build_sh does not" >&2; exit 1; }
+        if grep -q "AGENTX EXTRA CONFIGURE ARGS" "$build_sh"; then
+            echo "tweak: $build_sh already carries the AgentX arguments"
+            continue
+        fi
+        # Comment lines are documentation for whoever reads the tweak, never arguments: passing
+        # them through would hand configure a pile of prose.
+        arguments="$(grep -v '^[[:space:]]*#' "$tweak" | tr '\n' ' ' | sed 's/  */ /g; s/^ //; s/ $//')"
+        if [ -z "$arguments" ]; then
+            echo "tweak: $tweak is comment-only, nothing to append"
+            continue
+        fi
+        {
+            printf '\n# AGENTX EXTRA CONFIGURE ARGS -- added by tools/termux-bootstrap (do not edit by hand)\n'
+            printf 'TERMUX_PKG_EXTRA_CONFIGURE_ARGS+=" %s"\n' "$arguments"
+        } >> "$build_sh"
+        echo "tweak: appended to packages/$package/build.sh: $arguments"
+    done
+    shopt -u nullglob
+fi

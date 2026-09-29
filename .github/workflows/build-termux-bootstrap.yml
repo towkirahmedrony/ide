@@ -143,6 +143,18 @@ jobs:
       # TERMUX_APP__PACKAGE_NAME="com.termux" assignment, or if the prefix upstream derives
       # from it is not the AgentX prefix. The printed values are the evidence that the
       # archive was built for com.agentx.app and not for com.termux.
+      # Built debs are cached, keyed on the pinned revision, the AgentX patch and the
+      # architecture, so a retry rebuilds only what is missing. A changed patch changes the key
+      # and therefore cannot smuggle in a deb built against a different prefix.
+      - name: Restore the built packages
+        id: debs
+        uses: actions/cache/restore@v4
+        with:
+          path: build/termux-data
+          key: agentx-debs-${{ inputs.termux_packages_commit }}-${{ matrix.arch }}-${{ hashFiles('tools/termux-bootstrap/agentx-prefix.env', 'tools/termux-bootstrap/apply-agentx-prefix.sh', 'tools/termux-bootstrap/patches/*') }}-${{ github.run_id }}
+          restore-keys: |
+            agentx-debs-${{ inputs.termux_packages_commit }}-${{ matrix.arch }}-${{ hashFiles('tools/termux-bootstrap/agentx-prefix.env', 'tools/termux-bootstrap/apply-agentx-prefix.sh', 'tools/termux-bootstrap/patches/*') }}-
+
       - name: Point upstream at the AgentX package name and verify the derived prefix
         run: |
           set -euo pipefail
@@ -194,17 +206,18 @@ jobs:
               echo "::error::-f is forbidden here: it triggers an rm of the container root"; exit 1; }
           done
 
-          # Fresh volumes rather than clean.sh alone: named volumes persist between runs, and the
-          # build skips packages it finds built for the same revision, so a reused volume would
-          # silently reuse someone else's artefacts.
-          docker volume rm agentx-termux-build agentx-termux-data >/dev/null 2>&1 || true
+          # /data/data holds the built-package registry and the debs, and it is a *host* directory
+          # rather than a named volume so actions/cache can persist it between runs. Build trees
+          # under .termux-build stay a throwaway volume: they are per-run state, and caching them
+          # would spend the cache budget on something that is never reused.
+          mkdir -p ../build/termux-data
+          docker volume rm agentx-termux-build >/dev/null 2>&1 || true
           docker volume create agentx-termux-build >/dev/null
-          docker volume create agentx-termux-data >/dev/null
           docker rm -f agentx-builder >/dev/null 2>&1 || true
           docker run --detach --init --tty --name agentx-builder \
             --volume agentx-termux-build:/home/builder/.termux-build \
             --volume "$PWD:/home/builder/termux-packages" \
-            --volume agentx-termux-data:/data/data \
+            --volume "$(cd ../build/termux-data && pwd):/data/data" \
             --privileged \
             ghcr.io/termux/package-builder >/dev/null
 
@@ -216,14 +229,20 @@ jobs:
             /home/builder/termux-packages /home/builder/.termux-build /data/data
           docker exec -u 0 agentx-builder ls -ld /home/builder/.termux-build /data/data
           docker exec agentx-builder id
+          # Printed so the cache is visible in the log rather than inferred: a retry that reuses
+          # packages shows a non-zero count here and far fewer "termux - building" lines below.
+          echo "cached debs before this run: $(find ../build/termux-data -name '*.deb' | wc -l)"
+          du -sh ../build/termux-data | sed 's/^/cache size before this run: /'
 
-          # clean.sh as root: it umounts overlay directories left behind by a toolchain setup and
-          # cannot do that unprivileged. It says so itself -- "Try running 'clean.sh' with
-          # 'sudo'". TERMUX_TOPDIR and HOME are passed explicitly because running as root would
-          # otherwise point it at /root/.termux-build instead of the mounted volume.
-          docker exec -u 0 -w /home/builder/termux-packages agentx-builder \
-            env HOME=/home/builder TERMUX_TOPDIR=/home/builder/.termux-build ./clean.sh 2>&1 | tail -5 \
-            || echo "::warning::clean.sh did not complete; continuing, because the build volume was just recreated empty"
+          # clean.sh is deliberately gone, and this is a strategy change, not an oversight. Its
+          # whole job is to delete the built packages and the build trees -- precisely what is now
+          # cached on purpose -- so running it would empty the cache every time.
+          #
+          # Correctness does not depend on it: a cached deb is only reused when the cache key
+          # matches, and the key is the pinned revision plus the hash of the AgentX prefix patch
+          # and the patches/ directory plus the architecture. A deb built for a different prefix or
+          # an older patch therefore cannot survive, and the `-f` guard above remains as a second
+          # barrier. If the key is wrong the debs are simply rebuilt.
 
           df -h / | tail -1
 
@@ -270,8 +289,10 @@ jobs:
               || { echo "::error::build-bootstraps.sh exited $first_status"; exit 1; }
           fi
 
-          docker exec -u 0 agentx-builder chown -R 1001:1001 /home/builder/termux-packages || true
+          docker exec -u 0 agentx-builder chown -R 1001:1001 /home/builder/termux-packages /data/data || true
           docker rm -f agentx-builder >/dev/null 2>&1 || true
+          echo "debs in the cache now: $(find ../build/termux-data -name '*.deb' | wc -l)"
+          du -sh ../build/termux-data | sed 's/^/cache size now: /'
           cd ..
           test -f "termux-packages/bootstrap-${ARCH}.zip" \
             || { echo "::error::build-bootstraps.sh produced no bootstrap-${ARCH}.zip"; exit 1; }
@@ -316,6 +337,15 @@ jobs:
             cat "dist/manifest-${ARCH}.json"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # if: always() on purpose: the packages that did build are exactly what a retry needs, and a
+      # failed run is when that matters most.
+      - name: Save the built packages
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: build/termux-data
+          key: ${{ steps.debs.outputs.cache-primary-key }}
 
       - name: Upload the archive, its digest, manifests and logs
         # always(): a failed build is exactly when the log is worth having, and the failure has to

@@ -545,3 +545,110 @@ variable unset. Requirements: ~30 GB free disk, 4 GB+ RAM, Docker with the abili
 AppArmor profiles and mount fuse filesystems, and 1-3 hours per architecture. On success,
 `bootstrap-x86_64.zip` appears in the checkout; run `verify-bootstrap.sh` on it, then attach it
 to a release with a fixed tag so the publish job or the catalog step can pick it up.
+
+## Part 6: the targetSdk blocker, the util-linux cause, and package caching
+
+### The blocker that comes before any of this: targetSdk
+
+The app module declares `compileSdk = 37`, `targetSdk = 37`, `minSdk = 26`. On Android 10+
+that is fatal to the whole design, bootstrap or not.
+
+AOSP commit `0dd738d810532eb41ad8d90520156212ce756648` in `platform/system/sepolicy`
+("untrusted_app: Remove the ability to run `execve()` on files within an application's home
+directory") added, in `system/sepolicy/private/app_neverallows.te`:
+
+```
+neverallow {
+  all_untrusted_apps
+  -untrusted_app_25
+  -untrusted_app_27
+} { app_data_file privapp_data_file }:file execute_no_trans;
+```
+
+`execute_no_trans` is what `execve()` needs. The two exempted domains are the backward
+compatibility ones: `untrusted_app_25` for `targetSdkVersion <= 25` and `untrusted_app_27`
+for `26-28` (`private/untrusted_app_27.te` still carries
+`allow untrusted_app_27 app_data_file:file execute_no_trans;`). Apps targeting 29+ get the
+current `untrusted_app_*` domain, which keeps `execute` for `dlopen()` but not
+`execute_no_trans` for `exec()`.
+
+Sources:
+- `agnostic-apollo/Android-Docs`, `app-data-file-execute-restrictions.md`, quoting that
+  AOSP commit and those sepolicy files directly.
+- `termux/termux-packages` wiki, *Termux execution environment*: "If Termux app is running on
+  Android >= 10 and uses `targetSdkVersion >= 29`, then as part of Android W^X restrictions
+  with the `0dd738d8` commit via SeLinux policies, it will not be able to `exec()` its app
+  data files, like under the `/data/data/` (for user 0) directory."
+- Termux itself: `termux-app/gradle.properties` has `minSdkVersion=21`,
+  **`targetSdkVersion=28`**, `compileSdkVersion=36`.
+
+So every `execve()` of `/data/data/com.agentx.app/files/usr/bin/login`, `bash`, `pkg` … is
+denied at `targetSdk 37`. The bootstrap can be built and verified perfectly and the shell
+still will not start on Android 10+.
+
+### util-linux: the cause, established from evidence rather than guessed
+
+The Part 5 suspicion that the copy-based toolchain caused it is **wrong**. In run
+`36573752464` the fuse retry never fired: the log contains `unknown argument ignored:
+lazytime` at the start of the toolchain setup with no un-prefixed
+`fuse-overlayfs: cannot mount` failure and no `##[warning]` for the retry, so fuse-overlayfs
+mounted under `--privileged` and the NDK was **overlaid**, not copied.
+
+What the log does show:
+
+```
+checking for struct nsfs_file_handle... yes
+nsenter.c:189:27: error: variable has incomplete type 'struct file_handle'
+  note: forward declaration of 'struct file_handle'
+nsenter.c:225:6: error: call to undeclared function 'name_to_handle_at'
+```
+
+`util-linux` 2.42.1 (revision 4) probes with
+
+```
+AC_CHECK_TYPES([struct nsfs_file_handle], [], [], [[#include <linux/nsfs.h>]])
+```
+
+The NDK r30 sysroot ships `<linux/nsfs.h>`, so the probe answers yes and `nsenter.c` is
+compiled with its nsfs file-handle path -- which needs a complete `struct file_handle` and
+the `name_to_handle_at()` wrapper. Bionic provides neither: `bionic/libc/include/fcntl.h`
+pulls in `<linux/fcntl.h>` from the kernel uapi, and neither that header nor
+`bionic/libc/include/bits/fcntl.h` declares them. `packages/util-linux/` has no `nsenter`
+patch and the NDK 30 patch set has no patch for these symbols, and
+`TERMUX_PKG_API_LEVEL` is unset for the package (default 24, from
+`scripts/build/termux_step_setup_variables.sh`).
+
+The probe is too weak: it should also check the function. Rather than drop the package,
+`tools/termux-bootstrap/patches/util-linux.extra-args` now disables that one probe with
+`ac_cv_type_struct_nsfs_file_handle=no` -- the same `ac_cv_*` mechanism the package already
+uses for other Bionic gaps (`ac_cv_func_statx=no`, `ac_cv_type_struct_statx=no`,
+`ac_cv_func_uselocale=no`). It costs the `nsenter --net` file-handle feature and nothing
+else; `libuuid`, `libmount` and every other applet are untouched.
+
+### Package caching
+
+`build/termux-data` is mounted at `/data/data` -- a host directory rather than a named
+volume, so `actions/cache` can persist it -- and holds the built-package registry and the
+debs. The cache key is the pinned revision, the architecture, and a hash of
+`agentx-prefix.env`, `apply-agentx-prefix.sh` and `patches/`, so a changed patch cannot
+reuse a deb built for a different prefix. It is saved with `if: always()`, because the
+packages that did build are what a retry needs most.
+
+This required removing `clean.sh`, which deletes exactly what is now cached. Correctness does
+not depend on it: the key covers revision, patch and architecture, and the `-f` guard stays.
+A run prints `cached debs before this run` and `debs in the cache now` so reuse is visible
+rather than assumed.
+
+**Not yet observed:** no run has exercised the cache, so its hit rate, its size and the
+repository cache limit are all still unknown. The next dispatch is what measures them.
+
+### What is verified here, and what is not
+
+Verified by execution in this session: the tweak mechanism appends exactly one argument list
+with no prose and is idempotent on a second run; `actionlint` clean on both workflows; the
+fuse retry did not fire in `36573752464` (so the toolchain was overlaid); `util-linux`'s
+configure probe answered yes while the symbols are absent.
+
+Not verified: anything requiring another dispatch. The cache has never been hit, the
+util-linux override has never been compiled, and no archive exists. And with `targetSdk 37`
+none of it can be executed on Android 10+ even once it is built.

@@ -1,0 +1,16 @@
+# Appended to TERMUX_PKG_EXTRA_CONFIGURE_ARGS for util-linux by apply-agentx-prefix.sh.
+#
+# util-linux 2.42.1 configure.ac probes with
+#   AC_CHECK_TYPES([struct nsfs_file_handle], [], [], [[#include <linux/nsfs.h>]])
+# NDK r30's sysroot ships <linux/nsfs.h>, so the probe answers yes and
+# sys-utils/nsenter.c is compiled with its nsfs file-handle path, which calls
+# name_to_handle_at() and needs a complete struct file_handle. Bionic has neither: its
+# <fcntl.h> pulls in <linux/fcntl.h> from the kernel uapi, which declares neither, so the
+# build dies with
+#   nsenter.c:189:21: error: variable has incomplete type 'struct file_handle'
+#   nsenter.c:225:6:  error: call to undeclared function 'name_to_handle_at'
+# The probe is too weak -- it should also check the function -- and this override is the
+# same mechanism the package already uses for other Bionic gaps (ac_cv_func_statx=no,
+# ac_cv_type_struct_statx=no, ac_cv_func_uselocale=no). It costs only the nsenter --net
+# file-handle feature; every other applet, and libuuid/libmount, are untouched.
+ac_cv_type_struct_nsfs_file_handle=no
