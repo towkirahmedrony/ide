@@ -81,10 +81,11 @@ jobs:
     name: bootstrap-${{ matrix.arch }}
     needs: setup
     runs-on: ubuntu-latest
-    # A single architecture cross-compiles ~80 packages. Upstream's own bootstrap job
-    # takes hours; the 6 hour runner ceiling is the real limit, so this is set just under
-    # it and the job is expected to be slow rather than to fail on time.
-    timeout-minutes: 330
+    # A single architecture cross-compiles ~80 packages with no Docker layer cache to reuse, and
+    # the first run also installs the host toolchain and the Android NDK. That is hours; the 6
+    # hour runner ceiling is the real limit, so this sits just under it deliberately. Raising it
+    # further is pointless -- GitHub kills the job at 360 regardless.
+    timeout-minutes: 355
     strategy:
       fail-fast: false
       max-parallel: 4
