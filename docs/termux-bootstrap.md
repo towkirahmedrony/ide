@@ -1,110 +1,122 @@
 # Building a Termux bootstrap for this app's own prefix
 
-The published Termux bootstrap and every repository package are hard-wired to
+The published Termux bootstrap and every repository package are compiled for
 `/data/data/com.termux/files/usr` (background in
-[termux-terminal.md § Prefix constraint](termux-terminal.md#prefix-constraint)). The embedded
-runtime detects that and refuses to install them anywhere else rather than producing a shell full
-of `not found`.
+[termux-terminal.md § Prefix constraint](termux-terminal.md#prefix-constraint)). The
+embedded runtime detects that and refuses to install them anywhere else rather than
+producing a shell full of `not found`.
 
-There are two supported ways out. The first needs no package rebuild; the second does.
+For this app there is exactly one supported way out: **rebuild the bootstrap for
+`com.agentx.app`.** The published archives cannot be adopted, adapted or rewritten — the
+replacement prefix is longer than the original, so even the ELF `RUNPATH` strings cannot be
+patched in place.
 
-## Option 1 — build the APK with the official prefix (no rebuild)
+Everything needed is in [`tools/termux-bootstrap/`](../tools/termux-bootstrap/README.md),
+which records the pinned upstream revision, how the prefix is defined and verified in
+upstream's build source, the exact commands, and the verification the artifacts must pass.
 
-```bash
-./gradlew assembleRelease -Pagentx.termux.officialPrefix=true
-```
+## Status
 
-`app/build.gradle.kts` then sets `applicationId = "com.termux"`, so `Context.getFilesDir()`
-resolves to `/data/data/com.termux/files` — exactly what the artifacts expect.
-`TermuxPrefixPolicy` sees the official prefix, `TermuxBootstrapInstaller` downloads the published
-bootstrap, verifies its pinned SHA-256, unpacks it, and `pkg`/`apt` reach the official
-repositories with no further work.
+No AgentX bootstrap has been built yet. `TermuxBootstrapCatalog` lists all four ABIs with
+`sourceRevision = "unbuilt"` and no URL, digest, size or file count, so provisioning fails
+with an explanation instead of downloading anything. The build cannot be run from the
+development environment used so far (no Docker, no Android NDK, 2 vCPU, no push
+credentials); the ready-to-run GitHub Actions workflow and the precise blockers are
+documented in
+[tools/termux-bootstrap § Status](../tools/termux-bootstrap/README.md#status-not-built-in-this-environment--the-concrete-blocker).
 
-Caveats, both real:
+## How the prefix is configured upstream
 
-- the APK cannot be installed alongside a real Termux (same package name, different signature);
-- it takes over Termux's package identity, which is only appropriate for a fork that intends to be
-  the user's Termux.
-
-## Option 2 — build a bootstrap for `com.agentx.app`
-
-This is the route upstream provides for this exact case. `scripts/build-bootstraps.sh` in
-termux-packages documents itself as:
-
-> build-bootstraps.sh is a script to build bootstrap archives for the termux-app from local package
-> sources instead of debs published in apt repo like done by generate-bootstrap.sh. **It allows
-> bootstrap archives to be easily built for (forked) termux apps without having to publish an apt
-> repo first.**
-
-and, for the prefix:
-
-> The package name/prefix that the bootstrap is built for is defined by `TERMUX_APP_PACKAGE` in
-> `scripts/properties.sh`. It defaults to `com.termux`. If package name is changed, make sure to
-> run `./scripts/run-docker.sh ./clean.sh` or pass `-f` to force rebuild of packages.
-
-`properties.sh` narrows this down further. It states that the following are safe to modify when
-forking, and that **no other variable may be touched** unless it is a full fork:
+`scripts/properties.sh` in termux-packages defines the whole layout from one variable:
 
 ```
-- `TERMUX__NAME`, `TERMUX__LNAME` and `TERMUX__UNAME`.
-- `TERMUX__REPOS_HOST_ORG_NAME` and `TERMUX__REPOS_HOST_ORG_URL`.
-- `TERMUX_*__REPO_NAME` and `TERMUX_*__REPO_URL`.
-- `TERMUX_APP__PACKAGE_NAME`.
-- `TERMUX_APP__DATA_DIR`.
-- `TERMUX__PROJECT_SUBDIR`.
-- `TERMUX__ROOTFS_SUBDIR`.
-- `TERMUX__ROOTFS` and alternates.
-- `TERMUX__PREFIX` and alternates.
-- ...
+TERMUX_APP__PACKAGE_NAME="com.termux"
+TERMUX_APP__DATA_DIR="/data/data/$TERMUX_APP__PACKAGE_NAME"
+TERMUX__ROOTFS="$TERMUX_APP__DATA_DIR/$TERMUX__ROOTFS_SUBDIR"   # files
+TERMUX__PREFIX="$TERMUX__ROOTFS/$TERMUX__PREFIX_SUBDIR"          # usr
+TERMUX__PREFIX_CLASSICAL="$TERMUX__PREFIX"
 ```
 
-Because `TERMUX_APP__DATA_DIR` is derived (`"/data/data/$TERMUX_APP__PACKAGE_NAME"`), and
-`TERMUX__ROOTFS`/`TERMUX__PREFIX` derive from it, **changing `TERMUX_APP__PACKAGE_NAME` alone
-moves the whole prefix**. Setting `TERMUX__PREFIX` directly is rejected by the file's own
-validator, which requires it to equal `TERMUX_PREFIX_CLASSICAL`.
+So patching that single assignment moves the entire layout to
 
-### The workflow
+| Variable | Value for this app |
+| --- | --- |
+| `TERMUX_APP_PACKAGE` | `com.agentx.app` |
+| `TERMUX__ROOTFS` | `/data/data/com.agentx.app/files` |
+| `TERMUX__PREFIX` | `/data/data/com.agentx.app/files/usr` |
+| `TERMUX__HOME` | `/data/data/com.agentx.app/files/home` |
 
-[`.github/workflows/termux-bootstrap.yml`](../.github/workflows/termux-bootstrap.yml) does this as
-a **manual** (`workflow_dispatch`) job. It is deliberately not wired into the normal build: the
-job cross-compiles the userland for four ABIs inside the termux-packages Docker builder, which
-takes hours, and it must never be able to fail the APK build.
+Two traps, both verified in the source and handled by
+`tools/termux-bootstrap/apply-agentx-prefix.sh`:
 
-What it does:
+- `TERMUX_APP_PACKAGE` (single underscore separator at the end) is a *deprecated alias*
+  assigned from `TERMUX_APP__PACKAGE_NAME`. `scripts/build-bootstraps.sh --help` mentions
+  the alias, but patching only the alias does nothing, because `properties.sh` overwrites
+  it. The build patches `TERMUX_APP__PACKAGE_NAME`.
+- `TERMUX__PREFIX` cannot be set directly: `properties.sh` refuses any value that is not
+  equal to `TERMUX__PREFIX_CLASSICAL`.
 
-1. checks out `termux/termux-packages` at the revision you pass (default
-   `2fdb0c07f3fec34adf24c8af515c852fc51f4c9b`);
-2. rewrites the single `TERMUX_APP__PACKAGE_NAME="com.termux"` assignment, and **fails loudly** if
-   upstream no longer has exactly that one line, instead of silently building for the wrong
-   prefix;
-3. prints the derived `TERMUX_APP__DATA_DIR`, `TERMUX__ROOTFS` and `TERMUX__PREFIX` so the log
-   proves which prefix it built for;
-4. runs `./scripts/run-docker.sh ./scripts/build-bootstraps.sh --architectures <abis> -f`
-   (`-f` is required after a package-name change, as upstream's own help says);
-5. computes each archive's SHA-256, writes `bootstrap-digests.txt`, and puts a
-   ready-to-paste `TermuxBootstrapCatalog` snippet in the run summary;
-6. uploads the four `bootstrap-*.zip` files and the digests as artifacts.
+## Build, publish, then update the catalog
 
-### After the build
+The workflow is manual, because it cross-compiles the userland for four ABIs inside the
+termux-packages Docker builder and takes hours; it must never be able to fail the APK
+build.
 
-1. Host the archives somewhere the app can reach and replace `RELEASE`/`VARIANT` (or the whole
-   `RELEASE_BASE_URL`) plus the four `sha256` values in
-   [`TermuxBootstrapCatalog`](../termux-runtime/src/main/kotlin/com/agentx/app/termux/TermuxBootstrapCatalog.kt).
-   `TermuxBootstrapCatalogTest` checks that every ABI stays covered and that the digests keep the
-   right shape.
-2. Map each Termux architecture to an Android ABI (`aarch64`→`arm64-v8a`, `arm`→`armeabi-v7a`,
-   `i686`→`x86`, `x86_64`→`x86_64`).
-3. **For `pkg install` to keep working**, publish your own `packages` repository built from the
-   same tree and point the fork at it through the fork-safe `TERMUX_*__REPO_NAME` /
-   `TERMUX_*__REPO_URL` variables. Otherwise the bootstrap's apt sources still reach
-   `packages.termux.dev`, which ships debs built for `com.termux`'s prefix — `pkg install` would
-   then install packages that cannot run. The workflow takes a `publish_repo_urls` input for this
-   and currently **stops with an error** rather than producing archives that quietly depend on the
-   wrong repository.
+1. **Build.** `Actions → Build AgentX Termux bootstrap → Run workflow`. Set `only_arch` to
+   a single architecture while reading logs, and `publish: false` for a dry run. The job
+   checks out termux-packages at `2fdb0c07f3fec34adf24c8af515c852fc51f4c9b`, rewrites the
+   one package-name assignment, prints the prefix `properties.sh` derives (so the log
+   proves which prefix was built for), runs
+   `./scripts/run-docker.sh ./scripts/build-bootstraps.sh --architectures <arch> -f`,
+   post-processes the archive, verifies it, and fails on any violation. `-f` is required
+   after a package-name change, as upstream's own help says.
+2. **Verify.** Each job uploads `bootstrap-<arch>.zip`, its `.sha256`, its
+   `manifest-<arch>.json`, the verification report and the build log. Read
+   `verify-<arch>.txt`: it must end in `OK`, and the prefix-evidence log must show
+   `/data/data/com.agentx.app/files/usr`.
+3. **Publish.** With `publish: true` and no `only_arch`, the four archives are attached to
+   a GitHub Release under the fixed tag you pass. A mutable tag is rejected: `latest` would
+   make the digests recorded in source control stop matching what is served.
+4. **Update the catalog.** Paste the generated `TermuxBootstrapCatalog.Entry` block for each
+   ABI into
+   [`TermuxBootstrapCatalog.kt`](../termux-runtime/src/main/kotlin/com/agentx/app/termux/TermuxBootstrapCatalog.kt),
+   replacing that ABI's `pending(...)` call, and fill in the immutable release asset URL
+   (`…/releases/download/<tag>/bootstrap-<arch>.zip`). Only real values: the entry becomes
+   `available` only when the URL, a 64-character lower-case hex SHA-256, a positive size, a
+   positive file count and a non-`unbuilt` source revision are all present. Then:
 
-### Status
+   ```bash
+   ./gradlew :termux-runtime:test
+   ```
 
-The workflow has not been executed, because it cannot run from this environment (no Docker, no
-push access at the time of writing) and it is intentionally manual. Treat it as the plan the
-repository is set up for, not as a verified pipeline: the first run needs a human to read the
-build log, confirm the printed prefix, and then complete steps 1–3 above.
+   `TermuxBootstrapCatalogTest` fails on a blank or missing URL, a missing or malformed
+   digest, a missing size or file count, a `latest` URL, a revision that does not name the
+   pinned commit, and on the official Termux bootstrap's digest. A checksum mismatch at
+   install time deletes the archive and aborts before extraction, unchanged from Part 1.
+
+The ABI mapping the catalog must cover: `aarch64 → arm64-v8a`, `arm → armeabi-v7a`,
+`i686 → x86`, `x86_64 → x86_64`.
+
+## Package installation is disabled until an AgentX repository exists
+
+`pkg install` reaches an apt repository. The official repositories serve packages built for
+`com.termux`, and installing those into this prefix yields binaries whose ELF `RUNPATH`
+points at a directory this app does not own. The bootstrap therefore ships an
+`etc/apt/sources.list` with **no active `deb` line** — the official entries are present but
+commented out, together with the reason — so `pkg install <package>` fails loudly with
+"Unable to locate package" instead of installing something that cannot run.
+
+Building and hosting a repository for this prefix, then passing its URL as the
+`apt_repo_url` input, is the intended way to lift that limitation. The verifier fails the
+build if `sources.list` contains an active line naming `termux.dev`, so apt cannot silently
+be pointed back at the official repository.
+
+## Runtime verification status
+
+Nothing has been executed inside an AgentX prefix: no archives exist yet, and the
+environment could not build them. The scripts have been validated against the published
+upstream archive for every check that does not require a toolchain (the ELF and prefix
+checks correctly reject it), but the runtime smoke test — `sh`, `bash`, `printf 'hello\n'`,
+`command -v pkg`, `command -v apt` — is **unverified and belongs to Part 3**, together with
+the real APK acceptance run. Termux support must not be described as working until that
+passes.

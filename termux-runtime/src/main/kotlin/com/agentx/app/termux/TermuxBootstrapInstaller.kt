@@ -188,7 +188,11 @@ class TermuxBootstrapInstaller(
                     }
                     if (TermuxBootstrapArchive.isManifestEntry(name)) {
                         val manifest = zip.readBytes().toString(Charsets.UTF_8)
-                        val parsed = TermuxBootstrapArchive.parseSymlinks(manifest)
+                        val parsed = TermuxBootstrapArchive.parseSymlinks(
+                            content = manifest,
+                            stagingPrefix = paths.stagingPrefix,
+                            finalPrefix = paths.prefix,
+                        )
                         if (parsed.invalid.isNotEmpty()) {
                             throw TermuxBootstrapException(
                                 TermuxInstallStage.SYMLINK,
@@ -246,10 +250,19 @@ class TermuxBootstrapInstaller(
                     TermuxInstallStage.SYMLINK,
                     "Symlink path escapes staging: ${link.linkPath}",
                 )
-            if (!TermuxBootstrapArchive.isSafeSymlinkTarget(link.target)) {
+            // Absolute targets that point into the final prefix are expected here: they are
+            // dangling while the tree sits in usr-staging and resolve once it is renamed.
+            if (!TermuxBootstrapArchive.isSafeSymlinkTarget(
+                    stagingPrefix = paths.stagingPrefix,
+                    finalPrefix = paths.prefix,
+                    linkPath = link.linkPath,
+                    target = link.target,
+                )
+            ) {
                 throw TermuxBootstrapException(
                     TermuxInstallStage.SYMLINK,
-                    "Symlink target escapes staging: ${link.target}",
+                    "Symlink target ${link.target} of ${link.linkPath} escapes both " +
+                        "${paths.stagingPrefix} and ${paths.prefix}",
                 )
             }
             File(linkPath).parentFile?.mkdirs()

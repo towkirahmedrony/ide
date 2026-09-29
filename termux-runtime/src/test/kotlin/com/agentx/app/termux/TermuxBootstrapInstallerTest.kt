@@ -192,7 +192,8 @@ class TermuxBootstrapInstallerTest {
             archive,
             mapOf(
                 "bin/bash" to "ok".toByteArray(),
-                "SYMLINKS.txt" to "../escape\u2190bin/sh\n".toByteArray(),
+                // From bin/sh, one level up is the prefix itself; two levels up leaves it.
+                "SYMLINKS.txt" to "../../escape\u2190bin/sh\n".toByteArray(),
             ),
         )
         val entry = availableEntry(sha256 = TermuxBootstrapInstaller.sha256(archive), prefix = paths.prefix)
@@ -200,6 +201,42 @@ class TermuxBootstrapInstallerTest {
         val failed = assertIs<TermuxProvisioning.Failed>(result)
         assertEquals(TermuxInstallStage.SYMLINK, failed.stage)
         assertTrue(posix.links.isEmpty())
+    }
+
+    @Test
+    fun `a real bootstrap manifest installs every link`() {
+        // The shapes bootstrap-aarch64.zip actually ships: a bare-name multicall target, a
+        // relative target with `..`, and an absolute target into the final prefix. All three
+        // must be created; refusing any of them would abort a real install.
+        val paths = tempPaths()
+        val posix = RecordingPosix()
+        val archive = File(File(paths.downloadDir).also { it.mkdirs() }, "real.zip")
+        val manifest = listOf(
+            "coreutils\u2190./bin/ls",
+            "../term.h\u2190./include/ncursesw/term.h",
+            "${paths.prefix}/share/termux-keyring/mradityaalok.gpg\u2190./share/pacman/keyrings/mradityaalok.gpg",
+        ).joinToString("\n") + "\n"
+        writeZip(
+            archive,
+            mapOf(
+                "bin/coreutils" to "ok".toByteArray(),
+                "include/term.h" to "ok".toByteArray(),
+                "SYMLINKS.txt" to manifest.toByteArray(),
+            ),
+        )
+        val entry = availableEntry(sha256 = TermuxBootstrapInstaller.sha256(archive), prefix = paths.prefix)
+        val result = installer(paths, posix, entry, archive).provision()
+        val installed = assertIs<TermuxProvisioning.Installed>(result)
+        assertEquals(3, installed.symlinks)
+        assertEquals(
+            listOf(
+                "coreutils" to "${paths.prefix}/bin/ls",
+                "../term.h" to "${paths.prefix}/include/ncursesw/term.h",
+                "${paths.prefix}/share/termux-keyring/mradityaalok.gpg" to
+                    "${paths.prefix}/share/pacman/keyrings/mradityaalok.gpg",
+            ),
+            posix.links,
+        )
     }
 
     @Test

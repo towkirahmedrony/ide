@@ -35,25 +35,35 @@ line editing, colours and full-screen programs work.
    (`TermuxShellResolver`, same order as `TermuxSession.execute`); otherwise `/system/bin/sh`.
    So the terminal is a real pty terminal from the first launch, before any download.
 4. **Userland.** Tapping **Install** in the terminal header runs `TermuxBootstrapInstaller`:
-   download the official `bootstrap-<arch>.zip` for the device's ABI → verify SHA-256 against the
-   digest pinned in `TermuxBootstrapCatalog` (the same digests termux-app embeds) → extract to
-   `usr-staging` → apply `SYMLINKS.txt` → `chmod 0700` on `bin/`, `libexec`, `lib/apt/methods`,
-   `lib/apt/apt-helper` → rename `usr-staging` to `usr`. The move is last, so an interrupted
-   install never leaves a half-populated prefix that later code would mistake for a working one.
+   download the AgentX `bootstrap-<arch>.zip` for the device's ABI → verify SHA-256 against the
+   digest pinned in `TermuxBootstrapCatalog` (a mismatch deletes the archive and aborts) → extract
+   to `usr-staging` → apply `SYMLINKS.txt` → `chmod 0700` on `bin/`, `libexec`, `lib/apt/methods`,
+   `lib/apt/apt-helper` → rename `usr-staging` to `usr` → write the install marker at
+   `etc/termux/agentx-bootstrap.ok`. The move is last, so an interrupted install never leaves a
+   half-populated prefix that later code would mistake for a working one. No archive has been
+   published yet, so this path currently stops at `ArtifactUnavailable` with the reason and
+   [termux-bootstrap.md](termux-bootstrap.md) as the remedy.
 5. **Environment file.** `$PREFIX/etc/termux/termux.env` is written so a login shell sources the
    same `$PREFIX`/`$HOME` even for a child process that did not inherit our `envp`.
 
 ## How packages are provided
 
-The bootstrap *is* the package system. It ships `apt`, `dpkg`, `bash`, `coreutils`, `openssl`,
-`libandroid-support`, `termux-am` and the Termux apt configuration, pointed at the official
-repositories. `pkg install git`, `pkg install nodejs`, `apt upgrade` and the rest therefore work
-through the real ecosystem — there is no curated binary list anywhere in this repository, and no
-package server of ours.
+The bootstrap *is* the package system. It ships `apt`, `dpkg`, `pkg`, `bash`, `dash`,
+`coreutils`, `gawk`, `grep`, `sed`, `tar`, `gzip`, `termux-tools`, `termux-core`, `termux-exec`,
+`libc++`/`libandroid-support` and the Termux apt configuration. There is no curated binary list
+anywhere in this repository, and no package server of ours.
+
+What it does **not** have is a package repository. The official repositories serve packages built
+for `com.termux`, whose binaries cannot run in this prefix, so the bootstrap's
+`etc/apt/sources.list` deliberately contains no active `deb` line. `pkg install <package>`
+therefore fails with "Unable to locate package" — loudly, rather than by installing something
+broken. `apt`, `dpkg` and `pkg` themselves work; what is unavailable is installing anything
+outside the bootstrap until an AgentX-prefix repository is hosted. That decision, and how to lift
+it, is in [termux-bootstrap.md § Package installation](termux-bootstrap.md#package-installation-is-disabled-until-an-agentx-repository-exists).
 
 `git`, `nodejs`, `python`, `openssh`, `make` and `clang` are **not** in the base bootstrap; they
-are ordinary packages, installed by the user with `pkg`. That is the same situation as a fresh
-Termux install, and it is deliberate: hardcoding a tool list would freeze the environment.
+are ordinary packages. That matches a fresh Termux install — hardcoding a tool list would freeze
+the environment — but until a repository exists they cannot be installed with `pkg`.
 
 ## Prefix constraint
 
@@ -69,17 +79,16 @@ prefix `/data/data/com.termux/files/usr`:
 An app installed as `com.agentx.app` has a different data directory, and rewriting the downloaded
 binaries is not possible in place because the replacement prefix is longer than the original.
 Silently extracting anyway would produce a shell full of `not found`. So the runtime refuses, and
-says why, and gives two real options:
+says why, and points at the one route that works:
 
-1. **Build with the official prefix.** `./gradlew assembleRelease -Pagentx.termux.officialPrefix=true`
-   sets `applicationId = com.termux`, so the data directory *is* the one the artifacts expect and
-   the published bootstrap and repositories apply verbatim. Off by default: it takes over Termux's
-   package name and cannot coexist with a real Termux install.
-2. **Rebuild the bootstrap for your own package name.** The officially supported route for a
-   self-contained fork. See [termux-bootstrap.md](termux-bootstrap.md).
+**Rebuild the bootstrap for this app's own package name.** The officially supported route for a
+self-contained fork, and the only one this project supports: the application id is
+`com.agentx.app` in every build type, and official Termux artifacts are refused rather than
+adapted. See [termux-bootstrap.md](termux-bootstrap.md) for the build, the pinned upstream
+revision, the verification each artifact must pass, and the publish-and-pin procedure.
 
-Until one of those is done, the Terminal tab still gives a genuine pty shell (`$PREFIX/bin/sh` or
-`/system/bin/sh`), and the header says that Termux packages are unavailable and why.
+Until an AgentX bootstrap exists, the Terminal tab still gives a genuine pty shell (`$PREFIX/bin/sh`
+or `/system/bin/sh`), and the header says that Termux packages are unavailable and why.
 
 ## How sessions and long-running processes work
 

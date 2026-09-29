@@ -1,0 +1,241 @@
+name: Build AgentX Termux bootstrap
+
+# Produces the four per-ABI bootstrap archives that :termux-runtime installs, verifies
+# them, and publishes them to a GitHub Release under a fixed, non-'latest' tag.
+#
+# Deliberately manual. It must never be able to fail the APK build, and a full run is
+# hours of cross-compilation inside the termux-packages builder container.
+#
+# Read tools/termux-bootstrap/README.md before the first run: it records the pinned
+# upstream revision, how the prefix is defined and verified, and the one-time steps that
+# follow a successful build (publishing the release, then updating TermuxBootstrapCatalog
+# from the generated snippet).
+
+on:
+  workflow_dispatch:
+    inputs:
+      termux_packages_commit:
+        description: termux-packages commit to build from (the pinned revision lives in tools/termux-bootstrap/agentx-prefix.env)
+        required: true
+        default: 2fdb0c07f3fec34adf24c8af515c852fc51f4c9b
+      release_tag:
+        description: Fixed release tag to publish under, e.g. agentx-bootstrap-2026.09.29-r1 (never 'latest')
+        required: true
+      only_arch:
+        description: Build a single architecture only (aarch64 | arm | i686 | x86_64), empty builds all four
+        required: false
+        default: ""
+      apt_repo_url:
+        description: Optional AgentX apt repository URL to activate in the bootstrap; empty disables package installation
+        required: false
+        default: ""
+      publish:
+        description: Publish the verified archives to the release tag
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  TERMUX_PACKAGES_URL: https://github.com/termux/termux-packages.git
+
+jobs:
+  build:
+    name: bootstrap-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    # A single architecture cross-compiles ~80 packages. Upstream's own bootstrap job
+    # takes hours; the 6 hour runner ceiling is the real limit, so this is set just under
+    # it and the job is expected to be slow rather than to fail on time.
+    timeout-minutes: 330
+    if: ${{ inputs.only_arch == '' || inputs.only_arch == matrix.arch }}
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - arch: aarch64
+            abi: arm64-v8a
+            runner: ubuntu-latest
+          - arch: arm
+            abi: armeabi-v7a
+            runner: ubuntu-latest
+          - arch: i686
+            abi: x86
+            runner: ubuntu-latest
+          - arch: x86_64
+            abi: x86_64
+            runner: ubuntu-latest
+
+    steps:
+      - name: Checkout this repository
+        uses: actions/checkout@v4
+
+      # The builder container plus one architecture's build tree needs roughly 15-25 GB.
+      # A stock ubuntu-latest runner has ~14 GB free on /, so the toolchains that this job
+      # does not use are removed first. If a job still runs out of disk, build one
+      # architecture at a time with only_arch, or use a larger runner.
+      - name: Free disk space
+        run: |
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            "$AGENT_TOOLSDIRECTORY" || true
+          df -h /
+
+      - name: Clone termux-packages at the pinned commit
+        env:
+          COMMIT: ${{ inputs.termux_packages_commit }}
+        run: |
+          set -euo pipefail
+          git init termux-packages
+          cd termux-packages
+          git remote add origin "$TERMUX_PACKAGES_URL"
+          # A shallow fetch of one commit: the full history is not needed to build.
+          git fetch --depth 1 origin "$COMMIT"
+          git checkout -q FETCH_HEAD
+          echo "checked out $(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD)" = "$COMMIT" \
+            || { echo "::error::checked out commit does not match the requested one"; exit 1; }
+
+      # Fails loudly if upstream no longer has exactly one
+      # TERMUX_APP__PACKAGE_NAME="com.termux" assignment, or if the prefix upstream derives
+      # from it is not the AgentX prefix. The printed values are the evidence that the
+      # archive was built for com.agentx.app and not for com.termux.
+      - name: Point upstream at the AgentX package name and verify the derived prefix
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          tools/termux-bootstrap/apply-agentx-prefix.sh \
+            --termux-packages-dir termux-packages | tee build/prefix-evidence.txt
+
+      - name: Build the bootstrap
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          # -f (force) is required after a package-name change, as upstream's own --help
+          # says: otherwise packages built for the official prefix are reused.
+          cd termux-packages
+          ./scripts/run-docker.sh ./scripts/build-bootstraps.sh \
+            --architectures "$ARCH" -f 2>&1 | tee "../build/build-${ARCH}.log"
+          cd ..
+          test -f "termux-packages/bootstrap-${ARCH}.zip" \
+            || { echo "::error::build-bootstraps.sh produced no bootstrap-${ARCH}.zip"; exit 1; }
+
+      - name: Post-process (install marker, apt sources)
+        env:
+          ARCH: ${{ matrix.arch }}
+          APT_REPO_URL: ${{ inputs.apt_repo_url }}
+        run: |
+          set -euo pipefail
+          tools/termux-bootstrap/postprocess-bootstrap.sh \
+            --zip "termux-packages/bootstrap-${ARCH}.zip" \
+            --arch "$ARCH" \
+            --out-dir dist \
+            ${APT_REPO_URL:+--apt-repo-url "$APT_REPO_URL"} | tee "build/postprocess-${ARCH}.log"
+
+      # The gate. Non-zero here fails the job, so an unverified archive can never reach
+      # the release: ELF machine type, interpreter and RUNPATH, script shebangs, the
+      # com.termux scan, the symlink manifest, and the required contents and tools.
+      - name: Verify (fails the build on any violation)
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          tools/termux-bootstrap/verify-bootstrap.sh \
+            --zip "dist/bootstrap-${ARCH}.zip" \
+            --arch "$ARCH" \
+            --manifest-out "dist/manifest-${ARCH}.json" \
+            --emit-kotlin | tee "dist/verify-${ARCH}.txt"
+          sha256sum "dist/bootstrap-${ARCH}.zip" > "dist/bootstrap-${ARCH}.zip.sha256"
+          cat "dist/verify-${ARCH}.txt"
+
+      - name: Summarise
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          {
+            echo "## bootstrap-${ARCH}"
+            echo
+            echo '```'
+            cat "dist/manifest-${ARCH}.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the archive, its digest, manifests and logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: bootstrap-${{ matrix.arch }}
+          # Build logs are uploaded with the artifact: the workflow is manual and the
+          # first run needs a human to read the printed prefix and the build output.
+          path: |
+            dist/bootstrap-${{ matrix.arch }}.zip
+            dist/bootstrap-${{ matrix.arch }}.zip.sha256
+            dist/manifest-${{ matrix.arch }}.json
+            dist/verify-${{ matrix.arch }}.txt
+            build/prefix-evidence.txt
+            build/build-${{ matrix.arch }}.log
+            build/postprocess-${{ matrix.arch }}.log
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Publish release ${{ inputs.release_tag }}
+    needs: build
+    if: ${{ inputs.publish && (inputs.only_arch == '' ) }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate the tag
+        env:
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          case "$TAG" in
+            "" ) echo "::error::release_tag is required"; exit 1 ;;
+            latest|*-latest|latest-*) echo "::error::'latest' is not an acceptable tag: it is mutable, so published digests would stop matching"; exit 1 ;;
+          esac
+
+      - name: Download every verified archive
+        uses: actions/download-artifact@v4
+        with:
+          pattern: bootstrap-*
+          path: dist
+          merge-multiple: true
+
+      - name: Create or update the fixed-tag release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          ls -l dist
+          for asset in aarch64 arm i686 x86_64; do
+            test -f "dist/bootstrap-${asset}.zip" || { echo "::error::missing dist/bootstrap-${asset}.zip"; exit 1; }
+            test -f "dist/bootstrap-${asset}.zip.sha256" || { echo "::error::missing digest for ${asset}"; exit 1; }
+            test -f "dist/manifest-${asset}.json" || { echo "::error::missing manifest for ${asset}"; exit 1; }
+          done
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.zip dist/*.sha256 dist/manifest-*.json --clobber
+          else
+            gh release create "$TAG" \
+              --title "AgentX Termux bootstrap $TAG" \
+              --notes "Bootstrap archives built for /data/data/com.agentx.app/files/usr from termux-packages ${{ inputs.termux_packages_commit }}. Each archive is accompanied by its SHA-256 and a manifest.json recording the ELF and prefix verification results. Paste the generated TermuxBootstrapCatalog entry from each verify-*.txt into termux-runtime." \
+              dist/*.zip dist/*.sha256 dist/manifest-*.json
+          fi
+          echo "published $TAG"
+
+      - name: Print the catalog entries for the run summary
+        run: |
+          {
+            echo "## TermuxBootstrapCatalog entries"
+            echo
+            echo "Asset URLs (replace the placeholder URLs from each verify-*.txt):"
+            echo
+            for asset in aarch64 arm i686 x86_64; do
+              echo "- bootstrap-${asset}.zip: https://github.com/${{ github.repository }}/releases/download/${{ inputs.release_tag }}/bootstrap-${asset}.zip"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
