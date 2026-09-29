@@ -170,6 +170,9 @@ class TermuxRuntime(
         val workingDirectory = when (binding) {
             is TermuxWorkspaceBinding.Direct -> binding.path
             is TermuxWorkspaceBinding.Mirrored -> binding.termuxPath
+            // The workspace could not be bound, so the shell runs at $HOME rather than not at
+            // all: an unreadable or unmirrorable workspace must not cost the user their terminal.
+            is TermuxWorkspaceBinding.Home -> binding.path
             is TermuxWorkspaceBinding.Unavailable -> paths.home
         }
         val resolved = TermuxShellResolver.resolve(

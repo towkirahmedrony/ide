@@ -36,8 +36,9 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      # No setup-android action: the ubuntu-latest image already provides the SDK at
+      # $ANDROID_HOME, and the aapt/apksigner/zipalign lookups below find it there. One less
+      # third-party action is one less thing to fail before the checks even start.
 
       # A debug APK is used deliberately: it is signed by the toolchain with no secret, so
       # apksigner and zipalign can be asserted on every push without depending on repository
@@ -131,6 +132,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     needs: artifact
+    # `always()` so the gate below runs and fails with its reason even when the artifact job
+    # failed. A job that is skipped because an earlier job broke would read as "nothing to see",
+    # and the whole point of this job is to say out loud when a bootstrap does not exist.
+    if: always()
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -156,9 +161,7 @@ jobs:
         with:
           name: agentx-apk-and-checks
           path: dist
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        continue-on-error: true
 
       - name: Enable KVM
         run: |
