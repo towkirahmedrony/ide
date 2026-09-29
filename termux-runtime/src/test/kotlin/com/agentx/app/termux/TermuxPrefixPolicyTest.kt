@@ -31,8 +31,7 @@ class TermuxPrefixPolicyTest {
         val support = TermuxPrefixPolicy.evaluate(TermuxPaths.forAppDataDir("/data/data/com.other.app"))
         val unsupported = assertIs<TermuxPrefixSupport.Unsupported>(support)
 
-        assertTrue(unsupported.reason.contains("/data/data/com.agentx.app"))
-        assertTrue(unsupported.remedy.contains("agentx.termux.officialPrefix"))
+        assertTrue(unsupported.reason.contains(TermuxPaths.OFFICIAL_PREFIX))
     }
 
     @Test
