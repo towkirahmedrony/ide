@@ -35,3 +35,7 @@ ci-workflow-changes.patch
 termux-packages/
 tools/termux-bootstrap/dist/
 tools/termux-bootstrap/build/
+
+# Python bytecode from tools/termux-bootstrap
+__pycache__/
+*.pyc
