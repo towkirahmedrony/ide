@@ -168,6 +168,14 @@ jobs:
         run: |
           set -euo pipefail
           cd termux-packages
+          # setup-ubuntu.sh is written against the newer Ubuntu release upstream's CI uses, and
+          # names python3.14-venv, which does not exist on this runner's Ubuntu (noble, python
+          # 3.12). That was the only package apt could not resolve -- apt reports every
+          # unresolvable name at once -- so the list is otherwise fine on noble. The substitution
+          # keeps a python venv available, which is what the build actually needs, without
+          # touching anything else.
+          sed -i 's/python3\.14-venv/python3-venv/' scripts/setup-ubuntu.sh
+          grep -n "python3-venv" scripts/setup-ubuntu.sh || true
           sudo bash scripts/setup-ubuntu.sh 2>&1 | tail -30
           cd ..
           df -h / | tail -1
