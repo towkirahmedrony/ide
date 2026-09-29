@@ -17,6 +17,7 @@ import com.agentx.app.termux.TermuxWorkspaceBinding
 import com.termux.terminal.TerminalSession
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
@@ -61,7 +62,7 @@ data class TerminalUiState(
             provisioning !is TermuxProvisioningState.Verifying &&
             provisioning !is TermuxProvisioningState.Extracting &&
             prefixNote == null &&
-            !running
+            provisioning !is TermuxProvisioningState.Ready
 
     companion object {
         // TerminalView consumes this as a pixel-sized monospace glyph. 30 made a 720px-wide
@@ -137,8 +138,18 @@ class TerminalViewModel(
 
     fun provision() {
         val current = runtime ?: return
-        current.provision()
         uiState = uiState.copy(prefixNote = null)
+        viewModelScope.launch {
+            current.provision()
+            if (current.provisioning.first { state ->
+                    state is TermuxProvisioningState.Ready || state is TermuxProvisioningState.Failed
+                } is TermuxProvisioningState.Ready
+            ) {
+                // The first shell may have been Android's temporary /system/bin/sh. Replace it
+                // now that the real Termux-compatible prefix is ready.
+                restart()
+            }
+        }
     }
 
     fun selectSession(handle: String) {

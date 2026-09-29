@@ -75,7 +75,7 @@ class TermuxBootstrapInstaller(
      * and friends as links; the check is therefore a real one, not a name match.
      */
     fun isInstalled(): Boolean = TermuxShellResolver.LOGIN_SHELL_BINARIES.any { name ->
-        File("${paths.bin}/$name").isFile
+        File("${paths.bin}/$name").let { it.isFile && it.canExecute() }
     }
 
     fun provision(onState: (TermuxProvisioningState) -> Unit = {}): TermuxProvisioning {

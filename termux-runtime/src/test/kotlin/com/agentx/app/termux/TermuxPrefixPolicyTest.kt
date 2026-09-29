@@ -19,11 +19,10 @@ class TermuxPrefixPolicyTest {
     }
 
     @Test
-    fun `app own data directory is supported`() {
+    fun `custom app data directory is refused because official binaries are hard coded`() {
         val support = TermuxPrefixPolicy.evaluate(TermuxPaths.forAppDataDir("/data/data/com.agentx.app"))
-        val supported = assertIs<TermuxPrefixSupport.Supported>(support)
-        assertEquals("/data/data/com.agentx.app/files/usr", supported.prefix)
-        assertFalse(supported.official)
+        val unsupported = assertIs<TermuxPrefixSupport.Unsupported>(support)
+        assertTrue(unsupported.reason.contains(TermuxPaths.OFFICIAL_PREFIX))
     }
 
     @Test

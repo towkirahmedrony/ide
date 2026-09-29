@@ -24,15 +24,12 @@ object TermuxPrefixPolicy {
             return TermuxPrefixSupport.Supported(prefix = prefix, official = true)
         }
 
-        // 3. Allow our custom app data dir safely
-        if (paths.appDataDir == "/data/data/com.agentx.app") {
-            return TermuxPrefixSupport.Supported(prefix = prefix, official = false)
-        }
-
-        // 4. Reject unauthorized directories
+        // 3. Reject unauthorized directories. Official bootstrap binaries contain this absolute
+        // prefix in their ELF interpreter and package metadata; a same-shaped custom directory
+        // is not compatible and fails later with a misleading Permission denied.
         return TermuxPrefixSupport.Unsupported(
             prefix = prefix,
-            reason = "The official Termux bootstrap and its packages are built for the absolute prefix ${TermuxPaths.OFFICIAL_PREFIX} and this app's prefix is$prefix.",
+            reason = "The official Termux bootstrap and its packages are built for the absolute prefix ${TermuxPaths.OFFICIAL_PREFIX} and this app's prefix is $prefix.",
             remedy = remedy(paths)
         )
     }

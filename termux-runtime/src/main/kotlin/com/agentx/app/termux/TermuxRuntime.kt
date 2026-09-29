@@ -161,7 +161,19 @@ class TermuxRuntime(
             is TermuxWorkspaceBinding.Unavailable -> paths.home
         }
         // File.isFile() follows symlinks, which is what the bootstrap's login shells are.
-        val resolved = TermuxShellResolver.resolve(paths) { path -> File(path).isFile }
+        val resolved = if (prefixSupport is TermuxPrefixSupport.Supported) {
+            TermuxShellResolver.resolve(paths) { path ->
+                File(path).let { it.isFile && it.canExecute() }
+            }
+        } else {
+            // Official binaries are hard coded to the official prefix. A deliberately custom
+            // package build gets a live Android shell, never a dead Permission-denied session.
+            TermuxShellResolver.Resolved(
+                executable = TermuxShellResolver.SYSTEM_SHELL,
+                processName = "sh",
+                login = false,
+            )
+        }
 
         val environment = environmentFor(
             workingDirectory = workingDirectory,
