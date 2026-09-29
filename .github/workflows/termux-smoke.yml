@@ -227,16 +227,70 @@ jobs:
               test -s "smoke/which-$tool.txt" || { echo "::error::$tool is missing from the prefix"; exit 1; }
             done
 
+            # The binaries themselves must be executable by the app user. This is the check that
+            # catches the classic "the prefix extracted but nothing can run it" failure, which
+            # shows up as `Permission denied` from login/bash rather than as a missing file.
+            adb shell "run-as com.agentx.app /data/data/com.agentx.app/files/usr/bin/sh -c 'printf sh-ran'" \
+              | tee smoke/exec-sh.txt
+            adb shell "run-as com.agentx.app /data/data/com.agentx.app/files/usr/bin/bash -c 'printf bash-ran'" \
+              | tee smoke/exec-bash.txt
+            adb shell "run-as com.agentx.app /data/data/com.agentx.app/files/usr/bin/login -c 'printf login-ran'" \
+              | tee smoke/exec-login.txt || true
+            grep -q "sh-ran" smoke/exec-sh.txt || { echo "::error::bin/sh did not run from the prefix"; exit 1; }
+            grep -q "bash-ran" smoke/exec-bash.txt || { echo "::error::bin/bash did not run from the prefix"; exit 1; }
+            if grep -rhiE "permission denied" smoke/exec-*.txt; then
+              echo "::error::a prefix binary was refused with Permission denied"
+              exit 1
+            fi
+
+            # Task 4.4: the shell must still be alive after start. An immediate exit with status 1
+            # (a startup failure) or 9 (killed) is exactly the failure this job exists to catch,
+            # and it is invisible from the one-shot commands above because each of those starts
+            # its own process.
+            adb shell "run-as com.agentx.app sh -c 'ps -A -o PID,ARGS 2>/dev/null | grep -v grep | grep \"files/usr\"'" \
+              | tee smoke/process.txt || true
+            if ! grep -q "files/usr" smoke/process.txt; then
+              echo "::error::no AgentX shell process is running: it exited immediately after start"
+              adb shell "run-as com.agentx.app ls -l /data/data/com.agentx.app/files/usr/bin/sh" || true
+              exit 1
+            fi
+            adb logcat -d | grep -iE "exited|exit status|code 1|signal 9" | tail -20 > smoke/exit-codes.txt || true
+            if grep -qiE "exit(code| status)=?[19]\b" smoke/exit-codes.txt; then
+              echo "::error::the terminal process exited with code 1 or 9"
+              cat smoke/exit-codes.txt
+              exit 1
+            fi
+
             # Nothing may still point at the official prefix.
             if grep -rIl "/data/data/com.termux" smoke/ ; then
               echo "::error::a smoke log references the official Termux prefix"; exit 1
             fi
 
-            # Task 4.8: keyboard text must reach the shell.
+            # Task 4.8: the typed text has to be *executed by the shell*, so the assertion is a
+            # file the shell creates in response to typing. Dumping logcat proves nothing about
+            # whether a keystroke reached a pty.
+            #
+            # `adb shell input text` cannot send a bare space (it must be %s), and the shell's
+            # working directory may be $HOME or a workspace mirror, so the marker is searched for
+            # under the whole data dir rather than assumed to land in one place.
+            MARKER="agentx-keyboard-$(date +%s)"
             adb shell input keyevent KEYCODE_WAKEUP || true
-            adb shell input text "echo KEYBOARD_REACHED" || true
+            # Focus the terminal view before typing: the keyboard button is only enabled for a
+            # live session, which is itself part of what this asserts.
+            adb shell input tap 540 1200 || true
+            sleep 2
+            adb shell input text "touch%s${MARKER}.txt" || true
             adb shell input keyevent 66 || true
-            sleep 3
+            sleep 6
+            adb shell "run-as com.agentx.app sh -c 'find /data/data/com.agentx.app/files -maxdepth 5 -name \"${MARKER}.txt\"'" \
+              | tee smoke/keyboard.txt
+            grep -q "${MARKER}.txt" smoke/keyboard.txt || {
+              echo "::error::keyboard input never reached the shell: the shell did not create ${MARKER}.txt"
+              echo "The terminal had no focused, live session to receive the keys."
+              exit 1
+            }
+            echo "keyboard input reached the shell: ${MARKER}.txt was created by it"
+
             adb logcat -d > smoke/logcat.txt || true
 
       - name: Upload the smoke logs

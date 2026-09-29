@@ -192,6 +192,90 @@ Verified on a device only where it can be: see "Not verified here" below for the
 - **No root features.** Nothing here needs root, Magisk, an external Termux install, Docker or a
   remote host, and nothing here assumes unrestricted filesystem access.
 
+## Testing the aarch64 build on a real phone
+
+The emulator can only run the x86_64 bootstrap, so arm64 needs a phone. These are the exact steps,
+and the exact output to expect.
+
+**1. Install both apps.** Install the AgentX APK and, if it is not already there, the official
+Termux app from its own release page. They have different package ids, so neither replaces the
+other:
+
+```
+adb install -r app-arm64-v8a-release.apk
+adb shell pm list packages | grep -E "com\.agentx\.app|com\.termux"
+# expected: two lines
+#   package:com.agentx.app
+#   package:com.termux
+```
+
+**2. Install the bootstrap.** Open AgentX → Terminal tab. Before installing, the header says
+Termux packages are unavailable and the shell is Android's `/system/bin/sh`. Tap **Install**. The
+banner walks through downloading → verifying → extracting → installing. On success the shell
+restarts by itself and the header stops saying the packages are unavailable.
+
+**3. Check the environment.** In that terminal, run:
+
+```
+printf 'hello\n'
+pwd
+printf '%s\n' "$PREFIX"
+command -v sh
+command -v pkg
+command -v apt
+pkg --version || true
+```
+
+Expected:
+
+```
+hello
+/data/data/com.agentx.app/files/home
+/data/data/com.agentx.app/files/usr
+/data/data/com.agentx.app/files/usr/bin/sh
+/data/data/com.agentx.app/files/usr/bin/pkg
+/data/data/com.agentx.app/files/usr/bin/apt
+Termux-PKG/2.0 … (a version banner; `pkg --version` is allowed to fail)
+```
+
+`$PREFIX` must be `/data/data/com.agentx.app/files/usr`. If it prints anything containing
+`com.termux`, the archive is the official one and must not be used.
+
+**4. Check the interesting cases.**
+
+```
+ls /data/data/com.agentx.app/files/usr/etc/termux/agentx-bootstrap.ok   # the install marker
+pkg install git                                                          # expected to fail
+```
+
+`pkg install` is expected to say `Unable to locate package`: apt is deliberately pointed at no
+repository, because the official one ships packages built for a prefix this app cannot use. That
+is not a bug and must not be "fixed" by adding the official URL.
+
+Then: type into the keyboard (`echo typed-by-keyboard`) and confirm it appears in the transcript;
+rotate the device; open a `content://` folder as the workspace and confirm the terminal reports
+that it is running in a copy; press Ctrl-D to exit the shell and confirm the exit strip appears
+with a readable status and a **Restart terminal** action that works.
+
+**5. If it fails, collect this.** The stage named in the banner is the single most useful fact —
+`download`, `checksum`, `extraction`, `symlink`, `permissions`, `prefix`, `runtime` — together
+with the message beside it. Then:
+
+```
+adb logcat -d | grep -iE "agentx|termux|Termux" > agentx-logcat.txt
+adb shell run-as com.agentx.app ls -l /data/data/com.agentx.app/files/usr/bin | head -20
+adb shell run-as com.agentx.app cat /data/data/com.agentx.app/files/usr/etc/termux/agentx-bootstrap.ok
+adb shell "run-as com.agentx.app /data/data/com.agentx.app/files/usr/bin/sh -c 'printf ok'"
+```
+
+The marker file records the ABI, prefix and source revision the archive was built from, so it is
+worth pasting in full. A `Permission denied` from `login` or `bash` means the extracted files are
+not executable; a shell that exits with 1 within seconds means the prefix is incomplete; a shell
+that exits with 9 was killed, usually by memory pressure.
+
+Report the stage, the marker file, and `agentx-logcat.txt`. Until a phone run is reported, every
+arm64 item in the checklist below stays **unverified** — the emulator does not test it.
+
 ## Acceptance checklist
 
 Each item is marked with what actually backs it. **Unverified means unverified** — nothing here
