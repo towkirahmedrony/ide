@@ -481,3 +481,67 @@ fails on either, build one architecture per run with `only_arch`, or use a large
   `com.agentx.app` is a prediction from `termux_step_patch_package.sh`, not an observation.
 - Part 3's real APK smoke test is what turns any of this into "Termux support works". Until
   it passes, none of these artifacts should be described as working.
+
+## Where the build stands, and what to do next
+
+Nine dispatches, all of which failed, and each one later in the process than the last. The
+harness is no longer the problem: the run of `b892e51` compiled for 42 minutes and built **90
+packages** before failing on a single package's source.
+
+| Run | Commit | Died at | Cause |
+| --- | --- | --- | --- |
+| — | `491f9bc` | upload / publish | Fixed ahead of the first real dispatch: logs now upload on failure, a single-arch run may publish, concurrent dispatches no longer race on `gh release create` |
+| 36549812684 / 36549816381 | `491f9bc` | prefix patch | `Permission denied`, exit 126 — no executable bit in the checkout |
+| 36550488047 | `98a2db3` | build | `run-docker.sh`'s AppArmor + seccomp + fuse-overlayfs sandbox: `rm: cannot remove '/bin': Permission denied` |
+| 36551571841 | `5098ca1` | host env | `setup-ubuntu.sh` wants the newer Ubuntu upstream's CI uses; `clang-21`/`libllvm21` deps do not exist on noble |
+| 36552131389 | `3a6b9c7` | host env | Same, one package deeper (`libstdc++-15-dev`, `libxml2-16`) — route abandoned |
+| 36552727031 | `d327439` | build | Skipped: `-f` path, `rm -f "$TERMUX_BUILT_PACKAGES_DIRECTORY_FOR_ARCH"/*` with the variable unset |
+| 36553278484 | `db1e005` | build | `clean.sh` unprivileged: `chmod ... Operation not permitted`, `umount: must be superuser` |
+| 36554398784 | `5136dc8` | build | `./scripts/clean.sh` does not exist; it is at the repository root |
+| 36554916974 | `c7c1f98` | build | Same unprivileged `clean.sh` failure |
+| 36572462357 | `84cfed2` | build | Root chown worked, `clean.sh` worked, build started, then `mkdir: cannot create directory '/home/builder/.termux-build/apt': Permission denied` as `builder` |
+| 36573177092 | `e075d5f` | toolchain | Build as root: compiled `pcre2`, then `fuse-overlayfs: cannot mount: Permission denied` |
+| **36573752464** | **`b892e51`** | **`util-linux`** | `--privileged` + a bounded fuse retry. 42 minutes, 90 package builds, then `nsenter.c:189: error: variable has incomplete type 'struct file_handle'` and `call to undeclared function 'name_to_handle_at'` |
+
+### What the logs proved along the way
+
+- The prefix patch is consumed by the build, not just by the patch script. Every run prints
+  `Ignoring -i option to download dependencies since repo package name (com.termux) does not
+  equal app package name (com.agentx.app)`, which is `build-package.sh:633` refusing to fetch
+  official debs, and the packages are then compiled from source.
+- `--privileged` did **not** make the fuse overlay work on a GitHub-hosted runner: the log still
+  contains `fuse-overlayfs: cannot mount: Permission denied`, so the retry fired and the NDK was
+  extracted by copy instead of overlaid.
+
+### The open question
+
+`util-linux` fails to compile against Bionic's headers, 90 packages in. Two candidates, and the
+logs do not yet distinguish them:
+
+1. the copy-based toolchain setup (the fuse fallback) leaves a sysroot that does not match what
+   `util-linux` expects, so `struct file_handle` and `name_to_handle_at` are missing;
+2. genuine clang/NDK header drift for that one package.
+
+Do not guess between them — read `build-x86_64.log`, confirm whether `fuse-overlayfs is now
+unavailable` appears before the toolchain is set up, and check whether upstream's own CI ever
+compiles `util-linux` at all. It does not: upstream's bootstrap workflow assembles the archive
+from published debs, so this package has no compiled-from-source precedent there.
+
+### Building it on a machine that can
+
+On a plain Linux host or a self-hosted runner with Docker, the supported commands are the
+upstream ones, unmodified:
+
+```
+git clone https://github.com/termux/termux-packages && cd termux-packages
+git fetch --depth 1 origin 2fdb0c07f3fec34adf24c8af515c852fc51f4c9b && git checkout FETCH_HEAD
+bash ../tools/termux-bootstrap/apply-agentx-prefix.sh --termux-packages-dir .
+./scripts/run-docker.sh ./clean.sh
+./scripts/run-docker.sh ./scripts/build-bootstraps.sh --architectures x86_64
+```
+
+Never pass `-f`: it reaches `rm -f "$TERMUX_BUILT_PACKAGES_DIRECTORY_FOR_ARCH"/*` with that
+variable unset. Requirements: ~30 GB free disk, 4 GB+ RAM, Docker with the ability to load
+AppArmor profiles and mount fuse filesystems, and 1-3 hours per architecture. On success,
+`bootstrap-x86_64.zip` appears in the checkout; run `verify-bootstrap.sh` on it, then attach it
+to a release with a fixed tag so the publish job or the catalog step can pick it up.
