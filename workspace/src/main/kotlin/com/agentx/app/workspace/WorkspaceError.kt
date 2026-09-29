@@ -49,6 +49,15 @@ enum class WorkspaceErrorCode {
     /** Process execution is intentionally disabled until the security policy lands. */
     PROCESS_EXECUTION_UNAVAILABLE,
 
+    /** No usable shell binary was found on this device. */
+    SHELL_UNAVAILABLE,
+
+    /** The requested working directory is not a usable filesystem path. */
+    INVALID_WORKING_DIRECTORY,
+
+    /** The process could not be started or died unexpectedly. */
+    PROCESS_FAILED,
+
     UNKNOWN,
 }
 
@@ -88,6 +97,12 @@ data class WorkspaceError(
             WorkspaceErrorCode.UNSUPPORTED_OPERATION -> "This operation is not supported here."
             WorkspaceErrorCode.PROCESS_EXECUTION_UNAVAILABLE ->
                 "Command execution is not enabled yet."
+            WorkspaceErrorCode.SHELL_UNAVAILABLE ->
+                "No usable shell was found on this device."
+            WorkspaceErrorCode.INVALID_WORKING_DIRECTORY ->
+                "The shell cannot use this workspace location as a working directory."
+            WorkspaceErrorCode.PROCESS_FAILED ->
+                "The process failed to start or exited unexpectedly."
             WorkspaceErrorCode.UNKNOWN -> message.ifBlank { "Something went wrong." }
         }
 }

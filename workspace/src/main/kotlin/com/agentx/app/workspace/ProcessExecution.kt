@@ -19,9 +19,11 @@ data class ProcessEnvironment(
 )
 
 /**
- * A request to run a command inside a workspace. [workingDirectory] is
- * workspace-relative; cancellation is cooperative through the calling
- * coroutine.
+ * A one-shot command request.
+ *
+ * [workingDirectory] is a real filesystem path when executed by
+ * [ProcessRuntime]; the stub executor ignores it. Cancellation is cooperative
+ * through the calling coroutine.
  */
 data class ProcessRequest(
     val command: String,
@@ -62,14 +64,26 @@ interface ProcessHandle {
 }
 
 /**
- * Executes commands for a workspace.
+ * A one-shot command execution that later agent tools, build, and test
+ * runners can share. The human terminal uses [com.agentx.app.workspace.process.InteractiveShellSession]
+ * instead, so a long-lived shell is not torn down after every line.
+ */
+data class CommandExecution(
+    val id: String,
+    val request: ProcessRequest,
+    val result: ProcessResult? = null,
+)
+
+/**
+ * Executes one-shot commands.
  *
- * No real shell is connected yet: [allowsArbitraryExecution] is `false` for
- * every implementation and the security policy will be added in a later task.
+ * The human terminal uses [ProcessRuntime] for a long-lived interactive shell.
+ * Agent-issued commands must still go through the Tool Router; this executor
+ * never grants the agent [allowsArbitraryExecution] on its own.
  */
 interface ProcessExecutor {
 
-    /** Whether this executor may run arbitrary, unvetted commands. Always false for now. */
+    /** Whether this executor may run arbitrary, unvetted commands. */
     val allowsArbitraryExecution: Boolean
 
     /**

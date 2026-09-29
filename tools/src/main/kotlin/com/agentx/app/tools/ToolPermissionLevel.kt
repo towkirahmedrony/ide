@@ -10,6 +10,7 @@ package com.agentx.app.tools
 enum class ToolPermissionLevel {
     READ_ONLY,
     WORKSPACE_WRITE,
+    /** Agent-issued shell. The human terminal does not use this grant. */
     COMMAND_EXECUTION,
     NETWORK,
     GIT_WRITE,

@@ -10,6 +10,6 @@ import com.agentx.app.core.architecture.LayerStatus
 val WORKSPACE_LAYER = LayerDescriptor(
     id = "workspace",
     title = "Workspace Runtime",
-    summary = "Opens user-selected workspaces with a scoped filesystem; process execution remains a safe, disabled stub.",
+    summary = "Opens user-selected workspaces with a scoped filesystem and a real process runtime for the human terminal.",
     status = LayerStatus.ACTIVE,
 )

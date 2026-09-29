@@ -88,7 +88,13 @@ fun WorkspaceShell(
     )
     val terminalViewModel: TerminalViewModel = viewModel(
         key = "terminal-$workspaceId",
-        factory = IdeViewModelFactory { TerminalViewModel(workspaceId, dependencies.terminal) },
+        factory = IdeViewModelFactory {
+            TerminalViewModel(
+                workspaceId = workspaceId,
+                workspaceManager = dependencies.workspaceManager,
+                sessions = dependencies.terminalSessions,
+            )
+        },
     )
     val gitViewModel: GitViewModel = viewModel(
         key = "git-$workspaceId",

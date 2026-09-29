@@ -15,15 +15,16 @@ import com.agentx.app.ui.ide.data.ModelRunnerBrowserHost
 import com.agentx.app.ui.ide.data.NoOpOAuthBrowserLauncher
 import com.agentx.app.ui.ide.data.OAuthBrowserLauncher
 import com.agentx.app.ui.ide.data.OAuthCallbackInbox
-import com.agentx.app.ui.ide.data.TerminalSession
 import com.agentx.app.ui.ide.data.WorkspacePicker
 import com.agentx.app.ui.ide.data.mock.MockAgentSession
 import com.agentx.app.ui.ide.data.mock.MockGitRepository
 import com.agentx.app.ui.ide.data.mock.MockModelRunnerBrowser
-import com.agentx.app.ui.ide.data.mock.MockTerminalSession
 import com.agentx.app.ui.ide.data.mock.mockWorkspaceManager
 import com.agentx.app.ui.ide.data.mock.mockWorkspacePicker
 import com.agentx.app.workspace.WorkspaceManager
+import com.agentx.app.workspace.process.DefaultTerminalSessionManager
+import com.agentx.app.workspace.process.JvmProcessRuntime
+import com.agentx.app.workspace.process.TerminalSessionManager
 
 /**
  * Everything the IDE shell needs from the outside world. The workspace runtime
@@ -48,7 +49,7 @@ data class IdeDependencies(
     val codeIntelligence: CodeIntelligence? = null,
     val workspacePicker: WorkspacePicker,
     val agent: AgentSession,
-    val terminal: TerminalSession,
+    val terminalSessions: TerminalSessionManager,
     val git: GitRepository,
     val modelManager: ModelManager,
     val connectionManager: ConnectionManager,
@@ -69,12 +70,16 @@ data class IdeDependencies(
         /** In-memory bindings for previews and tests. */
         fun mock(): IdeDependencies {
             val runtimeOutput = RuntimeOutputBuffer()
+            val workspaceManager = mockWorkspaceManager()
             return IdeDependencies(
-                workspaceManager = mockWorkspaceManager(),
+                workspaceManager = workspaceManager,
                 workspaceSelection = WorkspaceSelectionState(),
                 workspacePicker = mockWorkspacePicker(),
                 agent = MockAgentSession(),
-                terminal = MockTerminalSession(),
+                terminalSessions = DefaultTerminalSessionManager(
+                    runtime = JvmProcessRuntime(),
+                    workspaceManager = workspaceManager,
+                ),
                 git = MockGitRepository(),
                 modelManager = ModelManagers.create(
                     runtimeOutput = runtimeOutput,

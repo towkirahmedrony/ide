@@ -46,8 +46,8 @@ import com.agentx.app.tools.WorkspaceManagerFileSystemResolver
 import com.agentx.app.ui.ide.ForgeIdeApp
 import com.agentx.app.ui.ide.IdeDependencies
 import com.agentx.app.ui.ide.data.mock.MockGitRepository
-import com.agentx.app.ui.ide.data.mock.MockTerminalSession
 import com.agentx.app.ui.theme.ForgeTheme
+import com.agentx.app.workspace.process.TerminalSessionManager
 import com.agentx.app.workspace.DefaultWorkspaceManager
 import com.agentx.app.workspace.android.SafWorkspaceBackend
 import com.agentx.app.workspace.android.SharedPreferencesWorkspaceMetadataStore
@@ -191,8 +191,10 @@ class MainActivity : ComponentActivity() {
                             // has online; it never learns where that model runs.
                             modelConfig = { modelManagerOrDefault(modelManager) },
                         ),
-                        terminal = MockTerminalSession(),
-                        git = MockGitRepository(),
+                         terminalSessions = checkNotNull(
+                             foundation.services.get<TerminalSessionManager>(ServiceKeys.TERMINAL_SESSION_MANAGER),
+                         ) { "Terminal session manager is not registered" },
+                         git = MockGitRepository(),
                         modelManager = checkNotNull(modelManager) { "Model manager is not registered" },
                         connectionManager = checkNotNull(connectionManager) { "Connection manager is not registered" },
                         integrationSetup = integrationSetup,

@@ -27,6 +27,15 @@ object ServiceKeys {
     /** Personal provider setup: Client IDs and callback URIs for this IDE. */
     const val INTEGRATION_SETUP = "forge.integrations.setup"
 
+    /** Starts OS processes for the human terminal and later command tools. */
+    const val PROCESS_RUNTIME = "forge.workspace.processRuntime"
+
+    /** One-shot command executor sharing the same [PROCESS_RUNTIME]. */
+    const val PROCESS_EXECUTOR = "forge.workspace.processExecutor"
+
+    /** Owns long-lived interactive shells so the UI cannot spawn duplicates. */
+    const val TERMINAL_SESSION_MANAGER = "forge.workspace.terminalSessions"
+
     /** Structural understanding of source files: languages, syntax trees, symbols. */
     const val CODE_INTELLIGENCE = "forge.codeintel"
 

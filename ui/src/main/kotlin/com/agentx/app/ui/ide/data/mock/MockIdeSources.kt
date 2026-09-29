@@ -5,14 +5,10 @@ import com.agentx.app.ui.ide.data.AgentSession
 import com.agentx.app.ui.ide.data.AgentStreamEvent
 import com.agentx.app.ui.ide.data.GitRepository
 import com.agentx.app.ui.ide.data.ModelRunnerBrowserHost
-import com.agentx.app.ui.ide.data.TerminalSession
 import com.agentx.app.ui.ide.data.WorkspacePicker
 import com.agentx.app.ui.ide.model.AgentActivity
 import com.agentx.app.ui.ide.model.AgentActivityStatus
 import com.agentx.app.ui.ide.model.GitSnapshot
-import com.agentx.app.ui.ide.model.TerminalLine
-import com.agentx.app.ui.ide.model.TerminalLineKind
-import com.agentx.app.ui.ide.model.TerminalResult
 import com.agentx.app.workspace.DefaultWorkspaceManager
 import com.agentx.app.workspace.WorkspaceManager
 import com.agentx.app.workspace.memory.InMemoryWorkspaceBackend
@@ -20,12 +16,12 @@ import com.agentx.app.workspace.memory.InMemoryWorkspaceMetadataStore
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import java.util.UUID
 
 /**
- * Stand-ins for layers that are not implemented yet (agent, terminal, git), plus
+ * Stand-ins for layers that are not implemented yet (agent, git), plus
  * an in-memory workspace binding. The workspace runtime itself is real domain
- * code; only its backend is synthetic here.
+ * code; only its backend is synthetic here. The terminal uses the real
+ * process runtime.
  */
 
 /** An in-memory workspace manager used by previews and tests. */
@@ -80,58 +76,6 @@ class MockAgentSession : AgentSession {
 
         onEvent(AgentStreamEvent.Activity(AgentActivity(AgentActivityStatus.COMPLETED, "Completed")))
         onEvent(AgentStreamEvent.Completed(reply))
-    }
-}
-
-/** Returns mock output. Never touches a real shell. */
-class MockTerminalSession : TerminalSession {
-
-    override suspend fun run(workspaceId: String, command: String): TerminalResult {
-        val trimmed = command.trim()
-        val lines = mutableListOf<TerminalLine>()
-
-        lines += TerminalLine(
-            id = UUID.randomUUID().toString(),
-            text = "\$ ${trimmed}",
-            kind = TerminalLineKind.INPUT,
-        )
-
-        delay(220)
-
-        lines += TerminalLine(
-            id = UUID.randomUUID().toString(),
-            text = "[mock] real shell execution is not available yet",
-            kind = TerminalLineKind.SYSTEM,
-        )
-
-        when {
-            trimmed.isEmpty() -> Unit
-            trimmed == "ls" || trimmed == "dir" -> lines += TerminalLine(
-                id = UUID.randomUUID().toString(),
-                text = "[mock] use the Files tab to browse the workspace",
-                kind = TerminalLineKind.OUTPUT,
-            )
-
-            trimmed.startsWith("echo ") -> lines += TerminalLine(
-                id = UUID.randomUUID().toString(),
-                text = trimmed.removePrefix("echo "),
-                kind = TerminalLineKind.OUTPUT,
-            )
-
-            trimmed == "pwd" -> lines += TerminalLine(
-                id = UUID.randomUUID().toString(),
-                text = "workspace://$workspaceId",
-                kind = TerminalLineKind.OUTPUT,
-            )
-
-            else -> lines += TerminalLine(
-                id = UUID.randomUUID().toString(),
-                text = "command not executed (mock terminal): $trimmed",
-                kind = TerminalLineKind.ERROR,
-            )
-        }
-
-        return TerminalResult(lines = lines, exitCode = 0)
     }
 }
 

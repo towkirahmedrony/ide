@@ -48,6 +48,7 @@ import com.agentx.app.tools.TOOLS_LAYER
 import com.agentx.app.tools.ToolsModule
 import com.agentx.app.ui.UI_LAYER
 import com.agentx.app.workspace.WORKSPACE_LAYER
+import com.agentx.app.workspace.WorkspaceModule
 
 /** Everything the UI needs to render the running foundation. */
 data class FoundationState(
@@ -155,6 +156,7 @@ object Foundation {
                 setup = integrationSetup,
             ),
         )
+        modules.register(WorkspaceModule())
         modules.register(AgentModule())
         modules.initialize(services)
 

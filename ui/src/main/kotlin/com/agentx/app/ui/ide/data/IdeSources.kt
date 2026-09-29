@@ -2,15 +2,15 @@ package com.agentx.app.ui.ide.data
 
 import com.agentx.app.ui.ide.model.AgentActivity
 import com.agentx.app.ui.ide.model.GitSnapshot
-import com.agentx.app.ui.ide.model.TerminalResult
 
 /**
  * Presentation-facing ports for the IDE shell.
  *
  * Workspace access is no longer mocked: the UI talks to the
  * `com.agentx.app.workspace.WorkspaceManager` domain contract, which is backed by
- * the Android Storage Access Framework. The remaining ports (agent, terminal,
- * git) are still stand-ins for layers that land in later tasks.
+ * the Android Storage Access Framework. The remaining ports (agent, git)
+ * are still stand-ins for layers that land in later tasks. The terminal
+ * talks to the Workspace process runtime through [com.agentx.app.workspace.process.TerminalSessionManager].
  */
 
 /**
@@ -87,11 +87,6 @@ interface AgentSession {
         approved: Boolean,
         onEvent: (AgentStreamEvent) -> Unit,
     ) = Unit
-}
-
-/** Executes shell commands for a workspace. Mocked until the runtime exists. */
-interface TerminalSession {
-    suspend fun run(workspaceId: String, command: String): TerminalResult
 }
 
 /** Reads repository state for a workspace. No real Git access yet. */
