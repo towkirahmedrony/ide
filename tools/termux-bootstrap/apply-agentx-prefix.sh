@@ -297,3 +297,35 @@ PYEOF
 elif [ -f "$setup_variables_sh" ]; then
     echo "tweak: termux_step_setup_variables.sh already exports the aliases"
 fi
+
+# ---------------------------------------------------------------------------
+# Source patches.
+#
+# patches/<package>.<name>.patch is installed into packages/<package>/<name>.patch, where
+# upstream's patch step picks up any *.patch in a package directory and -- this is the part
+# that matters -- substitutes the @TERMUX_*@ tokens inside it with the build's values before
+# applying it (termux_step_patch_package). That is upstream's own mechanism for local
+# changes, and it is why these patches carry @TERMUX_PREFIX@/@TERMUX_HOME@ tokens instead of
+# literal paths: the same patch text stays correct for any prefix.
+#
+# The four files they fix carry the official prefix in prose or in a diagnostic string that
+# no build variable reaches -- three documentation comments and one proot error message --
+# which is exactly why exporting the build variables did not fix them and why they need a
+# patch rather than a configure flag.
+# ---------------------------------------------------------------------------
+if [ -d "$tweaks_dir" ]; then
+    shopt -s nullglob
+    for patch_file in "$tweaks_dir"/*.patch; do
+        patch_name="$(basename "$patch_file")"
+        package="${patch_name%%.*}"
+        installed="${patch_name#*.}"
+        target_dir="$TERMUX_PACKAGES_DIR/packages/$package"
+        if [ ! -d "$target_dir" ]; then
+            echo "ERROR: $patch_file names package '$package' but $target_dir does not exist" >&2
+            exit 1
+        fi
+        cp -f "$patch_file" "$target_dir/$installed"
+        echo "patch: installed packages/$package/$installed"
+    done
+    shopt -u nullglob
+fi

@@ -1,0 +1,40 @@
+--- a/app/main/scripts/termux/api/termux_exec/service/ld_preload/termux-exec-ld-preload-lib.in
++++ b/app/main/scripts/termux/api/termux_exec/service/ld_preload/termux-exec-ld-preload-lib.in
+@@ -100,7 +100,7 @@
+     # copied below.
+     rm -f "$TERMUX__PREFIX/lib/libtermux-exec-ld-preload.so" || return $?
+ 
+-    # Prevent `CANNOT LINK EXECUTABLE "cp": library "/data/data/com.termux/files/usr/lib/libtermux-exec-ld-preload.so" not found: needed by main executable`
++    # Prevent `CANNOT LINK EXECUTABLE "cp": library "@TERMUX_PREFIX@/lib/libtermux-exec-ld-preload.so" not found: needed by main executable`
+     unset LD_PRELOAD || return $?
+ 
+     cp -a "$ld_preload_file" "$TERMUX__PREFIX/lib/libtermux-exec-ld-preload.so" || return $?
+--- a/lib/termux-exec_nos_c/tre/include/termux/termux_exec__nos__c/v1/termux/api/termux_exec/service/ld_preload/direct/exec/ExecIntercept.h
++++ b/lib/termux-exec_nos_c/tre/include/termux/termux_exec__nos__c/v1/termux/api/termux_exec/service/ld_preload/direct/exec/ExecIntercept.h
+@@ -85,22 +85,22 @@
+  * path.
+  *
+  * ```
+- * LD_DEBUG=3 /data/data/com.termux/files/usr/libexec/installed-tests/termux-exec/lib/termux-exec_nos_c/tre/scripts/termux/api/termux_exec/service/ld_preload/direct/exec/files/print-args-binary arg1; echo $?
++ * LD_DEBUG=3 @TERMUX_PREFIX@/libexec/installed-tests/termux-exec/lib/termux-exec_nos_c/tre/scripts/termux/api/termux_exec/service/ld_preload/direct/exec/files/print-args-binary arg1; echo $?
+  * 1
+  *
+  * # Logcat
+  * linker W  [ android linker & debugger ]
+- * linker D  DEBUG: library name "/data/data/com.termux/files/usr/libexec/installed-tests/termux-exec/lib/termux-exec_nos_c/tre/scripts/termux/api/termux_exec/service/ld_preload/direct/exec/files/print-args-binary" too long
++ * linker D  DEBUG: library name "@TERMUX_PREFIX@/libexec/installed-tests/termux-exec/lib/termux-exec_nos_c/tre/scripts/termux/api/termux_exec/service/ld_preload/direct/exec/files/print-args-binary" too long
+  * ```
+  *
+  * ```
+- * (exec -a print-args-binary /data/data/com.termux/files/usr/libexec/installed-tests/termux-exec/lib/termux-exec_nos_c/tre/scripts/termux/api/termux_exec/service/ld_preload/direct/exec/files/print-args-binary arg1); echo $?
++ * (exec -a print-args-binary @TERMUX_PREFIX@/libexec/installed-tests/termux-exec/lib/termux-exec_nos_c/tre/scripts/termux/api/termux_exec/service/ld_preload/direct/exec/files/print-args-binary arg1); echo $?
+  * arg1
+  * 0
+  * ```
+  *
+  * ```
+- * (cd /data/data/com.termux/files/usr/libexec/installed-tests/termux-exec/lib/termux-exec_nos_c/tre/scripts/termux/api/termux_exec/service/ld_preload/direct/exec/files && ./print-args-binary arg1); echo $?
++ * (cd @TERMUX_PREFIX@/libexec/installed-tests/termux-exec/lib/termux-exec_nos_c/tre/scripts/termux/api/termux_exec/service/ld_preload/direct/exec/files && ./print-args-binary arg1); echo $?
+  * arg1
+  * 0
+  * ```
