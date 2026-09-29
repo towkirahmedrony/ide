@@ -414,7 +414,7 @@ private fun clipboardText(context: Context): String? {
     val manager = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return null
     val clip = manager.primaryClip ?: return null
     if (clip.itemCount == 0) return null
-    return clip.itemAt(0).coerceToText(context).toString().takeIf { it.isNotEmpty() }
+    return clip.getItemAt(0).coerceToText(context).toString().takeIf { it.isNotEmpty() }
 }
 
 private fun showTerminalKeyboard(context: Context, view: TerminalView) {
