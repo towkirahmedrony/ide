@@ -64,7 +64,9 @@ data class TerminalUiState(
             !running
 
     companion object {
-        const val DEFAULT_FONT_SIZE_PX: Int = 30
+        // TerminalView consumes this as a pixel-sized monospace glyph. 30 made a 720px-wide
+        // phone show only a handful of columns and made the screen feel unresponsive.
+        const val DEFAULT_FONT_SIZE_PX: Int = 18
     }
 }
 

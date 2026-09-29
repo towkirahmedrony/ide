@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.view.MotionEvent
+import android.view.inputmethod.InputMethodManager
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -24,6 +25,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Stop
@@ -61,6 +63,7 @@ import com.agentx.app.ui.theme.ForgeMuted
 import com.agentx.app.ui.theme.ForgeSurfaceVariant
 import com.termux.terminal.TerminalSession
 import com.termux.view.TerminalView
+import java.util.concurrent.atomic.AtomicBoolean
 
 private val TerminalMetaStyle = TextStyle(
     fontFamily = FontFamily.Monospace,
@@ -99,6 +102,7 @@ fun TerminalScreen(
     val context = LocalContext.current
 
     val terminalView = remember { mutableStateOf<TerminalView?>(null) }
+    val redrawPending = remember { AtomicBoolean(false) }
     val controlDown = remember { mutableStateOf(false) }
     val altDown = remember { mutableStateOf(false) }
 
@@ -109,7 +113,9 @@ fun TerminalScreen(
                 return 1.0f
             }
 
-            override fun onSingleTapUp(event: MotionEvent) = Unit
+            override fun onSingleTapUp(event: MotionEvent) {
+                terminalView.value?.let { showTerminalKeyboard(context, it) }
+            }
             override fun onLongPress(event: MotionEvent): Boolean = false
             override fun readControlKey(): Boolean = controlDown.value
             override fun readAltKey(): Boolean = altDown.value
@@ -122,18 +128,30 @@ fun TerminalScreen(
     val terminalHost = remember {
         object : TermuxTerminalHost {
             override fun onScreenUpdated(session: TerminalSession) {
-                terminalView.value?.onScreenUpdated()
+                val view = terminalView.value ?: return
+                if (redrawPending.compareAndSet(false, true)) {
+                    view.post {
+                        redrawPending.set(false)
+                        terminalView.value?.onScreenUpdated()
+                    }
+                }
             }
 
             override fun onSessionFinished(session: TerminalSession) {
-                terminalView.value?.onScreenUpdated()
-                viewModel.refreshFromHost()
-                controlDown.value = false
-                altDown.value = false
+                terminalView.value?.post {
+                    terminalView.value?.onScreenUpdated()
+                    viewModel.refreshFromHost()
+                    controlDown.value = false
+                    altDown.value = false
+                } ?: viewModel.refreshFromHost()
             }
 
-            override fun onTitleChanged(session: TerminalSession) = viewModel.refreshFromHost()
-            override fun onColorsChanged(session: TerminalSession) { terminalView.value?.invalidate() }
+            override fun onTitleChanged(session: TerminalSession) {
+                terminalView.value?.post { viewModel.refreshFromHost() } ?: viewModel.refreshFromHost()
+            }
+            override fun onColorsChanged(session: TerminalSession) {
+                terminalView.value?.post { terminalView.value?.invalidate() }
+            }
             override fun onCopyTextToClipboard(text: String) = copyToClipboard(context, text)
             override fun onPasteTextFromClipboard(session: TerminalSession?) {
                 clipboardText(context)?.let { text ->
@@ -152,7 +170,11 @@ fun TerminalScreen(
     }
 
     Column(modifier = modifier.fillMaxSize().background(ForgeCanvas)) {
-        TerminalHeader(state = state, viewModel = viewModel)
+        TerminalHeader(
+            state = state,
+            viewModel = viewModel,
+            onShowKeyboard = { terminalView.value?.let { showTerminalKeyboard(context, it) } },
+        )
 
         ProvisioningBanner(state = state, onInstall = viewModel::provision)
 
@@ -201,7 +223,11 @@ fun TerminalScreen(
 }
 
 @Composable
-private fun TerminalHeader(state: TerminalUiState, viewModel: TerminalViewModel) {
+private fun TerminalHeader(
+    state: TerminalUiState,
+    viewModel: TerminalViewModel,
+    onShowKeyboard: () -> Unit,
+) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -222,7 +248,9 @@ private fun TerminalHeader(state: TerminalUiState, viewModel: TerminalViewModel)
                     modifier = Modifier.horizontalScroll(rememberScrollState()),
                 )
             }
-            // Minimal Icon Buttons
+            IconButton(onClick = onShowKeyboard, enabled = state.activeHandle != null) {
+                Icon(Icons.Filled.Keyboard, contentDescription = "Show keyboard")
+            }
             IconButton(onClick = viewModel::zoomOut) { Icon(Icons.Filled.Remove, contentDescription = "Smaller text") }
             IconButton(onClick = viewModel::zoomIn) { Icon(Icons.Filled.Add, contentDescription = "Larger text") }
             IconButton(
@@ -386,5 +414,13 @@ private fun clipboardText(context: Context): String? {
     val manager = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return null
     val clip = manager.primaryClip ?: return null
     if (clip.itemCount == 0) return null
-    return clip.getItemAt(0).coerceToText(context).toString().takeIf { it.isNotEmpty() }
+    return clip.itemAt(0).coerceToText(context).toString().takeIf { it.isNotEmpty() }
+}
+
+private fun showTerminalKeyboard(context: Context, view: TerminalView) {
+    view.post {
+        view.requestFocus()
+        val keyboard = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+        keyboard?.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT)
+    }
 }
