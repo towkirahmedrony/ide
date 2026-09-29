@@ -466,7 +466,9 @@ def main() -> int:
                 elif android10 and relative in ANDROID10_PROOT_32BIT_LOADERS:
                     # Scoped exception, recorded below so it is visible in the manifest rather
                     # than silent. Everything else still has to match args.arch.
-                    variant_exceptions_used.append(f"{relative}: intentionally ELF32 in an x86_64 archive")
+                    variant_exceptions_used.append(
+                        f"{relative}: intentionally ELF32 in a {args.arch} archive"
+                    )
                 elif klass.group(1) != expected_class or machine.group(1).strip() != expected_machine:
                     machine_mismatch.append(
                         f"{relative}: {klass.group(1)}/{machine.group(1).strip()} "
