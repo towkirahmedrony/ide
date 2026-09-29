@@ -34,7 +34,7 @@ while [ $# -gt 0 ]; do
         --profile)         PROFILE="$2"; shift 2 ;;
         --manifest-out)    MANIFEST_OUT="$2"; shift 2 ;;
         --emit-kotlin)     EMIT_KOTLIN=1; shift ;;
-        --prefix|--source-revision) EXTRA+=("$1" "$2"); shift 2 ;;
+        --prefix|--source-revision|--variant) EXTRA+=("$1" "$2"); shift 2 ;;
         --quiet)           EXTRA+=("$1"); shift ;;
         -h|--help)         sed -n '2,17p' "$0"; exit 0 ;;
         *) echo "error: unknown option '$1'" >&2; exit 64 ;;

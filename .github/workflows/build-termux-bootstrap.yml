@@ -62,14 +62,6 @@ jobs:
           ONLY_ARCH: ${{ inputs.only_arch }}
         run: |
           set -euo pipefail
-          # Which upstream variant to build. --android10 replaces apt and command-not-found
-          # with proot and skips the dpkg database and etc/apt entirely; it is the variant that
-          # exists for Android 10+, where an app cannot exec files in its own data directory
-          # unless it targets API <= 28, which this app deliberately does not.
-          VARIANT=normal
-          if [ "${{ inputs.android10 }}" = "true" ]; then VARIANT=android10; fi
-          echo "VARIANT=$VARIANT" >> "$GITHUB_ENV"
-          echo "building the $VARIANT variant of arch $ARCH"
           case "$ONLY_ARCH" in
             "")
               entries='[{"arch":"aarch64","abi":"arm64-v8a"},{"arch":"arm","abi":"armeabi-v7a"},{"arch":"i686","abi":"x86"},{"arch":"x86_64","abi":"x86_64"}]'
@@ -212,6 +204,15 @@ jobs:
           # assigned nowhere in the script or in the termux_step_handle_buildarch.sh it sources,
           # so the glob expands to /* and rm is handed the container root. Fresh volumes below
           # provide the same freshness -f was wanted for, without that bug.
+          # Which upstream variant to build. --android10 replaces apt and command-not-found
+          # with proot and skips the dpkg database and etc/apt entirely; it is the variant that
+          # exists for Android 10+, where an app cannot exec files in its own data directory
+          # unless it targets API <= 28, which this app deliberately does not. VARIANT is
+          # exported because postprocess and verify below select their checks with it.
+          VARIANT=normal
+          if [ "${{ inputs.android10 }}" = "true" ]; then VARIANT=android10; fi
+          echo "VARIANT=$VARIANT" >> "$GITHUB_ENV"
+          echo "building the $VARIANT variant of arch $ARCH"
           BUILD_ARGS=(--architectures "$ARCH")
           if [ "$VARIANT" = "android10" ]; then
             BUILD_ARGS+=(--android10)
