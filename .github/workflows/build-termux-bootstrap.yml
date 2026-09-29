@@ -146,7 +146,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p build
-          tools/termux-bootstrap/apply-agentx-prefix.sh \
+          bash tools/termux-bootstrap/apply-agentx-prefix.sh \
             --termux-packages-dir termux-packages | tee build/prefix-evidence.txt
 
       - name: Build the bootstrap
@@ -169,7 +169,7 @@ jobs:
           APT_REPO_URL: ${{ inputs.apt_repo_url }}
         run: |
           set -euo pipefail
-          tools/termux-bootstrap/postprocess-bootstrap.sh \
+          bash tools/termux-bootstrap/postprocess-bootstrap.sh \
             --zip "termux-packages/bootstrap-${ARCH}.zip" \
             --arch "$ARCH" \
             --out-dir dist \
@@ -183,7 +183,7 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
-          tools/termux-bootstrap/verify-bootstrap.sh \
+          bash tools/termux-bootstrap/verify-bootstrap.sh \
             --zip "dist/bootstrap-${ARCH}.zip" \
             --arch "$ARCH" \
             --manifest-out "dist/manifest-${ARCH}.json" \
