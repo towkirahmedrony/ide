@@ -149,6 +149,28 @@ jobs:
           bash tools/termux-bootstrap/apply-agentx-prefix.sh \
             --termux-packages-dir termux-packages | tee build/prefix-evidence.txt
 
+      # The builder Docker image is NOT used, deliberately.
+      #
+      # `./scripts/run-docker.sh ./scripts/build-bootstraps.sh ...` failed before compiling
+      # anything. run-docker.sh runs the container with a generated AppArmor profile, a seccomp
+      # profile, CAP_SYS_ADMIN, /dev/fuse and a fuse-overlayfs root; inside that sandbox the
+      # container's own root-wipe step dies with `rm: cannot remove '/bin': Permission denied`
+      # and the job exits 1. Upstream never exercises this path from CI either: its bootstrap
+      # workflow runs generate-bootstraps.sh on a plain runner, which assembles the archive from
+      # *published debs* -- those are compiled for /data/data/com.termux/files/usr, so that route
+      # is unusable here and the verifier would reject its output.
+      #
+      # scripts/setup-ubuntu.sh is upstream's supported non-Docker build environment. It installs
+      # the host toolchain and build-bootstraps.sh provisions the Android NDK itself: same
+      # compiler, same flags, no container sandbox in the way.
+      - name: Install the upstream host build environment
+        run: |
+          set -euo pipefail
+          cd termux-packages
+          sudo bash scripts/setup-ubuntu.sh 2>&1 | tail -30
+          cd ..
+          df -h / | tail -1
+
       - name: Build the bootstrap
         env:
           ARCH: ${{ matrix.arch }}
@@ -157,11 +179,13 @@ jobs:
           # -f (force) is required after a package-name change, as upstream's own --help
           # says: otherwise packages built for the official prefix are reused.
           cd termux-packages
-          ./scripts/run-docker.sh ./scripts/build-bootstraps.sh \
-            --architectures "$ARCH" -f 2>&1 | tee "../build/build-${ARCH}.log"
+          df -h / | tail -1
+          bash scripts/build-bootstraps.sh --architectures "$ARCH" -f 2>&1 \
+            | tee "../build/build-${ARCH}.log"
           cd ..
           test -f "termux-packages/bootstrap-${ARCH}.zip" \
             || { echo "::error::build-bootstraps.sh produced no bootstrap-${ARCH}.zip"; exit 1; }
+          df -h / | tail -1
 
       - name: Post-process (install marker, apt sources)
         env:
