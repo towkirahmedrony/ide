@@ -9,12 +9,12 @@ sealed interface TermuxPrefixSupport {
 object TermuxPrefixPolicy {
     fun evaluate(paths: TermuxPaths): TermuxPrefixSupport {
         val prefix = paths.prefix
-        
+
         // 1. Strictly enforce length limit FIRST
         if (prefix.length > TermuxPaths.MAX_PREFIX_LENGTH) {
             return TermuxPrefixSupport.Unsupported(
                 prefix = prefix,
-                reason = "The prefix $prefix is ${prefix.length} characters, over the${TermuxPaths.MAX_PREFIX_LENGTH} Termux allows.",
+                reason = "The prefix $prefix is ${prefix.length} characters, over the ${TermuxPaths.MAX_PREFIX_LENGTH} Termux allows.",
                 remedy = remedy(paths)
             )
         }
