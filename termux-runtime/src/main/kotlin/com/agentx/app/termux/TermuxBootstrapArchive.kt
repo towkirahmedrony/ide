@@ -66,8 +66,8 @@ object TermuxBootstrapArchive {
      *    directory, where `bin/coreutils` really exists (1111 of 1213 links);
      *  - `../ncurses.h` for `include/ncursesw/term.h` — relative, and `..` here stays
      *    inside the prefix (79 links);
-     *  - `/data/data/<pkg>/files/usr/share/termux-keyring/*.gpg` for
-     *    `share/pacman/keyrings/*.gpg` — absolute. Such a link is dangling while the
+     *  - `/data/data/<pkg>/files/usr/share/termux-keyring/<key>.gpg` for
+     *    `share/pacman/keyrings/<key>.gpg` — absolute. Such a link is dangling while the
      *    archive is being unpacked into `usr-staging`, and correct once the staging
      *    directory is renamed to `usr`, which is exactly what upstream's own installer
      *    relies on (20 links).

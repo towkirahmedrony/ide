@@ -29,3 +29,9 @@ captures/
 # Local integration patch produced for offline hand-off; not part of the source tree.
 termux-terminal-integration.patch
 ci-workflow-changes.patch
+
+# Termux bootstrap build: the upstream checkout, the built archives and the verification
+# output are local artifacts. Only tools/termux-bootstrap and the workflow are source.
+termux-packages/
+tools/termux-bootstrap/dist/
+tools/termux-bootstrap/build/

@@ -369,6 +369,38 @@ $ verify-bootstrap.sh --zip dist/bootstrap-aarch64.zip --arch aarch64
   prefix-scan-paths          FAIL      <- needs a real rebuild
 ```
 
+### Executed evidence for the Kotlin side
+
+`:termux-runtime` is an Android library module: its unit tests need the Android Gradle Plugin
+and an SDK, neither of which exists in the environment Part 2 was written in, so
+`./gradlew test` could not be run here. That is a real gap in the evidence, and it is why
+[`jvm-logic-check/Check.kt`](jvm-logic-check/Check.kt) exists: it re-runs the assertions of
+`TermuxBootstrapArchiveTest` and `TermuxBootstrapCatalogTest` against the **real** sources on
+a plain JVM, which needs nothing but a JDK and `kotlinc`. It sits outside every Gradle source
+set, so it cannot affect the build; the Gradle tests remain the source of truth for CI.
+
+```
+$ kotlinc -d /tmp/logic-check.jar \
+    termux-runtime/src/main/kotlin/com/agentx/app/termux/TermuxPaths.kt \
+    termux-runtime/src/main/kotlin/com/agentx/app/termux/TermuxBootstrapArchive.kt \
+    termux-runtime/src/main/kotlin/com/agentx/app/termux/TermuxBootstrapCatalog.kt \
+    tools/termux-bootstrap/jvm-logic-check/Check.kt
+$ java -cp "$KOTLIN_HOME/lib/kotlin-stdlib.jar:/tmp/logic-check.jar" CheckKt
+…
+checks: 47, failures: 0
+```
+
+Run with `kotlin-compiler-2.4.20` and `openjdk 21`. It covers all three symlink target shapes
+a real archive ships, the escape cases that must stay refused, a mixed manifest parsing without
+dropping a link, and the catalog contract — including that a blank URL, a missing or malformed
+digest, a missing size, a missing file count and an `unbuilt` revision each make an entry
+unavailable on their own.
+
+What it does **not** cover: `TermuxBootstrapInstaller.kt` and everything else that links against
+`android.*`, the vendored terminal modules or `kotlinx.coroutines`. The installer's two changed
+call sites were checked against the new signatures (the named arguments match one-to-one), but
+the module has not been compiled — **the first real compile is CI's**, and it has not run.
+
 ## Package repository strategy
 
 `pkg install` fetches `.deb` files from an apt repository. The official repositories
