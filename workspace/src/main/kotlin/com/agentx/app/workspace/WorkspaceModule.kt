@@ -1,5 +1,6 @@
 package com.agentx.app.workspace
 
+import com.agentx.app.core.foundation.ServiceKeys
 import com.agentx.app.core.module.ForgeModule
 import com.agentx.app.core.module.ModuleContext
 import com.agentx.app.workspace.process.JvmProcessRuntime
