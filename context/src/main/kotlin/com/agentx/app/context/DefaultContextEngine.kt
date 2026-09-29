@@ -1,5 +1,8 @@
 package com.agentx.app.context
 
+import com.agentx.app.core.logging.ForgeLogger
+import com.agentx.app.core.logging.ForgeLoggers
+import com.agentx.app.core.logging.LogLevel
 import com.agentx.app.core.valueOrNull
 import com.agentx.app.model.ModelMessage
 import com.agentx.app.model.ModelRole
@@ -33,6 +36,7 @@ class DefaultContextEngine(
     private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val clock: () -> Long = { System.currentTimeMillis() },
     private val fileCache: WorkspaceFileCache = WorkspaceFileCache(clock = clock),
+    private val logger: ForgeLogger = ForgeLoggers.create(LogLevel.INFO, baseFields = mapOf("layer" to "context")),
 ) : ContextEngine {
 
     private val loader = WorkspaceFileContextLoader(fileCache, clock)
@@ -206,6 +210,20 @@ class DefaultContextEngine(
                 put("truncated", (truncations.size + selection.truncated.size).toString())
                 put("excluded", (exclusions.size + selection.excluded.size).toString())
             },
+        )
+        logger.info(
+            "Context assembled",
+            mapOf(
+                "workspaceId" to (request.workspaceId ?: snapshot?.workspaceId),
+                "workspaceName" to snapshot?.name,
+                "selectedFile" to (request.selectedFile ?: snapshot?.selectedFile),
+                "hasFileSystem" to (fileSystem != null),
+                "items" to selection.items.size,
+                "files" to (counts[ContextSource.FILE] ?: 0),
+                "directories" to (counts[ContextSource.DIRECTORY] ?: 0),
+                "workspaceInfo" to (counts[ContextSource.WORKSPACE_INFO] ?: 0),
+                "excluded" to (exclusions.size + selection.excluded.size),
+            ),
         )
         return ContextResult(
             items = selection.items,

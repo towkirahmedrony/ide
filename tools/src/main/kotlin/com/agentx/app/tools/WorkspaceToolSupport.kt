@@ -1,6 +1,8 @@
 package com.agentx.app.tools
 
 import com.agentx.app.core.ForgeResult
+import com.agentx.app.core.logging.ForgeLoggers
+import com.agentx.app.core.logging.LogLevel
 import com.agentx.app.workspace.WorkspaceError
 import com.agentx.app.workspace.WorkspaceErrorCode
 import com.agentx.app.workspace.WorkspaceFileSystem
@@ -18,10 +20,30 @@ class WorkspaceManagerFileSystemResolver(
     private val manager: WorkspaceManager,
 ) : WorkspaceFileSystemResolver {
     override fun resolve(context: ToolExecutionContext): WorkspaceFileSystem? {
-        val current = manager.current ?: return null
+        val current = manager.current
         val requested = context.workspaceId
+        if (current == null) {
+            logger.info(
+                "Workspace resolver found no open workspace",
+                mapOf("requestedWorkspaceId" to requested, "sessionId" to context.sessionId),
+            )
+            return null
+        }
         if (requested.isNullOrBlank()) return current.fileSystem
-        return if (current.workspace.id.value == requested) current.fileSystem else null
+        if (current.workspace.id.value == requested) return current.fileSystem
+        logger.info(
+            "Workspace resolver rejected a mismatched workspace id",
+            mapOf(
+                "requestedWorkspaceId" to requested,
+                "currentWorkspaceId" to current.workspace.id.value,
+                "sessionId" to context.sessionId,
+            ),
+        )
+        return null
+    }
+
+    private companion object {
+        val logger = ForgeLoggers.create(LogLevel.INFO, baseFields = mapOf("layer" to "tools"))
     }
 }
 

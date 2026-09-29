@@ -1,10 +1,14 @@
 package com.agentx.app.tools
 
+import com.agentx.app.core.valueOrNull
 import com.agentx.app.tools.filesystem.ListDirectoryTool
 import com.agentx.app.tools.filesystem.ReadFileTool
 import com.agentx.app.tools.filesystem.SearchFilesTool
 import com.agentx.app.tools.filesystem.WriteFileTool
+import com.agentx.app.workspace.DefaultWorkspaceManager
+import com.agentx.app.workspace.memory.InMemoryWorkspaceBackend
 import com.agentx.app.workspace.memory.InMemoryWorkspaceFileSystem
+import com.agentx.app.workspace.memory.InMemoryWorkspaceMetadataStore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
@@ -14,6 +18,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -294,5 +299,42 @@ class ToolSystemFoundationTest {
         }
         val failure = assertIs<ToolResult.Failure>(result)
         assertEquals(ToolErrorCode.INVALID_ARGUMENTS, failure.error.code)
+    }
+
+    @Test
+    fun `workspace resolver uses the live manager session and rejects a mismatch`() {
+        val manager = DefaultWorkspaceManager(
+            backend = InMemoryWorkspaceBackend(
+                seedFiles = mapOf("README.md" to "# MyProject"),
+            ),
+            store = InMemoryWorkspaceMetadataStore(),
+        )
+        val opened = runSuspend { manager.open("MyProject") }.valueOrNull()
+        assertNotNull(opened)
+        val resolver = WorkspaceManagerFileSystemResolver(manager)
+        val matched = resolver.resolve(
+            ToolExecutionContext(workspaceId = opened.workspace.id.value),
+        )
+        assertNotNull(matched)
+        assertEquals("# MyProject", runSuspend { matched.readFile("README.md") }.valueOrNull())
+
+        assertNull(resolver.resolve(ToolExecutionContext(workspaceId = "other-id")))
+
+        val blank = resolver.resolve(ToolExecutionContext(workspaceId = null))
+        assertNotNull(blank)
+    }
+
+    @Test
+    fun `filesystem tools fail closed when no workspace is open`() {
+        val manager = DefaultWorkspaceManager(
+            backend = InMemoryWorkspaceBackend(),
+            store = InMemoryWorkspaceMetadataStore(),
+        )
+        val resolver = WorkspaceManagerFileSystemResolver(manager)
+        val (_, router) = routerWith(ListDirectoryTool(resolver), ReadFileTool(resolver))
+        val listed = runSuspend {
+            router.invoke("list_directory", context = grants(ToolPermissionLevel.READ_ONLY))
+        }
+        assertEquals(ToolErrorCode.WORKSPACE_UNAVAILABLE, assertIs<ToolResult.Failure>(listed).error.code)
     }
 }

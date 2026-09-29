@@ -15,10 +15,15 @@ import com.agentx.app.agent.runtime.AgentLoopRequest
 import com.agentx.app.agent.runtime.ResumedPermission
 import com.agentx.app.agent.specialized.SpecializedAgentFactory
 import com.agentx.app.agent.tools.AgentToolBridge
+import com.agentx.app.context.DefaultContextEngine
+import com.agentx.app.context.WorkspaceRuntimeContextProvider
+import com.agentx.app.context.WorkspaceSelectionState
+import com.agentx.app.core.valueOrNull
 import com.agentx.app.model.DefaultModelGateway
 import com.agentx.app.model.ModelConfig
 import com.agentx.app.model.ModelProviderErrorCode
 import com.agentx.app.model.ModelRole
+import com.agentx.app.tools.BuiltinTools
 import com.agentx.app.tools.DefaultToolRegistry
 import com.agentx.app.tools.DefaultToolRouter
 import com.agentx.app.tools.Tool
@@ -31,6 +36,14 @@ import com.agentx.app.tools.ToolInput
 import com.agentx.app.tools.ToolOutput
 import com.agentx.app.tools.ToolPermissionDecision
 import com.agentx.app.tools.ToolPermissionLevel
+import com.agentx.app.tools.WorkspaceManagerFileSystemResolver
+import com.agentx.app.tools.filesystem.ListDirectoryTool
+import com.agentx.app.tools.filesystem.ReadFileTool
+import com.agentx.app.tools.filesystem.SearchFilesTool
+import com.agentx.app.tools.filesystem.WriteFileTool
+import com.agentx.app.workspace.DefaultWorkspaceManager
+import com.agentx.app.workspace.memory.InMemoryWorkspaceBackend
+import com.agentx.app.workspace.memory.InMemoryWorkspaceMetadataStore
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -780,5 +793,91 @@ class AgentCoreTest {
         assertEquals(AgentStatus.COMPLETED, result.status)
         assertEquals(1, write.invocations.size)
         assertTrue(result.filesChanged.contains("Auth.kt"))
+    }
+
+    @Test
+    fun `explorer catalog includes inspect tools and not writes`() {
+        assertTrue(ListDirectoryTool.NAME in AgentCatalog.EXPLORER.allowedTools)
+        assertTrue(SearchFilesTool.NAME in AgentCatalog.EXPLORER.allowedTools)
+        assertTrue(ReadFileTool.NAME in AgentCatalog.EXPLORER.allowedTools)
+        assertFalse(WriteFileTool.NAME in AgentCatalog.EXPLORER.allowedTools)
+        assertTrue(AgentCatalog.MAIN.systemInstructions.contains(ListDirectoryTool.NAME))
+    }
+
+    @Test
+    fun `open workspace is inspected through tools and results continue to the model`() = runAgent {
+        val secret = "super-secret-token"
+        val manager = DefaultWorkspaceManager(
+            backend = InMemoryWorkspaceBackend(
+                seedFiles = mapOf(
+                    "README.md" to "# MyProject\nAndroid-first IDE.",
+                    "src/supabase.kt" to "fun initSupabase() {\n    createClient()\n}\n",
+                    ".env" to "API_KEY=$secret",
+                ),
+            ),
+            store = InMemoryWorkspaceMetadataStore(),
+        )
+        val opened = manager.open("MyProject").valueOrNull()
+        assertNotNull(opened)
+        val selection = WorkspaceSelectionState()
+        selection.openFile("README.md")
+        val engine = DefaultContextEngine(
+            workspace = WorkspaceRuntimeContextProvider(manager, selection),
+        )
+        val registry = DefaultToolRegistry()
+        BuiltinTools.filesystem(WorkspaceManagerFileSystemResolver(manager)).forEach(registry::register)
+        val provider = ScriptedModelProvider(
+            mapOf(
+                AgentRole.MAIN to mutableListOf(
+                    response("", toolCall("list_directory", id = "c1")),
+                    response("", toolCall("search_files", "query" to "Supabase", id = "c2")),
+                    response("", toolCall("read_file", "path" to "src/supabase.kt", id = "c3")),
+                    response(
+                        "",
+                        toolCall(
+                            AgentProtocol.FINISH_TOOL,
+                            AgentProtocol.ARG_SUMMARY to "Supabase is initialized in src/supabase.kt",
+                        ),
+                    ),
+                ),
+            ),
+        )
+        val runtime = AgentModule.assemble(
+            gateway = DefaultModelGateway().also { it.register(provider) },
+            registry = registry,
+            router = DefaultToolRouter(registry),
+            contextEngine = engine,
+        )
+
+        val result = runtime.orchestrator.run(
+            request = AgentRunRequest(
+                prompt = "Find where Supabase is initialized",
+                workspaceId = opened.workspace.id.value,
+                selectedFile = "README.md",
+            ),
+            modelConfig = testConfig(),
+            sink = CollectingEventSink(),
+        )
+
+        assertEquals(AgentStatus.COMPLETED, result.status)
+        assertEquals("Supabase is initialized in src/supabase.kt", result.summary)
+        assertTrue(result.filesInspected.contains("src/supabase.kt"))
+        assertTrue(provider.requests.size >= 4)
+
+        val seeded = provider.requests.first().messages.joinToString("\n") { it.content }
+        assertTrue(seeded.contains("MyProject"), seeded)
+        assertTrue(seeded.contains("README.md"), seeded)
+        assertTrue(seeded.contains("Workspace id: ${opened.workspace.id.value}"), seeded)
+        assertFalse(seeded.contains(secret), seeded)
+
+        val afterList = provider.requests[1].messages.single { it.role == ModelRole.TOOL }
+        assertTrue(afterList.content.contains("README.md") || afterList.content.contains("src"), afterList.content)
+
+        val afterSearch = provider.requests[2].messages.filter { it.role == ModelRole.TOOL }.last()
+        assertTrue(afterSearch.content.contains("supabase.kt"), afterSearch.content)
+
+        val afterRead = provider.requests[3].messages.filter { it.role == ModelRole.TOOL }.last()
+        assertTrue(afterRead.content.contains("initSupabase"), afterRead.content)
+        assertFalse(provider.requests.any { request -> request.messages.any { it.content.contains(secret) } })
     }
 }

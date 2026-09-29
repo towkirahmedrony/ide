@@ -22,6 +22,9 @@ import com.agentx.app.agent.specialized.unknownSubAgent
 import com.agentx.app.context.ContextBudget
 import com.agentx.app.context.ContextEngine
 import com.agentx.app.context.ContextRequest
+import com.agentx.app.core.logging.ForgeLogger
+import com.agentx.app.core.logging.ForgeLoggers
+import com.agentx.app.core.logging.LogLevel
 import com.agentx.app.model.ModelConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -63,6 +66,7 @@ class DefaultAgentOrchestrator(
     private val contextEngine: ContextEngine? = null,
     private val defaultTimeoutMillis: Long = DEFAULT_TIMEOUT_MILLIS,
     private val clock: () -> Long = { System.currentTimeMillis() },
+    private val logger: ForgeLogger = ForgeLoggers.create(LogLevel.INFO, baseFields = mapOf("layer" to "orchestrator")),
 ) : AgentOrchestrator {
 
     private val cancellations = ConcurrentHashMap<String, Boolean>()
@@ -409,6 +413,17 @@ class DefaultAgentOrchestrator(
             ),
         )
         if (assembled.text.isNotBlank()) parts += assembled.text
+        logger.info(
+            "Run context assembled",
+            mapOf(
+                "sessionId" to sessionId,
+                "workspaceId" to request.workspaceId,
+                "selectedFile" to request.selectedFile,
+                "contextChars" to parts.sumOf { it.length },
+                "engineItems" to assembled.items.size,
+                "engineEmpty" to assembled.isEmpty,
+            ),
+        )
         return parts.joinToString("\n\n")
     }
 

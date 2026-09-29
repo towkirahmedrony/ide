@@ -76,7 +76,12 @@ enum class AgentFailureKind {
 }
 
 interface AgentSession {
-    suspend fun run(input: String, onEvent: (AgentStreamEvent) -> Unit, workspaceId: String? = null)
+    suspend fun run(
+        input: String,
+        onEvent: (AgentStreamEvent) -> Unit,
+        workspaceId: String? = null,
+        selectedFile: String? = null,
+    )
 
     /**
      * Answers a pending permission request and lets the parked run continue.

@@ -83,7 +83,16 @@ fun WorkspaceShell(
     )
     val agentViewModel: AgentViewModel = viewModel(
         key = "agent-$workspaceId",
-        factory = IdeViewModelFactory { AgentViewModel(dependencies.agent, workspaceId) },
+        factory = IdeViewModelFactory {
+            AgentViewModel(
+                session = dependencies.agent,
+                workspaceId = workspaceId,
+                selectedFile = {
+                    workspaceViewModel.editorState.file?.path
+                        ?: dependencies.workspaceSelection.selectedFile()
+                },
+            )
+        },
     )
     val terminalViewModel: TerminalViewModel = viewModel(
         key = "terminal-$workspaceId",

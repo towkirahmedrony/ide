@@ -88,6 +88,7 @@ class WorkspaceRuntimeContextProvider(
         return WorkspaceSnapshot(
             workspaceId = session.workspace.id.value,
             name = session.workspace.metadata.name,
+            rootPath = session.workspace.metadata.displayLocation,
             selectedFile = selection.selectedFile(),
             openFiles = selection.openFiles(),
             recentFiles = selection.recentFiles(),

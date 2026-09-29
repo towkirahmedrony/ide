@@ -209,6 +209,37 @@ class AgentViewModelTest {
         assertEquals("Config updated", after.messages.last { it.role == ChatRole.AGENT }.text)
     }
 
+    @Test
+    fun `send forwards the live workspace id and selected file`() {
+        val captured = mutableListOf<Pair<String?, String?>>()
+        val session = object : AgentSession {
+            override suspend fun run(
+                input: String,
+                onEvent: (AgentStreamEvent) -> Unit,
+                workspaceId: String?,
+                selectedFile: String?,
+            ) {
+                captured += workspaceId to selectedFile
+                onEvent(AgentStreamEvent.Completed("ok"))
+            }
+        }
+        var openFile: String? = "src/Main.kt"
+        val viewModel = AgentViewModel(
+            session = session,
+            workspaceId = "saf-project",
+            selectedFile = { openFile },
+        )
+
+        viewModel.onInputChange("What does this project do?")
+        viewModel.send()
+
+        assertEquals(listOf("saf-project" to "src/Main.kt"), captured)
+        openFile = "README.md"
+        viewModel.onInputChange("summarise the readme")
+        viewModel.send()
+        assertEquals("README.md", captured.last().second)
+    }
+
     private fun failingViewModel(kind: AgentFailureKind, message: String): AgentViewModel {
         val session = ScriptedAgentSession { _, onEvent ->
             onEvent(AgentStreamEvent.Failed(message, kind))
@@ -219,14 +250,24 @@ class AgentViewModelTest {
     private class ScriptedAgentSession(
         private val block: suspend (String, (AgentStreamEvent) -> Unit) -> Unit,
     ) : AgentSession {
-        override suspend fun run(input: String, onEvent: (AgentStreamEvent) -> Unit, workspaceId: String?) {
+        override suspend fun run(
+            input: String,
+            onEvent: (AgentStreamEvent) -> Unit,
+            workspaceId: String?,
+            selectedFile: String?,
+        ) {
             block(input, onEvent)
         }
     }
 
     /** A session that parks on a permission request, then continues when resolved. */
     private class PermissionAgentSession : AgentSession {
-        override suspend fun run(input: String, onEvent: (AgentStreamEvent) -> Unit, workspaceId: String?) {
+        override suspend fun run(
+            input: String,
+            onEvent: (AgentStreamEvent) -> Unit,
+            workspaceId: String?,
+            selectedFile: String?,
+        ) {
             onEvent(AgentStreamEvent.Activity(AgentActivity(AgentActivityStatus.THINKING, "AI responding")))
             onEvent(
                 AgentStreamEvent.PermissionRequired(

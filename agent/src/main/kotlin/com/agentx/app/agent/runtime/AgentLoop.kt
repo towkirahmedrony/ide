@@ -36,6 +36,9 @@ import com.agentx.app.model.ModelToolSpec
 import com.agentx.app.model.json.JsonObject
 import com.agentx.app.model.json.JsonValue
 import com.agentx.app.agent.domain.toToolGrants
+import com.agentx.app.core.logging.ForgeLogger
+import com.agentx.app.core.logging.ForgeLoggers
+import com.agentx.app.core.logging.LogLevel
 import com.agentx.app.tools.ToolApproval
 import com.agentx.app.tools.ToolErrorCode
 import com.agentx.app.tools.ToolExecutionContext
@@ -109,6 +112,7 @@ class AgentLoop(
     private val clock: () -> Long = { System.currentTimeMillis() },
     /** Supplies the conversation/tool-result context for one run. */
     private val runContexts: RunContextFactory = RunContextFactory.default(),
+    private val logger: ForgeLogger = ForgeLoggers.create(LogLevel.INFO, baseFields = mapOf("layer" to "agent")),
 ) {
 
     suspend fun run(
@@ -118,6 +122,17 @@ class AgentLoop(
         onCancelled: () -> Boolean = { false },
     ): AgentResult {
         val startedAt = clock()
+        logger.info(
+            "Agent loop starting",
+            mapOf(
+                "sessionId" to request.sessionId,
+                "role" to request.definition.role.name,
+                "workspaceId" to request.workspaceId,
+                "hasScopedContext" to request.scopedContext.isNotBlank(),
+                "scopedContextChars" to request.scopedContext.length,
+                "allowedTools" to request.allowedTools.size,
+            ),
+        )
         // Conversation and tool-result context are built by the Context Engine;
         // the loop only drives them. [context.messages] is the budgeted,
         // model-ready form of that context.
@@ -939,6 +954,10 @@ class AgentLoop(
         append("\nPermission: ").append(request.permissionLevel.name)
         append("\nMax steps: ").append(request.maxSteps)
         append("\nAllowed tools: ").append(request.allowedTools.joinToString(", ").ifBlank { "(none)" })
+        request.workspaceId?.takeIf { it.isNotBlank() }?.let {
+            append("\nWorkspace id: ").append(it)
+            append("\nA workspace is already open. Inspect it with the filesystem tools before answering.")
+        }
         if (request.definition.role == AgentRole.MAIN) {
             append("\nDelegate at most one sub-agent per turn and wait for its result.")
         }

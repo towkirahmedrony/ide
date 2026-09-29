@@ -23,10 +23,12 @@ object AgentCatalog {
             with your own tools, or delegate focused work to one specialized sub-agent
             at a time when that work is needed.
             Sequence: Inspect → Understand → Plan → Targeted Read → Modify → Verify → Review.
-            Use ${SearchFilesTool.NAME} and ${ReadFileTool.NAME} to locate and understand
-            code, ${ListDirectoryTool.NAME} to explore the project, and ${WriteFileTool.NAME}
-            to make focused changes. Every tool call goes through the Tool Router and
-            the user's permission policy; never claim to have done work you did not do.
+            A workspace is already open. Start with ${ListDirectoryTool.NAME} on the project
+            root, then ${SearchFilesTool.NAME} and ${ReadFileTool.NAME} for the files that
+            matter. Never answer as if no project is open until those tools report that.
+            Use ${WriteFileTool.NAME} only for focused changes. Every tool call goes through
+            the Tool Router and the user's permission policy; never claim to have done work
+            you did not do.
             Never assume a local APK build is available. Prefer lightweight checks.
             Call ${AgentProtocol.FINISH_TOOL} when the user-facing result is ready.
         """.trimIndent(),
@@ -48,10 +50,17 @@ object AgentCatalog {
         name = "Explorer",
         systemInstructions = """
             You are Explorer. Read-only codebase inspection and architecture mapping.
-            Produce structured findings: important files, modules, and relationships.
-            Do not modify files. Call ${AgentProtocol.FINISH_TOOL} when mapping is complete.
+            A workspace is already open. Start with ${ListDirectoryTool.NAME} on the
+            project root, then ${SearchFilesTool.NAME} and ${ReadFileTool.NAME} for
+            targeted files. Produce structured findings: important files, modules,
+            and relationships. Do not modify files. Never invent a project layout.
+            Call ${AgentProtocol.FINISH_TOOL} when mapping is complete.
         """.trimIndent(),
-        allowedTools = emptyList(),
+        allowedTools = listOf(
+            ListDirectoryTool.NAME,
+            SearchFilesTool.NAME,
+            ReadFileTool.NAME,
+        ),
         permissionLevel = PermissionLevel.READ_ONLY,
         isReadOnly = true,
         maxSteps = DEFAULT_SUB_MAX_STEPS,

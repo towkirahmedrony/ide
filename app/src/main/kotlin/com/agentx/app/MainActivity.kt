@@ -153,6 +153,30 @@ class MainActivity : ComponentActivity() {
             },
         )
 
+        // One live workspace for the process: Files, Context Engine and tools
+        // must share this instance. Recreating it from Compose remember would
+        // drop the open session and make the agent look at an empty project.
+        val workspaceManager = DefaultWorkspaceManager(
+            backend = SafWorkspaceBackend(applicationContext),
+            store = SharedPreferencesWorkspaceMetadataStore(applicationContext),
+        )
+        val workspaceSelection = WorkspaceSelectionState()
+        when (val resolver = foundation.services.get<Any>(ServiceKeys.TOOL_WORKSPACE_RESOLVER)) {
+            is DelegatingWorkspaceFileSystemResolver ->
+                resolver.bind(WorkspaceManagerFileSystemResolver(workspaceManager))
+        }
+        (foundation.contextWorkspace as? DelegatingWorkspaceContextProvider)?.bind(
+            WorkspaceRuntimeContextProvider(manager = workspaceManager, selection = workspaceSelection),
+        )
+        when (val authorizer = foundation.services.get<Any>(ServiceKeys.TOOL_CONNECTION_AUTHORIZER)) {
+            is DelegatingToolConnectionAuthorizer ->
+                authorizer.bind(
+                    ConnectionManagerToolAuthorizer(
+                        checkNotNull(connectionManager) { "Connection manager is not registered" },
+                    ),
+                )
+        }
+
         setContent {
             ForgeTheme {
                 // Workspace access is real: the Storage Access Framework opens the
@@ -160,35 +184,9 @@ class MainActivity : ComponentActivity() {
                 val workspacePicker = rememberAndroidWorkspacePicker()
                 val dependencies = remember(workspacePicker, foundation) {
                     val orchestrator = foundation.services.get<AgentOrchestrator>(ServiceKeys.AGENT_ORCHESTRATOR)
-                    val workspaceManager = DefaultWorkspaceManager(
-                        backend = SafWorkspaceBackend(applicationContext),
-                        store = SharedPreferencesWorkspaceMetadataStore(applicationContext),
-                    )
-                    when (
-                        val resolver = foundation.services.get<Any>(ServiceKeys.TOOL_WORKSPACE_RESOLVER)
-                    ) {
-                        is DelegatingWorkspaceFileSystemResolver ->
-                            resolver.bind(WorkspaceManagerFileSystemResolver(workspaceManager))
-                    }
-                    when (
-                        val authorizer = foundation.services.get<Any>(ServiceKeys.TOOL_CONNECTION_AUTHORIZER)
-                    ) {
-                        is DelegatingToolConnectionAuthorizer ->
-                            authorizer.bind(
-                                ConnectionManagerToolAuthorizer(
-                                    checkNotNull(connectionManager) { "Connection manager is not registered" },
-                                ),
-                            )
-                    }
-                    // The Context Engine is pointed at the same live workspace, so
-                    // it can see the selected and recently used files.
-                    val selection = WorkspaceSelectionState()
-                    (foundation.contextWorkspace as? DelegatingWorkspaceContextProvider)?.bind(
-                        WorkspaceRuntimeContextProvider(manager = workspaceManager, selection = selection),
-                    )
                     IdeDependencies(
                         workspaceManager = workspaceManager,
-                        workspaceSelection = selection,
+                        workspaceSelection = workspaceSelection,
                         codeIntelligence = foundation.codeIntelligence,
                         workspacePicker = workspacePicker,
                         agent = OrchestratorAgentSession(

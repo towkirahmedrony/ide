@@ -45,7 +45,12 @@ class OrchestratorAgentSession(
     /** Same ceiling the Context Engine applies to conversation context. */
     private val conversationLimit = ContextBudget.DEFAULT.maxConversationMessages
 
-    override suspend fun run(input: String, onEvent: (AgentStreamEvent) -> Unit, workspaceId: String?) {
+    override suspend fun run(
+        input: String,
+        onEvent: (AgentStreamEvent) -> Unit,
+        workspaceId: String?,
+        selectedFile: String?,
+    ) {
         val config = modelConfig()
         if (config.validate().isNotEmpty()) {
             onEvent(AgentStreamEvent.Failed(NO_MODEL_ONLINE, AgentFailureKind.NOT_CONFIGURED))
@@ -58,13 +63,21 @@ class OrchestratorAgentSession(
             ),
         )
 
+        val activeWorkspaceId = workspaceId ?: this.workspaceId
+        Log.d(
+            TAG,
+            "Agent run workspaceId=${activeWorkspaceId ?: "(none)"} " +
+                "selectedFile=${selectedFile ?: "(none)"} promptChars=${input.length}",
+        )
+
         val sink = AgentEventSink { event ->
             mapEvent(event)?.let(onEvent)
         }
         val result = orchestrator.run(
             request = AgentRunRequest(
                 prompt = input,
-                workspaceId = workspaceId ?: this.workspaceId,
+                workspaceId = activeWorkspaceId,
+                selectedFile = selectedFile,
                 conversation = conversation.toList(),
             ),
             modelConfig = config,

@@ -51,6 +51,8 @@ data class AgentUiState(
 class AgentViewModel(
     private val session: AgentSession,
     private val workspaceId: String? = null,
+    /** Live editor selection; read at send-time so the agent sees the open file. */
+    private val selectedFile: () -> String? = { null },
 ) : ViewModel() {
 
     var uiState by mutableStateOf(
@@ -90,7 +92,12 @@ class AgentViewModel(
 
         job = viewModelScope.launch {
             try {
-                session.run(prompt, { event -> handleEvent(agentMessageId, event) }, workspaceId)
+                session.run(
+                    input = prompt,
+                    onEvent = { event -> handleEvent(agentMessageId, event) },
+                    workspaceId = workspaceId,
+                    selectedFile = selectedFile(),
+                )
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {

@@ -122,6 +122,49 @@ class ContextEngineTest {
     }
 
     @Test
+    fun `an open workspace includes info selected file and root listing`() = runTest {
+        val files = TestWorkspaceFileSystem(
+            mapOf(
+                "README.md" to "# MyProject\nAn Android IDE.",
+                "src/Main.kt" to "fun main() {}",
+                ".env" to "SECRET=should-not-appear",
+            ),
+        )
+        val engine = testEngine(
+            fileSystem = files,
+            snapshot = WorkspaceSnapshot(
+                workspaceId = "saf-abc",
+                name = "MyProject",
+                rootPath = "content://com.android.externalstorage.documents/tree/primary%3AMyProject",
+                selectedFile = "README.md",
+            ),
+            now = now,
+        )
+
+        val result = engine.buildContext(
+            ContextRequest(
+                task = "What does this project do?",
+                workspaceId = "saf-abc",
+                includeTask = false,
+                selectedFile = "README.md",
+            ),
+        )
+
+        val info = result.items.single { it.source == ContextSource.WORKSPACE_INFO }
+        assertTrue(info.content.contains("name=MyProject"))
+        assertTrue(info.content.contains("id=saf-abc"))
+        assertTrue(info.content.contains("selectedFile=README.md"))
+        assertTrue(info.content.contains("root=content://"))
+        assertEquals("README.md", result.itemsOf(ContextSource.FILE).single().path)
+        assertTrue(result.text.contains("# MyProject"))
+        val listing = result.itemsOf(ContextSource.DIRECTORY).single().content
+        assertTrue(listing.contains("README.md"))
+        assertTrue(listing.contains("src"))
+        assertFalse(result.text.contains("SECRET=should-not-appear"))
+        assertTrue(files.readPaths.none { it == ".env" })
+    }
+
+    @Test
     fun `no workspace means no file or directory context`() = runTest {
         val engine = testEngine(fileSystem = null, snapshot = null, now = now)
 
