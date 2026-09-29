@@ -21,7 +21,16 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.agentx.app"
+        // The embedded Termux userland only runs when the app's data directory matches the
+        // prefix the official Termux artifacts were built for. Flipping this builds a
+        // Termux-compatible APK (`com.termux`); it is off by default because it takes over
+        // Termux's package name and cannot coexist with a real Termux install.
+        // See termux-runtime/.../TermuxPrefixPolicy.kt and docs/termux-terminal.md.
+        val officialTermuxPrefix = providers.gradleProperty("agentx.termux.officialPrefix")
+            .orNull
+            .toBoolean()
+
+        applicationId = if (officialTermuxPrefix) "com.termux" else "com.agentx.app"
         minSdk = 26
         targetSdk = 37
         versionCode = 1
@@ -125,6 +134,8 @@ dependencies {
 
     // Android-facing layers.
     implementation(project(":ui"))
+    // The embedded Termux terminal runtime and its vendored terminal libraries.
+    implementation(project(":termux-runtime"))
     implementation(project(":codeintel-android"))
     implementation(project(":workspace-android"))
     implementation(project(":model-android"))

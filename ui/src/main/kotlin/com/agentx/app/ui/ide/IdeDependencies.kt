@@ -21,10 +21,8 @@ import com.agentx.app.ui.ide.data.mock.MockGitRepository
 import com.agentx.app.ui.ide.data.mock.MockModelRunnerBrowser
 import com.agentx.app.ui.ide.data.mock.mockWorkspaceManager
 import com.agentx.app.ui.ide.data.mock.mockWorkspacePicker
+import com.agentx.app.termux.TermuxRuntime
 import com.agentx.app.workspace.WorkspaceManager
-import com.agentx.app.workspace.process.DefaultTerminalSessionManager
-import com.agentx.app.workspace.process.JvmProcessRuntime
-import com.agentx.app.workspace.process.TerminalSessionManager
 
 /**
  * Everything the IDE shell needs from the outside world. The workspace runtime
@@ -49,7 +47,11 @@ data class IdeDependencies(
     val codeIntelligence: CodeIntelligence? = null,
     val workspacePicker: WorkspacePicker,
     val agent: AgentSession,
-    val terminalSessions: TerminalSessionManager,
+    /**
+     * The embedded Termux terminal runtime. Optional so previews render the Terminal tab
+     * without a pty; when it is absent the screen says so instead of showing a fake shell.
+     */
+    val terminalRuntime: TermuxRuntime? = null,
     val git: GitRepository,
     val modelManager: ModelManager,
     val connectionManager: ConnectionManager,
@@ -76,10 +78,8 @@ data class IdeDependencies(
                 workspaceSelection = WorkspaceSelectionState(),
                 workspacePicker = mockWorkspacePicker(),
                 agent = MockAgentSession(),
-                terminalSessions = DefaultTerminalSessionManager(
-                    runtime = JvmProcessRuntime(),
-                    workspaceManager = workspaceManager,
-                ),
+                // No pty in a preview: the terminal reports that instead of pretending.
+                terminalRuntime = null,
                 git = MockGitRepository(),
                 modelManager = ModelManagers.create(
                     runtimeOutput = runtimeOutput,

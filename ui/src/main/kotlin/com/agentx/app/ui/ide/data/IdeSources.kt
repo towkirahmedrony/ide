@@ -9,8 +9,8 @@ import com.agentx.app.ui.ide.model.GitSnapshot
  * Workspace access is no longer mocked: the UI talks to the
  * `com.agentx.app.workspace.WorkspaceManager` domain contract, which is backed by
  * the Android Storage Access Framework. The remaining ports (agent, git)
- * are still stand-ins for layers that land in later tasks. The terminal
- * talks to the Workspace process runtime through [com.agentx.app.workspace.process.TerminalSessionManager].
+ * are still stand-ins for layers that land in later tasks. The terminal talks to the embedded
+ * Termux runtime (`com.agentx.app.termux.TermuxRuntime`), which owns its own pty sessions.
  */
 
 /**

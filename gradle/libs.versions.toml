@@ -16,7 +16,13 @@ documentfile = "1.1.0"
 # not, which is why this project uses the Android-native ones.
 androidTreeSitter = "4.3.1"
 
+# The vendored Termux terminal libraries. `annotation` is the only AndroidX artifact they
+# reference; `ndk` is the revision upstream termux-app builds its PTY JNI with.
+androidxAnnotation = "1.9.0"
+ndk = "29.0.14206865"
+
 [libraries]
+androidx-annotation = { group = "androidx.annotation", name = "annotation", version.ref = "androidxAnnotation" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
 androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycle" }

@@ -91,8 +91,14 @@ fun WorkspaceShell(
         factory = IdeViewModelFactory {
             TerminalViewModel(
                 workspaceId = workspaceId,
-                workspaceManager = dependencies.workspaceManager,
-                sessions = dependencies.terminalSessions,
+                workspaceName = workspaceViewModel.project?.name ?: workspaceId,
+                // Read lazily: the workspace runtime may still be opening when the tab is built.
+                workspaceLocation = {
+                    dependencies.workspaceManager.current
+                        ?.takeIf { it.workspace.id.value == workspaceId }
+                        ?.workspace?.metadata?.displayLocation
+                },
+                runtime = dependencies.terminalRuntime,
             )
         },
     )

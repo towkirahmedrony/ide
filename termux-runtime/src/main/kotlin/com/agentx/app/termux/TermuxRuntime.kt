@@ -1,0 +1,270 @@
+package com.agentx.app.termux
+
+import android.content.Context
+import android.os.Build
+import android.util.Log
+import com.termux.terminal.TerminalSession
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
+
+/**
+ * The embedded Termux runtime: prefix layout, userland provisioning and live PTY sessions.
+ *
+ * One instance per process, created by the application and handed to the UI. It owns no
+ * `GlobalScope`; the scope it is given belongs to the app's composition root, so cancelling that
+ * scope shuts provisioning down instead of leaking a download.
+ *
+ * The runtime deliberately does **not** know about the Agent Tool System. Human terminal input
+ * goes through [sessions]; model-issued commands keep going through the Tool Router's
+ * COMMAND_EXECUTION permission path. They share the same Termux filesystem, not the same
+ * authorisation.
+ */
+class TermuxRuntime(
+    context: Context,
+    /** Default columns/rows before a `TerminalView` reports its real size. */
+    private val defaultColumns: Int = DEFAULT_COLUMNS,
+    private val defaultRows: Int = DEFAULT_ROWS,
+    private val transcriptRows: Int = DEFAULT_TRANSCRIPT_ROWS,
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val clockLabel: () -> String = { System.currentTimeMillis().toString() },
+) {
+
+    private val appContext = context.applicationContext
+
+    /**
+     * Owned by this instance, not `GlobalScope`: the runtime outlives Activities and
+     * ViewModels, and [release] is what ends it. A provisioning download therefore survives a
+     * rotation instead of being cancelled half way.
+     */
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    /** Layout of the runtime inside this app's private data directory. */
+    val paths: TermuxPaths = TermuxPaths.forAppDataDir(
+        appContext.filesDir.canonicalFile.parentFile?.absolutePath
+            ?: appContext.filesDir.absolutePath.removeSuffix("/files"),
+    )
+
+    /** Whether the official Termux artifacts can live in [paths]. */
+    val prefixSupport: TermuxPrefixSupport = TermuxPrefixPolicy.evaluate(paths)
+
+    private val installer = TermuxBootstrapInstaller(
+        paths = paths,
+        supportedAbis = supportedAbis(),
+    )
+
+    private val provisioningFlow = MutableStateFlow<TermuxProvisioningState>(TermuxProvisioningState.Idle)
+    val provisioning: StateFlow<TermuxProvisioningState> = provisioningFlow.asStateFlow()
+
+    /** Set by the terminal screen while it is on screen. See [TermuxSessionClient]. */
+    @Volatile
+    var terminalHost: TermuxTerminalHost? = null
+
+    private val sessionClient = TermuxSessionClient { terminalHost }
+
+    /** Invoked whenever the session list changes, for observers that are not Compose. */
+    @Volatile
+    var onSessionsChanged: (List<TermuxSessionSnapshot>) -> Unit = {}
+
+    val sessions: TermuxSessionManager = TermuxSessionManager(
+        factory = ::createSession,
+        onSessionsChanged = { snapshots -> onSessionsChanged(snapshots) },
+    )
+
+    /** True when `$PREFIX` already holds a shell. */
+    fun isUserlandInstalled(): Boolean = installer.isInstalled()
+
+    /**
+     * Downloads and installs the Termux userland when it is missing.
+     *
+     * Idempotent and safe to call from several places: a second call while one is running joins
+     * the same underlying work through [provisioning], and an already installed prefix returns
+     * immediately.
+     */
+    fun provision() {
+        val current = provisioningFlow.value
+        if (current is TermuxProvisioningState.Downloading ||
+            current is TermuxProvisioningState.Verifying ||
+            current is TermuxProvisioningState.Extracting
+        ) {
+            return
+        }
+        scope.launch {
+            val result = withContext(ioDispatcher) {
+                installer.provision { state -> provisioningFlow.value = state }
+            }
+            if (result is TermuxProvisioning.Installed) {
+                installer.writeEnvironmentFile(
+                    environmentFor(workingDirectory = paths.home, extra = emptyMap()),
+                )
+            }
+            if (result is TermuxProvisioning.Unsupported) {
+                Log.w(TAG, "Termux userland is unsupported here: ${result.reason}")
+            }
+            installer.createRuntimeDirectories()
+        }
+    }
+
+    /** Environment for a session, including the Termux environment file's contents. */
+    fun environmentFor(
+        workingDirectory: String?,
+        extra: Map<String, String>,
+    ): Array<String> = TermuxEnvironment.build(
+        paths = paths,
+        workingDirectory = workingDirectory,
+        androidEnv = System.getenv(),
+        extra = extra,
+    )
+
+    /**
+     * Resolves where a workspace should run.
+     *
+     * A real filesystem path is used directly. A SAF workspace is used only when it has already
+     * been mirrored into the Termux home; otherwise the caller is told why not, so the UI can say
+     * so instead of running commands in the wrong directory.
+     */
+    fun bindingFor(
+        workspaceId: String,
+        handle: String?,
+        displayLocation: String?,
+    ): TermuxWorkspaceBinding = TermuxWorkspaceBindings.resolve(
+        handle = handle,
+        displayLocation = displayLocation,
+        workspaceId = workspaceId,
+        paths = paths,
+        isDirectory = { path -> File(path).let { it.isDirectory && it.canRead() } },
+    )
+
+    /**
+     * Builds the spec for a workspace.
+     *
+     * The shell is `$PREFIX/bin/<login|bash|…>` when the userland is installed and
+     * `/system/bin/sh` until then, so the terminal is usable — with a real pty — even before a
+     * bootstrap is in place.
+     */
+    fun specFor(
+        workspaceKey: String,
+        binding: TermuxWorkspaceBinding,
+        extraEnvironment: Map<String, String> = emptyMap(),
+    ): TermuxShellSpec {
+        val workingDirectory = when (binding) {
+            is TermuxWorkspaceBinding.Direct -> binding.path
+            is TermuxWorkspaceBinding.Mirrored -> binding.termuxPath
+            is TermuxWorkspaceBinding.Unavailable -> paths.home
+        }
+        // File.isFile() follows symlinks, which is what the bootstrap's login shells are.
+        val resolved = TermuxShellResolver.resolve(paths) { path -> File(path).isFile }
+
+        val environment = environmentFor(
+            workingDirectory = workingDirectory,
+            extra = extraEnvironment,
+        )
+        return TermuxShellSpec(
+            workspaceKey = workspaceKey,
+            executable = resolved.executable,
+            processName = resolved.processName,
+            // The pty gives the shell a tty, so no `-i` is needed; the process name carries the
+            // login marker exactly as Termux does it.
+            arguments = listOf(resolved.processName),
+            workingDirectory = workingDirectory,
+            environment = environment,
+            transcriptRows = transcriptRows,
+        )
+    }
+
+    /**
+     * Returns a running session for [workspaceKey], starting one only if needed.
+     *
+     * [keepAlive] is passed to [TermuxSessionService] so a running development server is not
+     * killed while the app is in the background.
+     */
+    fun openSession(spec: TermuxShellSpec, keepAlive: Boolean = true): TermuxSession? {
+        val session = sessions.open(spec) ?: return null
+        if (keepAlive) TermuxSessionService.ensureRunning(appContext)
+        return session
+    }
+
+    /** Kills the process and stops the keep-alive service when no session is left. */
+    fun terminate(handle: String) {
+        sessions.terminate(handle)
+        if (sessions.sessions().none { it.isRunning }) TermuxSessionService.stopIfIdle(appContext)
+    }
+
+    fun terminateAll() {
+        sessions.terminateAll()
+        TermuxSessionService.stopIfIdle(appContext)
+    }
+
+    /**
+     * Ends the runtime for good: kills every shell, stops the keep-alive service and cancels
+     * the provisioning scope. Only for process shutdown — calling it because an Activity was
+     * recreated would kill a running development server.
+     */
+    fun release() {
+        sessions.release()
+        TermuxSessionService.stopIfIdle(appContext)
+        scope.cancel()
+        synchronized(LOCK) {
+            if (instance === this) instance = null
+        }
+    }
+
+    /** Called by the session client when a shell exits on its own. */
+    fun onSessionFinished(session: TerminalSession) {
+        sessions.onSessionFinished(session.mHandle)
+        if (sessions.sessions().none { it.isRunning }) TermuxSessionService.stopIfIdle(appContext)
+    }
+
+    private fun createSession(spec: TermuxShellSpec): TermuxSession {
+        val terminal = TerminalSession(
+            spec.executable,
+            spec.workingDirectory,
+            spec.arguments.toTypedArray(),
+            spec.environment,
+            spec.transcriptRows,
+            sessionClient,
+        )
+        // Give the pty a real window size straight away. `TerminalSession.updateSize` starts the
+        // process once the emulator exists, so the shell runs even while nothing is rendering it,
+        // and a later view attach resizes instead of spawning a second process.
+        terminal.updateSize(defaultColumns, defaultRows, 0, 0)
+        return TerminalSessionAdapter(terminal)
+    }
+
+    private fun supportedAbis(): List<String> = Build.SUPPORTED_ABIS?.toList().orEmpty()
+
+    /** Label used for a session that has no workspace, for example a scratch shell. */
+    fun scratchLabel(): String = "shell-${clockLabel()}"
+
+    companion object {
+        const val TAG: String = "TermuxRuntime"
+        const val DEFAULT_COLUMNS: Int = 80
+        const val DEFAULT_ROWS: Int = 24
+        const val DEFAULT_TRANSCRIPT_ROWS: Int = 2000
+
+        private val LOCK = Any()
+
+        @Volatile
+        private var instance: TermuxRuntime? = null
+
+        /**
+         * The runtime for this process.
+         *
+         * A singleton because the sessions are the expensive, stateful part: an Activity
+         * recreation must find the same runtime, otherwise it would orphan the old shells and
+         * start new ones. The application context is kept, never an Activity.
+         */
+        fun get(context: Context): TermuxRuntime =
+            instance ?: synchronized(LOCK) {
+                instance ?: TermuxRuntime(context).also { instance = it }
+            }
+    }
+}

@@ -64,9 +64,9 @@ interface ProcessHandle {
 }
 
 /**
- * A one-shot command execution that later agent tools, build, and test
- * runners can share. The human terminal uses [com.agentx.app.workspace.process.InteractiveShellSession]
- * instead, so a long-lived shell is not torn down after every line.
+ * A one-shot command execution shared by the agent command tools, build and test
+ * runners. The human terminal is a different path entirely: it runs on the
+ * embedded Termux pty in `:termux-runtime`, which the Tool Router never reaches.
  */
 data class CommandExecution(
     val id: String,

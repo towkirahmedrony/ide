@@ -27,14 +27,15 @@ object ServiceKeys {
     /** Personal provider setup: Client IDs and callback URIs for this IDE. */
     const val INTEGRATION_SETUP = "forge.integrations.setup"
 
-    /** Starts OS processes for the human terminal and later command tools. */
+    /** Starts OS processes for one-shot command execution. */
     const val PROCESS_RUNTIME = "forge.workspace.processRuntime"
 
     /** One-shot command executor sharing the same [PROCESS_RUNTIME]. */
     const val PROCESS_EXECUTOR = "forge.workspace.processExecutor"
 
-    /** Owns long-lived interactive shells so the UI cannot spawn duplicates. */
-    const val TERMINAL_SESSION_MANAGER = "forge.workspace.terminalSessions"
+    // The human terminal is not registered here any more. It is the embedded Termux runtime
+    // (`:termux-runtime`), created once per process by the application instead of being
+    // published through the service container, because its sessions must outlive the Activity.
 
     /** Structural understanding of source files: languages, syntax trees, symbols. */
     const val CODE_INTELLIGENCE = "forge.codeintel"

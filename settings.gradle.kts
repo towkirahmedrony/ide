@@ -28,7 +28,13 @@ include(":skills")
 include(":integrations")
 include(":codeintel")
 
+// Vendored Termux terminal libraries (Apache-2.0). Kept as separate modules so upstream source
+// stays unmodified and clearly attributable. See third_party/termux/README.md.
+include(":termux-terminal-emulator")
+include(":termux-terminal-view")
+
 // Android-facing layers.
+include(":termux-runtime")
 include(":ui")
 include(":codeintel-android")
 include(":workspace-android")

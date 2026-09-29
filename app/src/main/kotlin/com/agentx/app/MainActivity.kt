@@ -46,8 +46,9 @@ import com.agentx.app.tools.WorkspaceManagerFileSystemResolver
 import com.agentx.app.ui.ide.ForgeIdeApp
 import com.agentx.app.ui.ide.IdeDependencies
 import com.agentx.app.ui.ide.data.mock.MockGitRepository
+import com.agentx.app.termux.TermuxRuntime
+import com.agentx.app.termux.TermuxRuntimeHolder
 import com.agentx.app.ui.theme.ForgeTheme
-import com.agentx.app.workspace.process.TerminalSessionManager
 import com.agentx.app.workspace.DefaultWorkspaceManager
 import com.agentx.app.workspace.android.SafWorkspaceBackend
 import com.agentx.app.workspace.android.SharedPreferencesWorkspaceMetadataStore
@@ -111,6 +112,11 @@ class MainActivity : ComponentActivity() {
         // grammar that fails to load is reported as unparseable instead of
         // crashing.
         (foundation.codeIntelligenceParsers as? DelegatingSyntaxParserProvider)?.bind(TreeSitterParserProvider())
+
+        // The embedded Termux runtime is process-scoped, so an Activity recreation (rotation,
+        // return from the background) finds the same shells instead of orphaning them.
+        val termuxRuntime = TermuxRuntime.get(applicationContext)
+        TermuxRuntimeHolder.install(termuxRuntime)
 
         val modelManager = foundation.services.get<ModelManager>(ServiceKeys.MODEL_MANAGER)
         val connectionManager = foundation.services.get<ConnectionManager>(ServiceKeys.CONNECTION_MANAGER)
@@ -191,10 +197,8 @@ class MainActivity : ComponentActivity() {
                             // has online; it never learns where that model runs.
                             modelConfig = { modelManagerOrDefault(modelManager) },
                         ),
-                         terminalSessions = checkNotNull(
-                             foundation.services.get<TerminalSessionManager>(ServiceKeys.TERMINAL_SESSION_MANAGER),
-                         ) { "Terminal session manager is not registered" },
-                         git = MockGitRepository(),
+                        terminalRuntime = termuxRuntime,
+                        git = MockGitRepository(),
                         modelManager = checkNotNull(modelManager) { "Model manager is not registered" },
                         connectionManager = checkNotNull(connectionManager) { "Connection manager is not registered" },
                         integrationSetup = integrationSetup,

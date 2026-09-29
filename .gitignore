@@ -25,3 +25,7 @@ captures/
 # Android signing keys
 *.jks
 *.keystore
+
+# Local integration patch produced for offline hand-off; not part of the source tree.
+termux-terminal-integration.patch
+ci-workflow-changes.patch

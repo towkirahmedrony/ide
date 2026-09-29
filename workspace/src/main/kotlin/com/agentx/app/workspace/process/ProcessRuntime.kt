@@ -213,9 +213,9 @@ private class JvmStartedProcess(
 }
 
 /**
- * One-shot [ProcessExecutor] on top of [ProcessRuntime]. Used later by agent
- * command tools, build, and test runners. The human terminal does not go
- * through this path: it keeps a long-lived [InteractiveShellSession].
+ * One-shot [ProcessExecutor] on top of [ProcessRuntime], used by the agent command tools, build
+ * and test runners. The human terminal does not go through this path: it owns long-lived pty
+ * sessions in `:termux-runtime`, which the Tool Router never reaches.
  */
 class RuntimeProcessExecutor(
     private val runtime: ProcessRuntime,

@@ -87,18 +87,8 @@ data class ChatMessage(
     val toolName: String? = null,
 )
 
-enum class TerminalLineKind { INPUT, OUTPUT, ERROR, SYSTEM }
-
-data class TerminalLine(
-    val id: String,
-    val text: String,
-    val kind: TerminalLineKind,
-)
-
-data class TerminalResult(
-    val lines: List<TerminalLine>,
-    val exitCode: Int = 0,
-)
+// The line-based terminal models that used to live here are gone with the custom terminal:
+// the Terminal tab renders the vendored Termux emulator, which owns its screen buffer.
 
 /** A single changed file reported by the (future) Git layer. */
 data class GitChange(

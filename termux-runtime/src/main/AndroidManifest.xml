@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+        The terminal needs the network for two things: downloading the Termux bootstrap on first
+        use, and the `pkg`/`apt` repositories inside it. The app's own INTERNET permission is
+        declared by the application module.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application>
+        <!--
+            Keeps the process alive while a shell session runs, so a development server started
+            from the terminal is not trimmed when the app goes to the background. Declared here
+            so the runtime module stays self-contained.
+        -->
+        <service
+            android:name=".TermuxSessionService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+    </application>
+
+</manifest>

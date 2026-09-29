@@ -5,245 +5,308 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.agentx.app.ui.ide.model.TerminalLine
-import com.agentx.app.ui.ide.model.TerminalLineKind
-import com.agentx.app.workspace.ProcessEnvironment
-import com.agentx.app.workspace.WorkspaceManager
-import com.agentx.app.workspace.process.InteractiveShellSession
-import com.agentx.app.workspace.process.ProcessSignal
-import com.agentx.app.workspace.process.ProcessStreamKind
-import com.agentx.app.workspace.process.ShellLaunchRequest
-import com.agentx.app.workspace.process.TerminalEvent
-import com.agentx.app.workspace.process.TerminalSessionManager
-import com.agentx.app.workspace.process.TerminalSessionState
-import com.agentx.app.workspace.process.WorkspaceShellLocation
-import com.agentx.app.workspace.process.WorkspaceShellLocations
+import com.agentx.app.termux.TerminalSessionAdapter
+import com.agentx.app.termux.TermuxProvisioning
+import com.agentx.app.termux.TermuxProvisioningState
+import com.agentx.app.termux.TermuxSession
+import com.agentx.app.termux.TermuxSessionSnapshot
+import com.agentx.app.termux.TermuxShellSpec
+import com.agentx.app.termux.TermuxRuntime
+import com.agentx.app.termux.TermuxTerminalHost
+import com.agentx.app.termux.TermuxWorkspaceBinding
+import com.termux.terminal.TerminalSession
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
-import java.util.UUID
+import kotlin.math.roundToInt
 
+/**
+ * What the Terminal screen draws.
+ *
+ * There are no "lines" here: the emulator owns the screen buffer, and rendering is
+ * `TerminalView`'s job. This state only carries what the surrounding IDE chrome needs — which
+ * session is attached, where it is rooted, whether a userland has been installed, and the
+ * problems the user has to know about.
+ */
 data class TerminalUiState(
-    val lines: List<TerminalLine> = emptyList(),
-    val input: String = "",
     val workingDirectory: String = "",
-    val sessionState: TerminalSessionState = TerminalSessionState.IDLE,
-    val exitCode: Int? = null,
-    val limitation: String? = null,
-    val busy: Boolean = false,
+    val sessions: List<TermuxSessionSnapshot> = emptyList(),
+    val activeHandle: String? = null,
+    val running: Boolean = false,
+    val exitStatus: Int? = null,
+    val fontSizePx: Int = DEFAULT_FONT_SIZE_PX,
+    val provisioning: TermuxProvisioningState = TermuxProvisioningState.Idle,
+    /** Why the workspace could not be used as-is, if it could not. */
+    val workspaceNote: String? = null,
+    /** Set when the prefix cannot host the official Termux packages. */
+    val prefixNote: String? = null,
+    /** True when the embedded runtime is missing entirely (previews, or a failed boot). */
+    val unavailable: Boolean = false,
 ) {
     val statusLabel: String
-        get() = when (sessionState) {
-            TerminalSessionState.IDLE -> "idle"
-            TerminalSessionState.STARTING -> "starting"
-            TerminalSessionState.RUNNING -> "running"
-            TerminalSessionState.STOPPED -> "stopped"
-            TerminalSessionState.EXITED -> "exited" + (exitCode?.let { " $it" } ?: "")
-            TerminalSessionState.FAILED -> "failed"
-            TerminalSessionState.CANCELLED -> "cancelled"
+        get() = when {
+            unavailable -> "unavailable"
+            provisioning is TermuxProvisioningState.Downloading -> "installing ${provisioning.percent}%"
+            provisioning is TermuxProvisioningState.Verifying -> "verifying"
+            provisioning is TermuxProvisioningState.Extracting -> "installing"
+            provisioning is TermuxProvisioningState.Failed -> "install failed"
+            running -> "running"
+            exitStatus != null -> "exited $exitStatus"
+            else -> "idle"
         }
 
-    val shellAlive: Boolean get() = sessionState == TerminalSessionState.RUNNING
+    val canInstall: Boolean
+        get() = !unavailable &&
+            provisioning !is TermuxProvisioningState.Downloading &&
+            provisioning !is TermuxProvisioningState.Verifying &&
+            provisioning !is TermuxProvisioningState.Extracting &&
+            prefixNote == null &&
+            !running
+
+    companion object {
+        const val DEFAULT_FONT_SIZE_PX: Int = 30
+    }
 }
 
 /**
- * Drives the Terminal screen. Owns no OS process: [TerminalSessionManager]
- * keeps the interactive shell alive across configuration changes.
+ * Drives the Terminal screen.
  *
- * Human commands run directly. Agent-issued commands must still go through
- * the Tool Router as COMMAND_EXECUTION.
+ * Owns no process. The shell belongs to [TermuxRuntime], which outlives this ViewModel, so
+ * leaving the tab, rotating the device or a Compose recomposition cannot start a second shell
+ * or kill the one that is running `npm run dev`.
+ *
+ * The runtime forwards emulator callbacks to whichever [TermuxTerminalHost] the screen has
+ * bound, so the same session can be displayed, hidden and displayed again.
  */
 class TerminalViewModel(
     private val workspaceId: String,
-    private val workspaceManager: WorkspaceManager,
-    private val sessions: TerminalSessionManager,
+    private val workspaceName: String,
+    /** The workspace's location as the workspace runtime reports it. */
+    private val workspaceLocation: () -> String?,
+    private val runtime: TermuxRuntime?,
 ) : ViewModel() {
 
     var uiState by mutableStateOf(TerminalUiState())
         private set
 
-    private var session: InteractiveShellSession? = null
-    private var collectJob: Job? = null
-    private val history = mutableListOf<String>()
-    private var historyIndex: Int = -1
-    private var seenEventIds = LinkedHashSet<String>()
+    private var collectors: Job? = null
+    private var boundHost: TermuxTerminalHost? = null
+
+    /** Whether the user asked for a shell rooted at `$HOME` rather than at the workspace. */
+    private var scratch = false
 
     init {
-        attach()
-    }
-
-    fun onInputChange(text: String) {
-        uiState = uiState.copy(input = text)
-        historyIndex = -1
-    }
-
-    fun submit() {
-        val command = uiState.input
-        if (command.isEmpty()) {
-            session?.submit("")
-            return
-        }
-        val current = session
-        if (current == null || !uiState.shellAlive) {
-            append(systemLine("shell is not running"))
-            return
-        }
-        append(TerminalLine(id = newId(), text = "$ $command", kind = TerminalLineKind.INPUT))
-        if (history.lastOrNull() != command) history += command
-        historyIndex = -1
-        uiState = uiState.copy(input = "")
-        current.submit(command)
-    }
-
-    fun interrupt() {
-        session?.sendControl(ProcessSignal.INTERRUPT)
-    }
-
-    fun eof() {
-        session?.sendControl(ProcessSignal.EOF)
-    }
-
-    fun insertTab() {
-        uiState = uiState.copy(input = uiState.input + "\t")
-    }
-
-    fun historyPrevious() {
-        if (history.isEmpty()) return
-        val next = if (historyIndex < 0) history.lastIndex else (historyIndex - 1).coerceAtLeast(0)
-        historyIndex = next
-        uiState = uiState.copy(input = history[next])
-    }
-
-    fun historyNext() {
-        if (history.isEmpty() || historyIndex < 0) return
-        val next = historyIndex + 1
-        if (next >= history.size) {
-            historyIndex = -1
-            uiState = uiState.copy(input = "")
+        val current = runtime
+        if (current == null) {
+            uiState = uiState.copy(
+                unavailable = true,
+                prefixNote = "The embedded Termux runtime is not available in this build.",
+            )
         } else {
-            historyIndex = next
-            uiState = uiState.copy(input = history[next])
+            uiState = uiState.copy(
+                prefixNote = (current.prefixSupport as? com.agentx.app.termux.TermuxPrefixSupport.Unsupported)
+                    ?.reason,
+            )
+            observe(current)
+            open(scratch = false)
         }
     }
 
-    fun clear() {
-        session?.clearBuffer()
-        seenEventIds.clear()
-        uiState = uiState.copy(lines = listOf(systemLine("cleared")))
+    /** The screen publishes itself here so emulator callbacks reach the view it renders. */
+    fun bindTerminalHost(host: TermuxTerminalHost) {
+        boundHost = host
+        runtime?.terminalHost = host
+    }
+
+    fun unbindTerminalHost(host: TermuxTerminalHost) {
+        if (boundHost === host) {
+            boundHost = null
+            runtime?.terminalHost = null
+        }
+    }
+
+    /** The real pty session a `TerminalView` must attach to, or null when nothing is running. */
+    fun activeTerminalSession(): TerminalSession? =
+        (runtime?.sessions?.active() as? TerminalSessionAdapter)?.delegate
+
+    fun refreshFromHost() {
+        runtime?.sessions?.refresh()
+    }
+
+    fun provision() {
+        val current = runtime ?: return
+        current.provision()
+        uiState = uiState.copy(prefixNote = null)
+    }
+
+    fun selectSession(handle: String) {
+        runtime?.sessions?.setActive(handle)
+    }
+
+    /**
+     * Opens a shell in the workspace. Reuses the running one when there is one, so a
+     * recomposition or a tab switch never spawns a duplicate process.
+     */
+    fun openWorkspaceShell() {
+        scratch = false
+        open(scratch = false)
+    }
+
+    /** Opens an extra shell rooted at `$HOME`, for commands that are not about the project. */
+    fun openScratchShell() {
+        scratch = true
+        open(scratch = true)
     }
 
     fun restart() {
-        val current = session ?: return
-        viewModelScope.launch {
-            uiState = uiState.copy(busy = true, lines = emptyList())
-            seenEventIds.clear()
-            current.restart(launchRequest())
-            hydrate(current)
-            uiState = uiState.copy(busy = false)
-        }
+        val current = runtime ?: return
+        val handle = current.sessions.activeHandle.value ?: return
+        val spec = spec(scratch = scratch || current.sessions.find(handle) == null)
+        current.sessions.restart(handle, spec)?.let { current.sessions.setActive(it.handle) }
+    }
+
+    fun terminateActive() {
+        val current = runtime ?: return
+        val handle = current.sessions.activeHandle.value ?: return
+        current.terminate(handle)
+    }
+
+    fun terminateAll() {
+        runtime?.terminateAll()
+    }
+
+    /** Writes raw bytes to the active pty. Escape sequences are the caller's business. */
+    fun send(bytes: ByteArray) {
+        val session = runtime?.sessions?.active() ?: return
+        if (!session.isRunning) return
+        session.write(bytes, 0, bytes.size)
+    }
+
+    fun zoomIn() {
+        uiState = uiState.copy(
+            fontSizePx = (uiState.fontSizePx + FONT_STEP_PX).coerceAtMost(MAX_FONT_SIZE_PX),
+        )
+    }
+
+    fun zoomOut() {
+        uiState = uiState.copy(
+            fontSizePx = (uiState.fontSizePx - FONT_STEP_PX).coerceAtLeast(MIN_FONT_SIZE_PX),
+        )
+    }
+
+    fun resetZoom() {
+        uiState = uiState.copy(fontSizePx = TerminalUiState.DEFAULT_FONT_SIZE_PX)
     }
 
     override fun onCleared() {
-        collectJob?.cancel()
-        collectJob = null
-        session = null
+        collectors?.cancel()
+        collectors = null
+        // The sessions deliberately survive: they belong to the runtime, not to this screen.
+        if (boundHost != null) {
+            runtime?.terminalHost = null
+            boundHost = null
+        }
     }
 
-    private fun attach() {
-        collectJob?.cancel()
-        collectJob = viewModelScope.launch {
-            uiState = uiState.copy(busy = true)
-            val opened = sessions.sessionForWorkspace(workspaceId, launchRequest())
-            session = opened
-            hydrate(opened)
-            uiState = uiState.copy(busy = false)
+    private fun observe(current: TermuxRuntime) {
+        collectors?.cancel()
+        collectors = viewModelScope.launch {
             launch {
-                opened.events.collect { event -> appendEvent(event) }
+                current.sessions.snapshots.collect { sessions -> publish(sessions) }
             }
             launch {
-                opened.state.collect { state ->
-                    uiState = uiState.copy(sessionState = state, exitCode = opened.exitCode)
+                current.sessions.activeHandle.collect { handle ->
+                    publish(current.sessions.snapshots.value, handle)
                 }
             }
             launch {
-                opened.workingDirectory.collect { cwd ->
-                    uiState = uiState.copy(workingDirectory = cwd.orEmpty())
-                }
+                current.provisioning.collect { state -> uiState = uiState.copy(provisioning = state) }
             }
         }
     }
 
-    private fun hydrate(opened: InteractiveShellSession) {
-        val snapshot = opened.snapshot()
-        seenEventIds.clear()
-        val lines = snapshot.lines.map { event ->
-            seenEventIds += event.id
-            event.toLine()
-        }.toMutableList()
-        if (snapshot.droppedCount > 0) {
-            lines.add(0, systemLine("… ${snapshot.droppedCount} older lines dropped"))
+    private fun publish(
+        sessions: List<TermuxSessionSnapshot>,
+        active: String? = runtime?.sessions?.activeHandle?.value,
+    ) {
+        val current = sessions.firstOrNull { it.handle == active } ?: sessions.firstOrNull()
+        uiState = uiState.copy(
+            sessions = sessions,
+            activeHandle = active,
+            running = current?.running == true,
+            exitStatus = current?.takeIf { !it.running }?.exitStatus,
+            workingDirectory = current?.workingDirectory.orEmpty(),
+        )
+    }
+
+    private fun open(scratch: Boolean) {
+        val current = runtime ?: return
+        val binding = binding(current, scratch)
+        uiState = uiState.copy(
+            workspaceNote = (binding as? TermuxWorkspaceBinding.Unavailable)?.reason?.let(::trimNote),
+        )
+        val key = if (scratch) "$workspaceId::scratch" else workspaceId
+        current.openSession(current.specFor(key, binding, extraEnvironment(scratch)))
+    }
+
+    private fun spec(scratch: Boolean): TermuxShellSpec {
+        val current = checkNotNull(runtime) { "Termux runtime is not available" }
+        return current.specFor(
+            workspaceKey = if (scratch) "$workspaceId::scratch" else workspaceId,
+            binding = binding(current, scratch),
+            extraEnvironment = extraEnvironment(scratch),
+        )
+    }
+
+    private fun binding(current: TermuxRuntime, scratch: Boolean): TermuxWorkspaceBinding =
+        if (scratch) {
+            TermuxWorkspaceBinding.Direct(path = current.paths.home, displayLocation = "home")
+        } else {
+            current.bindingFor(
+                workspaceId = workspaceId,
+                handle = null,
+                displayLocation = workspaceLocation(),
+            )
         }
-        uiState = uiState.copy(
-            lines = lines,
-            workingDirectory = snapshot.workingDirectory.orEmpty(),
-            sessionState = snapshot.state,
-            exitCode = snapshot.exitCode,
-            limitation = snapshot.workspaceLimitation,
-        )
-    }
 
-    private fun launchRequest(): ShellLaunchRequest {
-        val metadata = workspaceManager.current
-            ?.takeIf { it.workspace.id.value == workspaceId }
-            ?.workspace
-            ?.metadata
-        val location = WorkspaceShellLocations.resolve(
-            handle = null,
-            displayLocation = metadata?.displayLocation,
-        )
-        val working = (location as? WorkspaceShellLocation.Filesystem)?.path
-        return ShellLaunchRequest(
-            workingDirectory = working,
-            workspaceLocation = location,
-            environment = ProcessEnvironment(inheritParent = false),
-            extraEnvironment = mapOf(
-                "CODER_WORKSPACE_ID" to workspaceId,
-                "CODER_WORKSPACE_NAME" to (metadata?.name ?: workspaceId),
-            ),
-        )
-    }
-
-    private fun appendEvent(event: TerminalEvent) {
-        if (!seenEventIds.add(event.id)) return
-        append(event.toLine())
-    }
-
-    private fun append(line: TerminalLine) {
-        val next = uiState.lines + line
-        uiState = uiState.copy(
-            lines = if (next.size > MAX_UI_LINES) next.takeLast(MAX_UI_LINES) else next,
-        )
-    }
-
-    private fun TerminalEvent.toLine(): TerminalLine = TerminalLine(
-        id = id,
-        text = text,
-        kind = when (kind) {
-            ProcessStreamKind.STDOUT -> TerminalLineKind.OUTPUT
-            ProcessStreamKind.STDERR -> TerminalLineKind.ERROR
-            ProcessStreamKind.SYSTEM -> TerminalLineKind.SYSTEM
-        },
+    /**
+     * Context for the shell. Deliberately only identifiers: no credentials, no tokens, nothing
+     * that came from a connection or a model preset.
+     */
+    private fun extraEnvironment(scratch: Boolean): Map<String, String> = mapOf(
+        "CODER_WORKSPACE_ID" to workspaceId,
+        "CODER_WORKSPACE_NAME" to workspaceName,
+        "CODER_SHELL_KIND" to if (scratch) "scratch" else "workspace",
+        "CODER_TERMUX_PREFIX" to (runtime?.paths?.prefix ?: ""),
     )
 
-    private fun systemLine(text: String) = TerminalLine(
-        id = newId(),
-        text = text,
-        kind = TerminalLineKind.SYSTEM,
-    )
+    /** The banner is long by design; the header shows the first sentence. */
+    private fun trimNote(note: String): String = note.substringBefore(". ") + "."
 
-    private fun newId(): String = UUID.randomUUID().toString()
-
-    companion object {
-        private const val MAX_UI_LINES = 2_000
+    private companion object {
+        const val FONT_STEP_PX = 4
+        const val MIN_FONT_SIZE_PX = 12
+        const val MAX_FONT_SIZE_PX = 72
     }
 }
+
+/** Kept so callers can express "installed and ready" without importing the sealed type. */
+val TermuxProvisioningState.isReady: Boolean get() = this is TermuxProvisioningState.Ready
+
+/** Convenience for the screen: the installed message, when there is one. */
+fun TermuxProvisioningState.installedMessage(): String? =
+    (this as? TermuxProvisioningState.Ready)?.installed?.let { installed ->
+        when (installed) {
+            is TermuxProvisioning.Installed -> "Termux userland installed (${installed.files} files)."
+            TermuxProvisioning.AlreadyInstalled -> null
+            else -> null
+        }
+    }
+
+/** Rounds a dp font size to the pixel value `TerminalView.setTextSize` expects. */
+fun pixelsFor(sizeDp: Float, density: Float): Int = (sizeDp * density).roundToInt()
+
+/** The label for a session in the session strip. */
+fun TermuxSession.label(): String = title?.takeIf { it.isNotBlank() } ?: workspaceKeyLabel()
+
+private fun TermuxSession.workspaceKeyLabel(): String = handle.take(8)
