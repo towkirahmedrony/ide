@@ -183,7 +183,23 @@ jobs:
         run: |
           set -euo pipefail
           cd termux-packages
+          # Guard: -f must never be passed to build-bootstraps.sh. build-bootstraps.sh line 400
+          # then runs `rm -f "$TERMUX_BUILT_PACKAGES_DIRECTORY_FOR_ARCH"/*`, and that variable is
+          # assigned nowhere in the script or in the termux_step_handle_buildarch.sh it sources,
+          # so the glob expands to /* and rm is handed the container root. Fresh volumes below
+          # provide the same freshness -f was wanted for, without that bug.
+          BUILD_ARGS=(--architectures "$ARCH")
+          for argument in "${BUILD_ARGS[@]}"; do
+            test "$argument" != "-f" || {
+              echo "::error::-f is forbidden here: it triggers an rm of the container root"; exit 1; }
+          done
+
+          # Fresh volumes rather than clean.sh alone: named volumes persist between runs, and the
+          # build skips packages it finds built for the same revision, so a reused volume would
+          # silently reuse someone else's artefacts.
+          docker volume rm agentx-termux-build agentx-termux-data >/dev/null 2>&1 || true
           docker volume create agentx-termux-build >/dev/null
+          docker volume create agentx-termux-data >/dev/null
           docker rm -f agentx-builder >/dev/null 2>&1 || true
           docker run --detach --init --tty --name agentx-builder \
             --volume agentx-termux-build:/home/builder/.termux-build \
@@ -192,23 +208,33 @@ jobs:
             --cap-add CAP_SYS_ADMIN \
             --device /dev/fuse \
             ghcr.io/termux/package-builder >/dev/null
-          # The checkout belongs to the runner user; the build writes into it as builder.
-          docker exec -u 0 agentx-builder chown -R 1001:1001 /home/builder/termux-packages
+
+          # run-docker.sh performs this chown for exactly this reason: the named volumes are
+          # created root-owned, so the unprivileged builder user cannot write to them, which is
+          # what produced `chmod ... Operation not permitted` and `umount: must be superuser`.
+          # Everything that touches the mounted volumes is therefore set up as root first.
+          docker exec -u 0 agentx-builder chown -R 1001:1001 \
+            /home/builder/termux-packages /home/builder/.termux-build /data/data
+          docker exec -u 0 agentx-builder ls -ld /home/builder/.termux-build /data/data
           docker exec agentx-builder id
+
+          # clean.sh as root: it umounts overlay directories left behind by a toolchain setup and
+          # cannot do that unprivileged. It says so itself -- "Try running 'clean.sh' with
+          # 'sudo'". TERMUX_TOPDIR and HOME are passed explicitly because running as root would
+          # otherwise point it at /root/.termux-build instead of the mounted volume.
+          docker exec -u 0 -w /home/builder/termux-packages agentx-builder \
+            env HOME=/home/builder TERMUX_TOPDIR=/home/builder/.termux-build ./clean.sh 2>&1 | tail -5 \
+            || echo "::warning::clean.sh did not complete; continuing, because the build volume was just recreated empty"
+
           df -h / | tail -1
-          # Upstream documents two ways to stop reusing packages that were built for the old
-          # prefix: run ./clean.sh, or pass -f. -f is unusable here, and it is an upstream
-          # bug rather than a local mistake: build-bootstraps.sh line 400 then runs
-          #   rm -f "$TERMUX_BUILT_PACKAGES_DIRECTORY_FOR_ARCH"/*
-          # and that variable is assigned nowhere in the script or in the
-          # termux_step_handle_buildarch.sh it sources, so the glob expands to /* and rm is
-          # handed the container root -- exactly the "Permission denied"/"Is a directory"
-          # wall this job hit, which under set -e ends the build with exit 1.
-          # clean.sh lives at the repository root and never reaches that line.
-          docker exec -w /home/builder/termux-packages agentx-builder ./clean.sh 2>&1 | tail -5
-          docker exec -w /home/builder/termux-packages agentx-builder \
-            ./scripts/build-bootstraps.sh --architectures "$ARCH" 2>&1 \
+
+          # The build itself runs as builder, as upstream intends, with HOME on the mounted
+          # volume so $HOME/.termux-build resolves to it.
+          docker exec -u builder -w /home/builder/termux-packages agentx-builder \
+            env HOME=/home/builder \
+            ./scripts/build-bootstraps.sh "${BUILD_ARGS[@]}" 2>&1 \
             | tee "../build/build-${ARCH}.log"
+
           docker exec -u 0 agentx-builder chown -R 1001:1001 /home/builder/termux-packages || true
           docker rm -f agentx-builder >/dev/null 2>&1 || true
           cd ..
