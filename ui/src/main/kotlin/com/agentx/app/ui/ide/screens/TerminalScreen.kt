@@ -207,9 +207,20 @@ fun TerminalScreen(
             }
         }
 
-        val note = state.workspaceNote ?: state.prefixNote
+        // An unavailable bootstrap is shown before the workspace note: it explains why the
+        // Install button is missing, and it is the one the user has to act on.
+        val note = state.bootstrapNote ?: state.workspaceNote ?: state.prefixNote
         if (note != null) {
-            NoteStrip(text = note, tone = if (state.workspaceNote != null) ForgeAmber else ForgeMuted)
+            NoteStrip(
+                text = note,
+                tone = if (state.workspaceNote != null || state.bootstrapNote != null) ForgeAmber else ForgeMuted,
+            )
+        }
+
+        // A stopped process is a state the user must be able to leave, so the way out is next to
+        // the reason it stopped rather than only in the icon row.
+        state.exitLine?.let { line ->
+            ExitedBanner(line = line, label = state.restartLabel, onRestart = viewModel::restart)
         }
 
         ExtraKeyRow(
@@ -248,7 +259,9 @@ private fun TerminalHeader(
                     modifier = Modifier.horizontalScroll(rememberScrollState()),
                 )
             }
-            IconButton(onClick = onShowKeyboard, enabled = state.activeHandle != null) {
+            // Enabled only while a process is attached: after an exit there is nothing to type
+            // into, and offering the keyboard would imply otherwise.
+            IconButton(onClick = onShowKeyboard, enabled = state.canType) {
                 Icon(Icons.Filled.Keyboard, contentDescription = "Show keyboard")
             }
             IconButton(onClick = viewModel::zoomOut) { Icon(Icons.Filled.Remove, contentDescription = "Smaller text") }
@@ -260,7 +273,7 @@ private fun TerminalHeader(
             IconButton(
                 onClick = viewModel::restart,
                 enabled = state.activeHandle != null,
-            ) { Icon(Icons.Filled.Refresh, contentDescription = "Restart") }
+            ) { Icon(Icons.Filled.Refresh, contentDescription = state.restartLabel) }
             IconButton(
                 onClick = viewModel::terminateActive,
                 enabled = state.activeHandle != null,
@@ -287,6 +300,38 @@ private fun TerminalHeader(
     }
 }
 
+/**
+ * The line and the way out for a process that has stopped.
+ *
+ * The status is spelled out ("exited with status 1 (a startup failure…)") rather than shown as a
+ * bare number, and the process's own output is directly above this strip in the terminal buffer.
+ */
+@Composable
+private fun ExitedBanner(line: String, label: String, onRestart: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(ForgeSurfaceVariant)
+            .padding(start = 12.dp, end = 12.dp, top = 6.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = line,
+            style = TerminalMetaStyle.copy(color = ForgeDanger),
+            maxLines = 3,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            text = label,
+            style = TerminalMetaStyle.copy(color = ForgeMint),
+            modifier = Modifier
+                .background(ForgeCanvas)
+                .clickable { onRestart() }
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+        )
+    }
+}
+
 @Composable
 private fun ProvisioningBanner(state: TerminalUiState, onInstall: () -> Unit) {
     val provisioning = state.provisioning
@@ -304,7 +349,15 @@ private fun ProvisioningBanner(state: TerminalUiState, onInstall: () -> Unit) {
         }
 
         provisioning is TermuxProvisioningState.Failed -> {
-            NoteStrip(text = "${provisioning.message} Tap Install to retry.", tone = ForgeDanger)
+            // Naming the stage is the difference between "install failed" and something the user
+            // can act on: a checksum failure and a permission failure need different responses.
+            val stage = provisioning.stage?.let { "Failed at ${it.wireName}: " }.orEmpty()
+            NoteStrip(
+                text = "$stage${provisioning.message} " +
+                    "${com.agentx.app.ui.ide.state.installStageGuidance(provisioning.stage)} " +
+                    "Tap Install to retry.",
+                tone = ForgeDanger,
+            )
         }
 
         state.canInstall && state.prefixNote == null -> {

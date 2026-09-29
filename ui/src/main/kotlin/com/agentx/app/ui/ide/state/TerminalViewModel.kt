@@ -1,5 +1,6 @@
 package com.agentx.app.ui.ide.state
 
+import android.os.Build
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -43,6 +44,11 @@ data class TerminalUiState(
     val prefixNote: String? = null,
     /** True when the embedded runtime is missing entirely (previews, or a failed boot). */
     val unavailable: Boolean = false,
+    /**
+     * Why no AgentX bootstrap can be installed on this device, when that is the case. Empty means
+     * an artifact is catalogued; it says nothing about whether installing would succeed.
+     */
+    val bootstrapNote: String? = null,
 ) {
     val statusLabel: String
         get() = when {
@@ -56,12 +62,33 @@ data class TerminalUiState(
             else -> "idle"
         }
 
+    /**
+     * Whether the on-screen keyboard may be offered. Only a live process can receive typing;
+     * offering it after the process exited would suggest the keys go somewhere.
+     */
+    val canType: Boolean
+        get() = acceptsInput(unavailable = unavailable, running = running)
+
+    /**
+     * The readable exit line, or null while the process is running. The process's own stderr is
+     * above this line, in the terminal buffer itself.
+     */
+    val exitLine: String?
+        get() = exitSummary(running = running, exitStatus = exitStatus, lastError = null)
+
+    /** The label for the restart action, which is the whole recovery path once a shell exits. */
+    val restartLabel: String get() = restartActionLabel(running)
+
+    /** Why an install cannot start right now, or null when it can. */
+    val installBlocked: String? get() = installBlockedReason(this)
+
     val canInstall: Boolean
         get() = !unavailable &&
             provisioning !is TermuxProvisioningState.Downloading &&
             provisioning !is TermuxProvisioningState.Verifying &&
             provisioning !is TermuxProvisioningState.Extracting &&
             prefixNote == null &&
+            bootstrapNote == null &&
             provisioning !is TermuxProvisioningState.Ready
 
     companion object {
@@ -87,6 +114,13 @@ class TerminalViewModel(
     /** The workspace's location as the workspace runtime reports it. */
     private val workspaceLocation: () -> String?,
     private val runtime: TermuxRuntime?,
+    /**
+     * The catalog entry for this device, injected so the screen's unavailable-ABI behaviour is
+     * testable. Defaults to the real catalog resolved against the device's ABIs.
+     */
+    private val bootstrapEntry: (List<String>) -> com.agentx.app.termux.TermuxBootstrapCatalog.Entry? =
+        com.agentx.app.termux.TermuxBootstrapCatalog::forAbis,
+    private val deviceAbis: () -> List<String> = { Build.SUPPORTED_ABIS.toList() },
 ) : ViewModel() {
 
     var uiState by mutableStateOf(TerminalUiState())
@@ -109,6 +143,11 @@ class TerminalViewModel(
             uiState = uiState.copy(
                 prefixNote = (current.prefixSupport as? com.agentx.app.termux.TermuxPrefixSupport.Unsupported)
                     ?.reason,
+                // Resolved once here so the screen can say "no bootstrap for this ABI/build"
+                // instead of offering an Install button that is guaranteed to fail.
+                bootstrapNote = bootstrapAvailabilityNote(
+                    runCatching { bootstrapEntry(deviceAbis()) }.getOrNull(),
+                ),
             )
             observe(current)
             open(scratch = false)

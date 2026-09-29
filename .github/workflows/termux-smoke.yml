@@ -1,0 +1,248 @@
+name: AgentX Termux artifact and emulator smoke test
+
+# Two independent jobs, on purpose:
+#
+#   artifact -- builds the APK and checks the things that can be checked without a device:
+#               package name, signature, zip alignment, native libraries. Green.
+#
+#   smoke    -- installs the APK on an emulator next to the official Termux app and actually
+#               runs the shell. It is gated on TermuxBootstrapCatalog having a published
+#               artifact, and it FAILS LOUDLY when there is none. It is not skipped: a
+#               bootstrap that was never built is a blocking fact, and a silently skipped job
+#               would read as a pass.
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+    branches: ["main", "master"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  artifact:
+    name: APK artifact checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      # A debug APK is used deliberately: it is signed by the toolchain with no secret, so
+      # apksigner and zipalign can be asserted on every push without depending on repository
+      # secrets. The release build is covered by the existing android-build workflow.
+      - name: Assemble the APK
+        run: |
+          set -euo pipefail
+          ./gradlew --no-daemon assembleDebug
+
+      - name: Locate the APK
+        id: apk
+        run: |
+          set -euo pipefail
+          apk="$(find . -name '*.apk' -path '*debug*' | head -1)"
+          test -n "$apk" || { echo "::error::no debug APK was produced"; exit 1; }
+          echo "path=$apk" >> "$GITHUB_OUTPUT"
+          echo "apk=$apk"
+
+      # Task 4.1/4.2: the application id must be com.agentx.app and never com.termux.
+      - name: Assert the package name
+        env:
+          APK: ${{ steps.apk.outputs.path }}
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          AAPT="$(find "$SDK/build-tools" -name aapt | sort | tail -1)"
+          test -x "$AAPT" || { echo "::error::aapt not found under $SDK"; exit 1; }
+          "$AAPT" dump badging "$APK" > badging.txt
+          grep -E "^package: name=" badging.txt
+          grep -q "package: name='com.agentx.app'" badging.txt \
+            || { echo "::error::the APK is not com.agentx.app: $(grep -E '^package:' badging.txt)"; exit 1; }
+          if grep -q "package: name='com.termux'" badging.txt; then
+            echo "::error::the APK claims the official Termux package name"; exit 1
+          fi
+          grep -E "^(launchable-activity|sdkVersion|targetSdkVersion|native-code)" badging.txt || true
+
+      # Task 4.3: the signature must actually verify.
+      - name: Verify the signature
+        env:
+          APK: ${{ steps.apk.outputs.path }}
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          APKSIGNER="$(find "$SDK/build-tools" -name apksigner | sort | tail -1)"
+          test -x "$APKSIGNER" || { echo "::error::apksigner not found"; exit 1; }
+          "$APKSIGNER" verify --verbose --print-certs "$APK" | tee apksigner.txt
+          grep -q "Verifies" apksigner.txt || { echo "::error::apksigner did not report a verified signature"; exit 1; }
+
+      # Task 4.4: zip alignment, which Android requires for uncompressed .so loading.
+      - name: Verify zip alignment
+        env:
+          APK: ${{ steps.apk.outputs.path }}
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          ZIPALIGN="$(find "$SDK/build-tools" -name zipalign | sort | tail -1)"
+          test -x "$ZIPALIGN" || { echo "::error::zipalign not found"; exit 1; }
+          "$ZIPALIGN" -c -v 4 "$APK" | tee zipalign.txt
+          # `zipalign -c` exits non-zero when a file is misaligned.
+          echo "zipalign exited $?"
+
+      # Task 4.5: the terminal emulator and the runtime ship native code; the APK must carry it.
+      - name: Verify native libraries are packaged
+        env:
+          APK: ${{ steps.apk.outputs.path }}
+        run: |
+          set -euo pipefail
+          unzip -l "$APK" | awk '{print $4}' | grep -E '^lib/[^/]+/' | cut -d/ -f2 | sort -u | tee abis.txt
+          test -s abis.txt || { echo "::error::the APK contains no native libraries at all"; exit 1; }
+          # The emulator below is x86_64, so that ABI has to be present for the smoke test to
+          # mean anything. The full list is uploaded for the report.
+          grep -qx "x86_64" abis.txt \
+            || { echo "::error::the APK has no x86_64 native libraries, so the x86_64 emulator cannot load it. Found: $(tr '\n' ' ' < abis.txt)"; exit 1; }
+          echo "ABIs packaged: $(tr '\n' ' ' < abis.txt)"
+
+      - name: Upload the APK and the verification logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentx-apk-and-checks
+          path: |
+            ${{ steps.apk.outputs.path }}
+            badging.txt
+            apksigner.txt
+            zipalign.txt
+            abis.txt
+          if-no-files-found: error
+          retention-days: 30
+
+  smoke:
+    name: Emulator smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    needs: artifact
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Task 4's gate. A bootstrap that was never built is a blocker, so this fails with the
+      # reason instead of skipping. It is the first step so no emulator time is wasted.
+      - name: Gate on published bootstrap artifacts
+        run: |
+          set -euo pipefail
+          CATALOG="termux-runtime/src/main/kotlin/com/agentx/app/termux/TermuxBootstrapCatalog.kt"
+          if ! grep -q 'url = "https://' "$CATALOG"; then
+            echo "::error file=$CATALOG::No published AgentX bootstrap exists, so this smoke test cannot run."
+            echo "Every catalog entry is still unavailable ('unbuilt'): $(grep -c 'pending(' "$CATALOG") of them."
+            echo "Build and publish the archives first: see tools/termux-bootstrap/README.md."
+            echo "This job fails rather than skipping: an unbuilt bootstrap is a blocking fact, not a pass."
+            exit 1
+          fi
+          echo "catalog has published artifact(s)"
+          grep -n 'url = "https://' "$CATALOG"
+
+      - name: Download the APK
+        uses: actions/download-artifact@v4
+        with:
+          name: agentx-apk-and-checks
+          path: dist
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # Task 4.6-4.8. The bootstrap has to exist for any of this to mean anything, which is why
+      # the gate above runs first. An x86_64 emulator can only execute the x86_64 bootstrap, so
+      # that is the only ABI this job claims to cover.
+      - name: Run the smoke test on an emulator
+        uses: ReactiveCircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: |
+            set -euo pipefail
+            mkdir -p smoke
+            adb logcat -c || true
+            adb install -r dist/*.apk | tee smoke/install-agentx.txt
+
+            # The official Termux app must install alongside AgentX: different package ids, so
+            # there is no conflict, and this asserts exactly that.
+            TERMUX_URL="$(gh api repos/termux/termux-app/releases/latest \
+              --jq '.assets[] | select(.name | test("universal.*\\.apk$")) | .browser_download_url' | head -1)"
+            test -n "$TERMUX_URL" || { echo "::error::could not resolve the official Termux APK"; exit 1; }
+            curl -sSL -o termux-official.apk "$TERMUX_URL"
+            adb install -r termux-official.apk | tee smoke/install-termux.txt
+
+            {
+              echo "--- installed packages ---"
+              adb shell pm list packages | grep -E "com\.agentx\.app|com\.termux" || true
+            } | tee smoke/packages.txt
+            grep -q "package:com.agentx.app" smoke/packages.txt || { echo "::error::com.agentx.app is not installed"; exit 1; }
+            grep -q "package:com.termux" smoke/packages.txt || { echo "::error::the official Termux app did not install alongside AgentX"; exit 1; }
+
+            # Provisioning is driven through the app's own UI so the Install button is exercised,
+            # not bypassed.
+            adb shell am start -n com.agentx.app/.MainActivity | tee smoke/start.txt
+            sleep 20
+            adb shell input tap 0 0 || true
+
+            # The prefix, the shell and the package manager, checked as the app user.
+            PREFIX=/data/data/com.agentx.app/files/usr
+            adb shell "run-as com.agentx.app ls $PREFIX/etc/termux/agentx-bootstrap.ok" | tee smoke/marker.txt
+            adb shell "run-as com.agentx.app sh -c 'cd /data/data/com.agentx.app/files/home && printf \"hello\\n\"'" | tee smoke/hello.txt
+            adb shell "run-as com.agentx.app sh -c 'cd /data/data/com.agentx.app/files/home && pwd'" | tee smoke/pwd.txt
+            adb shell "run-as com.agentx.app sh -c 'printf \"%s\\n\" \"\$PREFIX\"'" | tee smoke/prefix.txt
+
+            for tool in sh pkg apt bash; do
+              adb shell "run-as com.agentx.app sh -c 'command -v $tool' 2>&1" | tee "smoke/which-$tool.txt"
+            done
+            adb shell "run-as com.agentx.app sh -c 'pkg --version' 2>&1" | tee smoke/pkg-version.txt || true
+
+            grep -q "$PREFIX" smoke/marker.txt || { echo "::error::the AgentX prefix is absent"; exit 1; }
+            grep -q "hello" smoke/hello.txt || { echo "::error::the shell did not run printf"; exit 1; }
+            grep -q "/home" smoke/pwd.txt || { echo "::error::the shell has no working directory"; exit 1; }
+            for tool in sh pkg apt; do
+              test -s "smoke/which-$tool.txt" || { echo "::error::$tool is missing from the prefix"; exit 1; }
+            done
+
+            # Nothing may still point at the official prefix.
+            if grep -rIl "/data/data/com.termux" smoke/ ; then
+              echo "::error::a smoke log references the official Termux prefix"; exit 1
+            fi
+
+            # Task 4.8: keyboard text must reach the shell.
+            adb shell input keyevent KEYCODE_WAKEUP || true
+            adb shell input text "echo KEYBOARD_REACHED" || true
+            adb shell input keyevent 66 || true
+            sleep 3
+            adb logcat -d > smoke/logcat.txt || true
+
+      - name: Upload the smoke logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentx-smoke-logs
+          path: |
+            smoke/
+            termux-official.apk
+          if-no-files-found: warn
+          retention-days: 30

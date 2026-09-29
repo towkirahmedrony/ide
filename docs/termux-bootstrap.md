@@ -111,6 +111,85 @@ Building and hosting a repository for this prefix, then passing its URL as the
 build if `sources.list` contains an active line naming `termux.dev`, so apt cannot silently
 be pointed back at the official repository.
 
+## Installing and upgrading AgentX
+
+The application id is `com.agentx.app` in every build type. That is what makes the whole
+prefix scheme work, and it is what keeps the official Termux app installable next to this
+one:
+
+| | AgentX | Official Termux |
+| --- | --- | --- |
+| Package | `com.agentx.app` | `com.termux` |
+| Prefix | `/data/data/com.agentx.app/files/usr` | `/data/data/com.termux/files/usr` |
+| Provisioned by | this repository's own bootstrap | the Termux release archives |
+
+They do not share a data directory, a prefix, a binary or a package name, so both can be
+installed at once and uninstalling either leaves the other untouched. Nothing in this app
+writes to `com.termux`, and nothing in AgentX reads from it.
+
+Installing or upgrading AgentX:
+
+1. Build and install the APK (`./gradlew assembleDebug` for a local build).
+2. Open the Terminal tab. Until a bootstrap is installed the shell is Android's
+   `/system/bin/sh`: a genuine pty shell, but **not** Termux support, and the header says so.
+3. Tap **Install**. The bootstrap is downloaded, checksum-verified against the digest in
+   `TermuxBootstrapCatalog`, unpacked into `usr-staging`, symlinked, made executable and moved
+   into place. On success the shell is restarted automatically, replacing the system shell with
+   the AgentX Termux shell.
+4. Upgrading: install the newer APK over the old one. The prefix is left alone. To pick up a
+   newer bootstrap, publish one, update the catalog and tap Install again; a checksum mismatch
+   deletes the archive and aborts rather than extracting it.
+
+## Troubleshooting, by install stage
+
+Failures name the stage they failed at, so the message points at one thing to fix.
+
+| Stage | What it means | What to do |
+| --- | --- | --- |
+| `download` | The archive could not be fetched, or no artifact is catalogued for this ABI. | Check the connection. If the message says no artifact exists, the catalog is still `unbuilt`: build and publish the bootstrap first. |
+| `checksum` | The downloaded archive does not match the published SHA-256. | Nothing is installed: the archive is deleted. Retry; if it repeats, re-publish the release and re-check the catalog digest. |
+| `extraction` | The zip could not be unpacked. | A corrupt download or a wrong asset. Verify the release asset is a bootstrap zip. |
+| `symlink` | `SYMLINKS.txt` is malformed, or a target leaves the prefix. | The archive was not produced by `postprocess-bootstrap.sh`. Rebuild it with `tools/termux-bootstrap/scripts`. |
+| `permissions` | Files under `bin/` and `libexec/` could not be made executable. | Check the app still owns `/data/data/com.agentx.app`. Clear app data and reinstall if the directory was tampered with. |
+| `prefix` | The archives are not built for this app's prefix. | Almost always the official Termux bootstrap, or a build made without the `TERMUX_APP__PACKAGE_NAME` patch. Rebuild for `com.agentx.app`. |
+| `runtime` | The prefix installed but no shell would run from it. | The userland is incomplete. Reinstall; if it repeats, check the archive with `verify-bootstrap.sh`. |
+
+Other situations the screen reports rather than hiding:
+
+- **"No AgentX bootstrap is available for this ABI/build yet"** — the catalog entry for the
+  device ABI is `unbuilt`, so the Install button is withheld and the system shell stays usable.
+- **Shell exits immediately** — the exit strip shows the status in words ("exited with status 1
+  (a startup failure…)") and a **Restart terminal** action. The process's own stderr is in the
+  terminal buffer directly above it.
+- **Workspace cannot be entered** — a `content://` tree has no POSIX path, so either it is
+  mirrored into `/data/data/com.agentx.app/files/workspaces/<name>-<hash>` (commands then run
+  against a **copy**, and write-back is not implemented) or the shell falls back to `$HOME`.
+  Either way the terminal keeps running.
+- **`pkg install` says "Unable to locate package"** — expected: see below.
+
+## What is verified, and what is not
+
+Verified on this machine, by executing it:
+
+- `tools/termux-bootstrap/verify_bootstrap.py` against the real published upstream archive:
+  clean in the calibration profile, seven violations in the AgentX profile.
+- The `termux-runtime` workspace-binding, mirror and catalog logic, and the
+  `ui` presentation rules, on the JVM (see the harnesses in `tools/termux-bootstrap`).
+
+Verified in CI on the pushed commit: `./gradlew test` on the whole version catalogue, plus the
+APK package-name, signature, alignment and native-library checks in
+[`.github/workflows/termux-smoke.yml`](../.github/workflows/termux-smoke.yml).
+
+**Not verified, and it must not be presented as working:**
+
+- No AgentX bootstrap has been built, so nothing has ever been provisioned or executed inside
+  `/data/data/com.agentx.app/files/usr`. No `sh`, `bash`, `printf`, `pkg` or `apt` has run there.
+- The emulator smoke test has never executed: it is gated on the catalog having a published
+  artifact, and it currently fails at that gate — deliberately, and with that reason.
+- Therefore **full Termux support is unverified**. The acceptance checklist in
+  [termux-terminal.md](termux-terminal.md) records item by item what is verified and what is
+  not, and every on-device item is still open.
+
 ## Runtime verification status
 
 Nothing has been executed inside an AgentX prefix: no archives exist yet, and the

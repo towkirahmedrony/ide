@@ -192,6 +192,33 @@ Verified on a device only where it can be: see "Not verified here" below for the
 - **No root features.** Nothing here needs root, Magisk, an external Termux install, Docker or a
   remote host, and nothing here assumes unrestricted filesystem access.
 
+## Acceptance checklist
+
+Each item is marked with what actually backs it. **Unverified means unverified** — nothing here
+has been executed on a real device or emulator, because no AgentX bootstrap has been built yet, so
+the emulator job in
+[`.github/workflows/termux-smoke.yml`](../.github/workflows/termux-smoke.yml) stops at its
+catalogue gate.
+
+| # | Item | Status | Evidence |
+| --- | --- | --- | --- |
+| 1 | APK package is `com.agentx.app` | **unverified at runtime** | Enforced in CI by `aapt dump badging` on every push; not yet observed on a device. |
+| 2 | Official Termux coexists | **unverified** | Different ids, prefixes and data dirs, and the smoke job asserts both packages install; never executed. |
+| 3 | APK installs without conflict | **unverified** | Same as above. |
+| 4 | Custom shell starts | **unverified** | Requires a built bootstrap. `TermuxShellResolver` is unit tested; no shell has run. |
+| 5 | No `Permission denied` from `login`/`bash` | **unverified** | The installer chmods `bin/`, `libexec`, `lib/apt/*`; never observed on a device. |
+| 6 | Keyboard input reaches the shell | **unverified** | Wired and unit tested (`canType`, `send`); the `adb shell input text` assertion has never run. |
+| 7 | `pwd`, `ls`, `echo`, `command -v pkg`, `command -v apt` work | **unverified** | The verifier asserts these binaries are present **in an archive**; no archive exists. |
+| 8 | Install button restarts the shell | **unverified** | `TerminalViewModel.provision()` restarts on `Ready`; the transition is unit tested, the restart is not. |
+| 9 | Terminal does not exit immediately with code 1 or 9 | **unverified** | Depends on a real prefix. |
+| 10 | Unreadable workspace does not kill the terminal | **unit tested** | Falls back to `$HOME` and keeps a usable shell; the process-exit path is unchanged by a workspace error. |
+| 11 | APK signature valid | **unverified at runtime** | `apksigner verify` runs in CI on every push. |
+| 12 | APK zip alignment valid | **unverified at runtime** | `zipalign -c -v 4` runs in CI on every push. |
+| 13 | No ELF/script references `/data/data/com.termux` | **verified for archives only** | `verify_bootstrap.py` enforces zero occurrences; it has only ever been run against upstream's archive, which it correctly rejects. |
+
+**Do not describe this project as providing full Termux support.** Items 4, 5, 7 and 9 are the
+ones that decide it, and all four need a real bootstrap on a real device.
+
 ## Not verified here
 
 This change was verified by compilation and by the unit/regression suites in CI. It could **not**

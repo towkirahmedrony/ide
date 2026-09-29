@@ -42,7 +42,15 @@ sealed interface TermuxProvisioningState {
     data class Verifying(val percent: Int) : TermuxProvisioningState
     data class Extracting(val files: Int) : TermuxProvisioningState
     data class Ready(val installed: TermuxProvisioning) : TermuxProvisioningState
-    data class Failed(val message: String) : TermuxProvisioningState
+    /**
+     * [stage] is the step that actually failed, when it is known, so the UI can say which of
+     * download / checksum / extraction / symlink / permissions / prefix / runtime broke instead
+     * of showing one undifferentiated "install failed".
+     */
+    data class Failed(
+        val message: String,
+        val stage: TermuxInstallStage? = null,
+    ) : TermuxProvisioningState
 }
 
 class TermuxBootstrapInstaller(
@@ -337,8 +345,21 @@ class TermuxBootstrapInstaller(
             is TermuxProvisioning.Failed -> "[${result.stage.wireName}] ${result.message}"
             else -> "Provisioning did not complete."
         }
-        onState(TermuxProvisioningState.Failed(message))
+        onState(TermuxProvisioningState.Failed(message = message, stage = stageOf(result)))
         return result
+    }
+
+    /**
+     * Which install step a failure belongs to. An artifact that could not be resolved never
+     * reached the download, and a missing/unusable entry is reported against the step that
+     * would have used it.
+     */
+    private fun stageOf(result: TermuxProvisioning): TermuxInstallStage? = when (result) {
+        is TermuxProvisioning.Failed -> result.stage
+        is TermuxProvisioning.ArtifactUnavailable -> TermuxInstallStage.DOWNLOAD
+        is TermuxProvisioning.NoArchive -> TermuxInstallStage.DOWNLOAD
+        is TermuxProvisioning.Unsupported -> TermuxInstallStage.PREFIX
+        else -> null
     }
 
     class TermuxBootstrapException(val stage: TermuxInstallStage, message: String) : Exception(message)
