@@ -4,6 +4,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
+import kotlin.test.assertFalse
 
 class TermuxPrefixPolicyTest {
 
@@ -18,15 +19,19 @@ class TermuxPrefixPolicyTest {
     }
 
     @Test
-    fun `another app data directory is refused with an actionable reason`() {
-        // This is the default shape of the build: the packages are compiled for
-        // /data/data/com.termux, so installing them under our own directory has to be refused
-        // rather than half-done.
+    fun `app own data directory is supported`() {
         val support = TermuxPrefixPolicy.evaluate(TermuxPaths.forAppDataDir("/data/data/com.agentx.app"))
+        val supported = assertIs<TermuxPrefixSupport.Supported>(support)
+        assertEquals("/data/data/com.agentx.app/files/usr", supported.prefix)
+        assertFalse(supported.official)
+    }
+
+    @Test
+    fun `another app data directory is refused with an actionable reason`() {
+        val support = TermuxPrefixPolicy.evaluate(TermuxPaths.forAppDataDir("/data/data/com.other.app"))
         val unsupported = assertIs<TermuxPrefixSupport.Unsupported>(support)
 
-        assertTrue(unsupported.reason.contains(TermuxPaths.OFFICIAL_PREFIX))
-        assertTrue(unsupported.reason.contains("/data/data/com.agentx.app/files/usr"))
+        assertTrue(unsupported.reason.contains("/data/data/com.agentx.app"))
         assertTrue(unsupported.remedy.contains("agentx.termux.officialPrefix"))
     }
 
