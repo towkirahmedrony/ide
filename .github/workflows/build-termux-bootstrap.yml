@@ -154,10 +154,12 @@ jobs:
         id: debs
         uses: actions/cache/restore@v4
         with:
-          path: build/termux-data
-          key: agentx-debs-${{ inputs.termux_packages_commit }}-${{ matrix.arch }}-${{ hashFiles('tools/termux-bootstrap/agentx-prefix.env', 'tools/termux-bootstrap/apply-agentx-prefix.sh', 'tools/termux-bootstrap/patches/*') }}-${{ github.run_id }}
+          path: |
+            build/termux-data
+            termux-packages/output
+          key: agentx-debs-v2-${{ inputs.termux_packages_commit }}-${{ matrix.arch }}-${{ hashFiles('tools/termux-bootstrap/agentx-prefix.env', 'tools/termux-bootstrap/apply-agentx-prefix.sh', 'tools/termux-bootstrap/patches/*') }}-${{ github.run_id }}
           restore-keys: |
-            agentx-debs-${{ inputs.termux_packages_commit }}-${{ matrix.arch }}-${{ hashFiles('tools/termux-bootstrap/agentx-prefix.env', 'tools/termux-bootstrap/apply-agentx-prefix.sh', 'tools/termux-bootstrap/patches/*') }}-
+            agentx-debs-v2-${{ inputs.termux_packages_commit }}-${{ matrix.arch }}-${{ hashFiles('tools/termux-bootstrap/agentx-prefix.env', 'tools/termux-bootstrap/apply-agentx-prefix.sh', 'tools/termux-bootstrap/patches/*') }}-
 
       - name: Point upstream at the AgentX package name and verify the derived prefix
         run: |
@@ -227,6 +229,23 @@ jobs:
           # under .termux-build stay a throwaway volume: they are per-run state, and caching them
           # would spend the cache budget on something that is never reused.
           mkdir -p ../build/termux-data
+          mkdir -p output
+
+          # The debs and the built-package registry are cached together, and they have to agree.
+          # build-bootstraps.sh skips a package when the registry says it is built, so a
+          # restored registry without its debs is worse than no cache at all: every package is
+          # skipped, nothing is there to assemble, and the rootfs comes out short. That is
+          # exactly how the first cache-consuming run failed -- the second-stage step died on a
+          # missing etc/profile.d. A registry that arrives without debs is therefore moved
+          # aside (kept, not destroyed, so it can be inspected) and the packages are rebuilt.
+          cached_markers=$(find ../build/termux-data -name '.built-*' -o -name '*.built' -o -name 'built' 2>/dev/null | wc -l)
+          cached_debs=$(find output -name '*.deb' 2>/dev/null | wc -l)
+          echo "cache check: $cached_debs deb(s) and $cached_markers registry marker(s)"
+          if [ "$cached_markers" -gt 0 ] && [ "$cached_debs" -eq 0 ]; then
+            echo "::warning::restored cache has a built-package registry but no debs; moving it aside so the packages are rebuilt"
+            mv ../build/termux-data "../build/termux-data.stale-$(date +%s)"
+            mkdir -p ../build/termux-data
+          fi
           docker volume rm agentx-termux-build >/dev/null 2>&1 || true
           docker volume create agentx-termux-build >/dev/null
           docker rm -f agentx-builder >/dev/null 2>&1 || true
@@ -247,8 +266,8 @@ jobs:
           docker exec agentx-builder id
           # Printed so the cache is visible in the log rather than inferred: a retry that reuses
           # packages shows a non-zero count here and far fewer "termux - building" lines below.
-          echo "cached debs before this run: $(find ../build/termux-data -name '*.deb' | wc -l)"
-          du -sh ../build/termux-data | sed 's/^/cache size before this run: /'
+          echo "cached debs before this run: $(find output -name '*.deb' 2>/dev/null | wc -l)"
+          du -sh ../build/termux-data output 2>/dev/null | sed 's/^/cache size before this run: /'
 
           # clean.sh is deliberately gone, and this is a strategy change, not an oversight. Its
           # whole job is to delete the built packages and the build trees -- precisely what is now
@@ -307,8 +326,8 @@ jobs:
 
           docker exec -u 0 agentx-builder chown -R 1001:1001 /home/builder/termux-packages /data/data || true
           docker rm -f agentx-builder >/dev/null 2>&1 || true
-          echo "debs in the cache now: $(find ../build/termux-data -name '*.deb' | wc -l)"
-          du -sh ../build/termux-data | sed 's/^/cache size now: /'
+          echo "debs in the cache now: $(find output -name '*.deb' 2>/dev/null | wc -l)"
+          du -sh ../build/termux-data output 2>/dev/null | sed 's/^/cache size now: /'
           cd ..
           test -f "termux-packages/bootstrap-${ARCH}.zip" \
             || { echo "::error::build-bootstraps.sh produced no bootstrap-${ARCH}.zip"; exit 1; }
@@ -362,7 +381,9 @@ jobs:
         if: always()
         uses: actions/cache/save@v4
         with:
-          path: build/termux-data
+          path: |
+            build/termux-data
+            termux-packages/output
           key: ${{ steps.debs.outputs.cache-primary-key }}
 
       - name: Upload the archive, its digest, manifests and logs
