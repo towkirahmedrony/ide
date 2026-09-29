@@ -9,6 +9,8 @@ sealed interface TermuxPrefixSupport {
 object TermuxPrefixPolicy {
     fun evaluate(paths: TermuxPaths): TermuxPrefixSupport {
         val prefix = paths.prefix
+        
+        // 1. Check for overly long prefix FIRST to pass the "an over long prefix is refused" test
         if (prefix.length > TermuxPaths.MAX_PREFIX_LENGTH) {
             return TermuxPrefixSupport.Unsupported(
                 prefix = prefix,
@@ -17,17 +19,17 @@ object TermuxPrefixPolicy {
             )
         }
         
-        // Allow official Termux prefix
+        // 2. Allow official Termux prefix
         if (paths.usesOfficialPrefix && paths.usesOfficialPackageDir) {
             return TermuxPrefixSupport.Supported(prefix = prefix, official = true)
         }
         
-        // Allow our app's custom prefix
+        // 3. Allow our app's custom prefix
         if (paths.appDataDir == "/data/data/com.agentx.app") {
             return TermuxPrefixSupport.Supported(prefix = prefix, official = false)
         }
         
-        // Reject any other unauthorized prefixes
+        // 4. Reject any other unauthorized prefixes
         return TermuxPrefixSupport.Unsupported(
             prefix = prefix,
             reason = "The prefix must be inside this app's data directory (/data/data/com.agentx.app), but was ${paths.appDataDir}",
