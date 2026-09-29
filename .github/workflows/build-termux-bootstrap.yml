@@ -42,31 +42,53 @@ env:
   TERMUX_PACKAGES_URL: https://github.com/termux/termux-packages.git
 
 jobs:
+  # `only_arch` is resolved here rather than with a job-level `if:` on the build job.
+  # A job-level `if:` may only read the github/inputs/needs/vars contexts, so an
+  # expression mentioning `matrix` is rejected and takes the entire workflow file down
+  # with it (the run fails to load with zero jobs). Choosing the matrix before the job
+  # ever expands is both legal and cheaper than starting four runners to skip three.
+  setup:
+    name: Select architectures
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+    steps:
+      - id: select
+        env:
+          ONLY_ARCH: ${{ inputs.only_arch }}
+        run: |
+          set -euo pipefail
+          case "$ONLY_ARCH" in
+            "")
+              entries='[{"arch":"aarch64","abi":"arm64-v8a"},{"arch":"arm","abi":"armeabi-v7a"},{"arch":"i686","abi":"x86"},{"arch":"x86_64","abi":"x86_64"}]'
+              ;;
+            aarch64) entries='[{"arch":"aarch64","abi":"arm64-v8a"}]' ;;
+            arm)     entries='[{"arch":"arm","abi":"armeabi-v7a"}]' ;;
+            i686)    entries='[{"arch":"i686","abi":"x86"}]' ;;
+            x86_64)  entries='[{"arch":"x86_64","abi":"x86_64"}]' ;;
+            *)
+              echo "::error::unknown only_arch '$ONLY_ARCH'; expected aarch64, arm, i686 or x86_64"
+              exit 1
+              ;;
+          esac
+          # An explicit `include` key: GitHub accepts a bare array here, but the object
+          # form is the documented one and leaves no room for interpretation.
+          matrix="{\"include\":$entries}"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "building: $matrix"
+
   build:
     name: bootstrap-${{ matrix.arch }}
-    runs-on: ${{ matrix.runner }}
+    needs: setup
+    runs-on: ubuntu-latest
     # A single architecture cross-compiles ~80 packages. Upstream's own bootstrap job
     # takes hours; the 6 hour runner ceiling is the real limit, so this is set just under
     # it and the job is expected to be slow rather than to fail on time.
     timeout-minutes: 330
-    if: ${{ inputs.only_arch == '' || inputs.only_arch == matrix.arch }}
     strategy:
       fail-fast: false
       max-parallel: 4
-      matrix:
-        include:
-          - arch: aarch64
-            abi: arm64-v8a
-            runner: ubuntu-latest
-          - arch: arm
-            abi: armeabi-v7a
-            runner: ubuntu-latest
-          - arch: i686
-            abi: x86
-            runner: ubuntu-latest
-          - arch: x86_64
-            abi: x86_64
-            runner: ubuntu-latest
+      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
 
     steps:
       - name: Checkout this repository
