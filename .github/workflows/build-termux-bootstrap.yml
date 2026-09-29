@@ -164,33 +164,44 @@ jobs:
       # scripts/setup-ubuntu.sh is upstream's supported non-Docker build environment. It installs
       # the host toolchain and build-bootstraps.sh provisions the Android NDK itself: same
       # compiler, same flags, no container sandbox in the way.
-      - name: Install the upstream host build environment
-        run: |
-          set -euo pipefail
-          cd termux-packages
-          # setup-ubuntu.sh is written against the newer Ubuntu release upstream's CI uses, and
-          # names python3.14-venv, which does not exist on this runner's Ubuntu (noble, python
-          # 3.12). That was the only package apt could not resolve -- apt reports every
-          # unresolvable name at once -- so the list is otherwise fine on noble. The substitution
-          # keeps a python venv available, which is what the build actually needs, without
-          # touching anything else.
-          sed -i 's/python3\.14-venv/python3-venv/' scripts/setup-ubuntu.sh
-          grep -n "python3-venv" scripts/setup-ubuntu.sh || true
-          sudo bash scripts/setup-ubuntu.sh 2>&1 | tail -30
-          cd ..
-          df -h / | tail -1
-
-      - name: Build the bootstrap
+      # The build runs in upstream's builder image, but WITHOUT run-docker.sh.
+      #
+      # run-docker.sh wraps the container in a generated AppArmor profile, a seccomp profile and
+      # a fuse-overlayfs root. Under that profile the container cannot touch its own rootfs and
+      # the job dies with `rm: cannot remove '/bin': Permission denied` (exit 1) before compiling
+      # anything. The image itself is sound, so the container is created directly here with the
+      # mount and the two capabilities the build genuinely needs, and without the two security
+      # options that break it. Deviating from run-docker.sh is confined to this step.
+      #
+      # The host-toolchain route (scripts/setup-ubuntu.sh) was tried and is not viable on a
+      # GitHub-hosted runner: it is written for the newer Ubuntu upstream's CI uses and pulls
+      # clang-21/libllvm21, whose dependencies (libstdc++-15-dev, libxml2-16) do not exist on
+      # noble, so apt fails with unmet dependencies before the build starts.
+      - name: Build the bootstrap in the upstream builder image
         env:
           ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
-          # -f (force) is required after a package-name change, as upstream's own --help
-          # says: otherwise packages built for the official prefix are reused.
           cd termux-packages
+          docker volume create agentx-termux-build >/dev/null
+          docker rm -f agentx-builder >/dev/null 2>&1 || true
+          docker run --detach --init --tty --name agentx-builder \
+            --volume agentx-termux-build:/home/builder/.termux-build \
+            --volume "$PWD:/home/builder/termux-packages" \
+            --cap-add CAP_SYS_ADMIN \
+            --device /dev/fuse \
+            ghcr.io/termux/package-builder >/dev/null
+          # The checkout belongs to the runner user; the build writes into it as builder.
+          docker exec -u 0 agentx-builder chown -R 1001:1001 /home/builder/termux-packages
+          docker exec agentx-builder id
           df -h / | tail -1
-          bash scripts/build-bootstraps.sh --architectures "$ARCH" -f 2>&1 \
+          # -f (force) is required after a package-name change, as upstream's own --help says:
+          # otherwise packages built for the official prefix are reused.
+          docker exec -w /home/builder/termux-packages agentx-builder \
+            ./scripts/build-bootstraps.sh --architectures "$ARCH" -f 2>&1 \
             | tee "../build/build-${ARCH}.log"
+          docker exec -u 0 agentx-builder chown -R 1001:1001 /home/builder/termux-packages || true
+          docker rm -f agentx-builder >/dev/null 2>&1 || true
           cd ..
           test -f "termux-packages/bootstrap-${ARCH}.zip" \
             || { echo "::error::build-bootstraps.sh produced no bootstrap-${ARCH}.zip"; exit 1; }
