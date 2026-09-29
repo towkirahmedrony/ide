@@ -15,6 +15,7 @@
 # Usage:
 #   ./postprocess-bootstrap.sh --zip <bootstrap-<arch>.zip> --arch <aarch64|arm|i686|x86_64>
 #                             [--apt-repo-url <url>] [--apt-repo-distribution stable]
+#                             [--variant auto|normal|android10]
 #                             [--apt-repo-component main] [--out-dir <dir>]
 #
 # Exits non-zero on any violation. It never writes a modified archive in place:
@@ -32,6 +33,7 @@ ARCH=""
 APT_REPO_URL=""
 APT_REPO_DISTRIBUTION="stable"
 APT_REPO_COMPONENT="main"
+VARIANT="auto"
 OUT_DIR=""
 
 while [ $# -gt 0 ]; do
@@ -41,6 +43,7 @@ while [ $# -gt 0 ]; do
         --apt-repo-url)          APT_REPO_URL="$2"; shift 2 ;;
         --apt-repo-distribution) APT_REPO_DISTRIBUTION="$2"; shift 2 ;;
         --apt-repo-component)    APT_REPO_COMPONENT="$2"; shift 2 ;;
+        --variant)               VARIANT="$2"; shift 2 ;;
         --out-dir)               OUT_DIR="$2"; shift 2 ;;
         -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
         *) echo "error: unknown option '$1'" >&2; exit 64 ;;
@@ -127,11 +130,32 @@ if count == 0:
 print("  symlink manifest: %d entries, all with exactly one U+2190" % count)
 PY
 
+# --- 2b. Which upstream variant is this? -------------------------------------------
+# Two independent markers, both switched by the same build-bootstraps.sh flag: the dpkg
+# database exists only in the normal variant, and proot only in the --android10 one.
+VARIANT_DETECTED="normal"
+if [ -f "$TREE/bin/proot" ] && [ ! -f "$TREE/var/lib/dpkg/status" ]; then
+    VARIANT_DETECTED="android10"
+elif [ ! -f "$TREE/bin/proot" ] && [ ! -f "$TREE/var/lib/dpkg/status" ]; then
+    fail "extracted archive is neither variant: no bin/proot and no var/lib/dpkg/status"
+fi
+if [ "$VARIANT" != "auto" ] && [ "$VARIANT" != "$VARIANT_DETECTED" ]; then
+    fail "--variant $VARIANT was requested but the archive is $VARIANT_DETECTED"
+fi
+VARIANT="$VARIANT_DETECTED"
+say "variant: $VARIANT"
+
 # --- 3. Install marker ------------------------------------------------------------
 
 MARKER="$TREE/$AGENTX_INSTALL_MARKER"
 mkdir -p "$(dirname -- "$MARKER")"
-APT_REPOSITORY_VALUE="${APT_REPO_URL:-disabled}"
+if [ "$VARIANT" = "android10" ]; then
+    # This variant ships neither apt nor etc/apt, so there is nothing to harden. Recorded in
+    # the marker so the reason travels with the archive instead of looking like a mistake.
+    APT_REPOSITORY_VALUE="not-applicable-android10"
+else
+    APT_REPOSITORY_VALUE="${APT_REPO_URL:-disabled}"
+fi
 cat >"$MARKER" <<EOF
 # AgentX Termux bootstrap marker.
 #
@@ -149,6 +173,11 @@ EOF
 say "wrote $AGENTX_INSTALL_MARKER"
 
 # --- 4. apt sources ---------------------------------------------------------------
+# Skipped entirely for --android10: writing etc/apt/sources.list into an archive that has no
+# apt would invent a file upstream does not ship.
+if [ "$VARIANT" = "android10" ]; then
+    say "apt sources: not applicable to the android10 variant (no apt in this bootstrap)"
+else
 
 SOURCES="$TREE/etc/apt/sources.list"
 mkdir -p "$(dirname -- "$SOURCES")"
@@ -213,6 +242,8 @@ if [ -d "$TREE/etc/apt/sources.list.d" ]; then
             fail "$extra points apt at an official Termux repository; remove or rewrite it in postprocess-bootstrap.sh"
         fi
     done < <(find "$TREE/etc/apt/sources.list.d" -type f)
+fi
+
 fi
 
 # --- 5. Repack --------------------------------------------------------------------

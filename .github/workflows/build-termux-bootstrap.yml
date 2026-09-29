@@ -34,6 +34,10 @@ on:
         required: true
         type: boolean
         default: false
+      android10:
+        description: "Build the upstream --android10 variant: proot instead of apt, no dpkg database, no etc/apt"
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -58,6 +62,14 @@ jobs:
           ONLY_ARCH: ${{ inputs.only_arch }}
         run: |
           set -euo pipefail
+          # Which upstream variant to build. --android10 replaces apt and command-not-found
+          # with proot and skips the dpkg database and etc/apt entirely; it is the variant that
+          # exists for Android 10+, where an app cannot exec files in its own data directory
+          # unless it targets API <= 28, which this app deliberately does not.
+          VARIANT=normal
+          if [ "${{ inputs.android10 }}" = "true" ]; then VARIANT=android10; fi
+          echo "VARIANT=$VARIANT" >> "$GITHUB_ENV"
+          echo "building the $VARIANT variant of arch $ARCH"
           case "$ONLY_ARCH" in
             "")
               entries='[{"arch":"aarch64","abi":"arm64-v8a"},{"arch":"arm","abi":"armeabi-v7a"},{"arch":"i686","abi":"x86"},{"arch":"x86_64","abi":"x86_64"}]'
@@ -201,6 +213,9 @@ jobs:
           # so the glob expands to /* and rm is handed the container root. Fresh volumes below
           # provide the same freshness -f was wanted for, without that bug.
           BUILD_ARGS=(--architectures "$ARCH")
+          if [ "$VARIANT" = "android10" ]; then
+            BUILD_ARGS+=(--android10)
+          fi
           for argument in "${BUILD_ARGS[@]}"; do
             test "$argument" != "-f" || {
               echo "::error::-f is forbidden here: it triggers an rm of the container root"; exit 1; }
@@ -305,6 +320,7 @@ jobs:
         run: |
           set -euo pipefail
           bash tools/termux-bootstrap/postprocess-bootstrap.sh \
+            --variant "$VARIANT" \
             --zip "termux-packages/bootstrap-${ARCH}.zip" \
             --arch "$ARCH" \
             --out-dir dist \
@@ -319,6 +335,7 @@ jobs:
         run: |
           set -euo pipefail
           bash tools/termux-bootstrap/verify-bootstrap.sh \
+            --variant "$VARIANT" \
             --zip "dist/bootstrap-${ARCH}.zip" \
             --arch "$ARCH" \
             --manifest-out "dist/manifest-${ARCH}.json" \

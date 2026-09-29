@@ -48,6 +48,45 @@ OFFICIAL_PREFIX = "/data/data/com.termux/files/usr"
 AGENTX_PREFIX = "/data/data/com.agentx.app/files/usr"
 
 # Tools task 3 requires, and the package each is shipped by in the default
+# The two upstream bootstrap variants, as produced by scripts/build-bootstraps.sh.
+#
+# The default ("normal") variant ships apt, and build-bootstraps.sh registers every extracted
+# deb in var/lib/dpkg (status + info/.list + info/.md5sums + conffiles), which is what the
+# Part 2 checks were calibrated against.
+#
+# The --android10 variant exists because on Android 10+ an app cannot exec files from its own
+# data directory unless it targets API <= 28. It replaces apt and command-not-found with
+# proot, and it deliberately skips ALL of that dpkg bookkeeping -- there is no apt to read it,
+# and no var/lib/dpkg at all, nor any etc/apt. Those absences are the variant's contract, not
+# a defect, so the checks that assert them are switched off for it (and only those).
+VARIANT_NORMAL = "normal"
+VARIANT_ANDROID10 = "android10"
+
+NORMAL_ONLY_EXECUTABLES = {"apt", "apt-get", "dpkg"}
+ANDROID10_ONLY_EXECUTABLES = {
+    "proot": "proot, which replaces apt/command-not-found in this variant",
+}
+
+NORMAL_ONLY_FILES = {
+    "etc/apt/sources.list": "apt package sources",
+    "var/lib/dpkg/status": "dpkg installed-package database",
+}
+
+
+def detect_variant(*, has_dpkg_status, has_proot):
+    """Which upstream variant an extracted archive is, from what it contains.
+
+    Two independent markers, both of which the build script switches on the same flag:
+    the dpkg database (present exactly in the normal variant) and proot (present exactly in
+    the android10 variant).
+    """
+    if has_proot and not has_dpkg_status:
+        return VARIANT_ANDROID10
+    if has_dpkg_status and not has_proot:
+        return VARIANT_NORMAL
+    return None
+
+
 # bootstrap package set (verified against a real archive's var/lib/dpkg).
 REQUIRED_EXECUTABLES = {
     "sh": "dash (via bin/sh -> dash)",
@@ -179,6 +218,10 @@ def main() -> int:
     parser.add_argument("--manifest-out", default="")
     parser.add_argument("--emit-kotlin", action="store_true")
     parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--variant", default="auto",
+                        choices=("auto", VARIANT_NORMAL, VARIANT_ANDROID10),
+                        help="which upstream bootstrap variant this archive should be; "
+                             "auto detects it from the contents and then cross-checks")
     args = parser.parse_args()
 
     official = args.profile == "official"
@@ -219,11 +262,40 @@ def main() -> int:
 
         report.ok("archive-entries", f"{installer_file_count} files, {directory_count} directories")
 
+        # ---------------------------------------------------------------- variant
+        # Detection is from the archive itself, never from the build log: a normal bootstrap
+        # renamed to look like the android10 one, or vice versa, is exactly what this catches.
+        detected = detect_variant(
+            has_dpkg_status=os.path.isfile(os.path.join(work, "var/lib/dpkg/status")),
+            has_proot=os.path.isfile(os.path.join(work, "bin/proot")),
+        )
+        if detected is None:
+            report.fail(
+                "variant",
+                "archive is neither variant: expected exactly one of var/lib/dpkg/status "
+                "(normal) and bin/proot (android10)",
+            )
+            variant = args.variant if args.variant != "auto" else VARIANT_NORMAL
+        else:
+            variant = detected
+        if args.variant != "auto" and detected is not None and args.variant != detected:
+            report.fail("variant", f"--variant {args.variant} was requested but the archive is {detected}")
+        android10 = variant == VARIANT_ANDROID10
+        print(f"  variant={variant} (requested {args.variant}, detected {detected})")
+
         # ------------------------------------------------------------- content
-        for required, why in REQUIRED_PATHS.items():
+        required_paths = dict(REQUIRED_PATHS)
+        if android10:
+            for name in NORMAL_ONLY_FILES:
+                required_paths.pop(name, None)
+        for required, why in required_paths.items():
             if not os.path.exists(os.path.join(work, required)):
                 report.fail("required-files", f"missing {required} ({why})")
-        if os.path.isdir(os.path.join(work, "var/lib/dpkg/info")):
+        # build-bootstraps.sh skips the whole dpkg database for --android10 (there is no apt to
+        # read it), so its absence is the variant's contract rather than a defect.
+        if android10:
+            report.ok("dpkg-database", "absent by design in the android10 variant")
+        elif os.path.isdir(os.path.join(work, "var/lib/dpkg/info")):
             dpkg_info = os.listdir(os.path.join(work, "var/lib/dpkg/info"))
             if not dpkg_info:
                 report.fail("required-files", "var/lib/dpkg/info is empty")
@@ -314,7 +386,12 @@ def main() -> int:
             if link_path.startswith("lib/") and resolves_to_file(link_path):
                 available_libraries.add(os.path.basename(link_path))
 
-        for name, provider in REQUIRED_EXECUTABLES.items():
+        required_executables = dict(REQUIRED_EXECUTABLES)
+        if android10:
+            for name in NORMAL_ONLY_EXECUTABLES:
+                required_executables.pop(name, None)
+            required_executables.update(ANDROID10_ONLY_EXECUTABLES)
+        for name, provider in required_executables.items():
             if not resolves_to_file(f"bin/{name}"):
                 report.fail("required-executables", f"bin/{name} is missing or does not resolve ({provider})")
         report.ok("required-executables", f"{len(REQUIRED_EXECUTABLES)} tools")
@@ -536,7 +613,13 @@ def main() -> int:
         sources = os.path.join(work, "etc/apt/sources.list")
         sources_text = open(sources, encoding="utf-8", errors="replace").read() if os.path.isfile(sources) else ""
         active = [line.strip() for line in sources_text.splitlines() if re.match(r"^\s*deb\s", line)]
-        if official:
+        if android10:
+            report.ok(
+                "apt-sources",
+                "not applicable to the android10 variant: it ships no apt, so there is no "
+                "sources.list to point anywhere",
+            )
+        elif official:
             report.ok("apt-sources", "not enforced in the official calibration profile")
         else:
             if not sources_text:
@@ -554,6 +637,7 @@ def main() -> int:
         manifest = {
             "schema": 1,
             "profile": args.profile,
+            "variant": variant,
             "androidAbi": abi,
             "termuxArch": args.arch,
             "assetName": os.path.basename(args.zip),
