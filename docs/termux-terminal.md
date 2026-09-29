@@ -40,9 +40,9 @@ line editing, colours and full-screen programs work.
    to `usr-staging` → apply `SYMLINKS.txt` → `chmod 0700` on `bin/`, `libexec`, `lib/apt/methods`,
    `lib/apt/apt-helper` → rename `usr-staging` to `usr` → write the install marker at
    `etc/termux/agentx-bootstrap.ok`. The move is last, so an interrupted install never leaves a
-   half-populated prefix that later code would mistake for a working one. No archive has been
-   published yet, so this path currently stops at `ArtifactUnavailable` with the reason and
-   [termux-bootstrap.md](termux-bootstrap.md) as the remedy.
+   half-populated prefix that later code would mistake for a working one. The arm64 archive is
+   published and pinned in `TermuxBootstrapCatalog`; other ABIs remain unavailable until their
+   verified archives are published. See [termux-bootstrap.md](termux-bootstrap.md) for the remedy.
 5. **Environment file.** `$PREFIX/etc/termux/termux.env` is written so a login shell sources the
    same `$PREFIX`/`$HOME` even for a child process that did not inherit our `envp`.
 
@@ -278,9 +278,9 @@ arm64 item in the checklist below stays **unverified** — the emulator does not
 
 ## Acceptance checklist
 
-Each item is marked with what actually backs it. **Unverified means unverified** — nothing here
-has been executed on a real device or emulator, because no AgentX bootstrap has been built yet, so
-the emulator job in
+Each item is marked with what actually backs it. **Unverified means unverified** — the arm64
+archive is verified, but the runtime has not yet been executed on a real device. The emulator job
+in
 [`.github/workflows/termux-smoke.yml`](../.github/workflows/termux-smoke.yml) stops at its
 catalogue gate.
 
@@ -289,10 +289,10 @@ catalogue gate.
 | 1 | APK package is `com.agentx.app` | **unverified at runtime** | Enforced in CI by `aapt dump badging` on every push; not yet observed on a device. |
 | 2 | Official Termux coexists | **unverified** | Different ids, prefixes and data dirs, and the smoke job asserts both packages install; never executed. |
 | 3 | APK installs without conflict | **unverified** | Same as above. |
-| 4 | Custom shell starts | **unverified** | Requires a built bootstrap. `TermuxShellResolver` is unit tested; no shell has run. |
+| 4 | Custom shell starts | **unverified** | Arm64 bootstrap is built and catalogued; `TermuxShellResolver` is unit tested; no phone shell has run. |
 | 5 | No `Permission denied` from `login`/`bash` | **unverified** | The installer chmods `bin/`, `libexec`, `lib/apt/*`; never observed on a device. |
 | 6 | Keyboard input reaches the shell | **unverified** | Wired and unit tested (`canType`, `send`); the `adb shell input text` assertion has never run. |
-| 7 | `pwd`, `ls`, `echo`, `command -v pkg`, `command -v apt` work | **unverified** | The verifier asserts these binaries are present **in an archive**; no archive exists. |
+| 7 | `pwd`, `ls`, `echo`, `command -v pkg`, `command -v apt` work | **unverified** | The verifier asserts these binaries are present in the published arm64 archive; no phone run has confirmed them. |
 | 8 | Install button restarts the shell | **unverified** | `TerminalViewModel.provision()` restarts on `Ready`; the transition is unit tested, the restart is not. |
 | 9 | Terminal does not exit immediately with code 1 or 9 | **unverified** | Depends on a real prefix. |
 | 10 | Unreadable workspace does not kill the terminal | **unit tested** | Falls back to `$HOME` and keeps a usable shell; the process-exit path is unchanged by a workspace error. |

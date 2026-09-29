@@ -17,12 +17,11 @@ upstream's build source, the exact commands, and the verification the artifacts 
 
 ## Status
 
-No AgentX bootstrap has been built yet. `TermuxBootstrapCatalog` lists all four ABIs with
-`sourceRevision = "unbuilt"` and no URL, digest, size or file count, so provisioning fails
-with an explanation instead of downloading anything. The build cannot be run from the
-development environment used so far (no Docker, no Android NDK, 2 vCPU, no push
-credentials); the ready-to-run GitHub Actions workflow and the precise blockers are
-documented in
+The `aarch64`/`arm64-v8a` AgentX bootstrap has been built, verified and published at the
+fixed release tag `agentx-bootstrap-2026.09.30-r1`; its catalog entry contains the immutable
+URL, digest, size and file count. The other three ABIs remain `unbuilt` and provisioning on
+those devices fails with an explanation instead of downloading anything. The build workflow
+and the remaining publication steps are documented in
 [tools/termux-bootstrap § Status](../tools/termux-bootstrap/README.md#status-not-built-in-this-environment--the-concrete-blocker).
 
 ## How the prefix is configured upstream
@@ -182,20 +181,18 @@ APK package-name, signature, alignment and native-library checks in
 
 **Not verified, and it must not be presented as working:**
 
-- No AgentX bootstrap has been built, so nothing has ever been provisioned or executed inside
-  `/data/data/com.agentx.app/files/usr`. No `sh`, `bash`, `printf`, `pkg` or `apt` has run there.
-- The emulator smoke test has never executed: it is gated on the catalog having a published
-  artifact, and it currently fails at that gate — deliberately, and with that reason.
+- The arm64 bootstrap has been built and archive-verified, but it has not yet been executed on a
+  real arm64 phone. No device run has confirmed `sh`, `bash`, `printf`, `pkg` or `apt` there.
+- The emulator smoke test still needs the x86_64 bootstrap; the current published artifact covers
+  arm64 only, so x86_64 emulator coverage remains blocked by the catalog gate.
 - Therefore **full Termux support is unverified**. The acceptance checklist in
   [termux-terminal.md](termux-terminal.md) records item by item what is verified and what is
   not, and every on-device item is still open.
 
 ## Runtime verification status
 
-Nothing has been executed inside an AgentX prefix: no archives exist yet, and the
-environment could not build them. The scripts have been validated against the published
-upstream archive for every check that does not require a toolchain (the ELF and prefix
-checks correctly reject it), but the runtime smoke test — `sh`, `bash`, `printf 'hello\n'`,
+No AgentX prefix has been executed on a device yet. The arm64 archive exists and passed the
+ELF, prefix and content verifier; the runtime smoke test — `sh`, `bash`, `printf 'hello\n'`,
 `command -v pkg`, `command -v apt` — is **unverified and belongs to Part 3**, together with
 the real APK acceptance run. Termux support must not be described as working until that
 passes.

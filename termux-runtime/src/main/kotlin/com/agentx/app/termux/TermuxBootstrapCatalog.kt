@@ -41,7 +41,17 @@ object TermuxBootstrapCatalog {
     }
 
     val entries: List<Entry> = listOf(
-        pending("arm64-v8a", "aarch64"),
+        Entry(
+            androidAbi = "arm64-v8a",
+            termuxArch = "aarch64",
+            prefix = TermuxPaths.AGENTX_PREFIX,
+            sourceRevision = "termux-packages@2fdb0c07f3fec34adf24c8af515c852fc51f4c9b+agentx",
+            assetName = "bootstrap-aarch64.zip",
+            url = "https://github.com/towkirahmedrony/ide/releases/download/agentx-bootstrap-2026.09.30-r1/bootstrap-aarch64.zip",
+            sha256 = "163fe26fbf96da5e2e2cff387fb59e0d5b3ceb882fd49b61ef3b3bd0b8806bdc",
+            archiveSizeBytes = 26398671L,
+            fileCount = 2833,
+        ),
         pending("armeabi-v7a", "arm"),
         pending("x86", "i686"),
         pending("x86_64", "x86_64"),

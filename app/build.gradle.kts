@@ -23,7 +23,9 @@ android {
     defaultConfig {
         applicationId = "com.agentx.app"
         minSdk = 26
-        targetSdk = 37
+        // Android 10+ blocks execve() of binaries under app-private data for targetSdk >= 29.
+        // Termux intentionally targets 28 so its self-contained userland can start from $PREFIX.
+        targetSdk = 28
         versionCode = 1
         versionName = "0.1.0"
     }

@@ -546,12 +546,13 @@ AppArmor profiles and mount fuse filesystems, and 1-3 hours per architecture. On
 `bootstrap-x86_64.zip` appears in the checkout; run `verify-bootstrap.sh` on it, then attach it
 to a release with a fixed tag so the publish job or the catalog step can pick it up.
 
-## Part 6: the targetSdk blocker, the util-linux cause, and package caching
+## Part 6: the targetSdk requirement, the util-linux cause, and package caching
 
-### The blocker that comes before any of this: targetSdk
+### The targetSdk requirement
 
-The app module declares `compileSdk = 37`, `targetSdk = 37`, `minSdk = 26`. On Android 10+
-that is fatal to the whole design, bootstrap or not.
+The app module declares `compileSdk = 37`, `targetSdk = 28`, `minSdk = 26`. On Android 10+
+the target SDK must remain at 28 so the app can execute its self-contained userland from its
+private data directory, matching Termux's execution model.
 
 AOSP commit `0dd738d810532eb41ad8d90520156212ce756648` in `platform/system/sepolicy`
 ("untrusted_app: Remove the ability to run `execve()` on files within an application's home
@@ -582,9 +583,9 @@ Sources:
 - Termux itself: `termux-app/gradle.properties` has `minSdkVersion=21`,
   **`targetSdkVersion=28`**, `compileSdkVersion=36`.
 
-So every `execve()` of `/data/data/com.agentx.app/files/usr/bin/login`, `bash`, `pkg` … is
-denied at `targetSdk 37`. The bootstrap can be built and verified perfectly and the shell
-still will not start on Android 10+.
+With `targetSdk 28`, the compatibility SELinux domain permits the required `execve()` calls for
+`/data/data/com.agentx.app/files/usr/bin/login`, `bash`, `pkg` … on Android 10+. Raising the
+target SDK to 29 or later would reintroduce the failure.
 
 ### util-linux: the cause, established from evidence rather than guessed
 
