@@ -205,8 +205,7 @@ jobs:
             --volume agentx-termux-build:/home/builder/.termux-build \
             --volume "$PWD:/home/builder/termux-packages" \
             --volume agentx-termux-data:/data/data \
-            --cap-add CAP_SYS_ADMIN \
-            --device /dev/fuse \
+            --privileged \
             ghcr.io/termux/package-builder >/dev/null
 
           # run-docker.sh performs this chown for exactly this reason: the named volumes are
@@ -237,10 +236,39 @@ jobs:
           # container root is simply the user that owns everything. HOME is still pinned to
           # /home/builder so $HOME/.termux-build resolves to the mounted volume rather than
           # to /root, and the checkout is chowned back to the runner user below.
-          docker exec -u 0 -w /home/builder/termux-packages agentx-builder \
-            env HOME=/home/builder \
-            ./scripts/build-bootstraps.sh "${BUILD_ARGS[@]}" 2>&1 \
-            | tee "../build/build-${ARCH}.log"
+          build_once() {
+            docker exec -u 0 -w /home/builder/termux-packages agentx-builder \
+              env HOME=/home/builder \
+              ./scripts/build-bootstraps.sh "${BUILD_ARGS[@]}" 2>&1
+          }
+
+          set +e
+          build_once | tee "../build/build-${ARCH}.log"
+          first_status=${PIPESTATUS[0]}
+          set -e
+
+          # One bounded retry, for exactly one failure mode. termux_step_setup_toolchain.sh
+          # overlays the Android NDK with fuse-overlayfs to avoid copying it; when the kernel or
+          # the container runtime refuses the mount the build dies before compiling anything
+          # ("fuse-overlayfs: cannot mount: Permission denied"). Removing the binary makes the
+          # script take its documented fallback and extract the NDK normally, which costs disk
+          # instead of a whole dispatch. Any other failure is reported as-is, unretried.
+          if [ "$first_status" -ne 0 ] && grep -q "fuse-overlayfs: cannot mount" "../build/build-${ARCH}.log"; then
+            echo "::warning::fuse-overlayfs could not mount; retrying once with it disabled so the toolchain is extracted instead of overlaid"
+            docker exec -u 0 agentx-builder sh -c \
+              'command -v fuse-overlayfs >/dev/null && mv "$(command -v fuse-overlayfs)" /usr/local/bin/fuse-overlayfs.disabled'
+            docker exec -u 0 agentx-builder sh -c 'command -v fuse-overlayfs || echo "fuse-overlayfs is now unavailable"'
+            set +e
+            build_once | tee -a "../build/build-${ARCH}.log"
+            second_status=${PIPESTATUS[0]}
+            set -e
+            test "$second_status" -eq 0 \
+              || { echo "::error::build failed again without fuse-overlayfs (exit $second_status)"; exit 1; }
+            echo "build succeeded with the copy-based toolchain setup"
+          else
+            test "$first_status" -eq 0 \
+              || { echo "::error::build-bootstraps.sh exited $first_status"; exit 1; }
+          fi
 
           docker exec -u 0 agentx-builder chown -R 1001:1001 /home/builder/termux-packages || true
           docker rm -f agentx-builder >/dev/null 2>&1 || true
