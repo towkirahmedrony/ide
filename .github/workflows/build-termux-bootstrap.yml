@@ -100,13 +100,28 @@ jobs:
       # architecture at a time with only_arch, or use a larger runner.
       - name: Free disk space
         run: |
+          set -x
+          df -h /
+          # The builder container plus one architecture's build tree needs roughly 15-25 GB and a
+          # stock ubuntu-latest runner has ~14 GB free, so the toolchains this job never touches
+          # are removed. This job compiles C/C++ inside the termux-packages image, so the host
+          # Java, .NET, Swift, Android SDK and tool cache are all dead weight.
           sudo rm -rf \
             /usr/share/dotnet \
             /usr/local/lib/android \
             /opt/ghc \
-            /opt/hostedtoolcache/CodeQL \
-            "$AGENT_TOOLSDIRECTORY" || true
+            /opt/hostedtoolcache \
+            /usr/share/swift \
+            /usr/local/share/powershell \
+            /opt/az \
+            /usr/lib/jvm \
+            /usr/local/share/boost \
+            /usr/share/miniconda || true
           df -h /
+          # Docker layer caching across runs is deliberately not implemented: the termux-packages
+          # image is rebuilt by scripts/run-docker.sh and its layers are not cheaply cacheable by
+          # actions/cache without tarring tens of GB. The price is a slow first step, not a wrong
+          # result, and the per-architecture build dominates the wall clock either way.
 
       - name: Clone termux-packages at the pinned commit
         env:
@@ -189,6 +204,9 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the archive, its digest, manifests and logs
+        # always(): a failed build is exactly when the log is worth having, and the failure has to
+        # be diagnosable from the artifacts without re-running a multi-hour job.
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: bootstrap-${{ matrix.arch }}
@@ -202,13 +220,18 @@ jobs:
             build/prefix-evidence.txt
             build/build-${{ matrix.arch }}.log
             build/postprocess-${{ matrix.arch }}.log
-          if-no-files-found: error
+          # warn, not error: on a failed build the archive is absent by definition, and failing
+          # here would bury the real error behind a misleading artifact-upload error.
+          if-no-files-found: warn
           retention-days: 30
 
   publish:
     name: Publish release ${{ inputs.release_tag }}
     needs: build
-    if: ${{ inputs.publish && (inputs.only_arch == '' ) }}
+    # Publishable whenever the build job succeeded, including a single-architecture dispatch:
+    # each archive is verified inside that job before it is uploaded, so nothing can reach a
+    # release unverified, and the smoke test needs the x86_64 asset to exist on its own.
+    if: ${{ inputs.publish }}
     runs-on: ubuntu-latest
     steps:
       - name: Validate the tag
@@ -235,18 +258,29 @@ jobs:
         run: |
           set -euo pipefail
           ls -l dist
+          # Partial publication is deliberate: a release may legitimately carry only the ABIs that
+          # were requested. What is not optional is that every archive present has its digest and
+          # its manifest beside it, and that at least one archive exists.
+          published=0
           for asset in aarch64 arm i686 x86_64; do
-            test -f "dist/bootstrap-${asset}.zip" || { echo "::error::missing dist/bootstrap-${asset}.zip"; exit 1; }
-            test -f "dist/bootstrap-${asset}.zip.sha256" || { echo "::error::missing digest for ${asset}"; exit 1; }
+            zip="dist/bootstrap-${asset}.zip"
+            [ -f "$zip" ] || continue
+            test -f "${zip}.sha256" || { echo "::error::missing digest for ${asset}"; exit 1; }
             test -f "dist/manifest-${asset}.json" || { echo "::error::missing manifest for ${asset}"; exit 1; }
+            published=$((published + 1))
           done
+          test "$published" -gt 0 || { echo "::error::the build job produced no verified archive"; exit 1; }
+          echo "publishing $published verified archive(s)"
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" dist/*.zip dist/*.sha256 dist/manifest-*.json --clobber
           else
+            # Two architectures dispatched at once race here; losing the race is not an error,
+            # because the winner created the same tag with the same intent.
             gh release create "$TAG" \
               --title "AgentX Termux bootstrap $TAG" \
               --notes "Bootstrap archives built for /data/data/com.agentx.app/files/usr from termux-packages ${{ inputs.termux_packages_commit }}. Each archive is accompanied by its SHA-256 and a manifest.json recording the ELF and prefix verification results. Paste the generated TermuxBootstrapCatalog entry from each verify-*.txt into termux-runtime." \
-              dist/*.zip dist/*.sha256 dist/manifest-*.json
+              dist/*.zip dist/*.sha256 dist/manifest-*.json \
+              || gh release upload "$TAG" dist/*.zip dist/*.sha256 dist/manifest-*.json --clobber
           fi
           echo "published $TAG"
 

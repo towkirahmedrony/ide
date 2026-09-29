@@ -295,7 +295,7 @@ class TerminalViewModel(
         val current = runtime ?: return
         val binding = binding(current, scratch)
         uiState = uiState.copy(
-            workspaceNote = (binding as? TermuxWorkspaceBinding.Unavailable)?.reason?.let(::trimNote),
+            workspaceNote = workspaceNoteFor(binding)?.let(::trimNote),
         )
         val key = if (scratch) "$workspaceId::scratch" else workspaceId
         current.openSession(current.specFor(key, binding, extraEnvironment(scratch)))
@@ -331,6 +331,22 @@ class TerminalViewModel(
         "CODER_SHELL_KIND" to if (scratch) "scratch" else "workspace",
         "CODER_TERMUX_PREFIX" to (runtime?.paths?.prefix ?: ""),
     )
+
+    /**
+     * What the user has to know about where this shell is rooted.
+     *
+     * A mirrored workspace says so explicitly, because commands then run against a copy and the
+     * original folder is never written back — silently looking like the real folder would be the
+     * worst possible outcome.
+     */
+    private fun workspaceNoteFor(binding: TermuxWorkspaceBinding): String? = when (binding) {
+        is TermuxWorkspaceBinding.Mirrored ->
+            "Running in ${binding.termuxPath}, a copy of ${binding.source}. Commands run against " +
+                "the copy; the original folder is not written back."
+        is TermuxWorkspaceBinding.Home -> binding.reason
+        is TermuxWorkspaceBinding.Unavailable -> binding.reason
+        is TermuxWorkspaceBinding.Direct -> null
+    }
 
     /** The banner is long by design; the header shows the first sentence. */
     private fun trimNote(note: String): String = note.substringBefore(". ") + "."
