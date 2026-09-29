@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -66,7 +67,6 @@ private val TerminalMetaStyle = TextStyle(
     fontSize = 11.sp,
 )
 
-/** Keys the Android soft keyboard has no way to send, and that a terminal needs constantly. */
 private data class ExtraKey(val label: String, val bytes: () -> ByteArray)
 
 private val EXTRA_KEYS = listOf(
@@ -90,15 +90,6 @@ private val EXTRA_KEYS = listOf(
     ExtraKey("~") { "~".toByteArray() },
 )
 
-/**
- * The Terminal tab.
- *
- * The surface is the vendored Termux `TerminalView` rendering the vendored Termux emulator, so
- * colours, cursor movement, scrolling, selection and interactive full-screen programs behave the
- * way they do in Termux rather than being approximated with a text field. Input goes through the
- * same view, which means Ctrl combinations, Tab, the arrow keys and IME composition all reach the
- * pty; the extra-key row below only covers what a phone keyboard cannot express.
- */
 @Composable
 fun TerminalScreen(
     viewModel: TerminalViewModel,
@@ -111,8 +102,6 @@ fun TerminalScreen(
     val controlDown = remember { mutableStateOf(false) }
     val altDown = remember { mutableStateOf(false) }
 
-    // The view client reads these while a key is being processed, so the on-screen Ctrl/Alt
-    // toggles behave like the real modifier keys.
     val viewHost = remember {
         object : TermuxViewHost {
             override fun onScale(scale: Float): Float {
@@ -121,17 +110,11 @@ fun TerminalScreen(
             }
 
             override fun onSingleTapUp(event: MotionEvent) = Unit
-
             override fun onLongPress(event: MotionEvent): Boolean = false
-
             override fun readControlKey(): Boolean = controlDown.value
-
             override fun readAltKey(): Boolean = altDown.value
-
             override fun readShiftKey(): Boolean = false
-
             override fun readFnKey(): Boolean = false
-
             override fun onCopyModeChanged(copyMode: Boolean) = Unit
         }
     }
@@ -145,28 +128,20 @@ fun TerminalScreen(
             override fun onSessionFinished(session: TerminalSession) {
                 terminalView.value?.onScreenUpdated()
                 viewModel.refreshFromHost()
-                // The process ended; the modifier latches must not stay stuck on.
                 controlDown.value = false
                 altDown.value = false
             }
 
             override fun onTitleChanged(session: TerminalSession) = viewModel.refreshFromHost()
-
-            override fun onColorsChanged(session: TerminalSession) {
-                terminalView.value?.invalidate()
-            }
-
+            override fun onColorsChanged(session: TerminalSession) { terminalView.value?.invalidate() }
             override fun onCopyTextToClipboard(text: String) = copyToClipboard(context, text)
-
             override fun onPasteTextFromClipboard(session: TerminalSession?) {
                 clipboardText(context)?.let { text ->
                     val bytes = text.toByteArray(Charsets.UTF_8)
                     session?.write(bytes, 0, bytes.size)
                 }
             }
-
             override fun onBell() = Unit
-
             override fun onShellPid(session: TerminalSession, pid: Int) = Unit
         }
     }
@@ -192,8 +167,6 @@ fun TerminalScreen(
                             setTerminalViewClient(TermuxViewClient(viewHost))
                             setBackgroundColor(0xFF101418.toInt())
                             setTextSize(state.fontSizePx)
-                            // The view is created programmatically, so focusability has to be
-                            // asked for explicitly or the soft keyboard never appears.
                             isFocusable = true
                             isFocusableInTouchMode = true
                             requestFocus()
@@ -204,7 +177,6 @@ fun TerminalScreen(
                         view.setTextSize(state.fontSizePx)
                         val session = viewModel.activeTerminalSession()
                         if (session != null && view.currentSession !== session) {
-                            // Attaching resizes the existing pty; it does not start a process.
                             view.attachSession(session)
                             view.setTerminalCursorBlinkerState(true, true)
                         }
@@ -250,28 +222,21 @@ private fun TerminalHeader(state: TerminalUiState, viewModel: TerminalViewModel)
                     modifier = Modifier.horizontalScroll(rememberScrollState()),
                 )
             }
-            TextButton(onClick = viewModel::zoomOut) { Icon(Icons.Filled.Remove, contentDescription = "Smaller text") }
-            TextButton(onClick = viewModel::zoomIn) { Icon(Icons.Filled.Add, contentDescription = "Larger text") }
-            TextButton(
+            // Minimal Icon Buttons
+            IconButton(onClick = viewModel::zoomOut) { Icon(Icons.Filled.Remove, contentDescription = "Smaller text") }
+            IconButton(onClick = viewModel::zoomIn) { Icon(Icons.Filled.Add, contentDescription = "Larger text") }
+            IconButton(
                 onClick = viewModel::openScratchShell,
                 enabled = !state.unavailable,
-            ) { Text("New") }
-            TextButton(
+            ) { Icon(Icons.Filled.Add, contentDescription = "New") }
+            IconButton(
                 onClick = viewModel::restart,
                 enabled = state.activeHandle != null,
-            ) {
-                Icon(Icons.Filled.Refresh, contentDescription = null)
-                Spacer(Modifier.width(4.dp))
-                Text("Restart")
-            }
-            TextButton(
+            ) { Icon(Icons.Filled.Refresh, contentDescription = "Restart") }
+            IconButton(
                 onClick = viewModel::terminateActive,
                 enabled = state.activeHandle != null,
-            ) {
-                Icon(Icons.Filled.Stop, contentDescription = null)
-                Spacer(Modifier.width(4.dp))
-                Text("Kill")
-            }
+            ) { Icon(Icons.Filled.Stop, contentDescription = "Kill") }
         }
         if (state.sessions.size > 1) {
             LazyRow(

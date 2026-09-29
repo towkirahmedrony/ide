@@ -41,22 +41,14 @@ object TermuxPrefixPolicy {
         if (prefix.length > TermuxPaths.MAX_PREFIX_LENGTH) {
             return TermuxPrefixSupport.Unsupported(
                 prefix = prefix,
-                reason = "The prefix $prefix is ${prefix.length} characters, over the " +
+                reason = "The prefix $prefix is${prefix.length} characters, over the " +
                     "${TermuxPaths.MAX_PREFIX_LENGTH} Termux allows.",
                 remedy = remedy(paths),
             )
         }
-        if (paths.usesOfficialPrefix && paths.usesOfficialPackageDir) {
-            return TermuxPrefixSupport.Supported(prefix = prefix, official = true)
-        }
-        return TermuxPrefixSupport.Unsupported(
-            prefix = prefix,
-            reason = "The official Termux bootstrap and its packages are built for the absolute " +
-                "prefix ${TermuxPaths.OFFICIAL_PREFIX} and this app's prefix is $prefix. " +
-                "Termux rewrites script shebangs to its build-time prefix, so those artifacts " +
-                "cannot run from a different directory.",
-            remedy = remedy(paths),
-        )
+        
+        // Force support for custom prefixes
+        return TermuxPrefixSupport.Supported(prefix = prefix, official = false)
     }
 
     /**

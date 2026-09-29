@@ -41,7 +41,6 @@ import com.agentx.app.ui.theme.ForgeMint
 import com.agentx.app.ui.theme.ForgeMuted
 import com.agentx.app.ui.theme.ForgeSurface
 
-/** The five working areas of a workspace, shown in the bottom bar. */
 enum class WorkspaceTab(
     val route: String,
     val label: String,
@@ -92,7 +91,6 @@ fun WorkspaceShell(
             TerminalViewModel(
                 workspaceId = workspaceId,
                 workspaceName = workspaceViewModel.project?.name ?: workspaceId,
-                // Read lazily: the workspace runtime may still be opening when the tab is built.
                 workspaceLocation = {
                     dependencies.workspaceManager.current
                         ?.takeIf { it.workspace.id.value == workspaceId }
@@ -112,7 +110,6 @@ fun WorkspaceShell(
     val currentTab = WorkspaceTab.entries.firstOrNull { it.route == backStackEntry?.destination?.route }
         ?: WorkspaceTab.FILES
 
-    // Deterministic back behaviour: return to Files from any tab, then leave.
     BackHandler {
         if (currentTab != WorkspaceTab.FILES) {
             innerNavController.navigateToTab(WorkspaceTab.FILES)
@@ -121,7 +118,6 @@ fun WorkspaceShell(
         }
     }
 
-    // Never silently discard unsaved edits when switching files.
     workspaceViewModel.pendingOpenPath?.let { path ->
         AlertDialog(
             onDismissRequest = { workspaceViewModel.clearPendingOpen() },
@@ -226,7 +222,6 @@ private fun WorkspaceBottomBar(
                 selected = current == tab,
                 onClick = { onSelect(tab) },
                 icon = { Icon(tab.icon, contentDescription = tab.label) },
-                label = { Text(tab.label) },
                 colors = NavigationBarItemDefaults.colors(
                     selectedIconColor = ForgeMint,
                     selectedTextColor = ForgeMint,

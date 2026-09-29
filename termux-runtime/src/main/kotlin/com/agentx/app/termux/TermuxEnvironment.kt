@@ -72,6 +72,10 @@ object TermuxEnvironment {
         androidEnv: Map<String, String> = emptyMap(),
         extra: Map<String, String> = emptyMap(),
     ): Array<String> {
+        // Ensure the home and tmp directories exist before starting the shell
+        java.io.File(paths.home).mkdirs()
+        java.io.File(paths.tmp).mkdirs()
+
         val environment = LinkedHashMap<String, String>()
 
         // Termux's own values first: nothing below may overwrite them.
@@ -82,7 +86,7 @@ object TermuxEnvironment {
         environment["TERM"] = TERM
         environment["LANG"] = LANG
         environment["COLORTERM"] = COLORTERM
-        environment["SHELL"] = "$paths.bin/bash"
+        environment["SHELL"] = "${paths.bin}/bash"
 
         val working = workingDirectory?.takeIf { it.startsWith("/") } ?: paths.home
         environment["PWD"] = working
