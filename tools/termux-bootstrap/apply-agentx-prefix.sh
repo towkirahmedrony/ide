@@ -212,3 +212,28 @@ if [ -d "$tweaks_dir" ]; then
     done
     shopt -u nullglob
 fi
+
+# ---------------------------------------------------------------------------
+# Upstream's bootstrap package list is stale by one entry.
+#
+# scripts/build-bootstraps.sh asks for "bzip2", but packages/bzip2 does not exist at this
+# revision (nor at upstream master) -- the package was renamed to libbz2. The build stops on
+# it with
+#   ERROR: No package bzip2 found in any of the enabled repositories.
+#   Are you trying to set up a custom repository?
+# Upstream's own CI never notices, because it assembles archives from published debs with
+# generate-bootstraps.sh instead of building them from source. The stale name is replaced
+# with the one that exists, and only after confirming that bzip2 is really gone and libbz2
+# really is there, so this cannot silently point at the wrong package.
+# ---------------------------------------------------------------------------
+bootstraps_sh="$TERMUX_PACKAGES_DIR/scripts/build-bootstraps.sh"
+if [ -f "$bootstraps_sh" ] && grep -q 'PACKAGES+=("bzip2")' "$bootstraps_sh"; then
+    if [ -f "$TERMUX_PACKAGES_DIR/packages/libbz2/build.sh" ] \
+        && [ ! -f "$TERMUX_PACKAGES_DIR/packages/bzip2/build.sh" ]; then
+        sed -i 's|PACKAGES+=("bzip2")|PACKAGES+=("libbz2") # AGENTX: bzip2 was renamed to libbz2|' "$bootstraps_sh"
+        echo "tweak: build-bootstraps.sh: stale package 'bzip2' -> 'libbz2'"
+    else
+        echo "WARNING: build-bootstraps.sh lists 'bzip2' but packages/bzip2 or packages/libbz2" >&2
+        echo "         is not in the expected state; leaving the list untouched." >&2
+    fi
+fi
