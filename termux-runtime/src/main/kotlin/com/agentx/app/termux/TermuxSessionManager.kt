@@ -90,6 +90,15 @@ class TermuxSessionManager(
         return open(spec)
     }
 
+    fun restartTemporarySystemShells(specFor: (TermuxSessionSnapshot) -> TermuxShellSpec): List<TermuxSession> {
+        val targets = synchronized(lock) {
+            ordered.map { it.toSnapshot() }.filter { snapshot ->
+                snapshot.temporarySystemShell || snapshot.executable == TermuxShellResolver.SYSTEM_SHELL
+            }
+        }
+        return targets.mapNotNull { snapshot -> restart(snapshot.handle, specFor(snapshot)) }
+    }
+
     /** Kills the process and forgets the session. */
     fun terminate(handle: String) {
         val removed = synchronized(lock) { detachLocked(handle) }
@@ -156,6 +165,8 @@ class TermuxSessionManager(
         exitStatus = exitStatus,
         title = title,
         workingDirectory = workingDirectory,
+        temporarySystemShell = temporarySystemShell,
+        executable = executable,
     )
 
     companion object {

@@ -49,10 +49,21 @@ class TermuxPathsTest {
         val ours = TermuxPaths.forAppDataDir("/data/data/com.agentx.app")
         assertFalse(ours.usesOfficialPrefix)
         assertFalse(ours.usesOfficialPackageDir)
+        assertTrue(ours.usesAgentxPrefix)
+        assertTrue(ours.usesAgentxPackageDir)
+        assertEquals(TermuxPaths.AGENTX_PREFIX, ours.prefix)
 
         val official = TermuxPaths.forAppDataDir(TermuxPaths.OFFICIAL_APP_DATA_DIR)
         assertTrue(official.usesOfficialPrefix)
         assertTrue(official.usesOfficialPackageDir)
+        assertFalse(official.usesAgentxPrefix)
         assertEquals(TermuxPaths.OFFICIAL_PREFIX, official.prefix)
+    }
+
+    @Test
+    fun `package identity is agentx, never official termux`() {
+        assertEquals("com.agentx.app", TermuxPaths.AGENTX_PACKAGE_NAME)
+        assertEquals("/data/data/com.agentx.app/files/usr", TermuxPaths.AGENTX_PREFIX)
+        assertTrue(TermuxPaths.AGENTX_PACKAGE_NAME != TermuxPaths.OFFICIAL_PACKAGE_NAME)
     }
 }

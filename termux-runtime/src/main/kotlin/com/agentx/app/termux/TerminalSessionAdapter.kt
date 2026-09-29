@@ -11,6 +11,8 @@ import com.termux.terminal.TerminalSession
  */
 class TerminalSessionAdapter(
     val delegate: TerminalSession,
+    override val executable: String? = null,
+    override val temporarySystemShell: Boolean = executable == TermuxShellResolver.SYSTEM_SHELL,
 ) : TermuxSession {
 
     override val handle: String get() = delegate.mHandle

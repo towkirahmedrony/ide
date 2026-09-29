@@ -32,6 +32,10 @@ interface TermuxSession {
 
     /** Kill the shell. Used by "terminate session" and by a failed restart. */
     fun finish()
+
+    val executable: String? get() = null
+
+    val temporarySystemShell: Boolean get() = executable == TermuxShellResolver.SYSTEM_SHELL
 }
 
 /** What a session needs in order to start. */
@@ -49,6 +53,8 @@ data class TermuxShellSpec(
     /** `KEY=VALUE` entries for the PTY. */
     val environment: Array<String>,
     val transcriptRows: Int,
+    val temporarySystemShell: Boolean = false,
+    val fullTermux: Boolean = false,
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -59,7 +65,9 @@ data class TermuxShellSpec(
             arguments == other.arguments &&
             workingDirectory == other.workingDirectory &&
             environment.contentEquals(other.environment) &&
-            transcriptRows == other.transcriptRows
+            transcriptRows == other.transcriptRows &&
+            temporarySystemShell == other.temporarySystemShell &&
+            fullTermux == other.fullTermux
     }
 
     override fun hashCode(): Int {
@@ -70,6 +78,8 @@ data class TermuxShellSpec(
         result = 31 * result + workingDirectory.hashCode()
         result = 31 * result + environment.contentHashCode()
         result = 31 * result + transcriptRows
+        result = 31 * result + temporarySystemShell.hashCode()
+        result = 31 * result + fullTermux.hashCode()
         return result
     }
 }
@@ -82,6 +92,8 @@ data class TermuxSessionSnapshot(
     val exitStatus: Int,
     val title: String?,
     val workingDirectory: String?,
+    val temporarySystemShell: Boolean = false,
+    val executable: String? = null,
 ) {
     val label: String get() = title?.takeIf { it.isNotBlank() } ?: workspaceKey
 }

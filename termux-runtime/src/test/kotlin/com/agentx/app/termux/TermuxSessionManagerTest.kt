@@ -4,13 +4,18 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
+import kotlin.test.assertFalse
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 class TermuxSessionManagerTest {
 
     /** Stand-in for a PTY-backed session; the manager must not care which it is. */
-    private class FakeSession(override val handle: String) : TermuxSession {
+    private class FakeSession(
+        override val handle: String,
+        override val executable: String? = TermuxShellResolver.SYSTEM_SHELL,
+        override val temporarySystemShell: Boolean = executable == TermuxShellResolver.SYSTEM_SHELL,
+    ) : TermuxSession {
         override var isRunning: Boolean = true
             private set
         override var exitStatus: Int = -1
@@ -41,20 +46,32 @@ class TermuxSessionManagerTest {
 
         fun factory(): TermuxSessionFactory = TermuxSessionFactory { spec ->
             specs += spec
-            FakeSession("session-${specs.size}").also { sessions += it }
+            FakeSession(
+                handle = "session-${specs.size}",
+                executable = spec.executable,
+                temporarySystemShell = spec.temporarySystemShell,
+            ).also { sessions += it }
         }
     }
 
-    private fun spec(key: String = "demo", cwd: String = "/data/data/com.agentx.app/files/workspaces/demo") =
-        TermuxShellSpec(
-            workspaceKey = key,
-            executable = "/system/bin/sh",
-            processName = "sh",
-            arguments = listOf("sh"),
-            workingDirectory = cwd,
-            environment = arrayOf("HOME=/data/data/com.agentx.app/files/home"),
-            transcriptRows = 2000,
-        )
+    private fun spec(
+        key: String = "demo",
+        cwd: String = "/data/data/com.agentx.app/files/workspaces/demo",
+        executable: String = TermuxShellResolver.SYSTEM_SHELL,
+        processName: String = "sh",
+        temporary: Boolean = executable == TermuxShellResolver.SYSTEM_SHELL,
+        fullTermux: Boolean = false,
+    ) = TermuxShellSpec(
+        workspaceKey = key,
+        executable = executable,
+        processName = processName,
+        arguments = listOf(processName),
+        workingDirectory = cwd,
+        environment = arrayOf("HOME=/data/data/com.agentx.app/files/home"),
+        transcriptRows = 2000,
+        temporarySystemShell = temporary,
+        fullTermux = fullTermux,
+    )
 
     @Test
     fun `reopening the same workspace reuses the running shell`() {
@@ -188,5 +205,37 @@ class TermuxSessionManagerTest {
         manager.open(spec(key = "b"))
 
         assertEquals(first.handle, manager.activeHandle.value)
+    }
+
+    @Test
+    fun `a temporary system shell can stay running while installation proceeds`() {
+        val recorder = Recorder()
+        val manager = TermuxSessionManager(recorder.factory())
+        val session = manager.open(spec(temporary = true))!!
+        assertTrue(session.isRunning)
+        assertTrue(session.temporarySystemShell)
+        assertEquals(TermuxShellResolver.SYSTEM_SHELL, session.executable)
+        assertEquals(1, manager.sessions().size)
+    }
+
+    @Test
+    fun `temporary system shells are restarted onto the custom prefix after install`() {
+        val recorder = Recorder()
+        val manager = TermuxSessionManager(recorder.factory())
+        val first = manager.open(spec(temporary = true))!!
+        val custom = spec(
+            executable = "/data/data/com.agentx.app/files/usr/bin/bash",
+            processName = "-bash",
+            temporary = false,
+            fullTermux = true,
+        )
+        val restarted = manager.restartTemporarySystemShells { custom }
+        assertEquals(1, restarted.size)
+        assertEquals(1, recorder.sessions.first().finishCount)
+        assertNotEquals(first.handle, restarted.single().handle)
+        assertEquals(custom.executable, restarted.single().executable)
+        assertFalse(restarted.single().temporarySystemShell)
+        assertEquals(1, manager.sessions().size)
+        assertEquals(2, recorder.specs.size)
     }
 }

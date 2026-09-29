@@ -105,9 +105,21 @@ class TermuxRuntime(
                 installer.writeEnvironmentFile(
                     environmentFor(workingDirectory = paths.home, extra = emptyMap()),
                 )
+                sessions.restartTemporarySystemShells { snapshot ->
+                    specFor(
+                        workspaceKey = snapshot.workspaceKey,
+                        binding = TermuxWorkspaceBinding.Direct(
+                            path = snapshot.workingDirectory?.takeIf { it.startsWith("/") } ?: paths.home,
+                            displayLocation = snapshot.workingDirectory ?: paths.home,
+                        ),
+                    )
+                }
             }
             if (result is TermuxProvisioning.Unsupported) {
                 Log.w(TAG, "Termux userland is unsupported here: ${result.reason}")
+            }
+            if (result is TermuxProvisioning.ArtifactUnavailable) {
+                Log.w(TAG, "Termux userland is not built yet: ${result.reason}")
             }
             installer.createRuntimeDirectories()
         }
@@ -160,20 +172,12 @@ class TermuxRuntime(
             is TermuxWorkspaceBinding.Mirrored -> binding.termuxPath
             is TermuxWorkspaceBinding.Unavailable -> paths.home
         }
-        // File.isFile() follows symlinks, which is what the bootstrap's login shells are.
-        val resolved = if (prefixSupport is TermuxPrefixSupport.Supported) {
-            TermuxShellResolver.resolve(paths) { path ->
-                File(path).let { it.isFile && it.canExecute() }
-            }
-        } else {
-            // Official binaries are hard coded to the official prefix. A deliberately custom
-            // package build gets a live Android shell, never a dead Permission-denied session.
-            TermuxShellResolver.Resolved(
-                executable = TermuxShellResolver.SYSTEM_SHELL,
-                processName = "sh",
-                login = false,
-            )
-        }
+        val resolved = TermuxShellResolver.resolve(
+            paths = paths,
+            isExecutable = { path -> File(path).let { it.isFile && it.canExecute() } },
+            prefixSupport = prefixSupport,
+            allowTemporarySystemShell = true,
+        )
 
         val environment = environmentFor(
             workingDirectory = workingDirectory,
@@ -183,12 +187,12 @@ class TermuxRuntime(
             workspaceKey = workspaceKey,
             executable = resolved.executable,
             processName = resolved.processName,
-            // The pty gives the shell a tty, so no `-i` is needed; the process name carries the
-            // login marker exactly as Termux does it.
             arguments = listOf(resolved.processName),
             workingDirectory = workingDirectory,
             environment = environment,
             transcriptRows = transcriptRows,
+            temporarySystemShell = resolved.isTemporarySystemShell,
+            fullTermux = resolved.isFullTermux,
         )
     }
 
@@ -236,19 +240,31 @@ class TermuxRuntime(
     }
 
     private fun createSession(spec: TermuxShellSpec): TermuxSession {
-        val terminal = TerminalSession(
-            spec.executable,
-            spec.workingDirectory,
-            spec.arguments.toTypedArray(),
-            spec.environment,
-            spec.transcriptRows,
-            sessionClient,
-        )
-        // Give the pty a real window size straight away. `TerminalSession.updateSize` starts the
-        // process once the emulator exists, so the shell runs even while nothing is rendering it,
-        // and a later view attach resizes instead of spawning a second process.
+        val terminal = try {
+            TerminalSession(
+                spec.executable,
+                spec.workingDirectory,
+                spec.arguments.toTypedArray(),
+                spec.environment,
+                spec.transcriptRows,
+                sessionClient,
+            )
+        } catch (error: Exception) {
+            throw IllegalStateException(
+                TermuxShellStartFailure(
+                    executable = spec.executable,
+                    stderr = error.message.orEmpty(),
+                    exitReason = error.javaClass.simpleName,
+                ).message,
+                error,
+            )
+        }
         terminal.updateSize(defaultColumns, defaultRows, 0, 0)
-        return TerminalSessionAdapter(terminal)
+        return TerminalSessionAdapter(
+            delegate = terminal,
+            executable = spec.executable,
+            temporarySystemShell = spec.temporarySystemShell,
+        )
     }
 
     private fun supportedAbis(): List<String> = Build.SUPPORTED_ABIS?.toList().orEmpty()

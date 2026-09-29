@@ -14,8 +14,9 @@ class TermuxEnvironmentTest {
         androidEnv: Map<String, String> = emptyMap(),
         extra: Map<String, String> = emptyMap(),
         workingDirectory: String? = working,
+        readable: (String) -> Boolean = { true },
     ): Map<String, String> = TermuxEnvironment
-        .build(paths, workingDirectory, androidEnv, extra)
+        .build(paths, workingDirectory, androidEnv, extra, isReadableDirectory = readable)
         .associate { entry ->
             val separator = entry.indexOf('=')
             entry.substring(0, separator) to entry.substring(separator + 1)
@@ -26,18 +27,28 @@ class TermuxEnvironmentTest {
         val environment = env()
         assertEquals(paths.home, environment["HOME"])
         assertEquals(paths.prefix, environment["PREFIX"])
-        assertEquals(paths.bin, environment["PATH"])
+        assertEquals("${paths.bin}:/system/bin", environment["PATH"])
         assertEquals(paths.tmp, environment["TMPDIR"])
         assertEquals(working, environment["PWD"])
         assertEquals("xterm-256color", environment["TERM"])
         assertEquals("en_US.UTF-8", environment["LANG"])
         assertEquals("truecolor", environment["COLORTERM"])
+        assertEquals("/data/data/com.agentx.app/files/usr", environment["PREFIX"])
+        assertEquals("/data/data/com.agentx.app/files/home", environment["HOME"])
     }
 
     @Test
     fun `a non absolute working directory falls back to home`() {
         assertEquals(paths.home, env(workingDirectory = "relative/dir")["PWD"])
         assertEquals(paths.home, env(workingDirectory = null)["PWD"])
+    }
+
+    @Test
+    fun `an unreadable working directory falls back to home`() {
+        assertEquals(
+            paths.home,
+            env(workingDirectory = working, readable = { false })["PWD"],
+        )
     }
 
     @Test

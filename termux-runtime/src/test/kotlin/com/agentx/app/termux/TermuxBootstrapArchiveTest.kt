@@ -86,4 +86,15 @@ class TermuxBootstrapArchiveTest {
         assertFalse(TermuxBootstrapArchive.isSafeEntry(""))
         assertFalse(TermuxBootstrapArchive.isSafeEntry("./"))
     }
+
+    @Test
+    fun `symlink targets that escape staging are rejected`() {
+        assertFalse(TermuxBootstrapArchive.isSafeSymlinkTarget("/data/data/com.termux/files/usr/bin/sh"))
+        assertFalse(TermuxBootstrapArchive.isSafeSymlinkTarget("../escape"))
+        assertTrue(TermuxBootstrapArchive.isSafeSymlinkTarget("bin/bash"))
+        assertEquals(null, TermuxBootstrapArchive.resolveSymlink(prefix, "../bin/sh"))
+        val parsed = TermuxBootstrapArchive.parseSymlinks("/etc/passwd\u2190bin/evil\n")
+        assertFalse(parsed.invalid.isEmpty())
+        assertTrue(parsed.links.isEmpty())
+    }
 }

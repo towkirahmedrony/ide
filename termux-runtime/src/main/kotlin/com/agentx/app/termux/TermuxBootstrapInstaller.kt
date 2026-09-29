@@ -1,7 +1,5 @@
 package com.agentx.app.termux
 
-import android.system.Os
-import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -11,26 +9,33 @@ import java.net.URL
 import java.security.MessageDigest
 import java.util.zip.ZipInputStream
 
-/** Result of making sure a Termux userland exists. */
-sealed interface TermuxProvisioning {
-
-    /** Nothing to do: `$PREFIX/bin` already holds a shell. */
-    data object AlreadyInstalled : TermuxProvisioning
-
-    /** The archive was downloaded, verified and unpacked. */
-    data class Installed(val bytes: Long, val files: Int, val symlinks: Int) : TermuxProvisioning
-
-    /** The app's prefix cannot host official Termux artifacts. See `TermuxPrefixPolicy`. */
-    data class Unsupported(val reason: String, val remedy: String) : TermuxProvisioning
-
-    /** No bootstrap archive is published for this device's ABI. */
-    data class NoArchive(val supportedAbis: List<String>) : TermuxProvisioning
-
-    /** Download, verification or extraction failed; [failed] says where. */
-    data class Failed(val failed: String, val message: String) : TermuxProvisioning
+enum class TermuxInstallStage(val wireName: String) {
+    DOWNLOAD("download"),
+    CHECKSUM("checksum"),
+    EXTRACTION("extraction"),
+    SYMLINK("symlink"),
+    PERMISSIONS("permissions"),
+    PREFIX("prefix"),
+    RUNTIME("runtime"),
 }
 
-/** Coarse progress for the provisioning UI. */
+sealed interface TermuxProvisioning {
+
+    data object AlreadyInstalled : TermuxProvisioning
+
+    data class Installed(val bytes: Long, val files: Int, val symlinks: Int) : TermuxProvisioning
+
+    data class Unsupported(val reason: String, val remedy: String) : TermuxProvisioning
+
+    data class NoArchive(val supportedAbis: List<String>) : TermuxProvisioning
+
+    data class ArtifactUnavailable(val abi: String, val reason: String) : TermuxProvisioning
+
+    data class Failed(val stage: TermuxInstallStage, val message: String) : TermuxProvisioning {
+        val failed: String get() = stage.wireName
+    }
+}
+
 sealed interface TermuxProvisioningState {
     data object Idle : TermuxProvisioningState
     data class Downloading(val percent: Int, val receivedBytes: Long, val totalBytes: Long) : TermuxProvisioningState
@@ -40,42 +45,27 @@ sealed interface TermuxProvisioningState {
     data class Failed(val message: String) : TermuxProvisioningState
 }
 
-/**
- * Installs the official Termux bootstrap into the app's prefix.
- *
- * The sequence follows `TermuxInstaller.setupBootstrapIfNeeded`:
- * clear the staging prefix, extract there, apply `SYMLINKS.txt`, mark the executables, then move
- * the staging directory into place as `$PREFIX` in one rename. Doing the move last means an
- * interrupted install leaves no half-populated prefix that later code would mistake for a
- * working one.
- *
- * Differences from upstream are intentional and documented:
- * - the archive is downloaded instead of embedded, because embedding four ~100 MB archives plus
- *   the NDK obfuscation step is not worth it for an IDE that already needs the network;
- * - the SHA-256 pins come from `TermuxBootstrapCatalog`, so the check still happens;
- * - nothing is extracted unless [TermuxPrefixPolicy] confirms the prefix is one the official
- *   artifacts were built for.
- *
- * Blocking I/O on purpose: callers run this on a background dispatcher.
- */
 class TermuxBootstrapInstaller(
     private val paths: TermuxPaths,
-    /** Accepted ABIs in preference order, normally `Build.SUPPORTED_ABIS`. */
     private val supportedAbis: List<String>,
-    /** Downloads `url` to `target`, reporting `(received, total)`; [defaultDownload] by default. */
     private val download: (String, File, (Long, Long) -> Unit) -> File = TermuxBootstrapInstaller::defaultDownload,
-    /** Injects the layout decision so tests do not need a real `/data/data/com.termux`. */
     private val prefixSupport: (TermuxPaths) -> TermuxPrefixSupport = TermuxPrefixPolicy::evaluate,
+    private val matchPrefixes: (String, String) -> TermuxPrefixSupport = TermuxPrefixPolicy::requireMatchingPrefix,
+    private val resolveEntry: (List<String>) -> TermuxBootstrapCatalog.Entry? = TermuxBootstrapCatalog::forAbis,
+    private val posix: TermuxPosix = AndroidTermuxPosix,
+    private val isExecutable: (File) -> Boolean = { file -> posix.canExecute(file) },
 ) {
 
-    /**
-     * True once `$PREFIX/bin` holds a login shell.
-     *
-     * `File.isFile()` follows symlinks, which matters because the bootstrap installs `sh`, `bash`
-     * and friends as links; the check is therefore a real one, not a name match.
-     */
-    fun isInstalled(): Boolean = TermuxShellResolver.LOGIN_SHELL_BINARIES.any { name ->
-        File("${paths.bin}/$name").let { it.isFile && it.canExecute() }
+    fun isInstalled(): Boolean {
+        if (prefixSupport(paths) !is TermuxPrefixSupport.Supported) return false
+        if (TermuxPrefixPolicy.isOfficialPath(paths.prefix)) return false
+        val marker = File(paths.prefix, TermuxBootstrapArchive.INSTALL_MARKER)
+        if (!marker.isFile) return false
+        val hasShell = TermuxShellResolver.LOGIN_SHELL_BINARIES.any { name ->
+            isExecutable(File("${paths.bin}/$name"))
+        }
+        if (!hasShell) return false
+        return File(paths.lib).isDirectory
     }
 
     fun provision(onState: (TermuxProvisioningState) -> Unit = {}): TermuxProvisioning {
@@ -90,8 +80,18 @@ class TermuxBootstrapInstaller(
             is TermuxPrefixSupport.Supported -> Unit
         }
 
-        val entry = TermuxBootstrapCatalog.forAbis(supportedAbis)
+        val entry = resolveEntry(supportedAbis)
             ?: return fail(TermuxProvisioning.NoArchive(supportedAbis), onState)
+
+        when (val match = matchPrefixes(paths.prefix, entry.prefix)) {
+            is TermuxPrefixSupport.Unsupported ->
+                return fail(TermuxProvisioning.Unsupported(match.reason, match.remedy), onState)
+            is TermuxPrefixSupport.Supported -> Unit
+        }
+
+        if (!entry.available) {
+            return fail(TermuxProvisioning.ArtifactUnavailable(entry.androidAbi, entry.unavailableReason()), onState)
+        }
 
         return try {
             val archive = fetch(entry, onState)
@@ -99,9 +99,7 @@ class TermuxBootstrapInstaller(
             onState(TermuxProvisioningState.Ready(result))
             result
         } catch (io: IOException) {
-            fail(TermuxProvisioning.Failed("network", io.message ?: "download failed"), onState)
-        } catch (security: SecurityException) {
-            fail(TermuxProvisioning.Failed("verification", security.message ?: "checksum mismatch"), onState)
+            fail(TermuxProvisioning.Failed(TermuxInstallStage.DOWNLOAD, io.message ?: "download failed"), onState)
         } catch (corrupt: TermuxBootstrapException) {
             fail(TermuxProvisioning.Failed(corrupt.stage, corrupt.message ?: "bootstrap archive invalid"), onState)
         }
@@ -111,28 +109,41 @@ class TermuxBootstrapInstaller(
         entry: TermuxBootstrapCatalog.Entry,
         onState: (TermuxProvisioningState) -> Unit,
     ): File {
-        val target = File(paths.downloadDir, entry.fileName)
-        if (target.isFile && sha256(target) == entry.sha256) return target
+        val sha256 = entry.sha256 ?: throw TermuxBootstrapException(
+            TermuxInstallStage.DOWNLOAD,
+            entry.unavailableReason(),
+        )
+        val url = entry.url ?: throw TermuxBootstrapException(
+            TermuxInstallStage.DOWNLOAD,
+            entry.unavailableReason(),
+        )
+        val target = File(paths.downloadDir, entry.assetName)
+        if (target.isFile) {
+            onState(TermuxProvisioningState.Verifying(percent = 100))
+            val existing = sha256(target)
+            if (existing == sha256) return target
+            target.delete()
+        }
 
         target.parentFile?.mkdirs()
         onState(TermuxProvisioningState.Downloading(percent = 0, receivedBytes = 0, totalBytes = 0))
         val downloaded = try {
-            download(entry.url, target) { received, total ->
+            download(url, target) { received, total ->
                 val percent = if (total > 0) ((received * 100) / total).toInt().coerceIn(0, 99) else 0
                 onState(TermuxProvisioningState.Downloading(percent, received, total))
             }
         } catch (io: IOException) {
-            throw IOException("Could not download ${entry.url}: ${io.message}", io)
+            throw IOException("Could not download $url: ${io.message}", io)
         }
 
         onState(TermuxProvisioningState.Verifying(percent = 100))
         val digest = sha256(downloaded)
-        if (digest != entry.sha256) {
-            // Never keep an archive that failed verification: the next run must re-download.
+        if (digest != sha256) {
             downloaded.delete()
-            throw SecurityException(
-                "Bootstrap ${entry.fileName} failed SHA-256 verification " +
-                    "(expected ${entry.sha256}, got $digest). Nothing was installed.",
+            throw TermuxBootstrapException(
+                TermuxInstallStage.CHECKSUM,
+                "Bootstrap ${entry.assetName} failed SHA-256 verification " +
+                    "(expected $sha256, got $digest). Nothing was installed.",
             )
         }
         return downloaded
@@ -143,10 +154,24 @@ class TermuxBootstrapInstaller(
         archive: File,
         onState: (TermuxProvisioningState) -> Unit,
     ): TermuxProvisioning {
+        val expected = entry.sha256 ?: throw TermuxBootstrapException(
+            TermuxInstallStage.CHECKSUM,
+            "Refusing to extract ${entry.assetName}: no SHA-256 is recorded.",
+        )
+        val digest = sha256(archive)
+        if (digest != expected) {
+            archive.delete()
+            throw TermuxBootstrapException(
+                TermuxInstallStage.CHECKSUM,
+                "Bootstrap ${entry.assetName} failed SHA-256 verification " +
+                    "(expected $expected, got $digest). Nothing was installed.",
+            )
+        }
+
         val staging = File(paths.stagingPrefix)
         deleteRecursively(staging)
         if (!staging.mkdirs() && !staging.isDirectory) {
-            throw TermuxBootstrapException("staging", "Could not create ${staging.absolutePath}")
+            throw TermuxBootstrapException(TermuxInstallStage.EXTRACTION, "Could not create ${staging.absolutePath}")
         }
 
         var files = 0
@@ -159,14 +184,14 @@ class TermuxBootstrapInstaller(
                     val zipEntry = zip.nextEntry ?: break
                     val name = zipEntry.name
                     if (!TermuxBootstrapArchive.isSafeEntry(name)) {
-                        throw TermuxBootstrapException("extract", "Unsafe archive entry: $name")
+                        throw TermuxBootstrapException(TermuxInstallStage.EXTRACTION, "Unsafe archive entry: $name")
                     }
                     if (TermuxBootstrapArchive.isManifestEntry(name)) {
                         val manifest = zip.readBytes().toString(Charsets.UTF_8)
                         val parsed = TermuxBootstrapArchive.parseSymlinks(manifest)
                         if (parsed.invalid.isNotEmpty()) {
                             throw TermuxBootstrapException(
-                                "extract",
+                                TermuxInstallStage.SYMLINK,
                                 "Malformed ${TermuxBootstrapArchive.SYMLINK_MANIFEST}: ${parsed.invalid.first()}",
                             )
                         }
@@ -175,7 +200,10 @@ class TermuxBootstrapInstaller(
                         continue
                     }
 
-                    val target = File(staging, name.removePrefix("./"))
+                    val relative = name.removePrefix("./")
+                    val resolved = TermuxBootstrapArchive.resolvedInside(staging.absolutePath, relative)
+                        ?: throw TermuxBootstrapException(TermuxInstallStage.EXTRACTION, "Unsafe archive entry: $name")
+                    val target = File(resolved)
                     if (zipEntry.isDirectory) {
                         target.mkdirs()
                     } else {
@@ -188,7 +216,14 @@ class TermuxBootstrapInstaller(
                             }
                         }
                         if (TermuxBootstrapArchive.isExecutableEntry(name)) {
-                            Os.chmod(target.absolutePath, 0b111_000_000)
+                            try {
+                                posix.chmodOwnerExecute(target.absolutePath)
+                            } catch (error: Exception) {
+                                throw TermuxBootstrapException(
+                                    TermuxInstallStage.PERMISSIONS,
+                                    "Could not mark ${target.absolutePath} executable: ${error.message}",
+                                )
+                            }
                         }
                         files += 1
                         if (files % PROGRESS_EVERY == 0) onState(TermuxProvisioningState.Extracting(files))
@@ -200,50 +235,65 @@ class TermuxBootstrapInstaller(
 
         if (symlinks.isEmpty()) {
             throw TermuxBootstrapException(
-                "extract",
-                "No ${TermuxBootstrapArchive.SYMLINK_MANIFEST} in ${entry.fileName}; refusing to install a prefix " +
+                TermuxInstallStage.SYMLINK,
+                "No ${TermuxBootstrapArchive.SYMLINK_MANIFEST} in ${entry.assetName}; refusing to install a prefix " +
                     "where the shell and package manager would not resolve.",
             )
         }
         for (link in symlinks) {
             val linkPath = TermuxBootstrapArchive.resolveSymlink(paths.stagingPrefix, link.linkPath)
+                ?: throw TermuxBootstrapException(
+                    TermuxInstallStage.SYMLINK,
+                    "Symlink path escapes staging: ${link.linkPath}",
+                )
+            if (!TermuxBootstrapArchive.isSafeSymlinkTarget(link.target)) {
+                throw TermuxBootstrapException(
+                    TermuxInstallStage.SYMLINK,
+                    "Symlink target escapes staging: ${link.target}",
+                )
+            }
             File(linkPath).parentFile?.mkdirs()
             try {
-                Os.symlink(link.target, linkPath)
+                posix.symlink(link.target, linkPath)
             } catch (exists: Exception) {
-                // Re-installing over a leftover link is fine; a genuinely broken link is not.
                 if (!File(linkPath).exists()) {
-                    throw TermuxBootstrapException("symlink", "Could not create $linkPath -> ${link.target}")
+                    throw TermuxBootstrapException(
+                        TermuxInstallStage.SYMLINK,
+                        "Could not create $linkPath -> ${link.target}: ${exists.message}",
+                    )
                 }
             }
         }
 
         val prefix = File(paths.prefix)
         if (prefix.exists() && !deleteRecursively(prefix)) {
-            throw TermuxBootstrapException("prefix", "Could not clear ${prefix.absolutePath}")
+            throw TermuxBootstrapException(TermuxInstallStage.PREFIX, "Could not clear ${prefix.absolutePath}")
         }
         if (!staging.renameTo(prefix)) {
             throw TermuxBootstrapException(
-                "prefix",
+                TermuxInstallStage.PREFIX,
                 "Could not move ${staging.absolutePath} to ${prefix.absolutePath}",
             )
         }
 
         createRuntimeDirectories()
+        if (!File(paths.tmp).isDirectory || !File(paths.home).isDirectory || !File(paths.homeStorage).isDirectory) {
+            throw TermuxBootstrapException(
+                TermuxInstallStage.RUNTIME,
+                "Could not create ${paths.tmp}, ${paths.home} or ${paths.homeStorage}",
+            )
+        }
+
+        writeInstallMarker()
         return TermuxProvisioning.Installed(bytes = archive.length(), files = files, symlinks = symlinks.size)
     }
 
-    /**
-     * Directories Termux expects to exist. `$PREFIX/tmp` is writable scratch, `$HOME` is where a
-     * session starts, and `$ROOTFS/workspaces` is where SAF projects are mirrored.
-     */
     fun createRuntimeDirectories() {
         for (directory in listOf(paths.tmp, paths.home, paths.workspaces, paths.homeStorage)) {
             File(directory).mkdirs()
         }
     }
 
-    /** Writes `$PREFIX/etc/termux/termux.env`, which `$PREFIX/etc/profile` sources. */
     fun writeEnvironmentFile(environment: Array<String>) {
         val file = File(paths.envFile)
         file.parentFile?.mkdirs()
@@ -256,27 +306,34 @@ class TermuxBootstrapInstaller(
         }
     }
 
+    private fun writeInstallMarker() {
+        val marker = File(paths.prefix, TermuxBootstrapArchive.INSTALL_MARKER)
+        marker.parentFile?.mkdirs()
+        marker.writeText("ok\n")
+    }
+
     private fun fail(
         result: TermuxProvisioning,
         onState: (TermuxProvisioningState) -> Unit,
     ): TermuxProvisioning {
         val message = when (result) {
             is TermuxProvisioning.Unsupported -> result.reason
-            is TermuxProvisioning.NoArchive -> "No Termux bootstrap is published for ${result.supportedAbis.joinToString()}."
-            is TermuxProvisioning.Failed -> result.message
+            is TermuxProvisioning.NoArchive ->
+                "No AgentX bootstrap is catalogued for ${result.supportedAbis.joinToString()}."
+            is TermuxProvisioning.ArtifactUnavailable -> result.reason
+            is TermuxProvisioning.Failed -> "[${result.stage.wireName}] ${result.message}"
             else -> "Provisioning did not complete."
         }
         onState(TermuxProvisioningState.Failed(message))
         return result
     }
 
-    class TermuxBootstrapException(val stage: String, message: String) : Exception(message)
+    class TermuxBootstrapException(val stage: TermuxInstallStage, message: String) : Exception(message)
 
     companion object {
         private const val BUFFER_SIZE = 64 * 1024
         private const val PROGRESS_EVERY = 200
 
-        /** Downloads `url` to `target`, reporting `(received, total)` for the progress bar. */
         fun defaultDownload(url: String, target: File, onProgress: (Long, Long) -> Unit): File {
             var connection: HttpURLConnection? = null
             try {
@@ -334,7 +391,6 @@ class TermuxBootstrapInstaller(
     }
 }
 
-/** Buffered stdin wrapper so callers cannot forget to encode a keystroke. */
 fun TermuxSession.writeUtf8(text: String) {
     val bytes = text.toByteArray(Charsets.UTF_8)
     write(bytes, 0, bytes.size)

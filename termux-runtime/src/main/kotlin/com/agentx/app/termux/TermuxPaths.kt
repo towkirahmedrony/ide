@@ -6,8 +6,7 @@ package com.agentx.app.termux
  * Mirrors the layout documented in termux-packages
  * (`scripts/properties.sh`: `TERMUX__ROOTFS = $TERMUX_APP__DATA_DIR/files`,
  * `TERMUX__PREFIX = $TERMUX__ROOTFS/usr`, `TERMUX__HOME = $TERMUX__ROOTFS/home`),
- * except that the data directory is this app's own `filesDir` unless the build opts
- * into the official prefix. See [TermuxPrefixPolicy].
+ * except that the data directory is this app's own `filesDir`. See [TermuxPrefixPolicy].
  *
  * Pure data: no Android API, so the layout can be unit tested.
  */
@@ -45,21 +44,21 @@ data class TermuxPaths(
     /** `$HOME/.bashrc` and friends live here; created on first provision. */
     val homeStorage: String get() = "$home/storage"
 
-    /** True when [prefix] is the prefix every official Termux artifact is compiled against. */
     val usesOfficialPrefix: Boolean get() = prefix == OFFICIAL_PREFIX
-
-    /** True when [appDataDir] is the data directory official Termux artifacts assume. */
     val usesOfficialPackageDir: Boolean get() = appDataDir == OFFICIAL_APP_DATA_DIR
+    val usesAgentxPrefix: Boolean get() = prefix == AGENTX_PREFIX
+    val usesAgentxPackageDir: Boolean get() = appDataDir == AGENTX_APP_DATA_DIR
 
     companion object {
         const val ROOTFS_SUBDIR: String = "files"
         const val USR_SUBDIR: String = "usr"
 
-        /** Package name Termux itself uses; its data dir is what official artifacts hard-code. */
+        const val AGENTX_PACKAGE_NAME: String = "com.agentx.app"
+        const val AGENTX_APP_DATA_DIR: String = "/data/data/$AGENTX_PACKAGE_NAME"
+        const val AGENTX_PREFIX: String = "$AGENTX_APP_DATA_DIR/$ROOTFS_SUBDIR/$USR_SUBDIR"
+
         const val OFFICIAL_PACKAGE_NAME: String = "com.termux"
         const val OFFICIAL_APP_DATA_DIR: String = "/data/data/$OFFICIAL_PACKAGE_NAME"
-
-        /** The prefix termux-packages bakes into every bootstrap and repository package. */
         const val OFFICIAL_PREFIX: String = "$OFFICIAL_APP_DATA_DIR/$ROOTFS_SUBDIR/$USR_SUBDIR"
 
         /** Upstream rejects prefixes longer than 90 bytes including the NUL terminator. */

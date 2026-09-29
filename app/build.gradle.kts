@@ -21,16 +21,7 @@ android {
     }
 
     defaultConfig {
-        // The embedded Termux userland is compiled with /data/data/com.termux/files/usr
-        // baked into its native binaries. The default release must therefore use the official
-        // package id; otherwise execve() fails with Permission denied even when files exist.
-        // Set -Pagentx.termux.officialPrefix=false only for a deliberately shell-only build.
-        val officialTermuxPrefix = providers.gradleProperty("agentx.termux.officialPrefix")
-            .orNull
-            ?.toBoolean()
-            ?: true
-
-        applicationId = if (officialTermuxPrefix) "com.termux" else "com.agentx.app"
+        applicationId = "com.agentx.app"
         minSdk = 26
         targetSdk = 37
         versionCode = 1

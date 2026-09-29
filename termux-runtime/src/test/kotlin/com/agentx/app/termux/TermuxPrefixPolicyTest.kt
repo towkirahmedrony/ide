@@ -9,28 +9,50 @@ import kotlin.test.assertFalse
 class TermuxPrefixPolicyTest {
 
     @Test
-    fun `termux own data directory is supported`() {
+    fun `agentx prefix is supported as a custom bootstrap target`() {
+        val support = TermuxPrefixPolicy.evaluate(
+            TermuxPaths.forAppDataDir(TermuxPaths.AGENTX_APP_DATA_DIR),
+        )
+        val supported = assertIs<TermuxPrefixSupport.Supported>(support)
+        assertEquals(TermuxPaths.AGENTX_PREFIX, supported.prefix)
+        assertFalse(supported.official)
+    }
+
+    @Test
+    fun `official termux prefix is never allowed inside agentx`() {
         val support = TermuxPrefixPolicy.evaluate(
             TermuxPaths.forAppDataDir(TermuxPaths.OFFICIAL_APP_DATA_DIR),
         )
-        val supported = assertIs<TermuxPrefixSupport.Supported>(support)
-        assertEquals(TermuxPaths.OFFICIAL_PREFIX, supported.prefix)
-        assertTrue(supported.official)
-    }
-
-    @Test
-    fun `custom app data directory is refused because official binaries are hard coded`() {
-        val support = TermuxPrefixPolicy.evaluate(TermuxPaths.forAppDataDir("/data/data/com.agentx.app"))
         val unsupported = assertIs<TermuxPrefixSupport.Unsupported>(support)
+        assertEquals(TermuxPaths.OFFICIAL_PREFIX, unsupported.prefix)
         assertTrue(unsupported.reason.contains(TermuxPaths.OFFICIAL_PREFIX))
+        assertFalse(TermuxPrefixPolicy.canLaunch(
+            TermuxPaths.forAppDataDir(TermuxPaths.OFFICIAL_APP_DATA_DIR),
+            "${TermuxPaths.OFFICIAL_PREFIX}/bin/bash",
+        ))
     }
 
     @Test
-    fun `another app data directory is refused with an actionable reason`() {
+    fun `another app data directory is refused`() {
         val support = TermuxPrefixPolicy.evaluate(TermuxPaths.forAppDataDir("/data/data/com.other.app"))
         val unsupported = assertIs<TermuxPrefixSupport.Unsupported>(support)
+        assertTrue(unsupported.reason.contains(TermuxPaths.AGENTX_PREFIX))
+    }
 
+    @Test
+    fun `artifact prefix must match the runtime prefix`() {
+        val mismatch = TermuxPrefixPolicy.requireMatchingPrefix(
+            runtimePrefix = TermuxPaths.AGENTX_PREFIX,
+            artifactPrefix = TermuxPaths.OFFICIAL_PREFIX,
+        )
+        val unsupported = assertIs<TermuxPrefixSupport.Unsupported>(mismatch)
         assertTrue(unsupported.reason.contains(TermuxPaths.OFFICIAL_PREFIX))
+
+        val match = TermuxPrefixPolicy.requireMatchingPrefix(
+            runtimePrefix = TermuxPaths.AGENTX_PREFIX,
+            artifactPrefix = TermuxPaths.AGENTX_PREFIX,
+        )
+        assertIs<TermuxPrefixSupport.Supported>(match)
     }
 
     @Test
