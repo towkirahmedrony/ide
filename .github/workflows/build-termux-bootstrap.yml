@@ -204,8 +204,8 @@ jobs:
           # termux_step_handle_buildarch.sh it sources, so the glob expands to /* and rm is
           # handed the container root -- exactly the "Permission denied"/"Is a directory"
           # wall this job hit, which under set -e ends the build with exit 1.
-          # clean.sh is the documented alternative and never reaches that line.
-          docker exec -w /home/builder/termux-packages agentx-builder ./scripts/clean.sh 2>&1 | tail -5
+          # clean.sh lives at the repository root and never reaches that line.
+          docker exec -w /home/builder/termux-packages agentx-builder ./clean.sh 2>&1 | tail -5
           docker exec -w /home/builder/termux-packages agentx-builder \
             ./scripts/build-bootstraps.sh --architectures "$ARCH" 2>&1 \
             | tee "../build/build-${ARCH}.log"
