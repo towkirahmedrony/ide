@@ -17,6 +17,11 @@ on:
   pull_request:
     branches: ["main", "master"]
   workflow_dispatch:
+    inputs:
+      android10:
+        description: "The bootstrap under test is the upstream --android10 variant (proot instead of apt)"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -215,7 +220,22 @@ jobs:
             adb shell "run-as com.agentx.app sh -c 'cd /data/data/com.agentx.app/files/home && pwd'" | tee smoke/pwd.txt
             adb shell "run-as com.agentx.app sh -c 'printf \"%s\\n\" \"\$PREFIX\"'" | tee smoke/prefix.txt
 
-            for tool in sh pkg apt bash; do
+            # Which tools exist depends on the upstream variant: --android10 replaces apt with
+            # proot and ships no dpkg at all, so apt is absent by design there and proot is
+            # required instead. Everything else is common to both variants.
+            SMOKE_VARIANT="${{ inputs.android10 == true && 'android10' || 'normal' }}"
+            COLLECT_TOOLS="sh pkg bash"
+            REQUIRED_TOOLS="sh pkg"
+            if [ "$SMOKE_VARIANT" = "android10" ]; then
+              COLLECT_TOOLS="$COLLECT_TOOLS proot"
+              REQUIRED_TOOLS="$REQUIRED_TOOLS proot"
+              echo "android10 variant: apt and dpkg are expected to be absent, proot required"
+            else
+              COLLECT_TOOLS="$COLLECT_TOOLS apt"
+              REQUIRED_TOOLS="$REQUIRED_TOOLS apt"
+            fi
+            echo "smoke variant: $SMOKE_VARIANT (collecting: $COLLECT_TOOLS)"
+            for tool in $COLLECT_TOOLS; do
               adb shell "run-as com.agentx.app sh -c 'command -v $tool' 2>&1" | tee "smoke/which-$tool.txt"
             done
             adb shell "run-as com.agentx.app sh -c 'pkg --version' 2>&1" | tee smoke/pkg-version.txt || true
@@ -223,7 +243,7 @@ jobs:
             grep -q "$PREFIX" smoke/marker.txt || { echo "::error::the AgentX prefix is absent"; exit 1; }
             grep -q "hello" smoke/hello.txt || { echo "::error::the shell did not run printf"; exit 1; }
             grep -q "/home" smoke/pwd.txt || { echo "::error::the shell has no working directory"; exit 1; }
-            for tool in sh pkg apt; do
+            for tool in $REQUIRED_TOOLS; do
               test -s "smoke/which-$tool.txt" || { echo "::error::$tool is missing from the prefix"; exit 1; }
             done
 
