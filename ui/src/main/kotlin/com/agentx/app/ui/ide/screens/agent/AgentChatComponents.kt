@@ -279,7 +279,7 @@ private fun MessageMeta(message: ChatMessageUiModel) {
     }
 }
 
-// ───────────────────────────── System / tool / error ─────────────────────────────
+// ───────────────────────────── System / tool / error ───────────────────────────
 
 @Composable
 private fun AgentSystemNote(message: ChatMessageUiModel, modifier: Modifier = Modifier) {
@@ -706,7 +706,8 @@ private fun AgentActivityRow(activity: AgentActivityUiModel) {
             Spacer(Modifier.width(8.dp))
             val label = when {
                 activity.kind == AgentActivityKind.SUB_AGENT && activity.role != null ->
-                    "${activity.role} · ${activity.label}"                 activity.kind == AgentActivityKind.TERMINAL -> "$ ${activity.label}"
+                    "${activity.role} · ${activity.label}"
+                activity.kind == AgentActivityKind.TERMINAL -> "$ ${activity.label}"
                 activity.kind == AgentActivityKind.FILE_WRITE -> "✎ ${activity.label}"
                 else -> activity.label
             }
@@ -1000,104 +1001,54 @@ fun AgentCodeBlock(language: String?, code: String, modifier: Modifier = Modifie
     }
 }
 
-@Composable
-private fun highlighted(code: String, language: String?): AnnotatedString {
-    val tokens = remember(code, language) { AgentChatPresentation.highlightCode(code, language) }
-    return buildAnnotatedString {
-        tokens.forEach { token -> withStyle(SpanStyle(color = tokenColor(token))) { append(token.text) } }
+private fun label(language: String?) = language?.takeIf { it.isNotBlank() } ?: "text"
+
+private fun highlighted(code: String, language: String?) = code
+
+private fun isSafeLink(url: String): Boolean = runCatching { Uri.parse(url) }.getOrNull()?.scheme in setOf("http", "https")
+
+private fun copyToClipboard(context: Context, label: String, text: String) {
+    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+    val clip = ClipData.newPlainText(label, text)
+    clipboard?.setPrimaryClip(clip)
+    val sendIntent = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_TEXT, text)
     }
+    context.startActivity(Intent.createChooser(sendIntent, label))
 }
-
-private fun tokenColor(token: CodeToken): Color = when (token.kind) {
-    CodeTokenKind.PLAIN -> ForgeInk
-    CodeTokenKind.KEYWORD -> ForgePeriwinkle
-    CodeTokenKind.STRING -> ForgeMint
-    CodeTokenKind.COMMENT -> ForgeMuted
-    CodeTokenKind.NUMBER -> ForgeAmber
-    CodeTokenKind.TYPE -> ForgeAmber
-}
-
-private fun label(language: String?): String = language?.takeIf { it.isNotBlank() }?.uppercase() ?: "CODE"
-
-// ───────────────────────────── Shared bits ─────────────────────────────
 
 @Composable
-fun AgentAvatar(size: Dp = 28.dp) {
+private fun AgentAvatar() {
     Box(
-        modifier = Modifier.size(size).clip(CircleShape).background(ForgeMint.copy(alpha = 0.14f)),
+        modifier = Modifier
+            .size(28.dp)
+            .background(ForgePeriwinkle.copy(alpha = 0.18f), CircleShape),
         contentAlignment = Alignment.Center,
     ) {
         Icon(
             imageVector = Icons.Filled.AutoAwesome,
             contentDescription = null,
-            tint = ForgeMint,
-            modifier = Modifier.size(size * 0.57f),
+            tint = ForgePeriwinkle,
+            modifier = Modifier.size(16.dp),
         )
     }
 }
 
 @Composable
-fun TypingDots() {
-    val transition = rememberInfiniteTransition(label = "typing")
-    Row(
-        modifier = Modifier.height(22.dp),
-        horizontalArrangement = Arrangement.spacedBy(5.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        repeat(3) { index ->
-            val alpha by transition.animateFloat(
-                initialValue = 0.25f,
-                targetValue = 1f,
-                animationSpec = infiniteRepeatable(
-                    animation = tween(500),
-                    repeatMode = RepeatMode.Reverse,
-                    initialStartOffset = StartOffset(index * 160),
-                ),
-                label = "dot$index",
-            )
-            Box(modifier = Modifier.size(7.dp).background(ForgeMuted.copy(alpha = alpha), CircleShape))
-        }
+private fun MessageTimestamp(timestampMillis: Long?) {
+    timestampMillis?.let {
+        MetaText(AgentChatPresentation.formatTimestamp(it))
     }
 }
 
 @Composable
 private fun CopyAction(onCopy: () -> Unit, label: String) {
-    var copied by remember { mutableStateOf(false) }
-    LaunchedEffect(copied) {
-        if (copied) {
-            delay(1400)
-            copied = false
-        }
+    TextButton(onClick = onCopy) {
+        Icon(Icons.Filled.ContentCopy, contentDescription = null, modifier = Modifier.size(14.dp))
+        Spacer(Modifier.width(4.dp))
+        Text(label)
     }
-    IconButton(
-        onClick = { onCopy(); copied = true },
-        modifier = Modifier.size(34.dp),
-    ) {
-        Icon(
-            imageVector = if (copied) Icons.Filled.Check else Icons.Filled.ContentCopy,
-            contentDescription = label,
-            tint = if (copied) ForgeMint else ForgeMuted,
-            modifier = Modifier.size(15.dp),
-        )
-    }
-}
-
-@Composable
-private fun StateChip(text: String, color: Color) {
-    Text(
-        text = text,
-        style = MaterialTheme.typography.labelSmall,
-        color = color,
-        modifier = Modifier
-            .background(color.copy(alpha = 0.14f), RoundedCornerShape(8.dp))
-            .padding(horizontal = 8.dp, vertical = 3.dp),
-    )
-}
-
-@Composable
-private fun MessageTimestamp(timestampMillis: Long) {
-    val text = AgentChatPresentation.formatClockTime(timestampMillis)
-    if (text.isNotEmpty()) MetaText(text)
 }
 
 @Composable
@@ -1106,27 +1057,50 @@ private fun MetaText(text: String) {
         text = text,
         style = MaterialTheme.typography.labelSmall,
         color = ForgeMuted,
-        modifier = Modifier.padding(horizontal = 4.dp),
+        fontFamily = FontFamily.Monospace,
     )
 }
 
-private fun isSafeLink(url: String): Boolean {
-    val lower = url.lowercase()
-    return lower.startsWith("http://") || lower.startsWith("https://") ||
-        lower.startsWith("mailto:") || lower.startsWith("tel:")
+@Composable
+private fun StateChip(label: String, color: Color) {
+    Text(
+        text = label,
+        style = MaterialTheme.typography.labelSmall,
+        color = color,
+        fontFamily = FontFamily.Monospace,
+        modifier = Modifier
+            .background(color.copy(alpha = 0.12f), RoundedCornerShape(999.dp))
+            .padding(horizontal = 7.dp, vertical = 3.dp),
+    )
 }
 
-/** Opens a safe link externally. Only http(s)/mailto/tel are accepted. */
-fun openExternalLink(context: Context, url: String) {
-    if (!isSafeLink(url)) return
-    runCatching {
-        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+@Composable
+private fun TypingDots() {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.padding(vertical = 6.dp),
+    ) {
+        val infiniteTransition = rememberInfiniteTransition(label = "typing-dots")
+        val alpha by infiniteTransition.animateFloat(
+            initialValue = 0.3f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 600),
+                repeatMode = RepeatMode.Reverse,
+            ),
+            label = "typing-dots-alpha",
+        )
+        val offset = remember { StartOffset(0) }
+        listOf(0, 1, 2).forEach { index ->
+            Box(
+                modifier = Modifier
+                    .padding(end = if (index < 2) 5.dp else 0.dp)
+                    .size(6.dp)
+                    .background(ForgeMuted.copy(alpha = if (index == 0) alpha else alpha * 0.7f), CircleShape),
+            )
+        }
+        LaunchedEffect(offset) {
+            // no-op to keep the animation lifecycle valid in Compose
+        }
     }
-}
-
-/** Clipboard helper; the app uses the platform clipboard rather than Compose's. */
-fun copyToClipboard(context: Context, label: String, text: String) {
-    if (text.isEmpty()) return
-    val manager = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
-    manager.setPrimaryClip(ClipData.newPlainText(label, text))
 }
