@@ -1,5 +1,6 @@
 package com.agentx.app.model.provider.openai
 
+import com.agentx.app.core.timeout.AgentTimeouts
 import com.agentx.app.model.*
 import com.agentx.app.model.http.*
 import com.agentx.app.model.json.*
@@ -560,7 +561,13 @@ class OpenAiCompatibleProvider(
         const val DEFAULT_ID: String = "openai-compatible"
         const val DEFAULT_CHAT_PATH: String = "/chat/completions"
         const val CONNECT_TIMEOUT_MILLIS: Int = 15_000
-        const val READ_TIMEOUT_MILLIS: Int = 120_000
+
+        /**
+         * One model response, streamed or not, follows the central model-request
+         * budget instead of an arbitrary two minutes. `ModelConfig.timeoutMillis`
+         * still overrides it per model.
+         */
+        val READ_TIMEOUT_MILLIS: Int = AgentTimeouts.MODEL_REQUEST_MILLIS.toInt()
 
         val DEFAULT_CAPABILITIES: ModelCapabilities = ModelCapabilities(
             streaming = true,

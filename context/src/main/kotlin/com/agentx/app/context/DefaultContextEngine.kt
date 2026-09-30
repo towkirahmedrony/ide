@@ -88,7 +88,12 @@ class DefaultContextEngine(
         request.sessionSummary?.takeIf { it.isNotBlank() }?.let { summary ->
             candidates += sessionSummaryItem(summary, now)
         }
-        snapshot?.let { candidates += workspaceInfoItem(it, now) }
+        // Workspace facts are only volunteered for a turn that is about the
+        // project; a greeting must not turn into a project description.
+        val workspaceContext = request.includeWorkspace
+        if (workspaceContext && request.includeWorkspaceInfo) {
+            snapshot?.let { candidates += workspaceInfoItem(it, now) }
+        }
 
         request.toolResults.forEachIndexed { index, result ->
             val bounded = ContextTruncator.truncate(result.content, effectiveBudget.maxToolResultChars)
@@ -183,7 +188,9 @@ class DefaultContextEngine(
             }
 
             val directoryPaths = LinkedHashSet<String>()
-            if (request.includeWorkspaceRootSummary && fileSystem != null) directoryPaths += WorkspacePath.ROOT
+            if (workspaceContext && request.includeWorkspaceRootSummary && fileSystem != null) {
+                directoryPaths += WorkspacePath.ROOT
+            }
             request.directories.forEach { path ->
                 WorkspacePath.normalize(path).valueOrNull()?.let { directoryPaths += it }
             }
@@ -222,6 +229,7 @@ class DefaultContextEngine(
                 "workspaceName" to snapshot?.name,
                 "selectedFile" to (request.selectedFile ?: snapshot?.selectedFile),
                 "hasFileSystem" to (fileSystem != null),
+                "workspaceContext" to workspaceContext,
                 "items" to selection.items.size,
                 "files" to (counts[ContextSource.FILE] ?: 0),
                 "directories" to (counts[ContextSource.DIRECTORY] ?: 0),

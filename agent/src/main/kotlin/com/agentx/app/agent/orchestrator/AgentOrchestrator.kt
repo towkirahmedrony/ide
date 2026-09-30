@@ -20,6 +20,7 @@ import com.agentx.app.agent.main.MainAgent
 import com.agentx.app.agent.main.MainAgentRequest
 import com.agentx.app.agent.prompt.PromptVariables
 import com.agentx.app.agent.runtime.AgentIds
+import com.agentx.app.agent.runtime.ConversationalTurn
 import com.agentx.app.agent.runtime.ResumedPermission
 import com.agentx.app.agent.runtime.SubAgentInvoker
 import com.agentx.app.agent.specialized.SpecializedAgentRegistry
@@ -31,13 +32,14 @@ import com.agentx.app.context.ContextRequest
 import com.agentx.app.core.logging.ForgeLogger
 import com.agentx.app.core.logging.ForgeLoggers
 import com.agentx.app.core.logging.LogLevel
+import com.agentx.app.core.timeout.AgentTimeouts
+import com.agentx.app.core.timeout.withExecutionBudget
 import com.agentx.app.model.ModelConfig
 import com.agentx.app.model.ModelMessage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.withTimeout
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.coroutineContext
 
@@ -76,7 +78,12 @@ class DefaultAgentOrchestrator(
     private val contextEngine: ContextEngine? = null,
     /** Session-scoped conversation history. Optional so tests can omit it. */
     private val history: ConversationHistory? = null,
-    private val defaultTimeoutMillis: Long = DEFAULT_TIMEOUT_MILLIS,
+    /**
+     * Central execution budgets. The Main Agent and a delegated sub-agent have
+     * separate, generous ceilings; stopping a long task is the user's Stop/Cancel,
+     * not a short global timeout.
+     */
+    private val timeouts: AgentTimeouts = AgentTimeouts.DEFAULT,
     private val clock: () -> Long = { System.currentTimeMillis() },
     private val logger: ForgeLogger = ForgeLoggers.create(LogLevel.INFO, baseFields = mapOf("layer" to "orchestrator")),
 ) : AgentOrchestrator {
@@ -90,9 +97,10 @@ class DefaultAgentOrchestrator(
         val resumeContext: List<com.agentx.app.model.ModelMessage>,
         val context: String,
         val modelConfig: ModelConfig,
-        val timeoutMillis: Long,
+        val budgetMillis: Long,
         val contextBudget: ContextBudget,
         val promptVariables: PromptVariables,
+        val requiresWorkspace: Boolean,
     )
 
     private val pausedPermissions = ConcurrentHashMap<String, PausedRun>()
@@ -166,14 +174,19 @@ class DefaultAgentOrchestrator(
             )
         }
 
-        val timeout = request.timeoutMillis ?: defaultTimeoutMillis
+        // A caller may still bound one run explicitly; otherwise the category
+        // budget applies. Either way the task stays cancellable.
+        val budget = request.timeoutMillis ?: timeouts.mainTaskMillis
+        // "Hi" is not a request to describe the project: a conversational turn
+        // contributes no workspace context and orders no inspection.
+        val requiresWorkspace = ConversationalTurn.requiresWorkspace(request.prompt)
         val job = coroutineContext[Job]
         if (job != null) jobs[sessionId] = job
 
         val variables = promptVariables(request)
         return try {
-            val assembled = assembleContext(request, sessionId)
-            val result = withTimeout(timeout) {
+            val assembled = assembleContext(request, sessionId, requiresWorkspace)
+            val result = withExecutionBudget(budget) {
                 mainAgent.run(
                     request = MainAgentRequest(
                         sessionId = sessionId,
@@ -182,6 +195,7 @@ class DefaultAgentOrchestrator(
                         modelConfig = modelConfig,
                         contextBudget = request.contextBudget,
                         promptVariables = variables,
+                        requiresWorkspace = requiresWorkspace,
                     ),
                     sink = sink,
                     subAgentInvoker = SubAgentInvoker { child ->
@@ -198,16 +212,17 @@ class DefaultAgentOrchestrator(
                     resumeContext = result.resumeContext,
                     context = assembled,
                     modelConfig = modelConfig,
-                    timeoutMillis = timeout,
+                    budgetMillis = budget,
                     contextBudget = request.contextBudget,
                     promptVariables = variables,
+                    requiresWorkspace = requiresWorkspace,
                 )
             }
             result
         } catch (error: TimeoutCancellationException) {
             val agentError = AgentError(
                 code = AgentErrorCode.TIMEOUT,
-                message = "Agent session timed out after ${timeout}ms",
+                message = "Agent task exceeded its ${budget}ms budget",
                 sessionId = sessionId,
                 cause = error,
             )
@@ -278,7 +293,7 @@ class DefaultAgentOrchestrator(
         if (job != null) jobs[sessionId] = job
 
         return try {
-            val result = withTimeout(paused.timeoutMillis) {
+            val result = withExecutionBudget(paused.budgetMillis) {
                 mainAgent.run(
                     request = MainAgentRequest(
                         sessionId = sessionId,
@@ -295,6 +310,7 @@ class DefaultAgentOrchestrator(
                             approved = approved,
                         ),
                         promptVariables = paused.promptVariables,
+                        requiresWorkspace = paused.requiresWorkspace,
                     ),
                     sink = sink,
                     subAgentInvoker = SubAgentInvoker { child ->
@@ -311,16 +327,17 @@ class DefaultAgentOrchestrator(
                     resumeContext = result.resumeContext,
                     context = paused.context,
                     modelConfig = modelConfig,
-                    timeoutMillis = paused.timeoutMillis,
+                    budgetMillis = paused.budgetMillis,
                     contextBudget = paused.contextBudget,
                     promptVariables = paused.promptVariables,
+                    requiresWorkspace = paused.requiresWorkspace,
                 )
             }
             result
         } catch (error: TimeoutCancellationException) {
             val agentError = AgentError(
                 code = AgentErrorCode.TIMEOUT,
-                message = "Agent session timed out after ${paused.timeoutMillis}ms",
+                message = "Agent task exceeded its ${paused.budgetMillis}ms budget",
                 sessionId = sessionId,
                 cause = error,
             )
@@ -444,8 +461,35 @@ class DefaultAgentOrchestrator(
         val result = if (agent == null) {
             unknownSubAgent(request)
         } else {
-            coroutineScope {
-                agent.run(request, modelConfig, sink, onCancelled)
+            try {
+                // A sub-agent gets its own, independent budget: a long delegated
+                // task is not cut short by the Main Agent's remaining time.
+                coroutineScope {
+                    withExecutionBudget(timeouts.subAgentTaskMillis) {
+                        agent.run(request, modelConfig, sink, onCancelled)
+                    }
+                }
+            } catch (timeout: TimeoutCancellationException) {
+                // Structured and recoverable: the Main Agent is told the delegate
+                // ran out of budget and can continue, re-delegate or report it.
+                // Never a raw cancellation, which would abort the whole run.
+                val error = AgentError(
+                    code = AgentErrorCode.TIMEOUT,
+                    message = "Sub-agent '${request.role.name}' exceeded its " +
+                        "${timeouts.subAgentTaskMillis}ms budget",
+                    role = request.role,
+                    sessionId = request.sessionId,
+                    cause = timeout,
+                    details = mapOf("stage" to "sub_agent"),
+                )
+                sink.emit(AgentEvent.Failed(request.sessionId, error, clock()))
+                SubAgentResult(
+                    sessionId = request.sessionId,
+                    role = request.role,
+                    status = AgentStatus.FAILED,
+                    summary = error.message.orEmpty(),
+                    errors = listOf(error),
+                )
             }
         }
         sessions.update(request.sessionId) { it.withStatus(result.status, clock()) }
@@ -470,7 +514,11 @@ class DefaultAgentOrchestrator(
      * message of the run — and nothing in the loop talks to the engine directly.
      * A missing engine simply means "no supporting context", never a failure.
      */
-    private suspend fun assembleContext(request: AgentRunRequest, sessionId: String): String {
+    private suspend fun assembleContext(
+        request: AgentRunRequest,
+        sessionId: String,
+        requiresWorkspace: Boolean,
+    ): String {
         val parts = mutableListOf<String>()
         if (request.context.isNotBlank()) parts += request.context
         val stored = history?.conversation(sessionId)
@@ -502,6 +550,11 @@ class DefaultAgentOrchestrator(
                 sessionId = sessionId,
                 workspaceId = request.workspaceId,
                 includeTask = false,
+                // A conversational turn contributes no workspace facts: no root
+                // listing and no workspace descriptor. Anything the caller
+                // supplied explicitly (mentioned file, open file, prior tool
+                // results) still applies.
+                includeWorkspace = requiresWorkspace,
                 mentionedFiles = request.mentionedFiles,
                 selectedFile = request.selectedFile,
                 conversation = conversation,
@@ -520,6 +573,7 @@ class DefaultAgentOrchestrator(
                 "contextChars" to parts.sumOf { it.length },
                 "engineItems" to assembled.items.size,
                 "engineEmpty" to assembled.isEmpty,
+                "requiresWorkspace" to requiresWorkspace,
                 "historyMessages" to (stored?.messages?.size ?: 0),
                 "conversationMessages" to conversation.size,
             ),
@@ -621,8 +675,4 @@ class DefaultAgentOrchestrator(
     }
 
     private fun isCancelled(sessionId: String): Boolean = cancellations[sessionId] == true
-
-    companion object {
-        const val DEFAULT_TIMEOUT_MILLIS = 120_000L
-    }
 }

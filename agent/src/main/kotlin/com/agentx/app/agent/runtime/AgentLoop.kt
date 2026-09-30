@@ -42,6 +42,8 @@ import com.agentx.app.agent.domain.toToolGrants
 import com.agentx.app.core.logging.ForgeLogger
 import com.agentx.app.core.logging.ForgeLoggers
 import com.agentx.app.core.logging.LogLevel
+import com.agentx.app.core.timeout.AgentTimeouts
+import com.agentx.app.core.timeout.withExecutionBudget
 import com.agentx.app.tools.ToolApproval
 import com.agentx.app.tools.ToolErrorCode
 import com.agentx.app.tools.ToolExecutionContext
@@ -49,6 +51,8 @@ import com.agentx.app.tools.ToolExecutionError
 import com.agentx.app.tools.ToolInput
 import com.agentx.app.tools.ToolResult
 import com.agentx.app.tools.ToolRouter
+import com.agentx.app.tools.ToolTimeouts
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlin.coroutines.cancellation.CancellationException
 
 fun interface SubAgentInvoker {
@@ -75,6 +79,16 @@ data class AgentLoopRequest(
     val resumePermission: ResumedPermission? = null,
     /** Template variables used to resolve this run's system prompt. */
     val promptVariables: PromptVariables = PromptVariables.EMPTY,
+    /**
+     * Whether this turn is about the project, so the workspace may be inspected
+     * on the agent's own initiative.
+     *
+     * Defaults to `true` so a caller that does not classify its turns keeps the
+     * previous, permissive behaviour. A conversational turn passes `false`, and
+     * the system prompt then says so plainly instead of ordering an inspection
+     * the user did not ask for. It never widens or narrows tool permissions.
+     */
+    val requiresWorkspace: Boolean = true,
 )
 
 /**
@@ -121,6 +135,11 @@ class AgentLoop(
     private val prompts: PromptManager? = null,
     /** Resolves the enabled skills for a role as structured context. */
     private val skillContext: SkillContextResolver? = null,
+    /**
+     * Central, per-operation execution budgets. A model request and a shell
+     * command do not share a value: see [AgentTimeouts].
+     */
+    private val timeouts: AgentTimeouts = AgentTimeouts.DEFAULT,
     private val logger: ForgeLogger = ForgeLoggers.create(LogLevel.INFO, baseFields = mapOf("layer" to "agent")),
 ) {
 
@@ -284,6 +303,25 @@ class AgentLoop(
             val response = try {
                 ContentToolCallParser.normalize(
                     complete(request.modelConfig, context.messages(), toolSpecs, sink, request.sessionId),
+                )
+            } catch (timeout: TimeoutCancellationException) {
+                // A model request that ran past its own budget is a recoverable
+                // agent error, not a user cancellation: report it as a timeout so
+                // it can never be confused with Stop/Cancel.
+                val agentError = modelTimeout(timeout, request)
+                errors += agentError
+                sink.emit(AgentEvent.Failed(request.sessionId, agentError, clock()))
+                return AgentResult(
+                    sessionId = request.sessionId,
+                    status = AgentStatus.FAILED,
+                    summary = agentError.message,
+                    findings = findings.toList(),
+                    filesInspected = filesInspected.toList(),
+                    filesChanged = filesChanged.toList(),
+                    toolActions = toolActions.toList(),
+                    errors = errors.toList(),
+                    role = request.definition.role,
+                    stepStats = stats(startedAt, stepIndex, request.maxSteps, modelCalls, toolCalls, subAgentCalls),
                 )
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -564,15 +602,22 @@ class AgentLoop(
                 timestampMillis = clock(),
             ),
         )
+        // Each tool gets the budget its own category deserves — a file read and a
+        // Gradle build must not share one constant. An explicitly supplied
+        // per-call budget is never overridden.
+        val callContext = context.copy(
+            timeoutMillis = context.timeoutMillis ?: toolTimeout(call.name),
+            approval = if (forcedApproval == true) {
+                ToolApproval.granted("resumed with approval")
+            } else {
+                context.approval
+            },
+        )
         val result = try {
             router.invoke(
                 toolName = call.name,
                 input = ToolInput(bridge.toToolArguments(call.arguments)),
-                context = if (forcedApproval == true) {
-                    context.copy(approval = ToolApproval.granted("resumed with approval"))
-                } else {
-                    context
-                },
+                context = callContext,
             )
         } catch (cancelled: CancellationException) {
             // A tool interrupted mid-flight is reported as cancelled, then the
@@ -798,6 +843,20 @@ class AgentLoop(
         )
     }
 
+    /**
+     * The central budget for [toolName], chosen from its declared category and
+     * capabilities. An unknown tool gets the generic tool budget, never a short
+     * default.
+     */
+    private fun toolTimeout(toolName: String): Long {
+        val definition = bridge.definitionsFor(listOf(toolName)).firstOrNull()
+        return ToolTimeouts.forCall(
+            category = definition?.category,
+            capabilities = definition?.capabilities.orEmpty(),
+            timeouts = timeouts,
+        )
+    }
+
     /** Maps a tool outcome onto the status the Context Engine records for it. */
     private fun statusOf(success: Boolean): ToolContextStatus =
         if (success) ToolContextStatus.SUCCESS else ToolContextStatus.FAILURE
@@ -873,6 +932,17 @@ class AgentLoop(
         )
     }
 
+    /** A model request that exceeded its own budget; distinct from a cancellation. */
+    private fun modelTimeout(error: TimeoutCancellationException, request: AgentLoopRequest): AgentError =
+        AgentError(
+            code = AgentErrorCode.TIMEOUT,
+            message = "The model did not answer within ${timeouts.modelRequestMillis}ms",
+            role = request.definition.role,
+            sessionId = request.sessionId,
+            cause = error,
+            details = mapOf("stage" to "model_request"),
+        )
+
     private fun modelFailure(error: Throwable, request: AgentLoopRequest): AgentError {
         val provider = error as? ModelProviderError
         val code = when (provider?.code) {
@@ -904,6 +974,16 @@ class AgentLoop(
      * as a single normalized [ModelResponse].
      */
     private suspend fun complete(
+        config: ModelConfig,
+        messages: List<ModelMessage>,
+        tools: List<ModelToolSpec>,
+        sink: AgentEventSink,
+        sessionId: String,
+    ): ModelResponse = withExecutionBudget(timeouts.modelRequestMillis) {
+        completeWithinBudget(config, messages, tools, sink, sessionId)
+    }
+
+    private suspend fun completeWithinBudget(
         config: ModelConfig,
         messages: List<ModelMessage>,
         tools: List<ModelToolSpec>,
@@ -1029,11 +1109,19 @@ class AgentLoop(
         append("\nPermission: ").append(request.permissionLevel.name)
         append("\nMax steps: ").append(request.maxSteps)
         append("\nAllowed tools: ").append(request.allowedTools.joinToString(", ").ifBlank { "(none)" })
-        request.workspaceId?.takeIf { it.isNotBlank() }?.let {
-            append("\nWorkspace id: ").append(it)
-            append("\nA workspace is already open. Inspect it with the filesystem tools before answering.")
-            append("\nDo not guess the project type or invent files; list the workspace first.")
+        request.workspaceId?.takeIf { it.isNotBlank() }?.let { id ->
+            append("\nWorkspace id: ").append(id)
+            if (request.requiresWorkspace) {
+                append("\nThis task is about the workspace. Inspect it with the filesystem tools before answering.")
+                append("\nDo not guess the project type or invent files; list the workspace first.")
+            } else {
+                // The user said "Hi", not "describe my project": no inspection is
+                // ordered, and the agent is told not to volunteer one.
+                append("\nThis message is not about the workspace. Reply conversationally.")
+                append("\nDo not list, read or summarise the project unless the user asks about it.")
+            }
         }
+        append("\nNever invent file contents or project structure; report only what a tool returned.")
         append("\nUse the tool-calling interface. Never write tool-call JSON as assistant text.")
         if (request.definition.role == AgentRole.MAIN) {
             append("\nDelegate at most one sub-agent per turn and wait for its result.")

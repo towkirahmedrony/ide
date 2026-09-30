@@ -21,6 +21,12 @@ object ServiceKeys {
     /** Central agent system-prompt manager (defaults + user overrides). */
     const val AGENT_PROMPTS = "forge.agent.prompts"
 
+    /**
+     * Central, per-operation execution budgets shared by the Agent Core, the Tool
+     * System and the Model Gateway. One source of truth for every timeout.
+     */
+    const val AGENT_TIMEOUTS = "forge.agent.timeouts"
+
     /** Central skills registry and manager. */
     const val SKILLS = "forge.skills"
     const val CONNECTION_MANAGER = "forge.integrations.connectionManager"

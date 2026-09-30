@@ -29,6 +29,7 @@ import com.agentx.app.core.foundation.ServiceKeys
 import com.agentx.app.core.health.HealthMonitor
 import com.agentx.app.core.health.HealthReport
 import com.agentx.app.core.logging.ForgeLoggers
+import com.agentx.app.core.timeout.AgentTimeouts
 import com.agentx.app.core.module.ModuleRegistry
 import com.agentx.app.git.GIT_LAYER
 import com.agentx.app.integrations.INTEGRATIONS_LAYER
@@ -84,6 +85,8 @@ data class FoundationState(
     val promptManager: PromptManager,
     /** Central skills registry and manager. */
     val skillManager: SkillManager,
+    /** Per-operation execution budgets shared by every agent layer. */
+    val timeouts: AgentTimeouts = AgentTimeouts.DEFAULT,
 )
 
 /**
@@ -110,6 +113,12 @@ object Foundation {
         contextWorkspace: WorkspaceContextProvider = DelegatingWorkspaceContextProvider(),
         codeIntelligenceParsers: SyntaxParserProvider = DelegatingSyntaxParserProvider(),
         codeIntelligenceLimits: CodeIntelligenceLimits = CodeIntelligenceLimits.DEFAULT,
+        /**
+         * Per-operation execution budgets for the whole agent stack. One value
+         * object, so the Agent Core, the Tool System and the Model Gateway can
+         * never drift apart; see [AgentTimeouts].
+         */
+        timeouts: AgentTimeouts = AgentTimeouts.DEFAULT,
     ): FoundationState {
         val logger = ForgeLoggers.create(
             level = config.logLevel,
@@ -125,6 +134,9 @@ object Foundation {
         val skillManager = DefaultSkillManager(sources = skillSources, store = skillStore)
         services.register(ServiceKeys.AGENT_PROMPTS, promptManager)
         services.register(ServiceKeys.SKILLS, skillManager)
+        // Execution budgets are registered before the agent modules so every
+        // layer resolves the same configuration instead of a private constant.
+        services.register(ServiceKeys.AGENT_TIMEOUTS, timeouts)
         // Agent session conversations are the Agent Core's own persistent history;
         // registering the store here means the Agent module binds to it instead of
         // falling back to an in-memory one.
@@ -187,7 +199,9 @@ object Foundation {
             ),
         )
         modules.register(WorkspaceModule())
-        modules.register(AgentModule())
+        // The module reads the registered budgets from the container; the value
+        // passed here is only the fallback for an unregistered container.
+        modules.register(AgentModule(timeouts))
         modules.initialize(services)
 
         val health = HealthMonitor()
@@ -210,6 +224,7 @@ object Foundation {
             codeIntelligenceParsers = codeIntelligenceParsers,
             promptManager = promptManager,
             skillManager = skillManager,
+            timeouts = timeouts,
         )
     }
 

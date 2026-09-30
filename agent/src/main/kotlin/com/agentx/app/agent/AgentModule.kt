@@ -18,6 +18,7 @@ import com.agentx.app.context.RunContextFactory
 import com.agentx.app.context.SkillContextProvider
 import com.agentx.app.context.SkillContextResolver
 import com.agentx.app.core.foundation.ServiceKeys
+import com.agentx.app.core.timeout.AgentTimeouts
 import com.agentx.app.core.module.ForgeModule
 import com.agentx.app.core.module.ModuleContext
 import com.agentx.app.model.DefaultModelGateway
@@ -34,7 +35,8 @@ import com.agentx.app.tools.ToolRouter
  * registry are taken from the container; nothing is hardcoded.
  */
 class AgentModule(
-    private val timeoutMillis: Long = DefaultAgentOrchestrator.DEFAULT_TIMEOUT_MILLIS,
+    /** Fallback budgets, used when none are registered in the container. */
+    private val timeouts: AgentTimeouts = AgentTimeouts.DEFAULT,
 ) : ForgeModule {
 
     override val id: String = "agent"
@@ -59,7 +61,9 @@ class AgentModule(
             registry = registry,
             router = router,
             contextEngine = engine,
-            timeoutMillis = timeoutMillis,
+            // The container owns the budgets when the app registers them, so one
+            // configuration drives the orchestrator, the loop and the tool system.
+            timeouts = context.services.get<AgentTimeouts>(ServiceKeys.AGENT_TIMEOUTS) ?: timeouts,
             prompts = prompts,
             skillContext = skillContext,
             sessions = sessionStore,
@@ -84,7 +88,7 @@ class AgentModule(
             registry: ToolRegistry,
             router: ToolRouter,
             contextEngine: ContextEngine? = null,
-            timeoutMillis: Long = DefaultAgentOrchestrator.DEFAULT_TIMEOUT_MILLIS,
+            timeouts: AgentTimeouts = AgentTimeouts.DEFAULT,
             prompts: PromptManager? = null,
             skillContext: SkillContextResolver? = null,
             sessions: AgentSessionStore = InMemoryAgentSessionStore(),
@@ -99,6 +103,7 @@ class AgentModule(
                 runContexts = RunContextFactory.of(engine),
                 prompts = prompts,
                 skillContext = skillContext,
+                timeouts = timeouts,
             )
             val specialized = SpecializedAgentFactory(
                 loop = loop,
@@ -113,7 +118,7 @@ class AgentModule(
                 sessions = sessions,
                 contextEngine = engine,
                 history = history,
-                defaultTimeoutMillis = timeoutMillis,
+                timeouts = timeouts,
             )
             return AgentRuntime(
                 orchestrator = orchestrator,

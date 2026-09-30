@@ -25,8 +25,21 @@ data class ContextRequest(
     val searchResults: List<String> = emptyList(),
     /** Directories the task explicitly needs a listing of. */
     val directories: List<String> = emptyList(),
+    /**
+     * Whether this turn is about the project.
+     *
+     * A conversational turn ("Hi", "thanks") must not be answered with a
+     * description of the open project. When this is false the engine contributes
+     * no workspace *facts* of its own: no root directory listing and no workspace
+     * descriptor. Only what the caller explicitly supplied (mentioned files, the
+     * open file, tool results) is used, so nothing is inspected behind the user's
+     * back.
+     */
+    val includeWorkspace: Boolean = true,
     /** Adds a small summary item for the workspace root (one directory read). */
     val includeWorkspaceRootSummary: Boolean = true,
+    /** Adds the workspace name/root/selection item. */
+    val includeWorkspaceInfo: Boolean = true,
     val toolResults: List<ToolContextResult> = emptyList(),
     /** Prior conversation turns, oldest first. */
     val conversation: List<ModelMessage> = emptyList(),

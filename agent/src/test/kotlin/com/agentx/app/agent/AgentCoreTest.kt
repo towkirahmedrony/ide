@@ -18,6 +18,7 @@ import com.agentx.app.agent.tools.AgentToolBridge
 import com.agentx.app.context.DefaultContextEngine
 import com.agentx.app.context.WorkspaceRuntimeContextProvider
 import com.agentx.app.context.WorkspaceSelectionState
+import com.agentx.app.core.timeout.AgentTimeouts
 import com.agentx.app.core.valueOrNull
 import com.agentx.app.model.DefaultModelGateway
 import com.agentx.app.model.ModelConfig
@@ -64,14 +65,21 @@ class AgentCoreTest {
             it.register(webFetch)
         }
 
-        fun runtime(provider: ScriptedModelProvider, timeoutMillis: Long = 30_000L): AgentRuntime {
+        fun runtime(
+            provider: ScriptedModelProvider,
+            /** Budgets only; the shipped defaults are deliberately long. */
+            timeouts: AgentTimeouts = AgentTimeouts(
+                mainTaskMillis = 30_000L,
+                subAgentTaskMillis = 30_000L,
+            ),
+        ): AgentRuntime {
             val gateway = DefaultModelGateway()
             gateway.register(provider)
             return AgentModule.assemble(
                 gateway = gateway,
                 registry = registry,
                 router = DefaultToolRouter(registry),
-                timeoutMillis = timeoutMillis,
+                timeouts = timeouts,
             )
         }
     }

@@ -3,10 +3,11 @@ package com.agentx.app.tools
 import com.agentx.app.core.logging.ForgeLogger
 import com.agentx.app.core.logging.ForgeLoggers
 import com.agentx.app.core.logging.LogLevel
+import com.agentx.app.core.timeout.AgentTimeouts
+import com.agentx.app.core.timeout.withExecutionBudget
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
@@ -25,7 +26,8 @@ interface ToolExecutor {
 }
 
 class DefaultToolExecutor(
-    private val defaultTimeoutMillis: Long = DEFAULT_TIMEOUT_MILLIS,
+    /** Central per-category budgets; the caller may override one call explicitly. */
+    private val timeouts: AgentTimeouts = AgentTimeouts.DEFAULT,
     private val logger: ForgeLogger = ForgeLoggers.create(
         level = LogLevel.INFO,
         baseFields = mapOf("layer" to "tools"),
@@ -38,7 +40,11 @@ class DefaultToolExecutor(
         context: ToolExecutionContext,
     ): ToolResult {
         val name = tool.definition.name
-        val timeout = (context.timeoutMillis ?: defaultTimeoutMillis).coerceAtLeast(1L)
+        val definition = tool.definition
+        // An explicit per-call budget wins; otherwise the tool's own category
+        // decides, so a file read and a Gradle build do not share one constant.
+        val timeout = context.timeoutMillis
+            ?: ToolTimeouts.forCall(definition.category, definition.capabilities, timeouts)
         val startedAt = System.currentTimeMillis()
         logger.debug(
             "Executing tool",
@@ -51,7 +57,7 @@ class DefaultToolExecutor(
         )
         return try {
             val output = withContext(Dispatchers.Default) {
-                withTimeout(timeout) {
+                withExecutionBudget(timeout) {
                     SecretRedactor.redactOutput(tool.execute(input, context))
                 }
             }
@@ -94,6 +100,10 @@ class DefaultToolExecutor(
     }
 
     companion object {
-        const val DEFAULT_TIMEOUT_MILLIS: Long = 30_000L
+        /**
+         * The generic tool budget. Category-specific budgets (shell, file,
+         * network) live in [AgentTimeouts]; this only names the fallback.
+         */
+        const val DEFAULT_TIMEOUT_MILLIS: Long = AgentTimeouts.TOOL_EXECUTION_MILLIS
     }
 }

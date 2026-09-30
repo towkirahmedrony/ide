@@ -35,6 +35,12 @@ data class MainAgentRequest(
     val resumePermission: ResumedPermission? = null,
     /** Template variables used to resolve this run's system prompt. */
     val promptVariables: PromptVariables = PromptVariables.EMPTY,
+    /**
+     * Whether the user's message is about the project. When false the run is
+     * conversational and the workspace is not inspected on the agent's own
+     * initiative.
+     */
+    val requiresWorkspace: Boolean = true,
 )
 
 /**
@@ -80,6 +86,7 @@ class MainAgent(
                 resumeContext = request.resumeContext,
                 resumePermission = request.resumePermission,
                 promptVariables = request.promptVariables,
+                requiresWorkspace = request.requiresWorkspace,
             ),
             sink = sink,
             subAgentInvoker = subAgentInvoker,

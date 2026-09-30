@@ -1,5 +1,7 @@
 package com.agentx.app.model.runtime
 
+import com.agentx.app.core.timeout.AgentTimeouts
+
 /**
  * Bounds for every connection operation.
  *
@@ -18,8 +20,15 @@ data class ModelConnectionPolicy(
     val maxBackoffMillis: Long = 8_000,
     val backoffMultiplier: Double = 2.0,
 
-    /** Hard cap for a single connect operation, so nothing hangs. */
-    val operationTimeoutMillis: Long = 120_000,
+    /**
+     * Hard cap for a single connect operation, so nothing hangs.
+     *
+     * It follows the central model budget rather than an arbitrary two minutes:
+     * bringing up a cold local runtime (a hosted tunnel, a freshly started Colab
+     * session) legitimately takes minutes, and the previous 120s cap reported that
+     * as "model offline".
+     */
+    val operationTimeoutMillis: Long = AgentTimeouts.MODEL_REQUEST_MILLIS,
 
     /** Cap for one health request; the transport timeout is the outer bound. */
     val healthTimeoutMillis: Long = 10_000,

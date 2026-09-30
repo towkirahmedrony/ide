@@ -1,5 +1,6 @@
 package com.agentx.app.model.http
 
+import com.agentx.app.core.timeout.AgentTimeouts
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -101,7 +102,15 @@ class UrlConnectionHttpTransport(
     }
 
     companion object {
+        /** Establishing the connection only; deliberately short. */
         const val DEFAULT_CONNECT_TIMEOUT_MILLIS: Int = 15_000
-        const val DEFAULT_READ_TIMEOUT_MILLIS: Int = 120_000
+
+        /**
+         * Socket read timeout for one HTTP exchange. A local model can think for
+         * a long time before the first byte and a streamed answer resets this on
+         * every chunk, so it follows the central model-request budget rather than
+         * an arbitrary two minutes. A caller may still override it.
+         */
+        val DEFAULT_READ_TIMEOUT_MILLIS: Int = AgentTimeouts.MODEL_REQUEST_MILLIS.toInt()
     }
 }
