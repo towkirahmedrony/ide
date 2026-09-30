@@ -1,5 +1,9 @@
 package com.agentx.app.agent.conversation
 
+import com.agentx.app.model.json.Json
+import com.agentx.app.model.json.JsonCodec
+import com.agentx.app.model.json.objectOrNull
+import com.agentx.app.model.json.stringOrNull
 import java.io.File
 
 /**
@@ -72,36 +76,33 @@ class FilesystemConversationStore(
         }
     }
 
+    /** Loads the workspace -> active session map once, on first use. */
     private fun ensureActive() {
         if (loaded) return
         loaded = true
         val file = File(root, ACTIVE_FILE)
         if (!file.isFile) return
-        val decoded = ConversationCodec.decodeAll("[]")
         runCatching {
-            val text = file.readText()
-            val parsed = com.agentx.app.model.json.JsonCodec.parse(text)
-            val fields = parsed.objectOrNull() ?: return
+            val fields = JsonCodec.parse(file.readText()).objectOrNull() ?: return@runCatching
             fields.forEach { (key, value) ->
-                value.stringOrNull()?.takeIf { it.isNotBlank() }?.let { active[key] = it }
+                value.stringOrNull()?.takeIf { it.isNotBlank() }?.let { id -> active[key] = id }
             }
         }
-        decoded
     }
 
     private fun persistActive() {
         root.mkdirs()
-        val fields = active.mapValues { com.agentx.app.model.json.Json.of(it.value) }
-        File(root, ACTIVE_FILE).writeText(
-            com.agentx.app.model.json.JsonCodec.encodeObject(fields),
-        )
+        val fields = active.mapValues { Json.of(it.value) }
+        File(root, ACTIVE_FILE).writeText(JsonCodec.encodeObject(fields))
     }
 
+    /**
+     * Maps a session id to its file. Only `[A-Za-z0-9_-]+` ids are addressable,
+     * so a malformed id can never address another session or escape [root].
+     */
     private fun fileFor(sessionId: String): File? {
-        if (sessionId.isBlank() || sessionId.any { it == '/' || it == '\\' || it == '.' }) {
-            if (sessionId.any { !it.isLetterOrDigit() && it != '-' && it != '_' }) return null
-        }
-        if (sessionId.startsWith("_")) return null
+        if (sessionId.isBlank() || sessionId.startsWith("_")) return null
+        if (sessionId.any { !it.isLetterOrDigit() && it != '-' && it != '_' }) return null
         return File(root, "$sessionId.json")
     }
 
@@ -111,9 +112,3 @@ class FilesystemConversationStore(
         const val ACTIVE_FILE = "_active.json"
     }
 }
-
-private fun com.agentx.app.model.json.JsonValue.objectOrNull() =
-    com.agentx.app.model.json.objectOrNull()
-
-private fun com.agentx.app.model.json.JsonValue.stringOrNull() =
-    com.agentx.app.model.json.stringOrNull()
