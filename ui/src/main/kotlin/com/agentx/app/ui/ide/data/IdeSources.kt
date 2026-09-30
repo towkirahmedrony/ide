@@ -26,16 +26,12 @@ fun interface WorkspacePicker {
 /** Incremental events emitted while an agent produces a response. */
 sealed interface AgentStreamEvent {
     data class Activity(val activity: AgentActivity) : AgentStreamEvent
-
     data class Chunk(val text: String) : AgentStreamEvent
-
     data class Completed(val text: String) : AgentStreamEvent
-
     data class Failed(
         val message: String,
         val kind: AgentFailureKind = AgentFailureKind.UNKNOWN,
     ) : AgentStreamEvent
-
     data class AgentChanged(val role: String, val label: String) : AgentStreamEvent
 
     /**
@@ -73,6 +69,10 @@ sealed interface AgentStreamEvent {
         /** Raw tool output for the expandable terminal/tool rows; redacted by the presentation layer. */
         val output: String = "",
     ) : AgentStreamEvent
+
+    data class OutputDelta(val text: String) : AgentStreamEvent
+
+    data class ToolProgress(val toolName: String, val detail: String) : AgentStreamEvent
 
     /**
      * A tool call is parked until the user decides. Carries everything the
