@@ -323,6 +323,18 @@ internal fun mapEvent(event: AgentEvent): AgentStreamEvent? = when (event) {
         AgentActivity(AgentActivityStatus.THINKING, event.detail ?: "AI responding"),
     )
 
+    // The runtime's own plan, forwarded as-is: same steps, same titles, same
+    // statuses. Nothing is added, renamed or advanced on the way to the UI.
+    is AgentEvent.PlanUpdated -> AgentStreamEvent.Plan(
+        event.plan.steps.map { step ->
+            AgentStreamEvent.PlanStep(
+                index = step.index,
+                title = step.title,
+                status = step.status.name,
+            )
+        },
+    )
+
     is AgentEvent.ToolRequested -> AgentStreamEvent.ToolRequested(
         toolName = event.toolName,
         detail = describeToolArguments(event.arguments),

@@ -104,6 +104,25 @@ data class AgentActivityUiModel(
     val role: String? = null,
 )
 
+/**
+ * Status of one plan entry, as reported by the Agent Runtime.
+ *
+ * It mirrors the runtime's own step status; the UI never advances a step on its
+ * own, so a plan can only ever show what the runtime actually said.
+ */
+enum class PlanStepStatus { PENDING, ACTIVE, DONE, FAILED }
+
+/**
+ * One high-level plan step produced by the Agent Runtime
+ * ([com.agentx.app.agent.domain.AgentPlan] / [AgentStep]). Steps the runtime
+ * never created are never shown; a simple task with no plan shows no plan block.
+ */
+data class PlanStepUiModel(
+    val index: Int,
+    val title: String,
+    val status: PlanStepStatus,
+)
+
 /** A human-readable failure, without stack traces by default. */
 data class UiError(
     val title: String,
@@ -123,6 +142,12 @@ data class ChatMessageUiModel(
     val tool: ToolActivityUiModel? = null,
     val error: UiError? = null,
     val activities: List<AgentActivityUiModel> = emptyList(),
+    /**
+     * The runtime's plan for this turn, oldest step first. Empty when the Agent
+     * Runtime produced no plan (a simple task), in which case no plan block is
+     * rendered rather than a fabricated one.
+     */
+    val planSteps: List<PlanStepUiModel> = emptyList(),
     val elapsedMillis: Long? = null,
     val modelId: String? = null,
 ) {

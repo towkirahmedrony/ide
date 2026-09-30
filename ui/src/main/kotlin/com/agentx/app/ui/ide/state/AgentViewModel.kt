@@ -248,13 +248,29 @@ class AgentViewModel(
     fun refreshElapsed() {
         val started = uiState.generation.startedAtMillis ?: return
         val elapsed = (now() - started).coerceAtLeast(0L)
+        val current = now()
         uiState = uiState.copy(
             generation = uiState.generation.copy(elapsedMillis = elapsed),
             messages = uiState.messages.map { message ->
-                if (message.kind == ChatMessageKind.ASSISTANT && message.state == MessageState.STREAMING) {
-                    message.copy(elapsedMillis = elapsed)
-                } else {
+                if (message.kind != ChatMessageKind.ASSISTANT || message.state != MessageState.STREAMING) {
                     message
+                } else {
+                    message.copy(
+                        elapsedMillis = elapsed,
+                        // The step in flight ticks on its own, from its own real
+                        // start time, so "Running · 18s" counts the operation the
+                        // user is actually waiting on. Finished rows keep the
+                        // duration they were completed with.
+                        activities = message.activities.map { activity ->
+                            if (activity.status == ActivityItemStatus.ACTIVE) {
+                                activity.copy(
+                                    elapsedMillis = (current - activity.timestampMillis).coerceAtLeast(0L),
+                                )
+                            } else {
+                                activity
+                            }
+                        },
+                    )
                 }
             },
         )
@@ -398,6 +414,20 @@ class AgentViewModel(
             is AgentStreamEvent.AgentChanged -> {
                 uiState = uiState.copy(currentAgent = event.label)
                 setActivity(AgentActivityStatus.WAITING, event.label)
+            }
+
+            is AgentStreamEvent.Plan -> {
+                // The runtime's plan is stored verbatim on the turn it belongs to.
+                // A later plan replaces the earlier one; the UI contributes no
+                // steps of its own and never advances a step.
+                val steps = AgentChatPresentation.planStepsToUi(event.steps)
+                if (steps.isNotEmpty()) {
+                    uiState = uiState.copy(
+                        messages = uiState.messages.map { message ->
+                            if (message.id == assistantId) message.copy(planSteps = steps) else message
+                        },
+                    )
+                }
             }
 
             is AgentStreamEvent.SubAgentStarted -> {

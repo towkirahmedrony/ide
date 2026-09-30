@@ -38,6 +38,18 @@ sealed interface AgentStreamEvent {
 
     data class AgentChanged(val role: String, val label: String) : AgentStreamEvent
 
+    /**
+     * The Agent Runtime published its plan for this task.
+     *
+     * [steps] is the runtime's own step list with the runtime's own statuses; the
+     * UI never invents a step and never advances one on its own. A task the
+     * runtime planned without steps produces no plan block at all.
+     */
+    data class Plan(val steps: List<PlanStep>) : AgentStreamEvent
+
+    /** One plan step, exactly as the Agent Runtime reported it. */
+    data class PlanStep(val index: Int, val title: String, val status: String)
+
     /** A sub-agent run started; [detail] is its safe objective. */
     data class SubAgentStarted(val role: String, val label: String, val detail: String) : AgentStreamEvent
 

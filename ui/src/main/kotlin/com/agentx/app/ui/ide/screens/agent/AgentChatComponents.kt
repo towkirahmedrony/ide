@@ -88,6 +88,8 @@ import com.agentx.app.ui.ide.model.ChatMessageUiModel
 import com.agentx.app.ui.ide.model.InlineSpan
 import com.agentx.app.ui.ide.model.MessageBlock
 import com.agentx.app.ui.ide.model.MessageState
+import com.agentx.app.ui.ide.model.PlanStepStatus
+import com.agentx.app.ui.ide.model.PlanStepUiModel
 import com.agentx.app.ui.ide.model.ToolActivityUiModel
 import com.agentx.app.ui.ide.model.ToolRunStatus
 import com.agentx.app.ui.ide.model.UiError
@@ -239,6 +241,7 @@ private fun AgentAssistantMessage(
                         else -> AgentTurnOutcome.SUCCESS
                     },
                     elapsedMillis = message.elapsedMillis ?: 0L,
+                    planSteps = message.planSteps,
                 )
             }
 
@@ -444,6 +447,7 @@ private fun AgentErrorCard(
                 activities = message.activities,
                 outcome = AgentTurnOutcome.FAILED,
                 elapsedMillis = message.elapsedMillis ?: 0L,
+                planSteps = message.planSteps,
             )
         }
         Spacer(Modifier.height(10.dp))
@@ -479,6 +483,8 @@ fun AgentActivityPanel(
     activities: List<AgentActivityUiModel>,
     outcome: AgentTurnOutcome,
     elapsedMillis: Long,
+    /** The runtime's plan for this turn; empty when it produced none. */
+    planSteps: List<PlanStepUiModel> = emptyList(),
     modifier: Modifier = Modifier,
 ) {
     val running = outcome == AgentTurnOutcome.RUNNING
@@ -578,7 +584,82 @@ fun AgentActivityPanel(
         }
         AnimatedVisibility(visible = expanded) {
             Column(modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 10.dp)) {
+                // The runtime's plan first, then the real execution steps that
+                // carried it out. No plan means no plan block.
+                if (planSteps.isNotEmpty()) {
+                    PlanStepsBlock(planSteps)
+                    if (activities.isNotEmpty()) Spacer(Modifier.height(6.dp))
+                }
                 activities.forEach { activity -> AgentActivityRow(activity) }
+            }
+        }
+    }
+}
+
+/**
+ * The Agent Runtime's plan for this turn.
+ *
+ * Every row is a step the runtime actually produced, shown with the runtime's own
+ * status: ✓ done, ● active, ○ pending, ✕ failed. Nothing is added, reordered or
+ * advanced here, so a plan can never claim progress the agent did not make.
+ */
+@Composable
+private fun PlanStepsBlock(steps: List<PlanStepUiModel>) {
+    Column(modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp)) {
+        Text(
+            text = "Plan · ${AgentChatPresentation.planProgressLabel(steps)}",
+            style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+            color = ForgeMuted,
+            fontFamily = FontFamily.Monospace,
+        )
+        Spacer(Modifier.height(4.dp))
+        steps.forEach { step ->
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(modifier = Modifier.size(14.dp), contentAlignment = Alignment.Center) {
+                    when (step.status) {
+                        PlanStepStatus.ACTIVE -> CircularProgressIndicator(
+                            modifier = Modifier.size(11.dp),
+                            strokeWidth = 2.dp,
+                            color = ForgeMint,
+                        )
+                        PlanStepStatus.DONE -> Icon(
+                            Icons.Filled.CheckCircle,
+                            contentDescription = null,
+                            tint = ForgeMint,
+                            modifier = Modifier.size(13.dp),
+                        )
+                        PlanStepStatus.FAILED -> Icon(
+                            Icons.Filled.Close,
+                            contentDescription = null,
+                            tint = ForgeDanger,
+                            modifier = Modifier.size(13.dp),
+                        )
+                        // A hollow dot for "not started yet" — drawn rather than
+                        // taken from an icon set that may not ship this glyph.
+                        PlanStepStatus.PENDING -> Box(
+                            modifier = Modifier
+                                .size(9.dp)
+                                .border(1.5.dp, ForgeMuted, CircleShape),
+                        )
+                    }
+                }
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = step.title,
+                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
+                    color = when (step.status) {
+                        PlanStepStatus.ACTIVE -> ForgeMint
+                        PlanStepStatus.FAILED -> ForgeDanger
+                        PlanStepStatus.DONE -> ForgeMuted
+                        PlanStepStatus.PENDING -> ForgeMuted
+                    },
+                    modifier = Modifier.weight(1f),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
         }
     }

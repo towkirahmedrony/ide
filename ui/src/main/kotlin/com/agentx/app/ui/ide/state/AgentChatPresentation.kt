@@ -3,6 +3,7 @@ package com.agentx.app.ui.ide.state
 import com.agentx.app.model.ContentToolCallParser
 import com.agentx.app.model.ModelResponse
 import com.agentx.app.ui.ide.data.AgentFailureKind
+import com.agentx.app.ui.ide.data.AgentStreamEvent.PlanStep
 import com.agentx.app.ui.ide.data.PersistedAgentMessage
 import com.agentx.app.ui.ide.data.PersistedMessageKind
 import com.agentx.app.ui.ide.model.ActivityItemStatus
@@ -14,6 +15,8 @@ import com.agentx.app.ui.ide.model.ChatMessageUiModel
 import com.agentx.app.ui.ide.model.InlineSpan
 import com.agentx.app.ui.ide.model.MessageBlock
 import com.agentx.app.ui.ide.model.MessageState
+import com.agentx.app.ui.ide.model.PlanStepStatus
+import com.agentx.app.ui.ide.model.PlanStepUiModel
 import com.agentx.app.ui.ide.model.ToolActivityUiModel
 import com.agentx.app.ui.ide.model.ToolRunStatus
 import com.agentx.app.ui.ide.model.UiError
@@ -598,6 +601,48 @@ object AgentChatPresentation {
             ActivityItemStatus.FAILED -> last.label
             else -> last.label
         }
+    }
+
+    // ───────────────────────────── Plan steps ─────────────────────────────
+
+    /**
+     * Maps the runtime's plan steps into display rows.
+     *
+     * Only the runtime's own status is mapped; no step is added, reordered or
+     * advanced here. An unrecognised status is treated as pending rather than
+     * guessed at, so a new runtime state can never render as a false "done".
+     */
+    fun planStepsToUi(steps: List<PlanStep>): List<PlanStepUiModel> = steps
+        .sortedBy { it.index }
+        .map { step ->
+            PlanStepUiModel(
+                index = step.index,
+                title = step.title,
+                status = planStatusOf(step.status),
+            )
+        }
+
+    /** Maps the runtime's step status name onto a display status. */
+    fun planStatusOf(status: String): PlanStepStatus = when (status.trim().uppercase()) {
+        "COMPLETED" -> PlanStepStatus.DONE
+        "RUNNING", "PLANNING" -> PlanStepStatus.ACTIVE
+        "FAILED", "MAX_STEPS_REACHED", "CANCELLED" -> PlanStepStatus.FAILED
+        else -> PlanStepStatus.PENDING
+    }
+
+    /**
+     * The single step a collapsed plan block shows: the step in progress, or the
+     * first step still to do when nothing is running.
+     */
+    fun activePlanStep(steps: List<PlanStepUiModel>): PlanStepUiModel? =
+        steps.lastOrNull { it.status == PlanStepStatus.ACTIVE }
+            ?: steps.firstOrNull { it.status == PlanStepStatus.PENDING }
+            ?: steps.lastOrNull()
+
+    /** `2 of 5 steps` for the plan block's collapsed header. */
+    fun planProgressLabel(steps: List<PlanStepUiModel>): String {
+        val done = steps.count { it.status == PlanStepStatus.DONE }
+        return "$done of ${steps.size} steps"
     }
 
     /** Redacts and truncates a tool argument preview so no secret reaches the UI. */
