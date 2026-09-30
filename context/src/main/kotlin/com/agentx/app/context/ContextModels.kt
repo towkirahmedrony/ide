@@ -34,6 +34,9 @@ enum class ContextSource {
 
     /** Progress and state of the running agent task. */
     AGENT_STATE,
+
+    /** Instructions from a skill assigned to the running agent role. */
+    SKILL,
     ;
 
     /** Coarse band this source falls back to when a builder does not set one. */
@@ -47,6 +50,7 @@ enum class ContextSource {
             WORKSPACE_INFO -> ContextPriority.LOW
             CONVERSATION -> ContextPriority.LOW
             AGENT_STATE -> ContextPriority.LOW
+            SKILL -> ContextPriority.NORMAL
         }
 }
 
@@ -75,6 +79,7 @@ enum class ContextReason {
     AGENT_STATE,
     CONVERSATION,
     PROVIDER,
+    SKILL,
     MANUAL,
 }
 
@@ -197,6 +202,14 @@ object ContextRelevance {
     const val CONVERSATION_STEP = 2.0
     const val CONVERSATION_MIN = 10.0
 
+    /**
+     * Skills. Sits between tool results and search results: skill instructions
+     * are useful but must never displace the user's request or real file reads.
+     */
+    const val SKILL_HIGH = 68.0
+    const val SKILL_NORMAL = 58.0
+    const val SKILL_LOW = 42.0
+
     const val DEFAULT = 50.0
 
     fun defaultFor(source: ContextSource): Double = when (source) {
@@ -208,6 +221,7 @@ object ContextRelevance {
         ContextSource.DIRECTORY -> DIRECTORY
         ContextSource.WORKSPACE_INFO -> WORKSPACE_INFO
         ContextSource.CONVERSATION -> CONVERSATION
+        ContextSource.SKILL -> SKILL_NORMAL
     }
 
     fun toolResult(status: ToolContextStatus): Double = when (status) {

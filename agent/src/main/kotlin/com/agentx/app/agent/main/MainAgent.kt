@@ -10,6 +10,7 @@ import com.agentx.app.agent.domain.AgentRole
 import com.agentx.app.agent.domain.AgentStatus
 import com.agentx.app.agent.domain.AgentStep
 import com.agentx.app.agent.domain.AgentTask
+import com.agentx.app.agent.prompt.PromptVariables
 import com.agentx.app.agent.runtime.AgentLoop
 import com.agentx.app.agent.runtime.AgentLoopRequest
 import com.agentx.app.agent.runtime.ResumedPermission
@@ -32,6 +33,8 @@ data class MainAgentRequest(
     val resumeContext: List<ModelMessage> = emptyList(),
     /** The parked tool call plus the user's decision, when resuming. */
     val resumePermission: ResumedPermission? = null,
+    /** Template variables used to resolve this run's system prompt. */
+    val promptVariables: PromptVariables = PromptVariables.EMPTY,
 )
 
 /**
@@ -76,6 +79,7 @@ class MainAgent(
                 contextBudget = request.contextBudget,
                 resumeContext = request.resumeContext,
                 resumePermission = request.resumePermission,
+                promptVariables = request.promptVariables,
             ),
             sink = sink,
             subAgentInvoker = subAgentInvoker,

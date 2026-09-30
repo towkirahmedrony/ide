@@ -18,6 +18,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Handyman
 import androidx.compose.material.icons.filled.Info
@@ -54,7 +55,8 @@ enum class SettingsSection(
 ) {
     MODEL("model", "Models", "Saved models, runners and the active connection", Icons.Filled.Memory),
     CONNECTIONS("connections", "Connections", "External services the agent may use through tools", Icons.Filled.Hub),
-    AGENT("agent", "Agent", "Instructions, autonomy and generation limits", Icons.Filled.AutoAwesome),
+    AGENT("agent", "Agents", "System prompts for the Main agent and each sub-agent", Icons.Filled.AutoAwesome),
+    SKILLS("skills", "Skills", "Installed skills, enablement and agent assignment", Icons.Filled.Extension),
     TOOLS("tools", "Tools", "Enable or disable agent tools", Icons.Filled.Handyman),
     PERMISSIONS("permissions", "Permissions", "Allow, ask or deny per capability", Icons.Filled.Security),
     WORKSPACE("workspace", "Workspace", "Default workspace and runtime options", Icons.Filled.Folder),

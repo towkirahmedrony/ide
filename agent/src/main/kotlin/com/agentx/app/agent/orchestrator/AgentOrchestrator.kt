@@ -14,6 +14,7 @@ import com.agentx.app.agent.domain.SubAgentRequest
 import com.agentx.app.agent.domain.SubAgentResult
 import com.agentx.app.agent.main.MainAgent
 import com.agentx.app.agent.main.MainAgentRequest
+import com.agentx.app.agent.prompt.PromptVariables
 import com.agentx.app.agent.runtime.AgentIds
 import com.agentx.app.agent.runtime.ResumedPermission
 import com.agentx.app.agent.runtime.SubAgentInvoker
@@ -80,6 +81,7 @@ class DefaultAgentOrchestrator(
         val modelConfig: ModelConfig,
         val timeoutMillis: Long,
         val contextBudget: ContextBudget,
+        val promptVariables: PromptVariables,
     )
 
     private val pausedPermissions = ConcurrentHashMap<String, PausedRun>()
@@ -137,6 +139,7 @@ class DefaultAgentOrchestrator(
         val job = coroutineContext[Job]
         if (job != null) jobs[sessionId] = job
 
+        val variables = promptVariables(request)
         return try {
             val assembled = assembleContext(request, sessionId)
             val result = withTimeout(timeout) {
@@ -147,6 +150,7 @@ class DefaultAgentOrchestrator(
                         context = assembled,
                         modelConfig = modelConfig,
                         contextBudget = request.contextBudget,
+                        promptVariables = variables,
                     ),
                     sink = sink,
                     subAgentInvoker = SubAgentInvoker { child ->
@@ -164,6 +168,7 @@ class DefaultAgentOrchestrator(
                     modelConfig = modelConfig,
                     timeoutMillis = timeout,
                     contextBudget = request.contextBudget,
+                    promptVariables = variables,
                 )
             }
             result
@@ -252,6 +257,7 @@ class DefaultAgentOrchestrator(
                             toolCallId = paused.pending.toolCallId,
                             approved = approved,
                         ),
+                        promptVariables = paused.promptVariables,
                     ),
                     sink = sink,
                     subAgentInvoker = SubAgentInvoker { child ->
@@ -269,6 +275,7 @@ class DefaultAgentOrchestrator(
                     modelConfig = modelConfig,
                     timeoutMillis = paused.timeoutMillis,
                     contextBudget = paused.contextBudget,
+                    promptVariables = paused.promptVariables,
                 )
             }
             result
@@ -425,6 +432,40 @@ class DefaultAgentOrchestrator(
             ),
         )
         return parts.joinToString("\n\n")
+    }
+
+    /**
+     * Template variables available to a run's system prompt. Only non-secret,
+     * non-sensitive values are exposed; an unknown value is simply omitted and
+     * left as a visible `{{token}}` in the prompt.
+     */
+    private fun promptVariables(request: AgentRunRequest): PromptVariables = PromptVariables(
+        buildMap {
+            request.workspaceId?.takeIf { it.isNotBlank() }?.let { put("workspace", it) }
+            request.selectedFile?.takeIf { it.isNotBlank() }?.let { file ->
+                put("current_file", file)
+                languageOf(file)?.let { put("language", it) }
+            }
+        },
+    )
+
+    private fun languageOf(path: String): String? = when (path.substringAfterLast('.', "").lowercase()) {
+        "kt", "kts" -> "Kotlin"
+        "java" -> "Java"
+        "ts", "tsx" -> "TypeScript"
+        "js", "jsx" -> "JavaScript"
+        "py" -> "Python"
+        "rs" -> "Rust"
+        "go" -> "Go"
+        "swift" -> "Swift"
+        "c", "h" -> "C"
+        "cpp", "cc", "hpp" -> "C++"
+        "json" -> "JSON"
+        "xml" -> "XML"
+        "md" -> "Markdown"
+        "yml", "yaml" -> "YAML"
+        "sh", "bash" -> "Shell"
+        else -> null
     }
 
     private fun isCancelled(sessionId: String): Boolean = cancellations[sessionId] == true

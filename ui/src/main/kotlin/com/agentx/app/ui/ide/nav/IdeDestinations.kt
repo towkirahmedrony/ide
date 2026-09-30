@@ -10,9 +10,20 @@ object IdeDestinations {
 
     const val SETTINGS = "settings"
 
-    const val SETTINGS_DETAIL = "settings/{sectionId}"
+    // Prefixed with "section/" so it cannot collide with the exact agent/skill routes below.
+    const val SETTINGS_DETAIL = "settings/section/{sectionId}"
     const val ARG_SECTION_ID = "sectionId"
     const val ARG_PRESET_ID = "presetId"
+
+    /** Settings → Agents: the list of agent prompts and one prompt editor. */
+    const val AGENT_PROMPTS = "settings/agents"
+    const val AGENT_PROMPT_EDITOR = "settings/agents/{role}"
+    const val ARG_ROLE = "role"
+
+    /** Settings → Skills: the installed list and one skill's detail. */
+    const val SKILLS = "settings/skills"
+    const val SKILL_DETAIL = "settings/skills/{skillId}"
+    const val ARG_SKILL_ID = "skillId"
 
     const val ABOUT = "about"
     const val DEVELOPER = "developer"
@@ -41,7 +52,11 @@ object IdeDestinations {
 
     fun workspace(workspaceId: String): String = "workspace/$workspaceId"
 
-    fun settingsDetail(sectionId: String): String = "settings/$sectionId"
+    fun settingsDetail(sectionId: String): String = "settings/section/$sectionId"
+
+    fun agentPromptEditor(role: String): String = "settings/agents/$role"
+
+    fun skillDetail(skillId: String): String = "settings/skills/$skillId"
 
     fun modelEditor(presetId: String? = null): String = "models/editor/${presetId ?: NEW_MODEL}"
 

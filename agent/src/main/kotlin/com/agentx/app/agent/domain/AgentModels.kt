@@ -1,5 +1,6 @@
 package com.agentx.app.agent.domain
 
+import com.agentx.app.agent.prompt.PromptVariables
 import com.agentx.app.context.ContextBudget
 import com.agentx.app.model.ModelMessage
 import com.agentx.app.model.json.JsonObject
@@ -120,6 +121,8 @@ data class SubAgentRequest(
     val parentSessionId: String,
     val workspaceId: String? = null,
     val sessionId: String,
+    /** Template variables used to resolve this sub-agent's system prompt. */
+    val promptVariables: PromptVariables = PromptVariables.EMPTY,
 )
 
 data class SubAgentResult(

@@ -1,5 +1,6 @@
 package com.agentx.app.ui.ide
 
+import com.agentx.app.agent.prompt.PromptManager
 import com.agentx.app.codeintel.CodeIntelligence
 import com.agentx.app.context.WorkspaceSelectionState
 import com.agentx.app.integrations.ConnectionManagers
@@ -21,6 +22,8 @@ import com.agentx.app.ui.ide.data.mock.MockGitRepository
 import com.agentx.app.ui.ide.data.mock.MockModelRunnerBrowser
 import com.agentx.app.ui.ide.data.mock.mockWorkspaceManager
 import com.agentx.app.ui.ide.data.mock.mockWorkspacePicker
+import com.agentx.app.skills.DefaultSkillManager
+import com.agentx.app.skills.SkillManager
 import com.agentx.app.termux.TermuxRuntime
 import com.agentx.app.workspace.WorkspaceManager
 
@@ -67,6 +70,10 @@ data class IdeDependencies(
     val modelRunnerBrowser: ModelRunnerBrowserHost,
     /** Captured model-runtime output; shared with the manager's endpoint discovery. */
     val modelRuntimeOutput: RuntimeOutputBuffer,
+    /** Agent system-prompt manager: built-in defaults plus user overrides. */
+    val agentPrompts: PromptManager = PromptManager(),
+    /** Central skills registry and manager. */
+    val skills: SkillManager = DefaultSkillManager(),
 ) {
     companion object {
         /** In-memory bindings for previews and tests. */

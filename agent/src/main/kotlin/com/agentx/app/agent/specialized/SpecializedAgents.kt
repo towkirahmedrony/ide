@@ -71,6 +71,7 @@ class DefaultSpecializedAgent(
                 scopedContext = request.scopedContext,
                 workspaceId = request.workspaceId,
                 modelConfig = preferredConfig,
+                promptVariables = request.promptVariables,
             ),
             sink = sink,
             subAgentInvoker = null,

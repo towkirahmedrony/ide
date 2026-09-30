@@ -33,6 +33,10 @@ data class ContextBudget(
     val maxConversationMessages: Int = DEFAULT_MAX_CONVERSATION_MESSAGES,
     /** Maximum characters kept from the whole conversation history. */
     val maxConversationChars: Int = DEFAULT_MAX_CONVERSATION_CHARS,
+    /** Maximum number of skill-context items. */
+    val maxSkillItems: Int = DEFAULT_MAX_SKILL_ITEMS,
+    /** Maximum characters kept from one skill's instructions. */
+    val maxSkillChars: Int = DEFAULT_MAX_SKILL_CHARS,
 ) {
 
     /** Effective character ceiling, honoring both the char and token limits. */
@@ -44,6 +48,7 @@ data class ContextBudget(
         ContextSource.FILE -> maxFileChars
         ContextSource.TOOL_RESULT -> maxToolResultChars
         ContextSource.CONVERSATION -> maxConversationChars
+        ContextSource.SKILL -> maxSkillChars
         ContextSource.DIRECTORY -> maxDirectoryEntries * AVERAGE_DIRECTORY_ENTRY_CHARS
         else -> Int.MAX_VALUE
     }
@@ -67,6 +72,8 @@ data class ContextBudget(
         if (maxToolResultChars <= 0) problems += "maxToolResultChars must be positive"
         if (maxConversationMessages < 0) problems += "maxConversationMessages must not be negative"
         if (maxConversationChars <= 0) problems += "maxConversationChars must be positive"
+        if (maxSkillItems < 0) problems += "maxSkillItems must not be negative"
+        if (maxSkillChars <= 0) problems += "maxSkillChars must be positive"
         return problems
     }
 
@@ -82,6 +89,8 @@ data class ContextBudget(
         const val DEFAULT_MAX_TOOL_RESULT_CHARS = 4_000
         const val DEFAULT_MAX_CONVERSATION_MESSAGES = 16
         const val DEFAULT_MAX_CONVERSATION_CHARS = 24_000
+        const val DEFAULT_MAX_SKILL_ITEMS = 6
+        const val DEFAULT_MAX_SKILL_CHARS = 2_500
 
         /** Rough size of one rendered directory entry. */
         private const val AVERAGE_DIRECTORY_ENTRY_CHARS = 64
@@ -149,6 +158,7 @@ enum class ContextExclusionReason {
     OVER_FILE_LIMIT,
     OVER_DIRECTORY_LIMIT,
     OVER_TOOL_RESULT_LIMIT,
+    OVER_SKILL_LIMIT,
     OVER_CONVERSATION_LIMIT,
     OVER_ITEM_LIMIT,
     OVER_CHAR_BUDGET,

@@ -13,6 +13,8 @@ dependencies {
     // model layer already speaks.
     api(project(":workspace"))
     api(project(":model"))
+    // Skills are injected as structured context items.
+    api(project(":skills"))
     // Reuses the Tool System's secret redaction; no second secret policy.
     implementation(project(":tools"))
     // Structural understanding of files (symbols, outlines) for context items.

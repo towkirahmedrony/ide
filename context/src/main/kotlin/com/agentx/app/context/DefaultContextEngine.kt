@@ -275,6 +275,7 @@ class DefaultContextEngine(
         var fileCount = 0
         var directoryCount = 0
         var toolResultCount = 0
+        var skillCount = 0
         var conversationChars = 0
 
         for (item in rank(items)) {
@@ -282,6 +283,7 @@ class DefaultContextEngine(
                 ContextSource.FILE -> fileCount >= budget.maxFileCount
                 ContextSource.DIRECTORY -> directoryCount >= budget.maxDirectoryCount
                 ContextSource.TOOL_RESULT -> toolResultCount >= budget.maxToolResultCount
+                ContextSource.SKILL -> skillCount >= budget.maxSkillItems
                 else -> false
             }
             if (overCount) {
@@ -333,6 +335,7 @@ class DefaultContextEngine(
                 ContextSource.FILE -> fileCount++
                 ContextSource.DIRECTORY -> directoryCount++
                 ContextSource.TOOL_RESULT -> toolResultCount++
+                ContextSource.SKILL -> skillCount++
                 else -> Unit
             }
             selected += candidate
@@ -416,6 +419,7 @@ class DefaultContextEngine(
         ContextSource.FILE -> ContextExclusionReason.OVER_FILE_LIMIT
         ContextSource.DIRECTORY -> ContextExclusionReason.OVER_DIRECTORY_LIMIT
         ContextSource.TOOL_RESULT -> ContextExclusionReason.OVER_TOOL_RESULT_LIMIT
+        ContextSource.SKILL -> ContextExclusionReason.OVER_SKILL_LIMIT
         else -> ContextExclusionReason.OVER_ITEM_LIMIT
     }
 

@@ -187,6 +187,7 @@ class WorkspaceFileContextLoader(
         ContextReason.AGENT_STATE -> "Agent state"
         ContextReason.CURRENT_REQUEST -> "Current user request"
         ContextReason.PROVIDER -> "Context provider"
+        ContextReason.SKILL -> "Skill instructions"
         ContextReason.MANUAL -> "Added by the caller"
     }
 }

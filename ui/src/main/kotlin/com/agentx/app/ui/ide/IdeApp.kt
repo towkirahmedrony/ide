@@ -19,6 +19,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.agentx.app.agent.domain.AgentRole
 import com.agentx.app.core.architecture.LayerDescriptor
 import com.agentx.app.core.health.HealthReport
 import com.agentx.app.integrations.connection.ConnectionType
@@ -26,6 +27,8 @@ import com.agentx.app.ui.ide.components.IdeEmptyState
 import com.agentx.app.ui.ide.components.IdeTopBar
 import com.agentx.app.ui.ide.nav.IdeDestinations
 import com.agentx.app.ui.ide.screens.AboutScreen
+import com.agentx.app.ui.ide.screens.AgentPromptEditorScreen
+import com.agentx.app.ui.ide.screens.AgentPromptsScreen
 import com.agentx.app.ui.ide.screens.ConnectionEditorScreen
 import com.agentx.app.ui.ide.screens.ConnectionsScreen
 import com.agentx.app.ui.ide.screens.DeveloperScreen
@@ -37,7 +40,11 @@ import com.agentx.app.ui.ide.screens.SettingsDetailScreen
 import com.agentx.app.ui.ide.screens.ServiceDetailsScreen
 import com.agentx.app.ui.ide.screens.SettingsScreen
 import com.agentx.app.ui.ide.screens.SettingsSection
+import com.agentx.app.ui.ide.screens.SkillDetailScreen
+import com.agentx.app.ui.ide.screens.SkillsScreen
 import com.agentx.app.ui.ide.screens.WorkspaceShell
+import com.agentx.app.ui.ide.state.AgentPromptEditorViewModel
+import com.agentx.app.ui.ide.state.AgentPromptsViewModel
 import com.agentx.app.ui.ide.state.ConnectionEditorViewModel
 import com.agentx.app.ui.ide.state.ConnectionsViewModel
 import com.agentx.app.ui.ide.state.HomeViewModel
@@ -46,6 +53,7 @@ import com.agentx.app.ui.ide.state.ModelEditorViewModel
 import com.agentx.app.ui.ide.state.ModelRunnerViewModel
 import com.agentx.app.ui.ide.state.ModelsViewModel
 import com.agentx.app.ui.ide.state.OAuthCallbackViewModel
+import com.agentx.app.ui.ide.state.SkillsViewModel
 import com.agentx.app.ui.theme.ForgeCanvas
 
 /**
@@ -135,13 +143,95 @@ fun ForgeIdeApp(
                 onBack = { navController.popBackStack() },
                 onSelect = { section ->
                     val route = when (section) {
-                        // The Model section is the Model Manager, not a placeholder.
+                        // These sections are real screens, not placeholders.
                         SettingsSection.MODEL -> IdeDestinations.MODELS
                         SettingsSection.CONNECTIONS -> IdeDestinations.CONNECTIONS
+                        SettingsSection.AGENT -> IdeDestinations.AGENT_PROMPTS
+                        SettingsSection.SKILLS -> IdeDestinations.SKILLS
                         SettingsSection.ABOUT -> IdeDestinations.ABOUT
                         else -> IdeDestinations.settingsDetail(section.id)
                     }
                     navController.navigate(route)
+                },
+            )
+        }
+
+        composable(IdeDestinations.AGENT_PROMPTS) {
+            val promptsViewModel: AgentPromptsViewModel = viewModel(
+                key = "agent-prompts",
+                factory = IdeViewModelFactory { AgentPromptsViewModel(dependencies.agentPrompts) },
+            )
+            LaunchedEffect(Unit) { promptsViewModel.refresh() }
+            AgentPromptsScreen(
+                agents = promptsViewModel.agents,
+                loading = promptsViewModel.loading,
+                onBack = { navController.popBackStack() },
+                onOpen = { role -> navController.navigate(IdeDestinations.agentPromptEditor(role.name)) },
+            )
+        }
+
+        composable(
+            route = IdeDestinations.AGENT_PROMPT_EDITOR,
+            arguments = listOf(navArgument(IdeDestinations.ARG_ROLE) { type = NavType.StringType }),
+        ) { entry ->
+            val rawRole = entry.arguments?.getString(IdeDestinations.ARG_ROLE)
+            val role = AgentRole.entries.firstOrNull { it.name == rawRole } ?: AgentRole.MAIN
+            val editorViewModel: AgentPromptEditorViewModel = viewModel(
+                key = "agent-prompt-$role",
+                factory = IdeViewModelFactory {
+                    AgentPromptEditorViewModel(dependencies.agentPrompts, role)
+                },
+            )
+            AgentPromptEditorScreen(
+                state = editorViewModel.state,
+                onBack = { navController.popBackStack() },
+                onEdit = editorViewModel::edit,
+                onToggleEnabled = editorViewModel::setEnabled,
+                onSave = editorViewModel::save,
+                onReset = editorViewModel::reset,
+                onDiscard = editorViewModel::discard,
+                onDismissMessage = editorViewModel::dismissMessage,
+            )
+        }
+
+        composable(IdeDestinations.SKILLS) {
+            val skillsViewModel: SkillsViewModel = viewModel(
+                key = "skills-settings",
+                factory = IdeViewModelFactory { SkillsViewModel(dependencies.skills) },
+            )
+            LaunchedEffect(Unit) { skillsViewModel.refresh() }
+            SkillsScreen(
+                skills = skillsViewModel.installed,
+                loading = skillsViewModel.loading,
+                message = skillsViewModel.message,
+                onBack = { navController.popBackStack() },
+                onOpen = { id -> navController.navigate(IdeDestinations.skillDetail(id)) },
+                onToggle = skillsViewModel::setEnabled,
+                onImport = { raw, fallbackId -> skillsViewModel.import(raw, fallbackId) },
+                onReload = skillsViewModel::reloadFromDisk,
+                onReset = skillsViewModel::resetState,
+                onDismissMessage = skillsViewModel::dismissMessage,
+            )
+        }
+
+        composable(
+            route = IdeDestinations.SKILL_DETAIL,
+            arguments = listOf(navArgument(IdeDestinations.ARG_SKILL_ID) { type = NavType.StringType }),
+        ) { entry ->
+            val skillId = entry.arguments?.getString(IdeDestinations.ARG_SKILL_ID).orEmpty()
+            val skillsViewModel: SkillsViewModel = viewModel(
+                key = "skills-settings",
+                factory = IdeViewModelFactory { SkillsViewModel(dependencies.skills) },
+            )
+            SkillDetailScreen(
+                skill = skillsViewModel.skill(skillId),
+                onBack = { navController.popBackStack() },
+                onToggle = { enabled -> skillsViewModel.setEnabled(skillId, enabled) },
+                onToggleRole = { role -> skillsViewModel.toggleRole(skillId, role) },
+                onSetGlobal = { global -> skillsViewModel.setGlobal(skillId, global) },
+                onRemove = {
+                    skillsViewModel.remove(skillId)
+                    navController.popBackStack()
                 },
             )
         }

@@ -2,6 +2,10 @@ package com.agentx.app.foundation
 
 import com.agentx.app.agent.AGENT_LAYER
 import com.agentx.app.agent.AgentModule
+import com.agentx.app.agent.prompt.AgentPromptStore
+import com.agentx.app.agent.prompt.DefaultAgentPromptRepository
+import com.agentx.app.agent.prompt.InMemoryAgentPromptStore
+import com.agentx.app.agent.prompt.PromptManager
 import com.agentx.app.codeintel.CODE_INTELLIGENCE_LAYER
 import com.agentx.app.codeintel.CodeIntelligence
 import com.agentx.app.codeintel.CodeIntelligenceLimits
@@ -41,7 +45,12 @@ import com.agentx.app.model.preset.InMemoryModelSecretStore
 import com.agentx.app.model.preset.ModelPresetStore
 import com.agentx.app.model.preset.ModelSecretStore
 import com.agentx.app.model.runtime.RuntimeOutputBuffer
+import com.agentx.app.skills.DefaultSkillManager
+import com.agentx.app.skills.InMemorySkillStore
 import com.agentx.app.skills.SKILLS_LAYER
+import com.agentx.app.skills.SkillManager
+import com.agentx.app.skills.SkillSource
+import com.agentx.app.skills.SkillStore
 import com.agentx.app.tools.BuiltinTools
 import com.agentx.app.tools.DelegatingWorkspaceFileSystemResolver
 import com.agentx.app.tools.TOOLS_LAYER
@@ -69,6 +78,10 @@ data class FoundationState(
      * tree-sitter provider here, exactly like the workspace resolver.
      */
     val codeIntelligenceParsers: SyntaxParserProvider,
+    /** Central agent system-prompt manager (defaults + user overrides). */
+    val promptManager: PromptManager,
+    /** Central skills registry and manager. */
+    val skillManager: SkillManager,
 )
 
 /**
@@ -86,6 +99,9 @@ object Foundation {
         connectionSecretStore: ConnectionSecretStore = InMemoryConnectionSecretStore(),
         connectionProviders: ConnectionProviderRegistry = ConnectionProviderRegistry.EMPTY,
         integrationSetup: IntegrationSetupManager? = null,
+        agentPromptStore: AgentPromptStore = InMemoryAgentPromptStore(),
+        skillStore: SkillStore = InMemorySkillStore(),
+        skillSources: List<SkillSource> = emptyList(),
         runtimeOutput: RuntimeOutputBuffer = RuntimeOutputBuffer(),
         monitorModelConnections: Boolean = true,
         contextWorkspace: WorkspaceContextProvider = DelegatingWorkspaceContextProvider(),
@@ -99,6 +115,13 @@ object Foundation {
 
         val services = ServiceContainer()
         services.register(ServiceKeys.LOGGER, logger)
+
+        // Prompt and skill configuration are registered before the Agent Core so
+        // it can resolve prompts and skills without owning their storage.
+        val promptManager = PromptManager(DefaultAgentPromptRepository(agentPromptStore))
+        val skillManager = DefaultSkillManager(sources = skillSources, store = skillStore)
+        services.register(ServiceKeys.AGENT_PROMPTS, promptManager)
+        services.register(ServiceKeys.SKILLS, skillManager)
 
         val layers = forgeLayers()
 
@@ -178,6 +201,8 @@ object Foundation {
             contextWorkspace = contextWorkspace,
             codeIntelligence = codeIntelligence.engine,
             codeIntelligenceParsers = codeIntelligenceParsers,
+            promptManager = promptManager,
+            skillManager = skillManager,
         )
     }
 

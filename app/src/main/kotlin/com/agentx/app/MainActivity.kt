@@ -30,6 +30,10 @@ import com.agentx.app.integrations.providers.ConnectionProviders
 import com.agentx.app.integrations.oauth.UrlConnectionOAuthHttpClient
 import com.agentx.app.integrations.setup.IntegrationSetupManager
 import com.agentx.app.oauth.IntentOAuthBrowserLauncher
+import com.agentx.app.settings.FilesystemSkillFileStore
+import com.agentx.app.settings.SharedPreferencesAgentPromptStore
+import com.agentx.app.settings.SharedPreferencesSkillConfigStore
+import com.agentx.app.skills.CompositeSkillStore
 import com.agentx.app.tools.ToolRegistry
 import com.agentx.app.ui.ide.data.OAuthCallbackInbox
 import com.agentx.app.model.ModelConfig
@@ -57,6 +61,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import java.io.File
 
 class MainActivity : ComponentActivity() {
 
@@ -104,7 +109,16 @@ class MainActivity : ComponentActivity() {
             runtimeOutput = runtimeOutput,
             connectionProviders = built.registry,
             integrationSetup = built.setup,
+            agentPromptStore = SharedPreferencesAgentPromptStore(applicationContext),
+            skillStore = CompositeSkillStore(
+                config = SharedPreferencesSkillConfigStore(applicationContext),
+                files = FilesystemSkillFileStore(File(applicationContext.filesDir, SKILLS_DIRECTORY)),
+            ),
         )
+
+        // Skills are discovered from the filesystem off the main thread; until
+        // this completes, the manager serves the built-in catalog only.
+        backgroundScope.launch { foundation.skillManager.refresh() }
 
         // The code intelligence module is registered at boot with a bindable
         // parser backend; the tree-sitter grammars are attached here. Binding is
@@ -200,6 +214,8 @@ class MainActivity : ComponentActivity() {
                         modelManager = checkNotNull(modelManager) { "Model manager is not registered" },
                         connectionManager = checkNotNull(connectionManager) { "Connection manager is not registered" },
                         integrationSetup = integrationSetup,
+                        agentPrompts = foundation.promptManager,
+                        skills = foundation.skillManager,
                         oauthBrowser = IntentOAuthBrowserLauncher(applicationContext),
                         oauthCallbacks = oauthCallbacks,
                         modelRunnerBrowser = modelRunnerBrowser,
@@ -270,6 +286,7 @@ class MainActivity : ComponentActivity() {
 
     private companion object {
         const val KEY_RUNNER_STATE = "forge.modelRunner.state"
+        const val SKILLS_DIRECTORY = "skills"
     }
 }
 

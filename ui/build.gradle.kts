@@ -33,6 +33,9 @@ dependencies {
     api(project(":context"))
     // The Models screen talks to the Model Manager domain contract directly.
     api(project(":model"))
+    // Settings → Agents edits the prompt manager, and Settings → Skills manages skills.
+    api(project(":agent"))
+    api(project(":skills"))
     // The Connections screen talks to the Connection Manager domain contract.
     api(project(":integrations"))
     // The editor shows file structure through the code intelligence contract.

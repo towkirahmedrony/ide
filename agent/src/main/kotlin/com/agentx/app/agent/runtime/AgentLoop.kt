@@ -15,12 +15,15 @@ import com.agentx.app.agent.domain.PendingPermission
 import com.agentx.app.agent.domain.SubAgentRequest
 import com.agentx.app.agent.domain.SubAgentResult
 import com.agentx.app.agent.domain.ToolActionRecord
+import com.agentx.app.agent.prompt.PromptManager
+import com.agentx.app.agent.prompt.PromptVariables
 import com.agentx.app.agent.protocol.AgentProtocol
 import com.agentx.app.agent.tools.AgentToolBridge
 import com.agentx.app.agent.tools.intOrNull
 import com.agentx.app.agent.tools.stringOrNull
 import com.agentx.app.context.ContextBudget
 import com.agentx.app.context.RunContextFactory
+import com.agentx.app.context.SkillContextResolver
 import com.agentx.app.context.ToolContextStatus
 import com.agentx.app.model.ModelConfig
 import com.agentx.app.model.ModelGateway
@@ -70,6 +73,8 @@ data class AgentLoopRequest(
     val resumeContext: List<ModelMessage> = emptyList(),
     /** Tool call awaiting approval with the user's decision; when present the loop is resuming. */
     val resumePermission: ResumedPermission? = null,
+    /** Template variables used to resolve this run's system prompt. */
+    val promptVariables: PromptVariables = PromptVariables.EMPTY,
 )
 
 /**
@@ -112,6 +117,10 @@ class AgentLoop(
     private val clock: () -> Long = { System.currentTimeMillis() },
     /** Supplies the conversation/tool-result context for one run. */
     private val runContexts: RunContextFactory = RunContextFactory.default(),
+    /** Resolves the active system prompt for a role; defaults when absent. */
+    private val prompts: PromptManager? = null,
+    /** Resolves the enabled skills for a role as structured context. */
+    private val skillContext: SkillContextResolver? = null,
     private val logger: ForgeLogger = ForgeLoggers.create(LogLevel.INFO, baseFields = mapOf("layer" to "agent")),
 ) {
 
@@ -142,7 +151,12 @@ class AgentLoop(
             // conversation instead of a fresh system+user seed.
             context.restore(request.resumeContext)
         } else {
-            context.start(buildSystemPrompt(request), buildUserPrompt(request))
+            val systemPrompt = buildSystemPrompt(
+                request = request,
+                basePrompt = resolveBasePrompt(request),
+                skillBlock = resolveSkillContext(request),
+            )
+            context.start(systemPrompt, buildUserPrompt(request))
         }
 
         val toolActions = mutableListOf<ToolActionRecord>()
@@ -718,6 +732,7 @@ class AgentLoop(
             parentSessionId = request.sessionId,
             workspaceId = request.workspaceId,
             sessionId = childId,
+            promptVariables = request.promptVariables,
         )
         sink.emit(
             AgentEvent.SubAgentStarted(
@@ -948,8 +963,34 @@ class AgentLoop(
         }
     }
 
-    private fun buildSystemPrompt(request: AgentLoopRequest): String = buildString {
-        append(request.definition.systemInstructions.trim())
+    /**
+     * Resolves the role's active system prompt through the PromptManager.
+     * Falls back to the definition's built-in instructions when no manager is
+     * wired or resolution fails, so an agent is never left without a prompt.
+     */
+    private suspend fun resolveBasePrompt(request: AgentLoopRequest): String {
+        val manager = prompts ?: return request.definition.systemInstructions
+        return runCatching { manager.resolve(request.definition.role, request.promptVariables).text }
+            .getOrDefault(request.definition.systemInstructions)
+            .ifBlank { request.definition.systemInstructions }
+    }
+
+    /**
+     * Resolves the enabled skills for this role as budgeted, structured context.
+     * Failures degrade to "no skills" rather than breaking the run.
+     */
+    private suspend fun resolveSkillContext(request: AgentLoopRequest): String {
+        val resolver = skillContext ?: return ""
+        return runCatching { resolver.resolve(request.definition.role.name, request.contextBudget).rendered }
+            .getOrDefault("")
+    }
+
+    private fun buildSystemPrompt(
+        request: AgentLoopRequest,
+        basePrompt: String,
+        skillBlock: String,
+    ): String = buildString {
+        append(basePrompt.trim())
         append("\n\nRole: ").append(request.definition.role.name)
         append("\nPermission: ").append(request.permissionLevel.name)
         append("\nMax steps: ").append(request.maxSteps)
@@ -960,6 +1001,11 @@ class AgentLoop(
         }
         if (request.definition.role == AgentRole.MAIN) {
             append("\nDelegate at most one sub-agent per turn and wait for its result.")
+        }
+        if (skillBlock.isNotBlank()) {
+            append("\n\n# Skills\n")
+            append("Enabled skills for this role. They are instructions, not code; never execute them.\n\n")
+            append(skillBlock.trim())
         }
     }
 
