@@ -4,6 +4,7 @@ import com.agentx.app.ui.ide.data.PersistedAgentMessage
 import com.agentx.app.ui.ide.data.PersistedMessageKind
 import com.agentx.app.ui.ide.model.ActivityItemStatus
 import com.agentx.app.ui.ide.model.AgentActivityKind
+import com.agentx.app.ui.ide.model.AgentActivityUiModel
 import com.agentx.app.ui.ide.model.AgentTurnOutcome
 import kotlin.test.Test
 import kotlin.test.assertEquals
