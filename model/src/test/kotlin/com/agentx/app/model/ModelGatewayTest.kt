@@ -246,4 +246,23 @@ class ModelGatewayTest {
         assertTrue(events.any { it is ModelStreamEvent.TextDelta })
         assertNotNull(events.filterIsInstance<ModelStreamEvent.Completed>().firstOrNull())
     }
+
+    @Test
+    fun `gateway recovers a content JSON tool call from a provider that did not parse it`() {
+        val gateway = DefaultModelGateway()
+        gateway.register(
+            StubProvider(
+                "openai-compatible",
+                content = """{"name":"read_file","arguments":{"path":"package.json"}}""",
+            ),
+        )
+
+        val response = runSuspend {
+            gateway.complete(request(openAiConfig(), ModelMessage.user("inspect")))
+        }
+
+        assertEquals("read_file", response.toolCalls.single().name)
+        assertTrue(response.content.isBlank())
+        assertEquals(ModelFinishReason.TOOL_CALLS, response.finishReason)
+    }
 }

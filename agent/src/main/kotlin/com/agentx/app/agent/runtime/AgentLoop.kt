@@ -25,6 +25,7 @@ import com.agentx.app.context.ContextBudget
 import com.agentx.app.context.RunContextFactory
 import com.agentx.app.context.SkillContextResolver
 import com.agentx.app.context.ToolContextStatus
+import com.agentx.app.model.ContentToolCallParser
 import com.agentx.app.model.ModelConfig
 import com.agentx.app.model.ModelGateway
 import com.agentx.app.model.ModelMessage
@@ -34,7 +35,6 @@ import com.agentx.app.model.ModelRequest
 import com.agentx.app.model.ModelResponse
 import com.agentx.app.model.ModelStreamEvent
 import com.agentx.app.model.ModelToolCall
-import com.agentx.app.model.ModelToolChoice
 import com.agentx.app.model.ModelToolSpec
 import com.agentx.app.model.json.JsonObject
 import com.agentx.app.model.json.JsonValue
@@ -282,7 +282,9 @@ class AgentLoop(
             )
 
             val response = try {
-                complete(request.modelConfig, context.messages(), toolSpecs, sink, request.sessionId)
+                ContentToolCallParser.normalize(
+                    complete(request.modelConfig, context.messages(), toolSpecs, sink, request.sessionId),
+                )
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
@@ -910,21 +912,53 @@ class AgentLoop(
     ): ModelResponse {
         val request = ModelRequest(config = config, messages = messages, tools = tools)
         return if (config.stream) {
-            gateway.stream(request) { event ->
+            val streamed = StringBuilder()
+            var withheld = false
+            val response = gateway.stream(request) { event ->
                 val delta = event as? ModelStreamEvent.TextDelta
                 if (delta != null && delta.text.isNotEmpty()) {
-                    sink.emit(
-                        AgentEvent.OutputDelta(
-                            sessionId = sessionId,
-                            text = delta.text,
-                            timestampMillis = clock(),
-                        ),
-                    )
+                    streamed.append(delta.text)
+                    // Hold JSON-shaped deltas until the completed response is known
+                    // not to be a tool call, so tool-call JSON never reaches the chat.
+                    if (withheld || shouldWithholdStreaming(streamed.toString())) {
+                        withheld = true
+                    } else {
+                        sink.emit(
+                            AgentEvent.OutputDelta(
+                                sessionId = sessionId,
+                                text = delta.text,
+                                timestampMillis = clock(),
+                            ),
+                        )
+                    }
                 }
             }
+            val normalized = ContentToolCallParser.normalize(response)
+            if (normalized.toolCalls.isEmpty() && withheld && normalized.content.isNotBlank()) {
+                sink.emit(
+                    AgentEvent.OutputDelta(
+                        sessionId = sessionId,
+                        text = normalized.content,
+                        timestampMillis = clock(),
+                    ),
+                )
+            }
+            normalized
         } else {
-            gateway.complete(request)
+            ContentToolCallParser.normalize(gateway.complete(request))
         }
+    }
+
+    /**
+     * True when [text] looks like a JSON / fenced payload that may turn into a
+     * tool call. User-facing prose is streamed immediately.
+     */
+    private fun shouldWithholdStreaming(text: String): Boolean {
+        if (ContentToolCallParser.parse(text).isNotEmpty()) return true
+        if (ContentToolCallParser.isLikelyToolCallText(text)) return true
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return false
+        return trimmed.startsWith("{") || trimmed.startsWith("[") || trimmed.startsWith("```")
     }
 
     private fun stats(
@@ -998,7 +1032,9 @@ class AgentLoop(
         request.workspaceId?.takeIf { it.isNotBlank() }?.let {
             append("\nWorkspace id: ").append(it)
             append("\nA workspace is already open. Inspect it with the filesystem tools before answering.")
+            append("\nDo not guess the project type or invent files; list the workspace first.")
         }
+        append("\nUse the tool-calling interface. Never write tool-call JSON as assistant text.")
         if (request.definition.role == AgentRole.MAIN) {
             append("\nDelegate at most one sub-agent per turn and wait for its result.")
         }

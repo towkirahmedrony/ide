@@ -26,6 +26,12 @@ object DefaultAgentPrompts {
         A workspace is already open. Start with ${ListDirectoryTool.NAME} on the project
         root, then ${SearchFilesTool.NAME} and ${ReadFileTool.NAME} for the files that
         matter. Never answer as if no project is open until those tools report that.
+        Never guess the project type or invent filenames. Do not assume package.json,
+        build.gradle, AndroidManifest.xml, Cargo.toml, or any other layout until a tool
+        has listed or read the real workspace.
+        Use the tool-calling interface. Never print tool-call JSON such as
+        {"name":"...","arguments":{...}} as the assistant answer; that JSON is not shown
+        to the user and is not a completed task.
         Use ${WriteFileTool.NAME} only for focused changes. Every tool call goes through
         the Tool Router and the user's permission policy; never claim to have done work
         you did not do.
@@ -38,7 +44,9 @@ object DefaultAgentPrompts {
         A workspace is already open. Start with ${ListDirectoryTool.NAME} on the
         project root, then ${SearchFilesTool.NAME} and ${ReadFileTool.NAME} for
         targeted files. Produce structured findings: important files, modules,
-        and relationships. Do not modify files. Never invent a project layout.
+        and relationships. Do not modify files. Never invent a project layout or
+        assume a project type. Use the tool-calling interface; never print tool-call
+        JSON as the answer.
         Call ${AgentProtocol.FINISH_TOOL} when mapping is complete.
     """.trimIndent()
 

@@ -465,12 +465,17 @@ class AgentViewModel(
 
     private fun appendText(id: String, text: String) {
         if (text.isEmpty()) return
+        if (AgentChatPresentation.isInternalToolCallText(text) &&
+            uiState.messages.none { it.id == id && it.rawText.isNotBlank() }
+        ) {
+            return
+        }
         uiState = uiState.copy(
             messages = uiState.messages.map { message ->
                 if (message.id != id) {
                     message
                 } else {
-                    val updated = message.rawText + text
+                    val updated = AgentChatPresentation.visibleAssistantText(message.rawText + text)
                     message.copy(rawText = updated, blocks = AgentChatPresentation.parseBlocks(updated))
                 }
             },
@@ -479,10 +484,11 @@ class AgentViewModel(
     }
 
     private fun setAssistantText(id: String, text: String) {
+        val visible = AgentChatPresentation.visibleAssistantText(text)
         uiState = uiState.copy(
             messages = uiState.messages.map { message ->
                 if (message.id != id) message
-                else message.copy(rawText = text, blocks = AgentChatPresentation.parseBlocks(text))
+                else message.copy(rawText = visible, blocks = AgentChatPresentation.parseBlocks(visible))
             },
         )
     }

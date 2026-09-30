@@ -62,7 +62,8 @@ internal class ScriptedModelProvider(
     /** Every request the agent loop sent, in order, for continuation assertions. */
     val requests = mutableListOf<ModelRequest>()
 
-    override fun capabilities(modelId: String): ModelCapabilities = ModelCapabilities(toolCalling = true)
+    override fun capabilities(modelId: String): ModelCapabilities =
+        ModelCapabilities(toolCalling = true, streaming = true)
 
     override suspend fun complete(request: ModelRequest): ModelResponse {
         requests += request

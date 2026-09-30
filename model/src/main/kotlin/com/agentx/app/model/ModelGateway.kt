@@ -74,7 +74,7 @@ class DefaultModelGateway : ModelGateway {
     override suspend fun complete(request: ModelRequest): ModelResponse {
         validate(request)
         val provider = resolve(request) ?: throw providerNotFound(request)
-        return provider.complete(request)
+        return ContentToolCallParser.normalize(provider.complete(request))
     }
 
     override suspend fun stream(
@@ -90,7 +90,7 @@ class DefaultModelGateway : ModelGateway {
                 providerId = provider.id,
             )
         }
-        return provider.stream(request, onEvent)
+        return ContentToolCallParser.normalize(provider.stream(request, onEvent))
     }
 
     private fun validate(request: ModelRequest) {

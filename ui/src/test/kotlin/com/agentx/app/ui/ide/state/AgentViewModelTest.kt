@@ -215,6 +215,27 @@ class AgentViewModelTest {
     // ───────────────────────────── Tools and activity ─────────────────────────────
 
     @Test
+    fun `tool call JSON chunks are not shown as the assistant answer`() {
+        val json = """{"name":"read_file","arguments":{"path":"package.json"}}"""
+        val session = RecordingSession { _, onEvent ->
+            onEvent(AgentStreamEvent.Chunk(json))
+            onEvent(AgentStreamEvent.ToolRequested("read_file", "path=package.json"))
+            onEvent(AgentStreamEvent.ToolFinished("read_file", true, "ok"))
+            onEvent(AgentStreamEvent.Completed("Cargo.toml defines the package"))
+        }
+        val vm = viewModel(session)
+
+        vm.onInputChange("find the package config")
+        vm.send()
+
+        val assistant = vm.uiState.messages.last { it.kind == ChatMessageKind.ASSISTANT }
+        assertEquals("Cargo.toml defines the package", assistant.rawText)
+        assertFalse(assistant.rawText.contains("read_file"))
+        assertFalse(assistant.rawText.contains("package.json"))
+        assertTrue(vm.uiState.messages.any { it.kind == ChatMessageKind.TOOL && it.tool?.toolName == "read_file" })
+    }
+
+    @Test
     fun `tool events render as cards and activity on the assistant reply`() {
         val session = RecordingSession { _, onEvent ->
             onEvent(AgentStreamEvent.ToolRequested("search_files", "query=SupabaseClient"))

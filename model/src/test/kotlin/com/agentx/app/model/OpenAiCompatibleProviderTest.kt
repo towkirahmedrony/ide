@@ -376,4 +376,68 @@ class OpenAiCompatibleProviderTest {
         assertTrue(capabilities.streaming)
         assertTrue(capabilities.toolCalling)
     }
+
+    @Test
+    fun `content JSON tool call is recovered as a structured toolCalls payload`() {
+        val transport = FakeHttpTransport(
+            response = HttpResponseSpec(
+                200,
+                """
+                {
+                  "id": "chatcmpl-1",
+                  "model": "local-model",
+                  "choices": [{
+                    "index": 0,
+                    "message": {
+                      "role": "assistant",
+                      "content": "{\"name\":\"read_file\",\"arguments\":{\"path\":\"package.json\"}}"
+                    },
+                    "finish_reason": "stop"
+                  }]
+                }
+                """.trimIndent(),
+            ),
+        )
+        val response = runSuspend {
+            provider(transport).complete(request(openAiConfig(), ModelMessage.user("inspect")))
+        }
+        assertEquals(1, response.toolCalls.size)
+        assertEquals("read_file", response.toolCalls.single().name)
+        assertEquals("package.json", response.toolCalls.single().arguments.stringOrNull("path"))
+        assertTrue(response.content.isBlank())
+        assertEquals(ModelFinishReason.TOOL_CALLS, response.finishReason)
+    }
+
+    @Test
+    fun `legacy function_call payloads become ModelToolCall`() {
+        val transport = FakeHttpTransport(
+            response = HttpResponseSpec(
+                200,
+                """
+                {
+                  "id": "chatcmpl-1",
+                  "model": "local-model",
+                  "choices": [{
+                    "index": 0,
+                    "message": {
+                      "role": "assistant",
+                      "content": null,
+                      "function_call": {
+                        "name": "list_directory",
+                        "arguments": "{\"path\":\".\"}"
+                      }
+                    },
+                    "finish_reason": "function_call"
+                  }]
+                }
+                """.trimIndent(),
+            ),
+        )
+        val response = runSuspend {
+            provider(transport).complete(request(openAiConfig(), ModelMessage.user("inspect")))
+        }
+        assertEquals("list_directory", response.toolCalls.single().name)
+        assertEquals(".", response.toolCalls.single().arguments.stringOrNull("path"))
+        assertEquals(ModelFinishReason.TOOL_CALLS, response.finishReason)
+    }
 }

@@ -805,6 +805,138 @@ class AgentCoreTest {
     }
 
     @Test
+    fun `content JSON tool call is executed and the result continues to the model`() = runAgent {
+        val fx = Fixtures()
+        val provider = ScriptedModelProvider(
+            mapOf(
+                AgentRole.MAIN to mutableListOf(
+                    response("""{"name":"read_file","arguments":{"path":"Auth.kt"}}"""),
+                    response("", toolCall(AgentProtocol.FINISH_TOOL, AgentProtocol.ARG_SUMMARY to "Inspected Auth.kt")),
+                ),
+            ),
+        )
+        val sink = CollectingEventSink()
+        val result = loopOver(fx.registry, provider).run(
+            request = agentRequest(listOf("read_file", AgentProtocol.FINISH_TOOL), workspaceId = "ws"),
+            sink = sink,
+            onCancelled = { false },
+        )
+
+        assertEquals(AgentStatus.COMPLETED, result.status)
+        assertEquals("Inspected Auth.kt", result.summary)
+        assertEquals(1, fx.readFile.invocations.size)
+        assertEquals("Auth.kt", fx.readFile.invocations.single().string("path"))
+        assertTrue(sink.events.any { it is AgentEvent.ToolCallStarted && it.toolName == "read_file" })
+        assertTrue(sink.events.any { it is AgentEvent.ToolCallFinished && it.toolName == "read_file" && it.success })
+        assertEquals(2, provider.requests.size)
+        val continuation = provider.requests[1].messages
+        assertTrue(continuation.any { it.role == ModelRole.TOOL && it.content.contains("Auth.kt") })
+        assertFalse(result.summary.contains("read_file"))
+        assertFalse(result.summary.contains("package.json"))
+    }
+
+    @Test
+    fun `streaming content JSON tool call does not emit OutputDelta`() = runAgent {
+        val fx = Fixtures()
+        val provider = ScriptedModelProvider(
+            mapOf(
+                AgentRole.MAIN to mutableListOf(
+                    response("""{"name":"read_file","arguments":{"path":"Auth.kt"}}"""),
+                    response("", toolCall(AgentProtocol.FINISH_TOOL, AgentProtocol.ARG_SUMMARY to "ok")),
+                ),
+            ),
+        )
+        val sink = CollectingEventSink()
+        loopOver(fx.registry, provider).run(
+            request = agentRequest(listOf("read_file", AgentProtocol.FINISH_TOOL)).copy(
+                modelConfig = testConfig().copy(stream = true),
+            ),
+            sink = sink,
+            onCancelled = { false },
+        )
+        assertEquals(1, fx.readFile.invocations.size)
+        assertTrue(sink.events.none { it is AgentEvent.OutputDelta && it.text.contains("read_file") })
+    }
+
+    @Test
+    fun `content JSON tool call JSON is not treated as the final assistant answer`() = runAgent {
+        val fx = Fixtures()
+        val provider = ScriptedModelProvider(
+            mapOf(
+                AgentRole.MAIN to mutableListOf(
+                    response("""{"name":"read_file","arguments":{"path":"package.json"}}"""),
+                    response("The config is Auth.kt"),
+                ),
+            ),
+        )
+        val result = loopOver(fx.registry, provider).run(
+            request = agentRequest(listOf("read_file", AgentProtocol.FINISH_TOOL)),
+            sink = CollectingEventSink(),
+            onCancelled = { false },
+        )
+        assertEquals(AgentStatus.COMPLETED, result.status)
+        assertEquals("The config is Auth.kt", result.summary)
+        assertEquals(1, fx.readFile.invocations.size)
+        assertFalse(result.summary.contains("\"name\""))
+    }
+
+    @Test
+    fun `a project question inspects the workspace instead of assuming package json`() = runAgent {
+        val manager = DefaultWorkspaceManager(
+            backend = InMemoryWorkspaceBackend(
+                seedFiles = mapOf(
+                    "Cargo.toml" to "[package]\nname = \"demo\"\n",
+                    "src/main.rs" to "fn main() {}\n",
+                ),
+            ),
+            store = InMemoryWorkspaceMetadataStore(),
+        )
+        val opened = manager.open("demo").valueOrNull()
+        assertNotNull(opened)
+        val registry = DefaultToolRegistry()
+        BuiltinTools.filesystem(WorkspaceManagerFileSystemResolver(manager)).forEach(registry::register)
+        val provider = ScriptedModelProvider(
+            mapOf(
+                AgentRole.MAIN to mutableListOf(
+                    response("""{"name":"list_directory","arguments":{}}"""),
+                    response(
+                        "",
+                        toolCall(
+                            AgentProtocol.FINISH_TOOL,
+                            AgentProtocol.ARG_SUMMARY to "The package configuration is Cargo.toml",
+                            AgentProtocol.ARG_FILES_INSPECTED to "Cargo.toml",
+                        ),
+                    ),
+                ),
+            ),
+        )
+        val runtime = AgentModule.assemble(
+            gateway = DefaultModelGateway().also { it.register(provider) },
+            registry = registry,
+            router = DefaultToolRouter(registry),
+        )
+
+        val result = runtime.orchestrator.run(
+            request = AgentRunRequest(
+                prompt = "Find the file that defines the main application/package configuration.",
+                workspaceId = opened.workspace.id.value,
+            ),
+            modelConfig = testConfig(),
+            sink = CollectingEventSink(),
+        )
+
+        assertEquals(AgentStatus.COMPLETED, result.status)
+        assertTrue(result.summary.contains("Cargo.toml"))
+        assertFalse(result.summary.contains("package.json"))
+        val listed = provider.requests.getOrNull(1)?.messages?.single { it.role == ModelRole.TOOL }
+        assertNotNull(listed)
+        assertTrue(listed.content.contains("Cargo.toml"), listed.content)
+        assertFalse(listed.content.contains("package.json"))
+        val system = provider.requests.first().messages.first { it.role == ModelRole.SYSTEM }.content
+        assertTrue(system.contains("Do not guess the project type") || system.contains("Never guess"))
+    }
+
+    @Test
     fun `open workspace is inspected through tools and results continue to the model`() = runAgent {
         val secret = "super-secret-token"
         val manager = DefaultWorkspaceManager(

@@ -55,13 +55,15 @@ class OpenAiCompatibleProvider(
             applyNonStreamFallback(accumulator, rawBody.toString(), request, onEvent)
         }
         onEvent(ModelStreamEvent.Completed(accumulator.finishReason, accumulator.usage))
-        return ModelResponse(
-            model = accumulator.model ?: request.model,
-            providerId = id,
-            content = accumulator.content.toString(),
-            toolCalls = accumulator.toolCalls(),
-            finishReason = accumulator.finishReason,
-            usage = accumulator.usage,
+        return ContentToolCallParser.normalize(
+            ModelResponse(
+                model = accumulator.model ?: request.model,
+                providerId = id,
+                content = accumulator.content.toString(),
+                toolCalls = accumulator.toolCalls(),
+                finishReason = accumulator.finishReason,
+                usage = accumulator.usage,
+            ),
         )
     }
 
@@ -330,16 +332,19 @@ class OpenAiCompatibleProvider(
         val message = choice.objectOrNull("message") ?: throw invalidResponse("Choice did not contain a 'message'")
         val content = extractMessageContent(message)
         val toolCalls = parseToolCalls(message.arrayOrNull("tool_calls"))
+            .ifEmpty { parseLegacyFunctionCall(message) }
         val finishReason = choice.stringOrNull("finish_reason")?.let { toFinishReason(it) }
         val usage = json.objectOrNull("usage")?.let { parseUsage(it) }
         val model = json.stringOrNull("model") ?: request.model
-        return ModelResponse(
-            model = model,
-            providerId = id,
-            content = content,
-            toolCalls = toolCalls,
-            finishReason = finishReason,
-            usage = usage,
+        return ContentToolCallParser.normalize(
+            ModelResponse(
+                model = model,
+                providerId = id,
+                content = content,
+                toolCalls = toolCalls,
+                finishReason = finishReason,
+                usage = usage,
+            ),
         )
     }
 
@@ -347,14 +352,27 @@ class OpenAiCompatibleProvider(
         if (items == null) return emptyList()
         return items.mapNotNull { item ->
             val call = item.objectOrNull() ?: return@mapNotNull null
-            val function = call.objectOrNull("function") ?: return@mapNotNull null
-            val name = function.stringOrNull("name") ?: return@mapNotNull null
+            val function = call.objectOrNull("function")
+            val name = function?.stringOrNull("name") ?: call.stringOrNull("name") ?: return@mapNotNull null
             ModelToolCall(
                 id = call.stringOrNull("id") ?: "",
                 name = name,
-                arguments = parseArguments(function["arguments"]),
+                arguments = parseArguments(function?.get("arguments") ?: call["arguments"]),
             )
         }
+    }
+
+    /** Older OpenAI `function_call` payloads that predate `tool_calls`. */
+    private fun parseLegacyFunctionCall(message: JsonObject): List<ModelToolCall> {
+        val function = message.objectOrNull("function_call") ?: return emptyList()
+        val name = function.stringOrNull("name") ?: return emptyList()
+        return listOf(
+            ModelToolCall(
+                id = message.stringOrNull("id").orEmpty(),
+                name = name,
+                arguments = parseArguments(function["arguments"]),
+            ),
+        )
     }
 
     private fun parseArguments(raw: JsonValue?): JsonObject = when (raw) {
@@ -494,9 +512,24 @@ class OpenAiCompatibleProvider(
      * return `content` as a string or as a list of text parts.
      */
     private fun extractMessageContent(message: JsonObject): String {
-        message["content"]?.let { return jsonText(it) }
-        message["text"]?.let { return jsonText(it) }
+        message["content"]?.let { return jsonTextOrToolCall(it) }
+        message["text"]?.let { return jsonTextOrToolCall(it) }
         return ""
+    }
+
+    /**
+     * Some servers put a tool-call object in `content` instead of a string.
+     * Encode it so [ContentToolCallParser] can recover the call.
+     */
+    private fun jsonTextOrToolCall(value: JsonValue): String {
+        if (value is JsonValue.Obj) {
+            val text = value.fields.stringOrNull("text") ?: value.fields.stringOrNull("content")
+            if (!text.isNullOrEmpty()) return text
+            val encoded = JsonCodec.encode(value)
+            if (ContentToolCallParser.parse(encoded).isNotEmpty()) return encoded
+            return ""
+        }
+        return jsonText(value)
     }
 
     private fun extractDeltaContent(delta: JsonObject): String? {

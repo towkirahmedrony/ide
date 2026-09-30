@@ -1,5 +1,7 @@
 package com.agentx.app.ui.ide.state
 
+import com.agentx.app.model.ContentToolCallParser
+import com.agentx.app.model.ModelResponse
 import com.agentx.app.ui.ide.data.AgentFailureKind
 import com.agentx.app.ui.ide.data.PersistedAgentMessage
 import com.agentx.app.ui.ide.data.PersistedMessageKind
@@ -33,10 +35,29 @@ object AgentChatPresentation {
 
     // ───────────────────────────── Markdown ─────────────────────────────
 
+    /**
+     * Drops internal tool-call JSON so it is never rendered as the assistant's
+     * answer. Leftover prose, if any, is kept.
+     */
+    fun visibleAssistantText(text: String): String {
+        if (text.isBlank()) return ""
+        return ContentToolCallParser.normalize(
+            ModelResponse(model = "ui", providerId = "ui", content = text),
+        ).content
+    }
+
+    /** True when [text] is an internal tool-call payload rather than user-facing prose. */
+    fun isInternalToolCallText(text: String): Boolean {
+        if (text.isBlank()) return false
+        return visibleAssistantText(text).isBlank() &&
+            (ContentToolCallParser.parse(text).isNotEmpty() || ContentToolCallParser.isLikelyToolCallText(text))
+    }
+
     /** Parses markdown into renderable blocks, tolerating a streaming, partial response. */
     fun parseBlocks(text: String): List<MessageBlock> {
-        if (text.isEmpty()) return emptyList()
-        val normalized = text.replace("\r\n", "\n").replace('\r', '\n')
+        val visible = visibleAssistantText(text)
+        if (visible.isEmpty()) return emptyList()
+        val normalized = visible.replace("\r\n", "\n").replace('\r', '\n')
         val lines = normalized.split('\n')
         val blocks = mutableListOf<MessageBlock>()
         val paragraph = mutableListOf<String>()
@@ -702,7 +723,7 @@ object AgentChatPresentation {
         PersistedMessageKind.ASSISTANT -> ChatMessageUiModel(
             id = message.id,
             kind = ChatMessageKind.ASSISTANT,
-            rawText = message.text,
+            rawText = visibleAssistantText(message.text),
             blocks = parseBlocks(message.text),
             timestampMillis = message.timestampMillis,
             state = MessageState.COMPLETE,

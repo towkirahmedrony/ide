@@ -160,6 +160,32 @@ class AgentChatPresentationTest {
     // ───────────────────────────── Persistence mapping ─────────────────────────────
 
     @Test
+    fun `tool call JSON is not rendered as assistant text`() {
+        val json = """{"name":"read_file","arguments":{"path":"package.json"}}"""
+        assertTrue(AgentChatPresentation.isInternalToolCallText(json))
+        assertEquals("", AgentChatPresentation.visibleAssistantText(json))
+        assertTrue(AgentChatPresentation.parseBlocks(json).isEmpty())
+
+        val restored = AgentChatPresentation.persistedMessageToUi(
+            PersistedAgentMessage(
+                id = "a1",
+                kind = PersistedMessageKind.ASSISTANT,
+                text = json,
+            ),
+        )
+        assertEquals("", restored.rawText)
+        assertTrue(restored.blocks.isEmpty())
+    }
+
+    @Test
+    fun `prose around a tool call JSON keeps the prose`() {
+        val text = "Working on it.\n{\"name\":\"list_directory\",\"arguments\":{}}"
+        val visible = AgentChatPresentation.visibleAssistantText(text)
+        assertTrue(visible.contains("Working on it."))
+        assertFalse(visible.contains("list_directory"))
+    }
+
+    @Test
     fun `persisted assistant markdown becomes blocks rather than raw text`() {
         val ui = AgentChatPresentation.persistedMessageToUi(
             PersistedAgentMessage(
