@@ -706,7 +706,7 @@ private fun AgentActivityRow(activity: AgentActivityUiModel) {
             Spacer(Modifier.width(8.dp))
             val label = when {
                 activity.kind == AgentActivityKind.SUB_AGENT && activity.role != null ->
-                    "${activity.role} · ${activity.label}"                  activity.kind == AgentActivityKind.TERMINAL -> "$ ${activity.label}"
+                    "${activity.role} · ${activity.label}"                 activity.kind == AgentActivityKind.TERMINAL -> "$ ${activity.label}"
                 activity.kind == AgentActivityKind.FILE_WRITE -> "✎ ${activity.label}"
                 else -> activity.label
             }
