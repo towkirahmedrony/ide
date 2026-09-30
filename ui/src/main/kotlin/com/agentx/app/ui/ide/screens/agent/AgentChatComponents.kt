@@ -675,7 +675,7 @@ private fun AgentActivityRow(activity: AgentActivityUiModel) {
         activity.kind == AgentActivityKind.SUB_AGENT -> ForgePeriwinkle
         else -> ForgeMint
     }
-    val expandable = activity.outputLines.isNotEmpty()
+    val expandable = activity.outputLines.isNotEmpty() || !activity.detail.isNullOrBlank()
     var showOutput by remember(activity.id) { mutableStateOf(false) }
 
     Column(modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
@@ -747,9 +747,15 @@ private fun AgentActivityRow(activity: AgentActivityUiModel) {
             }
         }
         if (showOutput && expandable) {
-            // Bounded preview only; full output lives in the tool card, never dumped here.
+            // Bounded preview only; secrets were redacted by the presentation layer.
+            val detail = activity.detail?.takeIf { it.isNotBlank() }
+            val output = activity.outputLines.take(TERMINAL_PREVIEW_LINES)
             Text(
-                text = activity.outputLines.take(TERMINAL_PREVIEW_LINES).joinToString("\n"),
+                text = buildString {
+                    detail?.let { append(it) }
+                    if (detail != null && output.isNotEmpty()) append("\n\n")
+                    append(output.joinToString("\n"))
+                },
                 fontFamily = FontFamily.Monospace,
                 fontSize = 11.sp,
                 lineHeight = 15.sp,

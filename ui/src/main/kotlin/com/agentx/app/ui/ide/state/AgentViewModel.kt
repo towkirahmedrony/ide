@@ -446,7 +446,7 @@ class AgentViewModel(
             }
 
             is AgentStreamEvent.ToolRequested -> {
-                val toolId = UUID.randomUUID().toString()
+                val toolId = event.toolCallId.ifBlank { UUID.randomUUID().toString() }
                 appendToolMessage(toolId, event.toolName, event.detail)
                 appendToolActivity(assistantId, toolId, event.toolName, event.detail)
                 uiState = uiState.copy(generation = uiState.generation.copy(phase = GenerationPhase.TOOL))
@@ -454,14 +454,14 @@ class AgentViewModel(
             }
 
             is AgentStreamEvent.ToolRunning -> {
-                markToolRunning(event.toolName)
+                markToolRunning(event.toolName, event.toolCallId)
                 uiState = uiState.copy(generation = uiState.generation.copy(phase = GenerationPhase.TOOL))
                 setActivity(AgentActivityStatus.USING_TOOL, "Using tool · ${event.toolName}")
             }
 
             is AgentStreamEvent.ToolFinished -> {
-                finishToolMessage(event.toolName, event.success, event.summary)
-                finishActivityItem(assistantId, event.toolName, event.success, event.output)
+                finishToolMessage(event.toolName, event.toolCallId, event.success, event.summary)
+                finishActivityItem(assistantId, event.toolName, event.toolCallId, event.success, event.output)
                 if (event.success) {
                     setActivity(AgentActivityStatus.TOOL_SUCCESS, "Tool ok · ${event.toolName}")
                 } else {
@@ -562,8 +562,8 @@ class AgentViewModel(
         )
     }
 
-    private fun markToolRunning(toolName: String) {
-        val index = runningToolIndex(toolName)
+    private fun markToolRunning(toolName: String, toolCallId: String) {
+        val index = runningToolIndex(toolName, toolCallId)
         if (index < 0) return
         val updated = uiState.messages.toMutableList()
         val message = updated[index]
@@ -574,8 +574,8 @@ class AgentViewModel(
         uiState = uiState.copy(messages = updated)
     }
 
-    private fun finishToolMessage(toolName: String, success: Boolean, summary: String) {
-        val index = runningToolIndex(toolName)
+    private fun finishToolMessage(toolName: String, toolCallId: String, success: Boolean, summary: String) {
+        val index = runningToolIndex(toolName, toolCallId)
         if (index < 0) return
         val updated = uiState.messages.toMutableList()
         val message = updated[index]
@@ -592,9 +592,10 @@ class AgentViewModel(
         uiState = uiState.copy(messages = updated)
     }
 
-    private fun runningToolIndex(toolName: String): Int = uiState.messages.indexOfLast { message ->
+    private fun runningToolIndex(toolName: String, toolCallId: String = ""): Int = uiState.messages.indexOfLast { message ->
         message.kind == ChatMessageKind.TOOL &&
             message.tool?.toolName == toolName &&
+            (toolCallId.isBlank() || message.tool?.id == toolCallId) &&
             message.state == MessageState.STREAMING
     }
 
@@ -714,7 +715,13 @@ class AgentViewModel(
         )
     }
 
-    private fun finishActivityItem(assistantId: String, toolName: String, success: Boolean, output: String) {
+    private fun finishActivityItem(
+        assistantId: String,
+        toolName: String,
+        toolCallId: String,
+        success: Boolean,
+        output: String,
+    ) {
         uiState = uiState.copy(
             messages = uiState.messages.map { message ->
                 if (message.id != assistantId) {
@@ -723,6 +730,7 @@ class AgentViewModel(
                     val activities = message.activities.toMutableList()
                     val index = activities.indexOfLast {
                         it.toolName == toolName && it.status == ActivityItemStatus.ACTIVE
+                            && (toolCallId.isBlank() || it.id == toolCallId)
                     }
                     if (index < 0) {
                         message

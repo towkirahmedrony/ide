@@ -158,16 +158,21 @@ fun AgentScreen(
             }
         }
 
-        val contentSignature = state.messages.size to (
-            state.messages.lastOrNull()?.let { it.rawText.length + it.blocks.size * 31 + it.activities.size * 7 } ?: 0
+        val renderedMessages = state.messages.filterNot { it.kind == com.agentx.app.ui.ide.model.ChatMessageKind.TOOL }
+        val contentSignature = renderedMessages.size to (
+            renderedMessages.lastOrNull()?.let { it.rawText.length + it.blocks.size * 31 + it.activities.size * 7 } ?: 0
             )
         LaunchedEffect(contentSignature, state.activeSessionId) {
-            if (stickToBottom && state.messages.isNotEmpty()) {
-                listState.animateScrollToItem(state.messages.lastIndex)
+            if (stickToBottom && renderedMessages.isNotEmpty()) {
+                listState.animateScrollToItem(renderedMessages.lastIndex)
             }
         }
         LaunchedEffect(state.activeSessionId) { stickToBottom = true }
 
+        // Tool calls are rendered inside the assistant's unified execution feed.
+        // Keeping the transient TOOL entries in state is useful for lifecycle
+        // updates, but showing them as separate cards creates the noisy double UI
+        // the activity stream is meant to replace.
         Column(modifier = Modifier.fillMaxSize().background(ForgeCanvas)) {
             AgentHeader(
                 title = activeTitle,
@@ -183,7 +188,7 @@ fun AgentScreen(
             )
 
             Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                if (state.messages.isEmpty()) {
+                if (renderedMessages.isEmpty()) {
                     AgentEmptyState()
                 } else {
                     LazyColumn(
@@ -192,7 +197,7 @@ fun AgentScreen(
                         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
                         verticalArrangement = Arrangement.spacedBy(14.dp),
                     ) {
-                        items(state.messages, key = { it.id }) { message ->
+                        items(renderedMessages, key = { it.id }) { message ->
                             AgentMessageItem(
                                 message = message,
                                 onCopy = { copyToClipboard(context, "Agent message", message.copyText) },
@@ -204,12 +209,12 @@ fun AgentScreen(
                     }
                 }
 
-                if (!stickToBottom && state.messages.isNotEmpty()) {
+                if (!stickToBottom && renderedMessages.isNotEmpty()) {
                     JumpToLatestPill(
                         modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp),
                         onClick = {
                             stickToBottom = true
-                            scope.launch { listState.animateScrollToItem(state.messages.lastIndex) }
+                            scope.launch { listState.animateScrollToItem(renderedMessages.lastIndex) }
                         },
                     )
                 }
@@ -572,4 +577,3 @@ private fun SendStopButton(
         )
     }
 }
-

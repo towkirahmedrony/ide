@@ -68,6 +68,7 @@ sealed interface AgentEvent {
         val toolName: String,
         val role: AgentRole,
         override val timestampMillis: Long,
+        val toolCallId: String = "",
     ) : AgentEvent
 
     /** A resolved, authorized tool call is about to execute. */
@@ -85,6 +86,9 @@ sealed interface AgentEvent {
         val success: Boolean,
         val summary: String,
         override val timestampMillis: Long,
+        val toolCallId: String = "",
+        /** Structured/rendered tool output for the expandable execution row. */
+        val output: String = "",
     ) : AgentEvent
 
     /** A tool call ended without completing because the run was cancelled. */
