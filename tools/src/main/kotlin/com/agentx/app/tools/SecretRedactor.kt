@@ -25,8 +25,13 @@ object SecretRedactor {
     private val envLine = Regex(
         """(?im)^(?:export\s+)?([A-Z0-9_]*?(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)[A-Z0-9_]*)\s*=\s*.+$""",
     )
+    /**
+     * `key=value` and `key: value`. The optional quote after the name covers JSON
+     * payloads — `{"password":"hunter2"}` — which is the shape tool arguments and
+     * tool results actually take, so without it a secret in a JSON body survived.
+     */
     private val assignment = Regex(
-        """(?i)\b([A-Za-z0-9_.-]*(?:api[_-]?key|token|secret|password|credential)[A-Za-z0-9_.-]*)\s*[:=]\s*([^\s,;]+)""",
+        """(?i)\b([A-Za-z0-9_.-]*(?:api[_-]?key|token|secret|password|credential)[A-Za-z0-9_.-]*)"?\s*[:=]\s*([^\s,;]+)""",
     )
 
     const val REDACTED: String = "[REDACTED]"
