@@ -2,6 +2,7 @@ package com.agentx.app
 
 import android.content.Intent
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.remember
@@ -118,7 +119,15 @@ class MainActivity : ComponentActivity() {
 
         // Skills are discovered from the filesystem off the main thread; until
         // this completes, the manager serves the built-in catalog only.
-        backgroundScope.launch { foundation.skillManager.refresh() }
+        backgroundScope.launch {
+            runCatching { foundation.skillManager.refresh() }
+                .onFailure { error ->
+                    // A damaged or unreadable user skill must never prevent the IDE
+                    // from opening. Built-in skills remain available from the last
+                    // in-memory snapshot, while the cause is available in logcat.
+                    Log.e(TAG, "Could not refresh user skills; continuing with current catalog", error)
+                }
+        }
 
         // The code intelligence module is registered at boot with a bindable
         // parser backend; the tree-sitter grammars are attached here. Binding is
@@ -285,6 +294,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private companion object {
+        const val TAG = "AgentX.MainActivity"
         const val KEY_RUNNER_STATE = "forge.modelRunner.state"
         const val SKILLS_DIRECTORY = "skills"
     }
