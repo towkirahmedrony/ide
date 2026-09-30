@@ -2,20 +2,14 @@ package com.agentx.app.agent.main
 
 import com.agentx.app.agent.catalog.AgentCatalog
 import com.agentx.app.agent.domain.AgentDefinition
-import com.agentx.app.agent.domain.AgentEvent
 import com.agentx.app.agent.domain.AgentEventSink
-import com.agentx.app.agent.domain.AgentPlan
 import com.agentx.app.agent.domain.AgentResult
-import com.agentx.app.agent.domain.AgentRole
-import com.agentx.app.agent.domain.AgentStatus
-import com.agentx.app.agent.domain.AgentStep
 import com.agentx.app.agent.domain.AgentTask
 import com.agentx.app.agent.prompt.PromptVariables
 import com.agentx.app.agent.runtime.AgentLoop
 import com.agentx.app.agent.runtime.AgentLoopRequest
 import com.agentx.app.agent.runtime.ResumedPermission
 import com.agentx.app.agent.runtime.SubAgentInvoker
-import com.agentx.app.agent.runtime.nowMillis
 import com.agentx.app.agent.tools.AgentToolBridge
 import com.agentx.app.context.ContextBudget
 import com.agentx.app.model.ModelConfig
@@ -27,26 +21,13 @@ data class MainAgentRequest(
     val context: String = "",
     val modelConfig: ModelConfig,
     val maxSteps: Int? = null,
-    /** Limits applied to the run's conversation and tool-result context. */
     val contextBudget: ContextBudget = ContextBudget.DEFAULT,
-    /** Conversation snapshot restored when resuming a permission pause. */
     val resumeContext: List<ModelMessage> = emptyList(),
-    /** The parked tool call plus the user's decision, when resuming. */
     val resumePermission: ResumedPermission? = null,
-    /** Template variables used to resolve this run's system prompt. */
     val promptVariables: PromptVariables = PromptVariables.EMPTY,
-    /**
-     * Whether the user's message is about the project. When false the run is
-     * conversational and the workspace is not inspected on the agent's own
-     * initiative.
-     */
     val requiresWorkspace: Boolean = true,
 )
 
-/**
- * Primary agent. It plans, delegates sequentially, and compiles the user-facing
- * result. Specialized domain work lives in sub-agents, not here.
- */
 class MainAgent(
     private val loop: AgentLoop,
     private val bridge: AgentToolBridge,
@@ -59,17 +40,10 @@ class MainAgent(
         subAgentInvoker: SubAgentInvoker,
         onCancelled: () -> Boolean = { false },
     ): AgentResult {
-        val plan = AgentPlan(
-            steps = listOf(
-                AgentStep(1, "Understand the task", AgentRole.MAIN, AgentStatus.RUNNING),
-                AgentStep(2, "Delegate or act", AgentRole.MAIN, AgentStatus.IDLE),
-                AgentStep(3, "Compile the result", AgentRole.MAIN, AgentStatus.IDLE),
-            ),
-        )
-        sink.emit(AgentEvent.PlanUpdated(request.sessionId, plan, nowMillis()))
+        // হার্ডকোডেড ৩টা প্ল্যান এখান থেকে রিমুভ করা হয়েছে
 
         val allowed = bridge.filterAllowed(definition.allowedTools, definition.effectivePermission)
-        val result = loop.run(
+        return loop.run(
             request = AgentLoopRequest(
                 sessionId = request.sessionId,
                 parentSessionId = null,
@@ -92,6 +66,5 @@ class MainAgent(
             subAgentInvoker = subAgentInvoker,
             onCancelled = onCancelled,
         )
-        return result.copy(plan = plan.copy(revision = plan.revision + 1))
     }
 }

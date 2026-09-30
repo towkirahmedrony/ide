@@ -224,14 +224,7 @@ private fun AgentAssistantMessage(
     ) {
         AgentAvatar()
         Column(modifier = Modifier.weight(1f).padding(top = 3.dp)) {
-            if (message.rawText.isEmpty() && message.state == MessageState.STREAMING) {
-                TypingDots()
-            } else {
-                SelectionContainer { AgentMarkdownText(message.blocks, message.rawText) }
-            }
-
             if (message.activities.isNotEmpty()) {
-                Spacer(Modifier.height(10.dp))
                 AgentActivityPanel(
                     activities = message.activities,
                     outcome = when {
@@ -243,6 +236,13 @@ private fun AgentAssistantMessage(
                     elapsedMillis = message.elapsedMillis ?: 0L,
                     planSteps = message.planSteps,
                 )
+                Spacer(Modifier.height(10.dp))
+            }
+
+            if (message.rawText.isEmpty() && message.state == MessageState.STREAMING) {
+                TypingDots()
+            } else {
+                SelectionContainer { AgentMarkdownText(message.blocks, message.rawText) }
             }
 
             if (message.rawText.isNotEmpty() || message.state != MessageState.STREAMING) {
@@ -706,9 +706,7 @@ private fun AgentActivityRow(activity: AgentActivityUiModel) {
             Spacer(Modifier.width(8.dp))
             val label = when {
                 activity.kind == AgentActivityKind.SUB_AGENT && activity.role != null ->
-                    "${activity.role} · ${activity.label}"
-
-                activity.kind == AgentActivityKind.TERMINAL -> "$ ${activity.label}"
+                    "${activity.role} · ${activity.label}"                  activity.kind == AgentActivityKind.TERMINAL -> "$ ${activity.label}"
                 activity.kind == AgentActivityKind.FILE_WRITE -> "✎ ${activity.label}"
                 else -> activity.label
             }
