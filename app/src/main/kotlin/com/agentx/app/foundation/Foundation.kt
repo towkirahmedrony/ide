@@ -2,6 +2,8 @@ package com.agentx.app.foundation
 
 import com.agentx.app.agent.AGENT_LAYER
 import com.agentx.app.agent.AgentModule
+import com.agentx.app.agent.conversation.ConversationStore
+import com.agentx.app.agent.conversation.InMemoryConversationStore
 import com.agentx.app.agent.prompt.AgentPromptStore
 import com.agentx.app.agent.prompt.DefaultAgentPromptRepository
 import com.agentx.app.agent.prompt.InMemoryAgentPromptStore
@@ -100,6 +102,7 @@ object Foundation {
         connectionProviders: ConnectionProviderRegistry = ConnectionProviderRegistry.EMPTY,
         integrationSetup: IntegrationSetupManager? = null,
         agentPromptStore: AgentPromptStore = InMemoryAgentPromptStore(),
+        conversationStore: ConversationStore = InMemoryConversationStore(),
         skillStore: SkillStore = InMemorySkillStore(),
         skillSources: List<SkillDiscoverySource> = emptyList(),
         runtimeOutput: RuntimeOutputBuffer = RuntimeOutputBuffer(),
@@ -122,6 +125,10 @@ object Foundation {
         val skillManager = DefaultSkillManager(sources = skillSources, store = skillStore)
         services.register(ServiceKeys.AGENT_PROMPTS, promptManager)
         services.register(ServiceKeys.SKILLS, skillManager)
+        // Agent session conversations are the Agent Core's own persistent history;
+        // registering the store here means the Agent module binds to it instead of
+        // falling back to an in-memory one.
+        services.register(ServiceKeys.AGENT_CONVERSATION_STORE, conversationStore)
 
         val layers = forgeLayers()
 

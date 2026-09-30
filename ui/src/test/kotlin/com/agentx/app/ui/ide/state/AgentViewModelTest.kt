@@ -2,10 +2,18 @@ package com.agentx.app.ui.ide.state
 
 import com.agentx.app.ui.ide.data.AgentFailureKind
 import com.agentx.app.ui.ide.data.AgentSession
+import com.agentx.app.ui.ide.data.AgentSessionInfo
 import com.agentx.app.ui.ide.data.AgentStreamEvent
+import com.agentx.app.ui.ide.data.PersistedAgentMessage
+import com.agentx.app.ui.ide.data.PersistedMessageKind
+import com.agentx.app.ui.ide.model.ActivityItemStatus
 import com.agentx.app.ui.ide.model.AgentActivity
 import com.agentx.app.ui.ide.model.AgentActivityStatus
-import com.agentx.app.ui.ide.model.ChatRole
+import com.agentx.app.ui.ide.model.ChatMessageKind
+import com.agentx.app.ui.ide.model.GenerationPhase
+import com.agentx.app.ui.ide.model.MessageBlock
+import com.agentx.app.ui.ide.model.MessageState
+import com.agentx.app.ui.ide.model.ToolRunStatus
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -17,6 +25,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -34,234 +43,621 @@ class AgentViewModelTest {
         Dispatchers.resetMain()
     }
 
+    private fun viewModel(
+        session: AgentSession,
+        workspaceId: String? = null,
+        selectedFile: () -> String? = { null },
+        now: () -> Long = { 0L },
+    ) = AgentViewModel(
+        session = session,
+        workspaceId = workspaceId,
+        selectedFile = selectedFile,
+        now = now,
+        ioDispatcher = UnconfinedTestDispatcher(),
+    )
+
+    // ───────────────────────────── Streaming ─────────────────────────────
+
     @Test
     fun `send streams a reply and marks the turn completed`() {
-        val session = ScriptedAgentSession { prompt, onEvent ->
+        val session = RecordingSession { prompt, onEvent ->
             onEvent(AgentStreamEvent.Activity(AgentActivity(AgentActivityStatus.THINKING, "AI responding")))
             onEvent(AgentStreamEvent.Chunk("Hello "))
             onEvent(AgentStreamEvent.Chunk(prompt))
             onEvent(AgentStreamEvent.Completed("Hello $prompt"))
         }
-        val viewModel = AgentViewModel(session)
+        val vm = viewModel(session)
 
-        viewModel.onInputChange("world")
-        viewModel.send()
+        vm.onInputChange("world")
+        vm.send()
 
-        val state = viewModel.uiState
+        val state = vm.uiState
         assertFalse(state.running)
         assertEquals("", state.input)
         assertEquals(AgentActivityStatus.COMPLETED, state.activity.status)
-        assertEquals("Completed", state.activity.label)
-        assertEquals("world", state.messages.single { it.role == ChatRole.USER }.text)
-        assertEquals("Hello world", state.messages.single { it.role == ChatRole.AGENT }.text)
-        assertFalse(state.messages.single { it.role == ChatRole.AGENT }.streaming)
+        assertEquals(GenerationPhase.COMPLETED, state.generation.phase)
+        assertEquals("world", state.messages.single { it.kind == ChatMessageKind.USER }.rawText)
+        val assistant = state.messages.single { it.kind == ChatMessageKind.ASSISTANT }
+        assertEquals("Hello world", assistant.rawText)
+        assertEquals(MessageState.COMPLETE, assistant.state)
+        assertNotNull(session.runs.single().sessionId)
     }
 
     @Test
-    fun `connection failure keeps the user message and shows Connection error`() {
-        val viewModel = failingViewModel(AgentFailureKind.CONNECTION, "Could not connect")
+    fun `structured backend text renders as markdown blocks not raw json`() {
+        val code = "class Example {\n    val x = 1\n}"
+        val session = RecordingSession { _, onEvent ->
+            onEvent(AgentStreamEvent.Completed("Here is the file:\n\n```kotlin\n$code\n```\n\nDone."))
+        }
+        val vm = viewModel(session)
 
-        viewModel.onInputChange("ping colab")
-        viewModel.send()
+        vm.onInputChange("write it")
+        vm.send()
 
-        val state = viewModel.uiState
+        val assistant = vm.uiState.messages.single { it.kind == ChatMessageKind.ASSISTANT }
+        val block = assistant.blocks.filterIsInstance<MessageBlock.Code>().single()
+        assertEquals("kotlin", block.language)
+        assertTrue(block.code.contains("class Example {"))
+        // The response is a markdown paragraph before and after the code block.
+        assertTrue(assistant.blocks.filterIsInstance<MessageBlock.Paragraph>().size >= 1)
+    }
+
+    @Test
+    fun `the elapsed timer uses the real start timestamp and finalises on completion`() {
+        var clock = 1_000L
+        val gate = CompletableDeferred<Unit>()
+        val session = RecordingSession { _, onEvent ->
+            onEvent(AgentStreamEvent.Chunk("working"))
+            gate.await()
+            onEvent(AgentStreamEvent.Completed("working!"))
+        }
+        val vm = viewModel(session, now = { clock })
+
+        vm.onInputChange("go")
+        vm.send()
+
+        assertTrue(vm.uiState.running)
+        assertEquals(GenerationPhase.THINKING, vm.uiState.generation.phase)
+        assertEquals("working", vm.uiState.messages.last { it.kind == ChatMessageKind.ASSISTANT }.rawText)
+
+        clock = 13_400L
+        vm.refreshElapsed()
+        assertEquals(12_400L, vm.uiState.generation.elapsedMillis)
+        assertEquals("12s", AgentChatPresentation.formatElapsedSeconds(vm.uiState.generation.elapsedMillis))
+
+        gate.complete(Unit)
+
+        assertFalse(vm.uiState.running)
+        assertEquals(GenerationPhase.COMPLETED, vm.uiState.generation.phase)
+        assertEquals(12_400L, vm.uiState.generation.elapsedMillis)
+        assertEquals("12.4s", AgentChatPresentation.formatDuration(vm.uiState.generation.elapsedMillis))
+    }
+
+    @Test
+    fun `stop preserves generated content and marks the turn stopped`() {
+        val gate = CompletableDeferred<Unit>()
+        val session = RecordingSession { _, onEvent ->
+            onEvent(AgentStreamEvent.Chunk("partial answer"))
+            gate.await()
+        }
+        val vm = viewModel(session)
+
+        vm.onInputChange("go")
+        vm.send()
+        vm.stop()
+        gate.complete(Unit)
+
+        val state = vm.uiState
         assertFalse(state.running)
-        assertEquals("ping colab", state.messages.single { it.role == ChatRole.USER }.text)
-        assertEquals("Could not connect", state.messages.single { it.role == ChatRole.AGENT }.text)
+        assertEquals(GenerationPhase.STOPPED, state.generation.phase)
+        assertEquals("partial answer", state.messages.last { it.kind == ChatMessageKind.ASSISTANT }.rawText)
+        assertNotEquals(MessageState.STREAMING, state.messages.last { it.kind == ChatMessageKind.ASSISTANT }.state)
+        // The user's message is preserved so the turn can be retried.
+        assertEquals("go", state.messages.single { it.kind == ChatMessageKind.USER }.rawText)
+    }
+
+    // ───────────────────────────── Failures ─────────────────────────────
+
+    @Test
+    fun `a connection failure keeps the prompt and shows a readable error`() {
+        val vm = failingViewModel(AgentFailureKind.CONNECTION, "Could not connect")
+        vm.onInputChange("ping colab")
+        vm.send()
+
+        val state = vm.uiState
+        assertFalse(state.running)
+        assertEquals("ping colab", state.messages.single { it.kind == ChatMessageKind.USER }.rawText)
+        val error = assertNotNull(state.messages.single { it.kind == ChatMessageKind.ERROR }.error)
+        assertEquals("Connection failed", error.title)
+        assertEquals("Could not connect", error.message)
+        assertTrue(error.retryable)
         assertEquals(AgentActivityStatus.CONNECTION_ERROR, state.activity.status)
-        assertEquals("Connection error", state.activity.label)
     }
 
     @Test
-    fun `timeout keeps the user message and shows Timeout`() {
-        val viewModel = failingViewModel(AgentFailureKind.TIMEOUT, "The model request timed out")
+    fun `a timeout shows the timeout state`() {
+        val vm = failingViewModel(AgentFailureKind.TIMEOUT, "The model request timed out")
+        vm.onInputChange("slow turn")
+        vm.send()
 
-        viewModel.onInputChange("slow turn")
-        viewModel.send()
-
-        val state = viewModel.uiState
-        assertEquals("slow turn", state.messages.single { it.role == ChatRole.USER }.text)
-        assertEquals(AgentActivityStatus.TIMEOUT, state.activity.status)
-        assertEquals("Timeout", state.activity.label)
+        assertEquals(AgentActivityStatus.TIMEOUT, vm.uiState.activity.status)
+        assertEquals("Request timed out", vm.uiState.messages.single { it.kind == ChatMessageKind.ERROR }.error?.title)
     }
 
     @Test
-    fun `invalid response keeps the user message and shows Invalid response`() {
-        val viewModel = failingViewModel(AgentFailureKind.INVALID_RESPONSE, "Model endpoint returned invalid JSON")
+    fun `a missing model is reported without a retry action`() {
+        val vm = failingViewModel(AgentFailureKind.NOT_CONFIGURED, "No model is online.")
+        vm.onInputChange("hello")
+        vm.send()
 
-        viewModel.onInputChange("say hi")
-        viewModel.send()
-
-        val state = viewModel.uiState
-        assertEquals("say hi", state.messages.single { it.role == ChatRole.USER }.text)
-        assertEquals(AgentActivityStatus.INVALID_RESPONSE, state.activity.status)
-        assertEquals("Invalid response", state.activity.label)
+        val error = assertNotNull(vm.uiState.messages.single { it.kind == ChatMessageKind.ERROR }.error)
+        assertEquals("No model connected", error.title)
+        assertFalse(error.retryable)
     }
 
     @Test
     fun `session exceptions become visible errors without dropping the prompt`() {
-        val session = ScriptedAgentSession { _, _ -> throw IllegalStateException("boom") }
-        val viewModel = AgentViewModel(session)
+        val session = RecordingSession { _, _ -> throw IllegalStateException("boom") }
+        val vm = viewModel(session)
 
-        viewModel.onInputChange("keep me")
-        viewModel.send()
+        vm.onInputChange("keep me")
+        vm.send()
 
-        val state = viewModel.uiState
-        assertFalse(state.running)
-        assertEquals("keep me", state.messages.single { it.role == ChatRole.USER }.text)
-        assertEquals("boom", state.messages.single { it.role == ChatRole.AGENT }.text)
-        assertEquals(AgentActivityStatus.ERROR, state.activity.status)
-        assertEquals("Error", state.activity.label)
+        assertEquals("keep me", vm.uiState.messages.single { it.kind == ChatMessageKind.USER }.rawText)
+        assertEquals("boom", vm.uiState.messages.single { it.kind == ChatMessageKind.ERROR }.rawText)
+        assertEquals(AgentActivityStatus.ERROR, vm.uiState.activity.status)
+    }
+
+    // ───────────────────────────── Tools and activity ─────────────────────────────
+
+    @Test
+    fun `tool events render as cards and activity on the assistant reply`() {
+        val session = RecordingSession { _, onEvent ->
+            onEvent(AgentStreamEvent.ToolRequested("search_files", "query=SupabaseClient"))
+            onEvent(AgentStreamEvent.ToolRunning("search_files"))
+            onEvent(AgentStreamEvent.ToolFinished("search_files", true, "1 match in AuthRepository.kt"))
+            onEvent(AgentStreamEvent.Completed("Found it"))
+        }
+        val vm = viewModel(session)
+
+        vm.onInputChange("find auth")
+        vm.send()
+
+        val tool = assertNotNull(vm.uiState.messages.single { it.kind == ChatMessageKind.TOOL }.tool)
+        assertEquals("SEARCH_FILES", tool.displayName)
+        assertEquals(ToolRunStatus.COMPLETED, tool.status)
+        assertEquals("query=SupabaseClient", tool.detail)
+        assertEquals("1 match in AuthRepository.kt", tool.summary)
+
+        val assistant = vm.uiState.messages.last { it.kind == ChatMessageKind.ASSISTANT }
+        assertEquals(1, assistant.activities.size)
+        assertEquals("Searched files", assistant.activities.first().label)
+        assertEquals(ActivityItemStatus.DONE, assistant.activities.first().status)
     }
 
     @Test
-    fun `tool running permission and failure update the activity bar`() {
-        val session = ScriptedAgentSession { _, onEvent ->
-            onEvent(AgentStreamEvent.ToolRunning("read_file"))
-            onEvent(AgentStreamEvent.ToolFinished("read_file", true, "ok"))
-            onEvent(AgentStreamEvent.PermissionRequired("write_file", "needs write"))
-            onEvent(AgentStreamEvent.ToolFinished("write_file", false, "denied"))
+    fun `tool arguments are redacted before they reach the UI`() {
+        val session = RecordingSession { _, onEvent ->
+            onEvent(AgentStreamEvent.ToolRequested("run_command", "api_key=sk-live-secret --flag"))
+            onEvent(AgentStreamEvent.ToolFinished("run_command", true, "done"))
+            onEvent(AgentStreamEvent.Completed("ok"))
+        }
+        val vm = viewModel(session)
+        vm.onInputChange("run")
+        vm.send()
+
+        val detail = assertNotNull(vm.uiState.messages.single { it.kind == ChatMessageKind.TOOL }.tool).detail
+        assertEquals("api_key=[REDACTED] --flag", detail)
+    }
+
+    @Test
+    fun `a failed tool is marked failed`() {
+        val session = RecordingSession { _, onEvent ->
+            onEvent(AgentStreamEvent.ToolRequested("run_command", "cmd=./gradlew test"))
+            onEvent(AgentStreamEvent.ToolFinished("run_command", false, "Tests failed"))
             onEvent(AgentStreamEvent.Completed("done"))
         }
-        val viewModel = AgentViewModel(session)
-        viewModel.onInputChange("write")
-        viewModel.send()
+        val vm = viewModel(session)
+        vm.onInputChange("test")
+        vm.send()
 
-        val state = viewModel.uiState
-        assertEquals(AgentActivityStatus.COMPLETED, state.activity.status)
-        assertEquals("done", state.messages.single { it.role == ChatRole.AGENT }.text)
+        val tool = assertNotNull(vm.uiState.messages.single { it.kind == ChatMessageKind.TOOL }.tool)
+        assertEquals(ToolRunStatus.FAILED, tool.status)
+        assertEquals(AgentActivityStatus.TOOL_FAILURE, vm.uiState.activity.status)
     }
+
+    // ───────────────────────────── Composer guards ─────────────────────────────
 
     @Test
     fun `blank input is ignored`() {
-        val session = ScriptedAgentSession { _, _ -> error("should not run") }
-        val viewModel = AgentViewModel(session)
-        val before = viewModel.uiState.messages
+        val session = RecordingSession { _, _ -> error("should not run") }
+        val vm = viewModel(session)
 
-        viewModel.onInputChange("   ")
-        viewModel.send()
+        vm.onInputChange("   ")
+        vm.send()
 
-        assertEquals(before, viewModel.uiState.messages)
-        assertFalse(viewModel.uiState.running)
+        assertTrue(vm.uiState.messages.isEmpty())
+        assertFalse(vm.uiState.running)
     }
 
     @Test
     fun `send is ignored while a turn is already running`() {
         val gate = CompletableDeferred<Unit>()
         var runs = 0
-        val session = ScriptedAgentSession { _, _ ->
+        val session = RecordingSession { _, _ ->
             runs += 1
             gate.await()
         }
-        val viewModel = AgentViewModel(session)
+        val vm = viewModel(session)
 
-        viewModel.onInputChange("first")
-        viewModel.send()
-        assertTrue(viewModel.uiState.running)
-        viewModel.onInputChange("second")
-        viewModel.send()
+        vm.onInputChange("first")
+        vm.send()
+        assertTrue(vm.uiState.running)
+        vm.onInputChange("second")
+        vm.send()
 
         assertEquals(1, runs)
-        assertTrue(viewModel.uiState.messages.none { it.role == ChatRole.USER && it.text == "second" })
+        assertTrue(vm.uiState.messages.none { it.kind == ChatMessageKind.USER && it.rawText == "second" })
+        vm.stop()
         gate.complete(Unit)
-        assertFalse(viewModel.uiState.running)
-    }
-
-    @Test
-    fun `tool activity is visible in the transcript`() {
-        val session = ScriptedAgentSession { _, onEvent ->
-            onEvent(AgentStreamEvent.ToolRequested("search_files", "query=auth"))
-            onEvent(AgentStreamEvent.ToolFinished("search_files", true, "2 matches"))
-            onEvent(AgentStreamEvent.Completed("Found it"))
-        }
-        val viewModel = AgentViewModel(session)
-
-        viewModel.onInputChange("find auth")
-        viewModel.send()
-
-        val tool = viewModel.uiState.messages.single { it.role == ChatRole.TOOL }
-        assertEquals("search_files", tool.toolName)
-        assertTrue(tool.text.contains("query=auth"))
-        assertTrue(tool.text.contains("2 matches"))
-        assertFalse(tool.streaming)
-    }
-
-    @Test
-    fun `permission prompt is shown and resolved from the chat`() {
-        val session = PermissionAgentSession()
-        val viewModel = AgentViewModel(session)
-
-        viewModel.onInputChange("edit config")
-        viewModel.send()
-
-        val prompt = assertNotNull(viewModel.uiState.pendingPermission)
-        assertEquals("write_file", prompt.toolName)
-        assertEquals("session-1", prompt.sessionId)
-        assertTrue(prompt.detail.contains("config.yaml"))
-        assertEquals("WORKSPACE_WRITE", prompt.requiredPermission)
-        assertFalse(viewModel.uiState.running)
-
-        viewModel.respondToPermission(true)
-
-        val after = viewModel.uiState
-        assertNull(after.pendingPermission)
-        assertFalse(after.running)
-        assertEquals("Config updated", after.messages.last { it.role == ChatRole.AGENT }.text)
+        assertFalse(vm.uiState.running)
     }
 
     @Test
     fun `send forwards the live workspace id and selected file`() {
-        val captured = mutableListOf<Pair<String?, String?>>()
-        val session = object : AgentSession {
-            override suspend fun run(
-                input: String,
-                onEvent: (AgentStreamEvent) -> Unit,
-                workspaceId: String?,
-                selectedFile: String?,
-            ) {
-                captured += workspaceId to selectedFile
-                onEvent(AgentStreamEvent.Completed("ok"))
+        var openFile: String? = "src/Main.kt"
+        val session = RecordingSession { _, onEvent -> onEvent(AgentStreamEvent.Completed("ok")) }
+        val vm = viewModel(session, workspaceId = "saf-project", selectedFile = { openFile })
+
+        vm.onInputChange("What does this project do?")
+        vm.send()
+        assertEquals("saf-project", session.runs.last().workspaceId)
+        assertEquals("src/Main.kt", session.runs.last().selectedFile)
+
+        openFile = "README.md"
+        vm.onInputChange("summarise the readme")
+        vm.send()
+        assertEquals("README.md", session.runs.last().selectedFile)
+    }
+
+    // ───────────────────────────── Regenerate / retry / edit ─────────────────────────────
+
+    @Test
+    fun `regenerate replaces the reply without duplicating the user message`() {
+        var attempt = 0
+        val session = RecordingSession { _, onEvent ->
+            attempt += 1
+            onEvent(AgentStreamEvent.Completed("reply $attempt"))
+        }
+        val vm = viewModel(session)
+
+        vm.onInputChange("question")
+        vm.send()
+        val first = vm.uiState.messages.last { it.kind == ChatMessageKind.ASSISTANT }
+        assertEquals(1, vm.uiState.messages.count { it.kind == ChatMessageKind.USER })
+
+        vm.regenerate(first.id)
+
+        assertEquals(1, vm.uiState.messages.count { it.kind == ChatMessageKind.USER })
+        val second = vm.uiState.messages.last { it.kind == ChatMessageKind.ASSISTANT }
+        assertEquals("reply 2", second.rawText)
+        assertNotEquals(first.id, second.id)
+        assertEquals(1, vm.uiState.messages.count { it.kind == ChatMessageKind.ASSISTANT })
+    }
+
+    @Test
+    fun `retry reuses the failed turn`() {
+        var attempt = 0
+        val session = RecordingSession { _, onEvent ->
+            attempt += 1
+            if (attempt == 1) {
+                onEvent(AgentStreamEvent.Failed("Connection to model timed out.", AgentFailureKind.TIMEOUT))
+            } else {
+                onEvent(AgentStreamEvent.Completed("recovered"))
             }
         }
-        var openFile: String? = "src/Main.kt"
-        val viewModel = AgentViewModel(
-            session = session,
-            workspaceId = "saf-project",
-            selectedFile = { openFile },
+        val vm = viewModel(session)
+
+        vm.onInputChange("go")
+        vm.send()
+        val failed = vm.uiState.messages.single { it.kind == ChatMessageKind.ERROR }
+        assertEquals(1, vm.uiState.messages.count { it.kind == ChatMessageKind.USER })
+
+        vm.retry(failed.id)
+
+        assertEquals(1, vm.uiState.messages.count { it.kind == ChatMessageKind.USER })
+        assertEquals("recovered", vm.uiState.messages.last { it.kind == ChatMessageKind.ASSISTANT }.rawText)
+        assertTrue(vm.uiState.messages.none { it.kind == ChatMessageKind.ERROR })
+    }
+
+    @Test
+    fun `editing a user message resends from that point`() {
+        val prompts = mutableListOf<String>()
+        val session = RecordingSession { prompt, onEvent ->
+            prompts += prompt
+            onEvent(AgentStreamEvent.Completed("ok"))
+        }
+        val vm = viewModel(session)
+
+        vm.onInputChange("first")
+        vm.send()
+        vm.onInputChange("second")
+        vm.send()
+        assertEquals(listOf("first", "second"), prompts)
+
+        val firstUser = vm.uiState.messages.first { it.kind == ChatMessageKind.USER }
+        vm.editAndResend(firstUser.id, "first revised")
+
+        assertEquals(listOf("first", "second", "first revised"), prompts)
+        assertEquals("first revised", vm.uiState.messages.first { it.kind == ChatMessageKind.USER }.rawText)
+        // The second turn was dropped with the edit.
+        assertTrue(vm.uiState.messages.none { it.kind == ChatMessageKind.USER && it.rawText == "second" })
+    }
+
+    // ───────────────────────────── Permissions ─────────────────────────────
+
+    @Test
+    fun `permission prompt is shown and resolved from the chat`() {
+        val session = PermissionSession()
+        val vm = viewModel(session)
+
+        vm.onInputChange("edit config")
+        vm.send()
+
+        val prompt = assertNotNull(vm.uiState.pendingPermission)
+        assertEquals("write_file", prompt.toolName)
+        assertEquals("session-1", prompt.sessionId)
+        assertTrue(prompt.detail.contains("config.yaml"))
+        assertEquals("WORKSPACE_WRITE", prompt.requiredPermission)
+        // A parked turn stays live so Stop is available.
+        assertTrue(vm.uiState.running)
+
+        vm.respondToPermission(true)
+
+        val after = vm.uiState
+        assertNull(after.pendingPermission)
+        assertFalse(after.running)
+        assertEquals("Config updated", after.messages.last { it.kind == ChatMessageKind.ASSISTANT }.rawText)
+    }
+
+    // ───────────────────────────── Sessions ─────────────────────────────
+
+    @Test
+    fun `the sidebar loads persistent sessions newest first and restores the active one`() {
+        val session = RecordingSession { _, onEvent -> onEvent(AgentStreamEvent.Completed("ok")) }
+        session.seed(
+            "s1",
+            "Authentication investigation",
+            5_000L,
+            listOf(
+                PersistedAgentMessage("m1", PersistedMessageKind.USER, "fix auth"),
+                PersistedAgentMessage(
+                    "m2",
+                    PersistedMessageKind.ASSISTANT,
+                    "Try this:\n\n```kotlin\nclass Auth {}\n```",
+                ),
+            ),
         )
+        session.seed("s2", "Terminal debugging", 9_000L, emptyList())
 
-        viewModel.onInputChange("What does this project do?")
-        viewModel.send()
+        val vm = viewModel(session)
 
-        assertEquals(listOf<Pair<String?, String?>>("saf-project" to "src/Main.kt"), captured)
-        openFile = "README.md"
-        viewModel.onInputChange("summarise the readme")
-        viewModel.send()
-        assertEquals("README.md", captured.last().second)
+        val state = vm.uiState
+        assertEquals(2, state.sessions.size)
+        assertEquals("Terminal debugging", state.sessions.first().title)
+        assertEquals("s2", state.activeSessionId)
+        assertTrue(state.sessions.first().active)
+    }
+
+    @Test
+    fun `opening a session restores its transcript and never mixes sessions`() {
+        val session = RecordingSession { _, onEvent -> onEvent(AgentStreamEvent.Completed("ok")) }
+        session.seed(
+            "s1",
+            "Auth",
+            5_000L,
+            listOf(
+                PersistedAgentMessage("m1", PersistedMessageKind.USER, "fix auth"),
+                PersistedAgentMessage("m2", PersistedMessageKind.ASSISTANT, "Here is the fix."),
+            ),
+        )
+        session.seed("s2", "Terminal", 9_000L, listOf(PersistedAgentMessage("x1", PersistedMessageKind.USER, "ls")))
+
+        val vm = viewModel(session)
+        vm.openSession("s1")
+
+        assertEquals("s1", vm.uiState.activeSessionId)
+        assertEquals(listOf("fix auth"), vm.uiState.messages.filter { it.kind == ChatMessageKind.USER }.map { it.rawText })
+        assertTrue(vm.uiState.messages.any { it.rawText == "Here is the fix." })
+
+        vm.openSession("s2")
+        assertEquals("s2", vm.uiState.activeSessionId)
+        assertEquals(listOf("ls"), vm.uiState.messages.filter { it.kind == ChatMessageKind.USER }.map { it.rawText })
+    }
+
+    @Test
+    fun `restored code blocks render as code rather than escaped text`() {
+        val session = RecordingSession { _, onEvent -> onEvent(AgentStreamEvent.Completed("ok")) }
+        session.seed(
+            "s1",
+            "Code",
+            1_000L,
+            listOf(
+                PersistedAgentMessage(
+                    "m2",
+                    PersistedMessageKind.ASSISTANT,
+                    "Example:\n\n```java\nclass Example {\n    int x;\n}\n```",
+                ),
+            ),
+        )
+        val vm = viewModel(session)
+        vm.openSession("s1")
+
+        val assistant = vm.uiState.messages.single { it.kind == ChatMessageKind.ASSISTANT }
+        val code = assistant.blocks.filterIsInstance<MessageBlock.Code>().single()
+        assertEquals("java", code.language)
+        assertTrue(code.code.contains("class Example"))
+    }
+
+    @Test
+    fun `renaming and deleting sessions updates the sidebar`() {
+        val session = RecordingSession { _, onEvent -> onEvent(AgentStreamEvent.Completed("ok")) }
+        session.seed("s1", "Old title", 1_000L, emptyList())
+        session.seed("s2", "Keep me", 2_000L, emptyList())
+
+        val vm = viewModel(session)
+        vm.renameSession("s1", "New title")
+        assertEquals("New title", vm.uiState.sessions.single { it.id == "s1" }.title)
+
+        vm.deleteSession("s1")
+        assertTrue(vm.uiState.sessions.none { it.id == "s1" })
+        assertTrue(vm.uiState.sessions.any { it.id == "s2" })
+    }
+
+    @Test
+    fun `deleting the active session starts a fresh one`() {
+        val session = RecordingSession { _, onEvent -> onEvent(AgentStreamEvent.Completed("ok")) }
+        session.seed("s1", "Only session", 1_000L, listOf(PersistedAgentMessage("m1", PersistedMessageKind.USER, "hi")))
+
+        val vm = viewModel(session)
+        assertEquals("s1", vm.uiState.activeSessionId)
+
+        vm.deleteSession("s1")
+
+        assertNotEquals("s1", vm.uiState.activeSessionId)
+        assertNotNull(vm.uiState.activeSessionId)
+        assertTrue(vm.uiState.messages.isEmpty())
+    }
+
+    @Test
+    fun `a new session clears the transcript and sends through the new session id`() {
+        val session = RecordingSession { _, onEvent -> onEvent(AgentStreamEvent.Completed("ok")) }
+        session.seed("s1", "Existing", 1_000L, listOf(PersistedAgentMessage("m1", PersistedMessageKind.USER, "hi")))
+
+        val vm = viewModel(session)
+        vm.newSession()
+        val fresh = assertNotNull(vm.uiState.activeSessionId)
+        assertNotEquals("s1", fresh)
+        assertTrue(vm.uiState.messages.isEmpty())
+
+        vm.onInputChange("new task")
+        vm.send()
+        assertEquals(fresh, session.runs.single().sessionId)
+    }
+
+    @Test
+    fun `sessions created by a turn are persisted through the port`() {
+        val session = RecordingSession { _, onEvent -> onEvent(AgentStreamEvent.Completed("hello")) }
+        val vm = viewModel(session)
+
+        vm.onInputChange("hi")
+        vm.send()
+
+        val created = assertNotNull(vm.uiState.activeSessionId)
+        assertEquals(created, session.runs.single().sessionId)
+        assertTrue(session.sessions.containsKey(created))
     }
 
     private fun failingViewModel(kind: AgentFailureKind, message: String): AgentViewModel {
-        val session = ScriptedAgentSession { _, onEvent ->
+        val session = RecordingSession { _, onEvent ->
             onEvent(AgentStreamEvent.Failed(message, kind))
         }
-        return AgentViewModel(session)
+        return viewModel(session)
     }
 
-    private class ScriptedAgentSession(
-        private val block: suspend (String, (AgentStreamEvent) -> Unit) -> Unit,
+    /** An in-memory [AgentSession] with a real session store and recorded runs. */
+    private class RecordingSession(
+        private val block: suspend (String, (AgentStreamEvent) -> Unit) -> Unit = { _, onEvent ->
+            onEvent(AgentStreamEvent.Completed("ok"))
+        },
     ) : AgentSession {
+
+        data class RunCall(
+            val sessionId: String?,
+            val input: String,
+            val workspaceId: String?,
+            val selectedFile: String?,
+        )
+
+        val runs = mutableListOf<RunCall>()
+        val sessions = LinkedHashMap<String, MutableList<PersistedAgentMessage>>()
+        private val titles = LinkedHashMap<String, String>()
+        private val updated = LinkedHashMap<String, Long>()
+        private var active: String? = null
+        private var counter = 0
+
+        fun seed(id: String, title: String, updatedAt: Long, messages: List<PersistedAgentMessage>) {
+            sessions[id] = messages.toMutableList()
+            titles[id] = title
+            updated[id] = updatedAt
+        }
+
         override suspend fun run(
             input: String,
             onEvent: (AgentStreamEvent) -> Unit,
             workspaceId: String?,
             selectedFile: String?,
         ) {
+            runs += RunCall(null, input, workspaceId, selectedFile)
             block(input, onEvent)
+        }
+
+        override suspend fun runInSession(
+            sessionId: String,
+            input: String,
+            onEvent: (AgentStreamEvent) -> Unit,
+            workspaceId: String?,
+            selectedFile: String?,
+        ) {
+            runs += RunCall(sessionId, input, workspaceId, selectedFile)
+            block(input, onEvent)
+        }
+
+        override suspend fun listSessions(): List<AgentSessionInfo> =
+            sessions.keys.sortedByDescending { updated[it] ?: 0L }.map { id ->
+                AgentSessionInfo(
+                    id = id,
+                    title = titles[id] ?: "New session",
+                    updatedAtMillis = updated[id] ?: 0L,
+                    messageCount = sessions[id]?.size ?: 0,
+                    active = id == active,
+                )
+            }
+
+        override suspend fun activeSessionId(): String? = active
+
+        override suspend fun createSession(): AgentSessionInfo {
+            counter += 1
+            val id = "created-$counter"
+            sessions[id] = mutableListOf()
+            titles[id] = "New session"
+            updated[id] = 0L
+            active = id
+            return AgentSessionInfo(id, "New session", 0L, 0, true)
+        }
+
+        override suspend fun restoreSession(sessionId: String): List<PersistedAgentMessage> {
+            active = sessionId
+            return sessions[sessionId].orEmpty().toList()
+        }
+
+        override suspend fun renameSession(sessionId: String, title: String): Boolean {
+            if (!sessions.containsKey(sessionId)) return false
+            titles[sessionId] = title
+            return true
+        }
+
+        override suspend fun deleteSession(sessionId: String): Boolean {
+            val removed = sessions.remove(sessionId) != null
+            titles.remove(sessionId)
+            updated.remove(sessionId)
+            if (active == sessionId) active = null
+            return removed
         }
     }
 
     /** A session that parks on a permission request, then continues when resolved. */
-    private class PermissionAgentSession : AgentSession {
+    private class PermissionSession : AgentSession {
         override suspend fun run(
             input: String,
             onEvent: (AgentStreamEvent) -> Unit,

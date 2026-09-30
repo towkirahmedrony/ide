@@ -1,6 +1,11 @@
 package com.agentx.app.agent.ui
 
 import android.util.Log
+import com.agentx.app.agent.conversation.AgentConversation
+import com.agentx.app.agent.conversation.ConversationHistory
+import com.agentx.app.agent.conversation.ConversationMessage
+import com.agentx.app.agent.conversation.MessageRole
+import com.agentx.app.agent.conversation.SessionTitle
 import com.agentx.app.agent.domain.AgentError
 import com.agentx.app.agent.domain.AgentErrorCode
 import com.agentx.app.agent.domain.AgentEvent
@@ -20,13 +25,20 @@ import com.agentx.app.model.json.JsonObject
 import com.agentx.app.model.json.JsonValue
 import com.agentx.app.ui.ide.data.AgentFailureKind
 import com.agentx.app.ui.ide.data.AgentSession
+import com.agentx.app.ui.ide.data.AgentSessionInfo
 import com.agentx.app.ui.ide.data.AgentStreamEvent
+import com.agentx.app.ui.ide.data.PersistedAgentMessage
+import com.agentx.app.ui.ide.data.PersistedMessageKind
 import com.agentx.app.ui.ide.model.AgentActivity
 import com.agentx.app.ui.ide.model.AgentActivityStatus
 
 /**
  * Bridges the Agent Core orchestrator to the IDE [AgentSession] port.
  * UI stays free of model, tool, and orchestrator types.
+ *
+ * Session history is not reimplemented here: every session, message and tool
+ * record is read from and written to the Agent Core's own [ConversationHistory],
+ * which persists through the conversation store configured at boot.
  */
 class OrchestratorAgentSession(
     private val orchestrator: AgentOrchestrator,
@@ -35,10 +47,20 @@ class OrchestratorAgentSession(
 ) : AgentSession {
 
     /**
-     * Compact record of previous turns, oldest first. It is handed to the
-     * Context Engine on every run, which is what gives a follow-up request the
-     * current task, earlier decisions, tool activity and progress. It is
-     * bounded here and budgeted again by the engine.
+     * The session the next turn belongs to. Chosen by the user from the session
+     * sidebar, or created lazily on the first turn.
+     */
+    private var activeSessionId: String? = null
+
+    /** The Agent Core's persistent history, when the orchestrator owns one. */
+    private val history: ConversationHistory?
+        get() = orchestrator.history()
+
+    /**
+     * Compact record of previous turns, oldest first. It is only used as a
+     * fallback when the orchestrator has no persistent history (tests and
+     * previews); with history wired, [ConversationHistory] is the source of
+     * truth and this list stays empty.
      */
     private val conversation = mutableListOf<ModelMessage>()
 
@@ -46,6 +68,73 @@ class OrchestratorAgentSession(
     private val conversationLimit = ContextBudget.DEFAULT.maxConversationMessages
 
     override suspend fun run(
+        input: String,
+        onEvent: (AgentStreamEvent) -> Unit,
+        workspaceId: String?,
+        selectedFile: String?,
+    ) {
+        val sessionId = activeSessionId
+            ?: history?.createSession(workspaceId = workspaceId ?: this.workspaceId)?.id
+        if (sessionId != null) activeSessionId = sessionId
+        runTurn(sessionId, input, onEvent, workspaceId, selectedFile)
+    }
+
+    override suspend fun runInSession(
+        sessionId: String,
+        input: String,
+        onEvent: (AgentStreamEvent) -> Unit,
+        workspaceId: String?,
+        selectedFile: String?,
+    ) {
+        activeSessionId = sessionId
+        runTurn(sessionId, input, onEvent, workspaceId, selectedFile)
+    }
+
+    // ───────────────────────────── Session management ─────────────────────────────
+
+    override suspend fun listSessions(): List<AgentSessionInfo> {
+        val store = history ?: return emptyList()
+        return store.conversations(workspaceId).map { conversation -> conversation.toInfo(activeSessionId) }
+    }
+
+    override suspend fun activeSessionId(): String? {
+        activeSessionId?.let { return it }
+        return history?.conversations(workspaceId)?.firstOrNull()?.id
+    }
+
+    override suspend fun createSession(): AgentSessionInfo? {
+        val store = history ?: return null
+        val created = store.createSession(workspaceId = workspaceId)
+        activeSessionId = created.id
+        return created.toInfo(created.id)
+    }
+
+    override suspend fun restoreSession(sessionId: String): List<PersistedAgentMessage> {
+        val store = history ?: return emptyList()
+        val conversation = store.open(sessionId) ?: return emptyList()
+        activeSessionId = sessionId
+        return conversation.messages.map { message -> message.toPersisted() }
+    }
+
+    override suspend fun renameSession(sessionId: String, title: String): Boolean {
+        val store = history ?: return false
+        val trimmed = title.trim()
+        if (trimmed.isEmpty()) return false
+        val updated = store.rename(sessionId, trimmed) ?: return false
+        return updated.session.title == trimmed
+    }
+
+    override suspend fun deleteSession(sessionId: String): Boolean {
+        val store = history ?: return false
+        val removed = store.delete(sessionId)
+        if (activeSessionId == sessionId) activeSessionId = null
+        return removed
+    }
+
+    // ───────────────────────────── Turn ─────────────────────────────
+
+    private suspend fun runTurn(
+        sessionId: String?,
         input: String,
         onEvent: (AgentStreamEvent) -> Unit,
         workspaceId: String?,
@@ -66,31 +155,32 @@ class OrchestratorAgentSession(
         val activeWorkspaceId = workspaceId ?: this.workspaceId
         Log.d(
             TAG,
-            "Agent run workspaceId=${activeWorkspaceId ?: "(none)"} " +
+            "Agent run sessionId=${sessionId ?: "(none)"} workspaceId=${activeWorkspaceId ?: "(none)"} " +
                 "selectedFile=${selectedFile ?: "(none)"} promptChars=${input.length}",
         )
 
-        val sink = AgentEventSink { event ->
-            mapEvent(event)?.let(onEvent)
-        }
+        val sink = AgentEventSink { event -> mapEvent(event)?.let(onEvent) }
         val result = orchestrator.run(
             request = AgentRunRequest(
                 prompt = input,
+                sessionId = sessionId,
                 workspaceId = activeWorkspaceId,
                 selectedFile = selectedFile,
-                conversation = conversation.toList(),
+                // With persistent history the core rebuilds the conversation from
+                // the stored transcript; the fallback list is only for no-history runs.
+                conversation = if (sessionId == null) conversation.toList() else emptyList(),
             ),
             modelConfig = config,
             sink = sink,
         )
-        record(input, result)
-        emitOutcome(result, sessionId = null, onEvent = onEvent)
+        if (sessionId == null) record(input, result)
+        emitOutcome(result, sessionId = sessionId, onEvent = onEvent)
     }
 
     /**
-     * Remembers this turn for the next one: the request, the outcome, and a
-     * compact line of what the agent actually did with its tools. Nothing is
-     * stored beyond the conversation budget, and nothing is persisted.
+     * Remembers this turn for the next one when there is no persistent history:
+     * the request, the outcome, and a compact line of what the agent actually
+     * did with its tools. Nothing is stored beyond the conversation budget.
      */
     private fun record(input: String, result: AgentResult) {
         conversation += ModelMessage.user(input.trim())
@@ -168,6 +258,37 @@ class OrchestratorAgentSession(
         const val MAX_ENTRY_CHARS = 1_000
     }
 }
+
+// ───────────────────────────── Mapping ─────────────────────────────
+
+private fun AgentConversation.toInfo(activeId: String?): AgentSessionInfo = AgentSessionInfo(
+    id = id,
+    title = session.title?.takeIf { it.isNotBlank() } ?: SessionTitle.DEFAULT,
+    updatedAtMillis = session.updatedAtMillis,
+    messageCount = messages.size,
+    active = id == activeId,
+)
+
+private fun ConversationMessage.toPersisted(): PersistedAgentMessage = PersistedAgentMessage(
+    id = id,
+    kind = when (role) {
+        MessageRole.USER -> PersistedMessageKind.USER
+        MessageRole.ASSISTANT -> PersistedMessageKind.ASSISTANT
+        MessageRole.ERROR -> PersistedMessageKind.ERROR
+        MessageRole.TOOL -> PersistedMessageKind.TOOL
+        MessageRole.SUB_AGENT -> PersistedMessageKind.SUB_AGENT
+        MessageRole.SYSTEM -> PersistedMessageKind.SYSTEM
+    },
+    text = content.text,
+    toolName = content.toolName,
+    toolArguments = content.toolArguments,
+    toolResult = content.toolResult,
+    toolSuccess = metadata.toolSuccess,
+    timestampMillis = metadata.timestampMillis,
+    errorCode = content.errorCode,
+    subAgentRole = content.subAgentRole,
+    modelId = metadata.modelId,
+)
 
 internal fun permissionEvent(pending: PendingPermission, sessionId: String): AgentStreamEvent.PermissionRequired =
     AgentStreamEvent.PermissionRequired(

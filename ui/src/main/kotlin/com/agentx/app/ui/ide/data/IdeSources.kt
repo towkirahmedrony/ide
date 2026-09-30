@@ -75,6 +75,40 @@ enum class AgentFailureKind {
     UNKNOWN,
 }
 
+/**
+ * Session metadata for the Agent session sidebar. Free of agent-core types so
+ * the UI never depends on the persistence model.
+ */
+data class AgentSessionInfo(
+    val id: String,
+    val title: String,
+    val updatedAtMillis: Long,
+    val messageCount: Int = 0,
+    val active: Boolean = false,
+)
+
+/** Kind of a persisted transcript entry, mapped for presentation. */
+enum class PersistedMessageKind { USER, ASSISTANT, TOOL, ERROR, SYSTEM, SUB_AGENT }
+
+/**
+ * One persisted conversation entry. This is the only shape in which the Agent
+ * Core's stored history crosses into the UI; the persistence model itself never
+ * leaks into a Composable.
+ */
+data class PersistedAgentMessage(
+    val id: String,
+    val kind: PersistedMessageKind,
+    val text: String,
+    val toolName: String? = null,
+    val toolArguments: String? = null,
+    val toolResult: String? = null,
+    val toolSuccess: Boolean? = null,
+    val timestampMillis: Long = 0L,
+    val errorCode: String? = null,
+    val subAgentRole: String? = null,
+    val modelId: String? = null,
+)
+
 interface AgentSession {
     suspend fun run(
         input: String,
@@ -92,6 +126,41 @@ interface AgentSession {
         approved: Boolean,
         onEvent: (AgentStreamEvent) -> Unit,
     ) = Unit
+
+    /**
+     * Runs one turn inside a persistent session. Sessions that keep no history
+     * fall back to [run]; the default keeps scripted and mock sessions working.
+     */
+    suspend fun runInSession(
+        sessionId: String,
+        input: String,
+        onEvent: (AgentStreamEvent) -> Unit,
+        workspaceId: String? = null,
+        selectedFile: String? = null,
+    ) {
+        run(input, onEvent, workspaceId, selectedFile)
+    }
+
+    /**
+     * Persistent, newest-first session list for the current workspace. Defaults
+     * to empty so a session without history simply shows no sidebar entries.
+     */
+    suspend fun listSessions(): List<AgentSessionInfo> = emptyList()
+
+    /** The session the next turn belongs to, or null when none is selected yet. */
+    suspend fun activeSessionId(): String? = null
+
+    /** Creates and selects an empty session, returning its metadata. */
+    suspend fun createSession(): AgentSessionInfo? = null
+
+    /** Loads a session's persisted transcript so it can be restored. */
+    suspend fun restoreSession(sessionId: String): List<PersistedAgentMessage> = emptyList()
+
+    /** Renames a persisted session. Returns whether the title changed. */
+    suspend fun renameSession(sessionId: String, title: String): Boolean = false
+
+    /** Deletes a persisted session and its transcript. */
+    suspend fun deleteSession(sessionId: String): Boolean = false
 }
 
 /** Reads repository state for a workspace. No real Git access yet. */

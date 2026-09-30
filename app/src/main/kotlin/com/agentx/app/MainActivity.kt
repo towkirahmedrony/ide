@@ -8,6 +8,7 @@ import androidx.activity.compose.setContent
 import androidx.compose.runtime.remember
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
+import com.agentx.app.agent.conversation.FilesystemConversationStore
 import com.agentx.app.agent.orchestrator.AgentOrchestrator
 import com.agentx.app.agent.ui.OrchestratorAgentSession
 import com.agentx.app.codeintel.DelegatingSyntaxParserProvider
@@ -111,6 +112,11 @@ class MainActivity : ComponentActivity() {
             connectionProviders = built.registry,
             integrationSetup = built.setup,
             agentPromptStore = SharedPreferencesAgentPromptStore(applicationContext),
+            // Agent sessions persist as one JSON file each, so a session can be
+            // reopened (or deleted) without touching another session's history.
+            conversationStore = FilesystemConversationStore(
+                File(applicationContext.filesDir, AGENT_SESSIONS_DIRECTORY),
+            ),
             skillStore = CompositeSkillStore(
                 config = SharedPreferencesSkillConfigStore(applicationContext),
                 files = FilesystemSkillFileStore(File(applicationContext.filesDir, SKILLS_DIRECTORY)),
@@ -297,6 +303,7 @@ class MainActivity : ComponentActivity() {
         const val TAG = "AgentX.MainActivity"
         const val KEY_RUNNER_STATE = "forge.modelRunner.state"
         const val SKILLS_DIRECTORY = "skills"
+        const val AGENT_SESSIONS_DIRECTORY = "agent-sessions"
     }
 }
 

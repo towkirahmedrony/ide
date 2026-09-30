@@ -76,17 +76,6 @@ data class AgentActivity(
     val label: String,
 )
 
-enum class ChatRole { USER, AGENT, SYSTEM, TOOL }
-
-data class ChatMessage(
-    val id: String,
-    val role: ChatRole,
-    val text: String,
-    val streaming: Boolean = false,
-    /** Set for [ChatRole.TOOL] entries so results can be matched to their call. */
-    val toolName: String? = null,
-)
-
 // The line-based terminal models that used to live here are gone with the custom terminal:
 // the Terminal tab renders the vendored Termux emulator, which owns its screen buffer.
 

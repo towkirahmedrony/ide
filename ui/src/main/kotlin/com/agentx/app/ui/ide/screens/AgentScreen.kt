@@ -1,12 +1,6 @@
 package com.agentx.app.ui.ide.screens
 
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.StartOffset
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -24,38 +18,47 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
-import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -63,11 +66,15 @@ import com.agentx.app.ui.ide.components.IdeDivider
 import com.agentx.app.ui.ide.components.IdeStatusPill
 import com.agentx.app.ui.ide.model.AgentActivity
 import com.agentx.app.ui.ide.model.AgentActivityStatus
-import com.agentx.app.ui.ide.model.ChatMessage
-import com.agentx.app.ui.ide.model.ChatRole
-import com.agentx.app.ui.ide.state.AgentUiState
+import com.agentx.app.ui.ide.model.AgentChatUiState
+import com.agentx.app.ui.ide.model.GenerationPhase
+import com.agentx.app.ui.ide.model.GenerationState
+import com.agentx.app.ui.ide.model.PermissionPromptUi
+import com.agentx.app.ui.ide.screens.agent.AgentMessageItem
+import com.agentx.app.ui.ide.screens.agent.AgentSessionDrawerContent
+import com.agentx.app.ui.ide.screens.agent.copyToClipboard
+import com.agentx.app.ui.ide.state.AgentChatPresentation
 import com.agentx.app.ui.ide.state.AgentViewModel
-import com.agentx.app.ui.ide.state.PermissionPrompt
 import com.agentx.app.ui.theme.ForgeAmber
 import com.agentx.app.ui.theme.ForgeBorder
 import com.agentx.app.ui.theme.ForgeCanvas
@@ -78,6 +85,8 @@ import com.agentx.app.ui.theme.ForgeMuted
 import com.agentx.app.ui.theme.ForgePeriwinkle
 import com.agentx.app.ui.theme.ForgeSurface
 import com.agentx.app.ui.theme.ForgeSurfaceVariant
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
 
 @Composable
 fun AgentScreen(
@@ -85,277 +94,239 @@ fun AgentScreen(
     modifier: Modifier = Modifier,
 ) {
     val state = viewModel.uiState
-    val listState = rememberLazyListState()
+    val context = LocalContext.current
+    val drawerState = rememberDrawerState(DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
+    var nowMillis by remember { mutableStateOf(System.currentTimeMillis()) }
 
-    LaunchedEffect(state.messages.size, state.messages.lastOrNull()?.text) {
-        if (state.messages.isNotEmpty()) {
-            listState.animateScrollToItem(state.messages.lastIndex)
-        }
-    }
+    // The sidebar's relative timestamps are refreshed once per composition of a
+    // new session list, never on every streaming frame.
+    LaunchedEffect(state.sessions) { nowMillis = System.currentTimeMillis() }
 
-    Column(modifier = modifier.fillMaxSize().background(ForgeCanvas)) {
-        AgentActivityBar(
-            activity = state.activity,
-            running = state.running,
-            currentAgent = state.currentAgent,
-        )
+    val activeTitle = state.sessions.firstOrNull { it.id == state.activeSessionId }?.title ?: "Agent"
 
-        LazyColumn(
-            modifier = Modifier.weight(1f).fillMaxWidth(),
-            state = listState,
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            items(state.messages, key = { it.id }) { message ->
-                ChatBubble(message)
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        drawerContent = {
+            ModalDrawerSheet(
+                drawerContainerColor = ForgeSurface,
+                drawerContentColor = ForgeInk,
+            ) {
+                AgentSessionDrawerContent(
+                    sessions = state.sessions,
+                    activeSessionId = state.activeSessionId,
+                    nowMillis = nowMillis,
+                    onNewSession = {
+                        viewModel.newSession()
+                        scope.launch { drawerState.close() }
+                    },
+                    onOpenSession = { id ->
+                        viewModel.openSession(id)
+                        scope.launch { drawerState.close() }
+                    },
+                    onRenameSession = viewModel::renameSession,
+                    onDeleteSession = viewModel::deleteSession,
+                )
+            }
+        },
+        modifier = modifier.fillMaxSize(),
+    ) {
+        val listState = rememberLazyListState()
+        var stickToBottom by remember { mutableStateOf(true) }
+
+        val atBottom by remember {
+            derivedStateOf {
+                val info = listState.layoutInfo
+                val last = info.visibleItemsInfo.lastOrNull()
+                last == null || last.index >= info.totalItemsCount - 1
             }
         }
 
-        state.pendingPermission?.let { prompt ->
-            PermissionPromptCard(
-                prompt = prompt,
-                onDecision = viewModel::respondToPermission,
-            )
+        // Only a user scroll gesture changes the follow decision; programmatic
+        // scrolling ends with the list at the bottom and keeps following.
+        LaunchedEffect(listState) {
+            snapshotFlow { listState.isScrollInProgress }.collect { scrolling ->
+                if (!scrolling) stickToBottom = atBottom
+            }
         }
 
-        AgentInputBar(
-            state = state,
-            onInputChange = viewModel::onInputChange,
-            onSend = viewModel::send,
-            onStop = viewModel::stop,
-        )
+        val contentSignature = state.messages.size to (
+            state.messages.lastOrNull()?.let { it.rawText.length + it.blocks.size * 31 + it.activities.size * 7 } ?: 0
+            )
+        LaunchedEffect(contentSignature, state.activeSessionId) {
+            if (stickToBottom && state.messages.isNotEmpty()) {
+                listState.animateScrollToItem(state.messages.lastIndex)
+            }
+        }
+        LaunchedEffect(state.activeSessionId) { stickToBottom = true }
+
+        Column(modifier = Modifier.fillMaxSize().background(ForgeCanvas)) {
+            AgentHeader(
+                title = activeTitle,
+                activity = state.activity,
+                generation = state.generation,
+                currentAgent = state.currentAgent,
+                onOpenDrawer = { scope.launch { drawerState.open() } },
+                onNewSession = { viewModel.newSession() },
+            )
+
+            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                if (state.messages.isEmpty()) {
+                    AgentEmptyState()
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        state = listState,
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp),
+                    ) {
+                        items(state.messages, key = { it.id }) { message ->
+                            AgentMessageItem(
+                                message = message,
+                                onCopy = { copyToClipboard(context, "Agent message", message.copyText) },
+                                onRegenerate = { viewModel.regenerate(message.id) },
+                                onRetry = { viewModel.retry(message.id) },
+                                onEditSend = { text -> viewModel.editAndResend(message.id, text) },
+                            )
+                        }
+                    }
+                }
+
+                if (!stickToBottom && state.messages.isNotEmpty()) {
+                    JumpToLatestPill(
+                        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp),
+                        onClick = {
+                            stickToBottom = true
+                            scope.launch { listState.animateScrollToItem(state.messages.lastIndex) }
+                        },
+                    )
+                }
+            }
+
+            state.pendingPermission?.let { prompt ->
+                PermissionPromptCard(prompt = prompt, onDecision = viewModel::respondToPermission)
+            }
+
+            AgentInputBar(
+                state = state,
+                onInputChange = viewModel::onInputChange,
+                onSend = viewModel::send,
+                onStop = viewModel::stop,
+            )
+        }
     }
 }
 
-// ───────────────────────────── Status bar ─────────────────────────────
+// ───────────────────────────── Header ─────────────────────────────
 
 @Composable
-private fun AgentActivityBar(activity: AgentActivity, running: Boolean, currentAgent: String) {
+private fun AgentHeader(
+    title: String,
+    activity: AgentActivity,
+    generation: GenerationState,
+    currentAgent: String,
+    onOpenDrawer: () -> Unit,
+    onNewSession: () -> Unit,
+) {
     val color = activityColor(activity.status)
     Column(modifier = Modifier.fillMaxWidth().background(ForgeSurface)) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 10.dp),
+            modifier = Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(modifier = Modifier.size(14.dp), contentAlignment = Alignment.Center) {
-                if (running) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(14.dp),
-                        strokeWidth = 2.dp,
-                        color = color,
-                    )
-                } else {
-                    Box(modifier = Modifier.size(8.dp).background(color, CircleShape))
-                }
+            IconButton(onClick = onOpenDrawer, modifier = Modifier.size(44.dp)) {
+                Icon(Icons.Filled.Menu, contentDescription = "Open sessions", tint = ForgeInk)
             }
-            Spacer(Modifier.width(10.dp))
-            Text(
-                text = "$currentAgent · ${activity.label}",
-                style = MaterialTheme.typography.labelSmall,
-                color = ForgeInk,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
-            Spacer(Modifier.width(8.dp))
-            IdeStatusPill(
-                text = activity.status.name.lowercase().replace('_', ' '),
-                color = color,
-            )
+            Column(modifier = Modifier.weight(1f).padding(horizontal = 4.dp)) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = ForgeInk,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = "$currentAgent · ${activity.label}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ForgeMuted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            GenerationChip(generation = generation, color = color)
+            IconButton(onClick = onNewSession, modifier = Modifier.size(44.dp)) {
+                Icon(Icons.Filled.Add, contentDescription = "New session", tint = ForgeInk)
+            }
         }
         IdeDivider()
     }
 }
 
-// ───────────────────────────── Messages ─────────────────────────────
-
+/** `Generating… 12s` while running, the final `12.4s` once the turn ends. */
 @Composable
-private fun ChatBubble(message: ChatMessage) {
-    when (message.role) {
-        ChatRole.SYSTEM -> Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.Center,
+private fun GenerationChip(generation: GenerationState, color: Color) {
+    when {
+        generation.running -> Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(14.dp))
+                .background(color.copy(alpha = 0.14f))
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
+            CircularProgressIndicator(modifier = Modifier.size(12.dp), strokeWidth = 2.dp, color = color)
+            Spacer(Modifier.width(8.dp))
             Text(
-                text = message.text,
+                text = "Generating… ${AgentChatPresentation.formatElapsedSeconds(generation.elapsedMillis)}",
                 style = MaterialTheme.typography.labelSmall,
-                color = ForgeMuted,
-                textAlign = TextAlign.Center,
-                modifier = Modifier
-                    .background(ForgeSurfaceVariant.copy(alpha = 0.6f), RoundedCornerShape(14.dp))
-                    .padding(horizontal = 12.dp, vertical = 7.dp),
+                color = color,
             )
         }
 
-        ChatRole.USER -> Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.End,
-        ) {
-            Box(
-                modifier = Modifier
-                    .widthIn(max = 320.dp)
-                    .background(
-                        ForgePeriwinkle.copy(alpha = 0.18f),
-                        RoundedCornerShape(
-                            topStart = 18.dp,
-                            topEnd = 18.dp,
-                            bottomStart = 18.dp,
-                            bottomEnd = 4.dp,
-                        ),
-                    )
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
-            ) {
-                SelectionContainer {
-                    Text(
-                        text = message.text,
-                        style = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp, lineHeight = 22.sp),
-                        color = ForgeInk,
-                    )
-                }
-            }
-        }
-
-        // Agent replies are plain text on the canvas with a small avatar,
-        // like ChatGPT / Claude, instead of a boxed bubble.
-        ChatRole.AGENT -> Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            AgentAvatar()
-            Column(modifier = Modifier.weight(1f).padding(top = 3.dp)) {
-                if (message.text.isEmpty()) {
-                    TypingDots()
-                } else {
-                    SelectionContainer {
-                        Text(
-                            text = message.text,
-                            style = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp, lineHeight = 23.sp),
-                            color = ForgeInk,
-                        )
-                    }
-                }
-            }
-        }
-
-        // Tool activity is shown inline so the conversation records what the
-        // agent actually did, not just what it said.
-        ChatRole.TOOL -> Row(
-            modifier = Modifier.fillMaxWidth().padding(start = 38.dp),
-        ) {
-            ToolCard(message)
-        }
-    }
-}
-
-@Composable
-private fun AgentAvatar() {
-    Box(
-        modifier = Modifier
-            .size(28.dp)
-            .clip(CircleShape)
-            .background(ForgeMint.copy(alpha = 0.14f)),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            imageVector = Icons.Filled.AutoAwesome,
-            contentDescription = null,
-            tint = ForgeMint,
-            modifier = Modifier.size(16.dp),
+        generation.phase != GenerationPhase.IDLE && generation.elapsedMillis > 0L -> Text(
+            text = AgentChatPresentation.formatDuration(generation.elapsedMillis),
+            style = MaterialTheme.typography.labelSmall,
+            color = ForgeMuted,
+            modifier = Modifier.padding(horizontal = 6.dp),
         )
     }
 }
 
 @Composable
-private fun TypingDots() {
-    val transition = rememberInfiniteTransition(label = "typing")
-    Row(
-        modifier = Modifier.height(22.dp),
-        horizontalArrangement = Arrangement.spacedBy(5.dp),
-        verticalAlignment = Alignment.CenterVertically,
+private fun AgentEmptyState() {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(32.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        repeat(3) { index ->
-            val alpha by transition.animateFloat(
-                initialValue = 0.25f,
-                targetValue = 1f,
-                animationSpec = infiniteRepeatable(
-                    animation = tween(500),
-                    repeatMode = RepeatMode.Reverse,
-                    initialStartOffset = StartOffset(index * 160),
-                ),
-                label = "dot$index",
-            )
-            Box(
-                modifier = Modifier
-                    .size(7.dp)
-                    .background(ForgeMuted.copy(alpha = alpha), CircleShape),
-            )
-        }
+        Text(
+            text = "Start an agent task",
+            style = MaterialTheme.typography.titleMedium,
+            color = ForgeInk,
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = "Describe a task and the agent will inspect, plan, edit and verify. " +
+                "Its tool calls and reasoning summary appear here as it works.",
+            style = MaterialTheme.typography.bodySmall,
+            color = ForgeMuted,
+        )
     }
 }
 
 @Composable
-private fun ToolCard(message: ChatMessage) {
-    val lines = message.text.lines()
-    val header = lines.firstOrNull().orEmpty().removePrefix("▶").trim()
-    val result = lines.drop(1).joinToString("\n").trim()
-    val failed = result.startsWith("✖")
-    val resultText = result.removePrefix("✔").removePrefix("✖").trim()
-    val tint = when {
-        message.streaming -> ForgeMint
-        failed -> ForgeDanger
-        else -> ForgeMint
-    }
-    val shape = RoundedCornerShape(12.dp)
-
+private fun JumpToLatestPill(modifier: Modifier = Modifier, onClick: () -> Unit) {
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(shape)
-            .background(ForgeSurface)
-            .border(1.dp, ForgeBorder, shape)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.Top,
+        modifier = modifier
+            .clip(RoundedCornerShape(18.dp))
+            .background(ForgeSurfaceVariant)
+            .border(1.dp, ForgeBorder, RoundedCornerShape(18.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(
-            modifier = Modifier.padding(top = 2.dp).size(16.dp),
-            contentAlignment = Alignment.Center,
-        ) {
-            when {
-                message.streaming -> CircularProgressIndicator(
-                    modifier = Modifier.size(14.dp),
-                    strokeWidth = 2.dp,
-                    color = tint,
-                )
-                failed -> Icon(Icons.Filled.Close, contentDescription = null, tint = tint, modifier = Modifier.size(16.dp))
-                else -> Icon(Icons.Filled.Check, contentDescription = null, tint = tint, modifier = Modifier.size(16.dp))
-            }
-        }
-        Spacer(Modifier.width(10.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = header,
-                fontFamily = FontFamily.Monospace,
-                fontSize = 12.sp,
-                lineHeight = 17.sp,
-                color = ForgeInk,
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis,
-            )
-            if (resultText.isNotBlank()) {
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    text = resultText,
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 11.sp,
-                    lineHeight = 16.sp,
-                    color = if (failed) ForgeDanger else ForgeMuted,
-                    maxLines = 6,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-        }
+        Icon(Icons.Filled.ArrowDownward, contentDescription = null, tint = ForgeMint, modifier = Modifier.size(16.dp))
+        Spacer(Modifier.width(8.dp))
+        Text(text = "Jump to latest", style = MaterialTheme.typography.labelSmall, color = ForgeInk)
     }
 }
 
@@ -363,7 +334,7 @@ private fun ToolCard(message: ChatMessage) {
 
 @Composable
 private fun PermissionPromptCard(
-    prompt: PermissionPrompt,
+    prompt: PermissionPromptUi,
     onDecision: (Boolean) -> Unit,
 ) {
     val shape = RoundedCornerShape(16.dp)
@@ -402,11 +373,7 @@ private fun PermissionPromptCard(
         )
         if (prompt.detail.isNotBlank()) {
             Spacer(Modifier.height(8.dp))
-            Text(
-                text = prompt.detail,
-                style = MaterialTheme.typography.bodySmall,
-                color = ForgeMuted,
-            )
+            Text(text = prompt.detail, style = MaterialTheme.typography.bodySmall, color = ForgeMuted)
         }
         if (prompt.requiredPermission.isNotBlank()) {
             Spacer(Modifier.height(4.dp))
@@ -418,11 +385,7 @@ private fun PermissionPromptCard(
         }
         if (prompt.reason.isNotBlank()) {
             Spacer(Modifier.height(4.dp))
-            Text(
-                text = prompt.reason,
-                style = MaterialTheme.typography.labelSmall,
-                color = ForgeMuted,
-            )
+            Text(text = prompt.reason, style = MaterialTheme.typography.labelSmall, color = ForgeMuted)
         }
         Spacer(Modifier.height(14.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -439,10 +402,7 @@ private fun PermissionPromptCard(
                 onClick = { onDecision(true) },
                 modifier = Modifier.weight(1f).height(44.dp),
                 shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = ForgeAmber,
-                    contentColor = ForgeCanvas,
-                ),
+                colors = ButtonDefaults.buttonColors(containerColor = ForgeAmber, contentColor = ForgeCanvas),
             ) {
                 Text("Allow")
             }
@@ -454,7 +414,7 @@ private fun PermissionPromptCard(
 
 @Composable
 private fun AgentInputBar(
-    state: AgentUiState,
+    state: AgentChatUiState,
     onInputChange: (String) -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
@@ -507,16 +467,22 @@ private fun AgentInputBar(
                                     } else {
                                         "Describe a task for the agent…"
                                     },
-                                    style = MaterialTheme.typography.bodyMedium.copy(
-                                        fontSize = 15.sp,
-                                        lineHeight = 22.sp,
-                                    ),
+                                    style = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp, lineHeight = 22.sp),
                                     color = ForgeMuted,
                                 )
                             }
                             innerTextField()
                         }
                     },
+                )
+            }
+
+            if (state.running) {
+                Text(
+                    text = AgentChatPresentation.formatElapsedSeconds(state.generation.elapsedMillis),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ForgeMuted,
+                    modifier = Modifier.padding(end = 8.dp, bottom = 10.dp),
                 )
             }
 
@@ -555,7 +521,7 @@ private fun SendStopButton(
     ) {
         Icon(
             imageVector = if (running) Icons.Filled.Stop else Icons.Filled.ArrowUpward,
-            contentDescription = if (running) "Stop" else "Send",
+            contentDescription = if (running) "Stop generating" else "Send message",
             tint = content,
             modifier = Modifier.size(20.dp),
         )
