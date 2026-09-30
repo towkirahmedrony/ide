@@ -62,13 +62,9 @@ sealed interface AgentStreamEvent {
     ) : AgentStreamEvent
 
     /** The model asked for a tool; emitted before it runs. */
-    data class ToolRequested(
-        val toolName: String,
-        val detail: String,
-        val toolCallId: String = "",
-    ) : AgentStreamEvent
+    data class ToolRequested(val toolName: String, val detail: String) : AgentStreamEvent
 
-    data class ToolRunning(val toolName: String, val toolCallId: String = "") : AgentStreamEvent
+    data class ToolRunning(val toolName: String) : AgentStreamEvent
 
     data class ToolFinished(
         val toolName: String,
@@ -76,7 +72,6 @@ sealed interface AgentStreamEvent {
         val summary: String,
         /** Raw tool output for the expandable terminal/tool rows; redacted by the presentation layer. */
         val output: String = "",
-        val toolCallId: String = "",
     ) : AgentStreamEvent
 
     /**

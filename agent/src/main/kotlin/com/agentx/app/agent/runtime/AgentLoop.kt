@@ -565,7 +565,6 @@ class AgentLoop(
         sink.emit(
             AgentEvent.ToolCallStarted(
                 sessionId = request.sessionId,
-                toolCallId = call.id,
                 toolName = call.name,
                 role = request.definition.role,
                 timestampMillis = clock(),
@@ -585,7 +584,6 @@ class AgentLoop(
             sink.emit(
                 AgentEvent.ToolCallFinished(
                     sessionId = request.sessionId,
-                    toolCallId = call.id,
                     toolName = call.name,
                     success = false,
                     summary = message,
@@ -717,11 +715,9 @@ class AgentLoop(
             sink.emit(
                 AgentEvent.ToolCallFinished(
                     sessionId = request.sessionId,
-                    toolCallId = call.id,
                     toolName = call.name,
                     success = record.success,
                     summary = record.summary,
-                    output = resultText,
                     timestampMillis = clock(),
                 ),
             )

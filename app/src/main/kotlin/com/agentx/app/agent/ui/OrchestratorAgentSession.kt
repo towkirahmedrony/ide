@@ -338,13 +338,9 @@ internal fun mapEvent(event: AgentEvent): AgentStreamEvent? = when (event) {
     is AgentEvent.ToolRequested -> AgentStreamEvent.ToolRequested(
         toolName = event.toolName,
         detail = describeToolArguments(event.arguments),
-        toolCallId = event.toolCallId,
     )
 
-    is AgentEvent.ToolCallStarted -> AgentStreamEvent.ToolRunning(
-        toolName = event.toolName,
-        toolCallId = event.toolCallId,
-    )
+    is AgentEvent.ToolCallStarted -> AgentStreamEvent.ToolRunning(event.toolName)
 
     is AgentEvent.ToolProgress -> AgentStreamEvent.Activity(
         AgentActivity(AgentActivityStatus.USING_TOOL, event.detail),
@@ -354,10 +350,9 @@ internal fun mapEvent(event: AgentEvent): AgentStreamEvent? = when (event) {
         toolName = event.toolName,
         success = event.success,
         summary = event.summary,
-        toolCallId = event.toolCallId,
-        // The bridge's rendered result is the same structured text the model saw;
-        // it is redacted again at the presentation layer before display.
-        output = event.output.ifBlank { event.summary },
+        // The bridge's rendered result is the same text the model saw; it is
+        // redacted again at the presentation layer before display.
+        output = event.summary,
     )
 
     is AgentEvent.ToolCancelled -> AgentStreamEvent.ToolFinished(
