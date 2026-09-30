@@ -203,7 +203,8 @@ class AgentChatPresentationTest {
 
         val assistant = ui.single { it.kind == ChatMessageKind.ASSISTANT }
         assertEquals(1, assistant.activities.size)
-        assertEquals("Searched files", assistant.activities.first().label)
+        assertEquals("\"auth\"", assistant.activities.first().label)
+        assertEquals("SEARCH_FILES", assistant.activities.first().toolName?.uppercase())
     }
 
     @Test

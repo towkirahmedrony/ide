@@ -38,12 +38,29 @@ sealed interface AgentStreamEvent {
 
     data class AgentChanged(val role: String, val label: String) : AgentStreamEvent
 
+    /** A sub-agent run started; [detail] is its safe objective. */
+    data class SubAgentStarted(val role: String, val label: String, val detail: String) : AgentStreamEvent
+
+    /** A sub-agent run finished; [success] reflects its real end status. */
+    data class SubAgentFinished(
+        val role: String,
+        val label: String,
+        val success: Boolean,
+        val summary: String,
+    ) : AgentStreamEvent
+
     /** The model asked for a tool; emitted before it runs. */
     data class ToolRequested(val toolName: String, val detail: String) : AgentStreamEvent
 
     data class ToolRunning(val toolName: String) : AgentStreamEvent
 
-    data class ToolFinished(val toolName: String, val success: Boolean, val summary: String) : AgentStreamEvent
+    data class ToolFinished(
+        val toolName: String,
+        val success: Boolean,
+        val summary: String,
+        /** Raw tool output for the expandable terminal/tool rows; redacted by the presentation layer. */
+        val output: String = "",
+    ) : AgentStreamEvent
 
     /**
      * A tool call is parked until the user decides. Carries everything the

@@ -4,7 +4,9 @@ import com.agentx.app.ui.ide.data.AgentFailureKind
 import com.agentx.app.ui.ide.data.PersistedAgentMessage
 import com.agentx.app.ui.ide.data.PersistedMessageKind
 import com.agentx.app.ui.ide.model.ActivityItemStatus
+import com.agentx.app.ui.ide.model.AgentActivityKind
 import com.agentx.app.ui.ide.model.AgentActivityUiModel
+import com.agentx.app.ui.ide.model.AgentTurnOutcome
 import com.agentx.app.ui.ide.model.ChatMessageKind
 import com.agentx.app.ui.ide.model.ChatMessageUiModel
 import com.agentx.app.ui.ide.model.InlineSpan
@@ -472,11 +474,109 @@ object AgentChatPresentation {
         "list_files", "list_directory" -> "Listed files"
         "find_symbol", "find_definition", "find_references" -> "Found a symbol"
         "get_file_symbols", "get_file_outline" -> "Inspected file structure"
-        "run_command" -> "Ran a command"
+        "run_command" -> "Terminal command"
         "write_file", "create_file" -> "Wrote a file"
         "apply_patch" -> "Applied a patch"
         "git_status", "git_diff", "git_log" -> "Checked git state"
         else -> "Used ${toolName.replace('_', ' ').trim()}"
+    }
+
+    /** Classifies a tool into an activity kind for its activity row. */
+    fun activityKind(toolName: String): AgentActivityKind = when (toolName.lowercase()) {
+        "read_file", "read_range" -> AgentActivityKind.FILE_READ
+        "search_files", "search_text", "find_symbol", "find_definition", "find_references",
+        "get_file_symbols", "get_file_outline",
+        -> AgentActivityKind.SEARCH
+
+        "run_command" -> AgentActivityKind.TERMINAL
+        "write_file", "create_file", "apply_patch", "edit_file" -> AgentActivityKind.FILE_WRITE
+        else -> AgentActivityKind.TOOL
+    }
+
+    /**
+     * A short, safe subject line for one tool call, e.g. `"AuthRepository.kt"`
+     * for READ_FILE. Extracted from real tool arguments, redacted, never raw JSON.
+     */
+    fun toolSubject(toolName: String, detail: String?): String? {
+        val clean = detail?.trim().orEmpty()
+        if (clean.isEmpty() || clean == "(no arguments)") return null
+        return when (toolName.lowercase()) {
+            "read_file", "read_range", "write_file", "create_file" ->
+                firstValue(clean, listOf("path", "file"))
+
+            "search_files", "search_text" ->
+                firstValue(clean, listOf("query", "pattern", "text"))?.let { "\"$it\"" }
+
+            "list_files", "list_directory" ->
+                firstValue(clean, listOf("path", "dir", "directory"))
+
+            // The row renders as `$ npm run build`, so the subject is the command.
+            "run_command" ->
+                firstValue(clean, listOf("command", "cmd"))
+
+            else -> null
+        }
+    }
+
+    /** The terminal command text, when the detail carries one. */
+    fun terminalCommand(detail: String?): String? {
+        val clean = detail?.trim().orEmpty()
+        if (clean.isEmpty() || clean == "(no arguments)") return null
+        return firstValue(clean, listOf("command", "cmd"))
+            ?: clean.takeIf { it.length <= 120 && !it.contains('{') }?.lineSequence()?.firstOrNull()
+    }
+
+    private fun firstValue(detail: String, keys: List<String>): String? {
+        for (key in keys) {
+            // Matches `key=value`, `key: value` and `key="value"` from the safe
+            // argument previews; full JSON is never handed to the UI.
+            val regex = Regex("(?i)\\b${Regex.escape(key)}\\s*[=:]\\s*(\"?)([^,\"\\n]{1,120})")
+            regex.find(detail)?.let { match ->
+                val value = match.groupValues[2].trim()
+                if (value.isNotEmpty()) return value
+            }
+        }
+        return null
+    }
+
+    /** Splits tool/terminal output into a bounded list of display lines. */
+    fun outputLines(result: String?, limit: Int = 80): List<String> =
+        result.orEmpty()
+            .lineSequence()
+            .map { it.trimEnd() }
+            .filter { it.isNotBlank() }
+            .take(limit)
+            .toList()
+
+    /**
+     * The headline status text for the collapsible activity block: `Working · 7s`
+     * while running, then `Completed · 12.4s`, `Failed · 2.1s` or `Stopped`.
+     */
+    fun activityHeadline(
+        outcome: AgentTurnOutcome,
+        elapsedMillis: Long,
+        activeStepCount: Int,
+        activeStepLabel: String,
+        failedLabel: String?,
+    ): String {
+        val time = formatDuration(elapsedMillis)
+        return when (outcome) {
+            AgentTurnOutcome.RUNNING -> "$activeStepLabel · ${formatElapsedSeconds(elapsedMillis)}"
+            AgentTurnOutcome.SUCCESS -> "Completed · $time · $activeStepCount steps"
+            AgentTurnOutcome.FAILED -> "Failed · $time${failedLabel?.let { " · $it" }.orEmpty()}"
+            AgentTurnOutcome.STOPPED -> "Stopped · $time"
+        }
+    }
+
+    /** Picks the currently active step's label for the headline. */
+    fun activeStepLabel(activities: List<AgentActivityUiModel>): String {
+        val active = activities.lastOrNull { it.status == ActivityItemStatus.ACTIVE }
+        if (active != null) return active.label
+        val last = activities.lastOrNull() ?: return "Working"
+        return when (last.status) {
+            ActivityItemStatus.FAILED -> last.label
+            else -> last.label
+        }
     }
 
     /** Redacts and truncates a tool argument preview so no secret reaches the UI. */
@@ -571,21 +671,14 @@ object AgentChatPresentation {
             val ui = persistedMessageToUi(message)
             when (ui.kind) {
                 ChatMessageKind.TOOL -> {
-                    ui.tool?.let { tool ->
-                        pendingActivities += AgentActivityUiModel(
-                            id = tool.id,
-                            label = activityLabel(tool.toolName),
-                            status = activityStatusFrom(tool.status),
-                            toolName = tool.toolName,
-                            timestampMillis = tool.startedAtMillis,
-                            elapsedMillis = tool.elapsedMillis,
-                        )
-                    }
+                    // Restored tool entries already carry a full structured row.
+                    pendingActivities += ui.activities
                     result += ui
                 }
 
                 ChatMessageKind.ASSISTANT -> {
-                    result += ui.copy(activities = pendingActivities.toList())
+                    val restored = ui.activities + pendingActivities.toList()
+                    result += ui.copy(activities = restored)
                     pendingActivities = mutableListOf()
                 }
 
@@ -638,6 +731,7 @@ object AgentChatPresentation {
             timestampMillis = message.timestampMillis,
             state = if (message.toolSuccess == false) MessageState.FAILED else MessageState.COMPLETE,
             tool = toolFromPersisted(message),
+            activities = listOf(activityFromPersistedTool(message)),
         )
 
         PersistedMessageKind.SUB_AGENT -> ChatMessageUiModel(
@@ -670,6 +764,24 @@ object AgentChatPresentation {
         )
     }
 
+    /** Restored turns get the same structured activity row live turns show. */
+    fun activityFromPersistedTool(message: PersistedAgentMessage): AgentActivityUiModel {
+        val name = message.toolName?.takeIf { it.isNotBlank() } ?: "tool"
+        val detail = sanitizeToolDetail(message.toolArguments)
+        val subject = toolSubject(name, detail)
+        return AgentActivityUiModel(
+            id = message.id,
+            label = subject ?: activityLabel(name),
+            status = if (message.toolSuccess == false) ActivityItemStatus.FAILED else ActivityItemStatus.DONE,
+            kind = activityKind(name),
+            toolName = name,
+            timestampMillis = message.timestampMillis,
+            detail = subject,
+            outputLines = outputLines(message.toolResult),
+            role = message.subAgentRole,
+        )
+    }
+
     /** A user message is plain text; it is never treated as markdown headings or fences. */
     fun userBlocks(text: String): List<MessageBlock> {
         if (text.isBlank()) return emptyList()
@@ -679,6 +791,14 @@ object AgentChatPresentation {
     private val SECRET_PATTERN = Regex(
         "(?i)(api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|passwd|credential|authorization)\\s*[=:]\\s*\\S+",
     )
+
+    /** Secrets never survive into an activity row's output preview. */
+    fun redactOutput(text: String?): String? {
+        val clean = text?.trim().orEmpty()
+        if (clean.isEmpty()) return null
+        val redacted = SECRET_PATTERN.replace(clean) { match -> "${match.groupValues[1]}=[REDACTED]" }
+        return redacted.takeIf { it.isNotEmpty() }
+    }
 }
 
 enum class CodeTokenKind { PLAIN, KEYWORD, STRING, COMMENT, NUMBER, TYPE }

@@ -8,7 +8,9 @@ import com.agentx.app.ui.ide.data.PersistedAgentMessage
 import com.agentx.app.ui.ide.data.PersistedMessageKind
 import com.agentx.app.ui.ide.model.ActivityItemStatus
 import com.agentx.app.ui.ide.model.AgentActivity
+import com.agentx.app.ui.ide.model.AgentActivityKind
 import com.agentx.app.ui.ide.model.AgentActivityStatus
+import com.agentx.app.ui.ide.model.AgentTurnOutcome
 import com.agentx.app.ui.ide.model.ChatMessageKind
 import com.agentx.app.ui.ide.model.GenerationPhase
 import com.agentx.app.ui.ide.model.MessageBlock
@@ -48,12 +50,14 @@ class AgentViewModelTest {
         workspaceId: String? = null,
         selectedFile: () -> String? = { null },
         now: () -> Long = { 0L },
+        modelId: () -> String? = { null },
     ) = AgentViewModel(
         session = session,
         workspaceId = workspaceId,
         selectedFile = selectedFile,
         now = now,
         ioDispatcher = UnconfinedTestDispatcher(),
+        modelId = modelId,
     )
 
     // ───────────────────────────── Streaming ─────────────────────────────
@@ -231,8 +235,119 @@ class AgentViewModelTest {
 
         val assistant = vm.uiState.messages.last { it.kind == ChatMessageKind.ASSISTANT }
         assertEquals(1, assistant.activities.size)
-        assertEquals("Searched files", assistant.activities.first().label)
-        assertEquals(ActivityItemStatus.DONE, assistant.activities.first().status)
+        val search = assistant.activities.first()
+        assertEquals("\"SupabaseClient\"", search.label)
+        assertEquals(AgentActivityKind.SEARCH, search.kind)
+        assertEquals(ActivityItemStatus.DONE, search.status)
+    }
+
+    @Test
+    fun `a terminal tool becomes a terminal row with redacted output`() {
+        val session = RecordingSession { _, onEvent ->
+            onEvent(AgentStreamEvent.ToolRequested("run_command", "command=npm run build"))
+            onEvent(AgentStreamEvent.ToolRunning("run_command"))
+            onEvent(
+                AgentStreamEvent.ToolFinished(
+                    "run_command",
+                    true,
+                    "built ok",
+                    output = "vite v5 building…\napi_key=sk-live-abc123\nBUILD SUCCESSFUL",
+                ),
+            )
+            onEvent(AgentStreamEvent.Completed("done"))
+        }
+        val vm = viewModel(session)
+        vm.onInputChange("build")
+        vm.send()
+
+        val assistant = vm.uiState.messages.last { it.kind == ChatMessageKind.ASSISTANT }
+        val terminal = assistant.activities.single()
+        assertEquals(AgentActivityKind.TERMINAL, terminal.kind)
+        assertEquals("npm run build", terminal.label)
+        assertEquals(ActivityItemStatus.DONE, terminal.status)
+        assertTrue(terminal.outputLines.isNotEmpty())
+        assertTrue(terminal.outputLines.none { it.contains("sk-live-abc123") })
+        assertTrue(terminal.outputLines.any { it.contains("[REDACTED]") })
+    }
+
+    @Test
+    fun `a failed tool row keeps its failure visible`() {
+        val session = RecordingSession { _, onEvent ->
+            onEvent(AgentStreamEvent.ToolRequested("run_command", "command=./gradlew test"))
+            onEvent(AgentStreamEvent.ToolFinished("run_command", false, "Tests failed"))
+            onEvent(AgentStreamEvent.Completed("done"))
+        }
+        val vm = viewModel(session)
+        vm.onInputChange("test")
+        vm.send()
+
+        val assistant = vm.uiState.messages.last { it.kind == ChatMessageKind.ASSISTANT }
+        assertEquals(ActivityItemStatus.FAILED, assistant.activities.single().status)
+        // The turn itself is completed; only the step failed.
+        assertEquals(AgentTurnOutcome.SUCCESS, vm.uiState.turnOutcome)
+    }
+
+    @Test
+    fun `sub-agent delegation renders as its own structured row`() {
+        var clock = 1_000L
+        val session = RecordingSession { _, onEvent ->
+            onEvent(AgentStreamEvent.SubAgentStarted("EXPLORER", "Explorer", "Inspecting project architecture"))
+            clock = 5_400L
+            onEvent(AgentStreamEvent.SubAgentFinished("EXPLORER", "Explorer", true, "3 files inspected"))
+            onEvent(AgentStreamEvent.Completed("done"))
+        }
+        val vm = viewModel(session, now = { clock })
+        vm.onInputChange("explore")
+        vm.send()
+
+        val assistant = vm.uiState.messages.last { it.kind == ChatMessageKind.ASSISTANT }
+        val subAgent = assistant.activities.single()
+        assertEquals(AgentActivityKind.SUB_AGENT, subAgent.kind)
+        assertEquals("EXPLORER", subAgent.role)
+        assertEquals("Inspecting project architecture", subAgent.label)
+        assertEquals(ActivityItemStatus.DONE, subAgent.status)
+        assertEquals(4_400L, subAgent.elapsedMillis)
+        assertTrue(subAgent.outputLines.contains("3 files inspected"))
+        // The header chip returns to Main once the sub-agent is done.
+        assertEquals("Main", vm.uiState.currentAgent)
+    }
+
+    @Test
+    fun `a failed sub-agent stays failed and returns control to Main`() {
+        val session = RecordingSession { _, onEvent ->
+            onEvent(AgentStreamEvent.SubAgentStarted("CODER", "Coder", "Patching the config"))
+            onEvent(AgentStreamEvent.SubAgentFinished("CODER", "Coder", false, "patch rejected"))
+            onEvent(AgentStreamEvent.Completed("done"))
+        }
+        val vm = viewModel(session)
+        vm.onInputChange("fix it")
+        vm.send()
+
+        val subAgent = vm.uiState.messages.last { it.kind == ChatMessageKind.ASSISTANT }.activities.single()
+        assertEquals(ActivityItemStatus.FAILED, subAgent.status)
+        assertEquals("Main", vm.uiState.currentAgent)
+    }
+
+    @Test
+    fun `thinking summaries settle when a tool starts`() {
+        val session = RecordingSession { _, onEvent ->
+            onEvent(AgentStreamEvent.Activity(AgentActivity(AgentActivityStatus.THINKING, "Inspecting the auth flow")))
+            onEvent(AgentStreamEvent.ToolRequested("read_file", "path=AuthRepository.kt"))
+            onEvent(AgentStreamEvent.ToolFinished("read_file", true, "ok"))
+            onEvent(AgentStreamEvent.Completed("done"))
+        }
+        val vm = viewModel(session)
+        vm.onInputChange("go")
+        vm.send()
+
+        val assistant = vm.uiState.messages.last { it.kind == ChatMessageKind.ASSISTANT }
+        val thinking = assistant.activities.first()
+        val read = assistant.activities.last()
+        assertEquals("Inspecting the auth flow", thinking.label)
+        assertEquals(AgentActivityKind.THINKING, thinking.kind)
+        assertEquals(ActivityItemStatus.DONE, thinking.status)
+        assertEquals(AgentActivityKind.FILE_READ, read.kind)
+        assertEquals("AuthRepository.kt", read.label)
     }
 
     @Test
@@ -265,6 +380,47 @@ class AgentViewModelTest {
         assertEquals(ToolRunStatus.FAILED, tool.status)
         val assistant = vm.uiState.messages.last { it.kind == ChatMessageKind.ASSISTANT }
         assertEquals(ActivityItemStatus.FAILED, assistant.activities.single().status)
+    }
+
+    // ───────────────────────────── Activity timing and header context ───────
+
+    @Test
+    fun `activity rows freeze their own durations from real timestamps`() {
+        var clock = 10_000L
+        val session = RecordingSession { _, onEvent ->
+            onEvent(AgentStreamEvent.ToolRequested("read_file", "path=Main.kt"))
+            clock = 11_800L
+            onEvent(AgentStreamEvent.ToolFinished("read_file", true, "ok"))
+            onEvent(AgentStreamEvent.Completed("done"))
+        }
+        val vm = viewModel(session, now = { clock })
+        vm.onInputChange("go")
+        vm.send()
+
+        val row = vm.uiState.messages.last { it.kind == ChatMessageKind.ASSISTANT }.activities.single()
+        assertEquals(1_800L, row.elapsedMillis)
+    }
+
+    @Test
+    fun `the header model indicator comes from the model manager`() {
+        val session = RecordingSession { _, onEvent -> onEvent(AgentStreamEvent.Completed("ok")) }
+        val vm = viewModel(session, modelId = { "qwen2.5-coder" })
+
+        vm.onInputChange("hi")
+        vm.send()
+
+        assertEquals("qwen2.5-coder", vm.uiState.modelId)
+    }
+
+    @Test
+    fun `a missing model indicator stays blank rather than fake`() {
+        val session = RecordingSession { _, onEvent -> onEvent(AgentStreamEvent.Completed("ok")) }
+        val vm = viewModel(session, modelId = { null })
+
+        vm.onInputChange("hi")
+        vm.send()
+
+        assertNull(vm.uiState.modelId)
     }
 
     // ───────────────────────────── Composer guards ─────────────────────────────

@@ -25,10 +25,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
@@ -55,7 +57,6 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -63,16 +64,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.agentx.app.ui.ide.components.IdeDivider
-import com.agentx.app.ui.ide.components.IdeStatusPill
-import com.agentx.app.ui.ide.model.AgentActivity
-import com.agentx.app.ui.ide.model.AgentActivityStatus
 import com.agentx.app.ui.ide.model.AgentChatUiState
-import com.agentx.app.ui.ide.model.GenerationPhase
 import com.agentx.app.ui.ide.model.GenerationState
 import com.agentx.app.ui.ide.model.PermissionPromptUi
 import com.agentx.app.ui.ide.screens.agent.AgentMessageItem
 import com.agentx.app.ui.ide.screens.agent.AgentSessionDrawerContent
 import com.agentx.app.ui.ide.screens.agent.copyToClipboard
+import com.agentx.app.ui.ide.model.AgentActivity
 import com.agentx.app.ui.ide.state.AgentChatPresentation
 import com.agentx.app.ui.ide.state.AgentViewModel
 import com.agentx.app.ui.theme.ForgeAmber
@@ -82,16 +80,26 @@ import com.agentx.app.ui.theme.ForgeDanger
 import com.agentx.app.ui.theme.ForgeInk
 import com.agentx.app.ui.theme.ForgeMint
 import com.agentx.app.ui.theme.ForgeMuted
-import com.agentx.app.ui.theme.ForgePeriwinkle
 import com.agentx.app.ui.theme.ForgeSurface
 import com.agentx.app.ui.theme.ForgeSurfaceVariant
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 
+/**
+ * The Agent page: a dedicated, full-screen agent workspace.
+ *
+ * The global workspace top bar is not rendered for this tab; this screen's own
+ * compact header is the top-level header of the whole Agent screen and carries
+ * the controls the global header used to provide (back, workspace context,
+ * session sidebar, model indicator and settings).
+ */
 @Composable
 fun AgentScreen(
     viewModel: AgentViewModel,
     modifier: Modifier = Modifier,
+    workspaceName: String? = null,
+    onBack: (() -> Unit)? = null,
+    onOpenSettings: (() -> Unit)? = null,
 ) {
     val state = viewModel.uiState
     val context = LocalContext.current
@@ -163,11 +171,15 @@ fun AgentScreen(
         Column(modifier = Modifier.fillMaxSize().background(ForgeCanvas)) {
             AgentHeader(
                 title = activeTitle,
+                workspaceName = workspaceName,
+                modelId = state.modelId,
                 activity = state.activity,
                 generation = state.generation,
                 currentAgent = state.currentAgent,
+                onBack = onBack,
                 onOpenDrawer = { scope.launch { drawerState.open() } },
                 onNewSession = { viewModel.newSession() },
+                onOpenSettings = onOpenSettings,
             )
 
             Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
@@ -219,22 +231,39 @@ fun AgentScreen(
 
 // ───────────────────────────── Header ─────────────────────────────
 
+/**
+ * Compact top-level header of the dedicated Agent workspace. It keeps maximum
+ * room for the conversation and absorbs the controls the global top bar used to
+ * offer on this tab: back, workspace context, sessions, model and settings.
+ */
 @Composable
 private fun AgentHeader(
     title: String,
+    workspaceName: String?,
+    modelId: String?,
     activity: AgentActivity,
     generation: GenerationState,
     currentAgent: String,
+    onBack: (() -> Unit)?,
     onOpenDrawer: () -> Unit,
     onNewSession: () -> Unit,
+    onOpenSettings: (() -> Unit)?,
 ) {
-    val color = activityColor(activity.status)
     Column(modifier = Modifier.fillMaxWidth().background(ForgeSurface)) {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+            modifier = Modifier.fillMaxWidth().padding(start = 2.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            IconButton(onClick = onOpenDrawer, modifier = Modifier.size(44.dp)) {
+            if (onBack != null) {
+                IconButton(onClick = onBack, modifier = Modifier.size(42.dp)) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Back to workspace",
+                        tint = ForgeInk,
+                    )
+                }
+            }
+            IconButton(onClick = onOpenDrawer, modifier = Modifier.size(42.dp)) {
                 Icon(Icons.Filled.Menu, contentDescription = "Open sessions", tint = ForgeInk)
             }
             Column(modifier = Modifier.weight(1f).padding(horizontal = 4.dp)) {
@@ -245,49 +274,65 @@ private fun AgentHeader(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                Text(
-                    text = "$currentAgent · ${activity.label}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = ForgeMuted,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                val subtitle = headerSubtitle(workspaceName, modelId, currentAgent, activity.label)
+                if (subtitle.isNotEmpty()) {
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = ForgeMuted,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
-            GenerationChip(generation = generation, color = color)
-            IconButton(onClick = onNewSession, modifier = Modifier.size(44.dp)) {
+            GenerationChip(generation = generation)
+            IconButton(onClick = onNewSession, modifier = Modifier.size(42.dp)) {
                 Icon(Icons.Filled.Add, contentDescription = "New session", tint = ForgeInk)
+            }
+            if (onOpenSettings != null) {
+                IconButton(onClick = onOpenSettings, modifier = Modifier.size(42.dp)) {
+                    Icon(Icons.Filled.Settings, contentDescription = "Settings", tint = ForgeInk)
+                }
             }
         }
         IdeDivider()
     }
 }
 
+/** One muted line: `MyProject · qwen2.5 · Main · Working`. Never shows a raw model URL. */
+private fun headerSubtitle(
+    workspaceName: String?,
+    modelId: String?,
+    currentAgent: String,
+    activityLabel: String,
+): String = listOf(workspaceName, modelId, currentAgent, activityLabel)
+    .filterNotNull()
+    .filter { it.isNotBlank() }
+    .joinToString(" · ")
+
 /** `Generating… 12s` while running, the final `12.4s` once the turn ends. */
 @Composable
-private fun GenerationChip(generation: GenerationState, color: Color) {
-    when {
-        generation.running -> Row(
+private fun GenerationChip(generation: GenerationState) {
+    if (generation.running) {
+        Row(
             modifier = Modifier
                 .clip(RoundedCornerShape(14.dp))
-                .background(color.copy(alpha = 0.14f))
+                .background(ForgeMint.copy(alpha = 0.14f))
                 .padding(horizontal = 10.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            CircularProgressIndicator(modifier = Modifier.size(12.dp), strokeWidth = 2.dp, color = color)
+            CircularProgressIndicator(
+                modifier = Modifier.size(12.dp),
+                strokeWidth = 2.dp,
+                color = ForgeMint,
+            )
             Spacer(Modifier.width(8.dp))
             Text(
                 text = "Generating… ${AgentChatPresentation.formatElapsedSeconds(generation.elapsedMillis)}",
                 style = MaterialTheme.typography.labelSmall,
-                color = color,
+                color = ForgeMint,
             )
         }
-
-        generation.phase != GenerationPhase.IDLE && generation.elapsedMillis > 0L -> Text(
-            text = AgentChatPresentation.formatDuration(generation.elapsedMillis),
-            style = MaterialTheme.typography.labelSmall,
-            color = ForgeMuted,
-            modifier = Modifier.padding(horizontal = 6.dp),
-        )
     }
 }
 
@@ -528,19 +573,3 @@ private fun SendStopButton(
     }
 }
 
-private fun activityColor(status: AgentActivityStatus): Color = when (status) {
-    AgentActivityStatus.IDLE -> ForgeMuted
-    AgentActivityStatus.SENDING -> ForgePeriwinkle
-    AgentActivityStatus.THINKING -> ForgePeriwinkle
-    AgentActivityStatus.USING_TOOL -> ForgeMint
-    AgentActivityStatus.TOOL_SUCCESS -> ForgeMint
-    AgentActivityStatus.TOOL_FAILURE -> ForgeDanger
-    AgentActivityStatus.PERMISSION_REQUIRED -> ForgeAmber
-    AgentActivityStatus.WAITING -> ForgeAmber
-    AgentActivityStatus.COMPLETED -> ForgeMint
-    AgentActivityStatus.CONNECTION_ERROR,
-    AgentActivityStatus.TIMEOUT,
-    AgentActivityStatus.INVALID_RESPONSE,
-    AgentActivityStatus.ERROR,
-    -> ForgeDanger
-}

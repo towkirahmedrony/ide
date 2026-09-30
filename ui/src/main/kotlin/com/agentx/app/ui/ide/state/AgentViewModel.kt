@@ -12,6 +12,7 @@ import com.agentx.app.ui.ide.data.AgentSessionInfo
 import com.agentx.app.ui.ide.data.AgentStreamEvent
 import com.agentx.app.ui.ide.model.ActivityItemStatus
 import com.agentx.app.ui.ide.model.AgentActivity
+import com.agentx.app.ui.ide.model.AgentActivityKind
 import com.agentx.app.ui.ide.model.AgentActivityStatus
 import com.agentx.app.ui.ide.model.AgentActivityUiModel
 import com.agentx.app.ui.ide.model.AgentChatUiState
@@ -52,6 +53,8 @@ class AgentViewModel(
     /** Dispatcher for the file-backed session store; injectable for tests. */
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val tickMillis: Long = 1_000L,
+    /** Backing model of the agent, surfaced as a compact header indicator. */
+    private val modelId: () -> String? = { null },
 ) : ViewModel() {
 
     var uiState by mutableStateOf(AgentChatUiState())
@@ -86,7 +89,7 @@ class AgentViewModel(
     fun send() {
         val prompt = uiState.input.trim()
         if (prompt.isEmpty() || uiState.running) return
-        uiState = uiState.copy(input = "")
+        uiState = uiState.copy(input = "", modelId = modelId() ?: uiState.modelId)
         startTurn(prompt, base = uiState.messages, addUserMessage = true)
     }
 
@@ -237,13 +240,23 @@ class AgentViewModel(
 
     // ───────────────────────────── Generation timer ─────────────────────────────
 
-    /** Recomputes the elapsed time from the real generation start timestamp. */
+    /**
+     * Recomputes the elapsed time from the real generation start timestamp. The
+     * single ticker feeds both the generation clock and the in-flight turn's
+     * activity headline, so no composable needs a timer of its own.
+     */
     fun refreshElapsed() {
         val started = uiState.generation.startedAtMillis ?: return
+        val elapsed = (now() - started).coerceAtLeast(0L)
         uiState = uiState.copy(
-            generation = uiState.generation.copy(
-                elapsedMillis = (now() - started).coerceAtLeast(0L),
-            ),
+            generation = uiState.generation.copy(elapsedMillis = elapsed),
+            messages = uiState.messages.map { message ->
+                if (message.kind == ChatMessageKind.ASSISTANT && message.state == MessageState.STREAMING) {
+                    message.copy(elapsedMillis = elapsed)
+                } else {
+                    message
+                }
+            },
         )
     }
 
@@ -387,17 +400,25 @@ class AgentViewModel(
                 setActivity(AgentActivityStatus.WAITING, event.label)
             }
 
+            is AgentStreamEvent.SubAgentStarted -> {
+                uiState = uiState.copy(currentAgent = event.label)
+                appendSubAgentActivity(assistantId, event.role, event.label, event.detail)
+                setActivity(AgentActivityStatus.WAITING, event.label)
+            }
+
+            is AgentStreamEvent.SubAgentFinished -> {
+                uiState = uiState.copy(currentAgent = "Main")
+                finishSubAgentActivity(assistantId, event.role, event.success, event.summary)
+                setActivity(
+                    if (event.success) AgentActivityStatus.TOOL_SUCCESS else AgentActivityStatus.TOOL_FAILURE,
+                    if (event.success) "${event.label} done" else "${event.label} failed",
+                )
+            }
+
             is AgentStreamEvent.ToolRequested -> {
                 val toolId = UUID.randomUUID().toString()
                 appendToolMessage(toolId, event.toolName, event.detail)
-                appendActivity(
-                    assistantId = assistantId,
-                    id = toolId,
-                    label = AgentChatPresentation.activityLabel(event.toolName),
-                    status = ActivityItemStatus.ACTIVE,
-                    toolName = event.toolName,
-                    at = now(),
-                )
+                appendToolActivity(assistantId, toolId, event.toolName, event.detail)
                 uiState = uiState.copy(generation = uiState.generation.copy(phase = GenerationPhase.TOOL))
                 setActivity(AgentActivityStatus.USING_TOOL, "Using tool · ${event.toolName}")
             }
@@ -410,7 +431,7 @@ class AgentViewModel(
 
             is AgentStreamEvent.ToolFinished -> {
                 finishToolMessage(event.toolName, event.success, event.summary)
-                finishActivityItem(assistantId, event.toolName, event.success)
+                finishActivityItem(assistantId, event.toolName, event.success, event.output)
                 if (event.success) {
                     setActivity(AgentActivityStatus.TOOL_SUCCESS, "Tool ok · ${event.toolName}")
                 } else {
@@ -541,33 +562,7 @@ class AgentViewModel(
             message.state == MessageState.STREAMING
     }
 
-    private fun appendActivity(
-        assistantId: String,
-        id: String,
-        label: String,
-        status: ActivityItemStatus,
-        toolName: String?,
-        at: Long,
-    ) {
-        uiState = uiState.copy(
-            messages = uiState.messages.map { message ->
-                if (message.id != assistantId) {
-                    message
-                } else {
-                    message.copy(
-                        activities = message.activities + AgentActivityUiModel(
-                            id = id,
-                            label = label,
-                            status = status,
-                            toolName = toolName,
-                            timestampMillis = at,
-                        ),
-                    )
-                }
-            },
-        )
-    }
-
+    /** One safe thinking/working summary row from the runtime's real detail. */
     private fun appendGenericActivity(assistantId: String, label: String) {
         val clean = label.trim()
         if (clean.isEmpty() || clean.lowercase() in GENERIC_ACTIVITY_LABELS) return
@@ -580,7 +575,7 @@ class AgentViewModel(
                 } else {
                     // Settle only previous generic steps; in-flight tool rows keep their own state.
                     val settled = message.activities.map { activity ->
-                        if (activity.toolName == null && activity.status == ActivityItemStatus.ACTIVE) {
+                        if (activity.kind == AgentActivityKind.THINKING && activity.status == ActivityItemStatus.ACTIVE) {
                             activity.copy(status = ActivityItemStatus.DONE)
                         } else {
                             activity
@@ -591,6 +586,7 @@ class AgentViewModel(
                             id = UUID.randomUUID().toString(),
                             label = clean,
                             status = ActivityItemStatus.ACTIVE,
+                            kind = AgentActivityKind.THINKING,
                             timestampMillis = now(),
                         ),
                     )
@@ -599,7 +595,90 @@ class AgentViewModel(
         )
     }
 
-    private fun finishActivityItem(assistantId: String, toolName: String, success: Boolean) {
+    /** Adds a structured tool row with its safe subject and kind. */
+    private fun appendToolActivity(assistantId: String, id: String, toolName: String, detail: String) {
+        val clean = AgentChatPresentation.sanitizeToolDetail(detail)
+        val subject = AgentChatPresentation.toolSubject(toolName, clean)
+        appendActivityRow(
+            assistantId,
+            AgentActivityUiModel(
+                id = id,
+                label = subject ?: AgentChatPresentation.activityLabel(toolName),
+                status = ActivityItemStatus.ACTIVE,
+                kind = AgentChatPresentation.activityKind(toolName),
+                toolName = toolName,
+                timestampMillis = now(),
+                detail = subject,
+            ),
+        )
+    }
+
+    /** A sub-agent delegation row, from the real SubAgentStarted event only. */
+    private fun appendSubAgentActivity(assistantId: String, role: String, label: String, detail: String) {
+        appendActivityRow(
+            assistantId,
+            AgentActivityUiModel(
+                id = "subagent-$role-${now()}",
+                label = detail.ifBlank { "Working on the delegated task" },
+                status = ActivityItemStatus.ACTIVE,
+                kind = AgentActivityKind.SUB_AGENT,
+                timestampMillis = now(),
+                role = role,
+                detail = detail.takeIf { it.isNotBlank() },
+            ),
+        )
+    }
+
+    private fun finishSubAgentActivity(assistantId: String, role: String, success: Boolean, summary: String) {
+        uiState = uiState.copy(
+            messages = uiState.messages.map { message ->
+                if (message.id != assistantId) {
+                    message
+                } else {
+                    val activities = message.activities.toMutableList()
+                    val index = activities.indexOfLast {
+                        it.kind == AgentActivityKind.SUB_AGENT && it.role == role && it.status == ActivityItemStatus.ACTIVE
+                    }
+                    if (index < 0) {
+                        message
+                    } else {
+                        val started = activities[index].timestampMillis
+                        activities[index] = activities[index].copy(
+                            status = if (success) ActivityItemStatus.DONE else ActivityItemStatus.FAILED,
+                            elapsedMillis = (now() - started).coerceAtLeast(0L),
+                            outputLines = AgentChatPresentation.outputLines(
+                                AgentChatPresentation.redactOutput(summary),
+                            ),
+                        )
+                        message.copy(activities = activities)
+                    }
+                }
+            },
+        )
+    }
+
+    private fun appendActivityRow(assistantId: String, row: AgentActivityUiModel) {
+        uiState = uiState.copy(
+            messages = uiState.messages.map { message ->
+                if (message.id != assistantId) {
+                    message
+                } else {
+                    // Only a previous THINKING summary settles; in-flight tool and
+                    // sub-agent rows keep their own lifecycle.
+                    val settled = message.activities.map { activity ->
+                        if (activity.kind == AgentActivityKind.THINKING && activity.status == ActivityItemStatus.ACTIVE) {
+                            activity.copy(status = ActivityItemStatus.DONE)
+                        } else {
+                            activity
+                        }
+                    }
+                    message.copy(activities = settled + row)
+                }
+            },
+        )
+    }
+
+    private fun finishActivityItem(assistantId: String, toolName: String, success: Boolean, output: String) {
         uiState = uiState.copy(
             messages = uiState.messages.map { message ->
                 if (message.id != assistantId) {
@@ -616,6 +695,9 @@ class AgentViewModel(
                         activities[index] = activities[index].copy(
                             status = if (success) ActivityItemStatus.DONE else ActivityItemStatus.FAILED,
                             elapsedMillis = elapsed,
+                            outputLines = AgentChatPresentation.outputLines(
+                                AgentChatPresentation.redactOutput(output),
+                            ),
                         )
                         message.copy(activities = activities)
                     }
@@ -686,7 +768,10 @@ class AgentViewModel(
             messages = uiState.messages.mapNotNull { message ->
                 when {
                     message.id != id -> message
-                    message.rawText.isBlank() && message.error == null -> null
+                    // A turn that produced neither text, an error, nor any
+                    // execution activity is dropped; one with activity history
+                    // stays so the user can inspect what actually ran.
+                    message.rawText.isBlank() && message.error == null && message.activities.isEmpty() -> null
                     else -> message.copy(state = state, elapsedMillis = elapsed)
                 }
             },
@@ -704,6 +789,7 @@ class AgentViewModel(
 
         val GENERIC_ACTIVITY_LABELS = setOf(
             "idle", "sending", "thinking", "ai responding", "waiting", "completed", "stopped", "error",
+            "starting main", "permission granted", "permission denied",
         )
 
         fun statusFor(kind: AgentFailureKind): AgentActivityStatus = when (kind) {

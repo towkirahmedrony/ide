@@ -338,25 +338,34 @@ internal fun mapEvent(event: AgentEvent): AgentStreamEvent? = when (event) {
         toolName = event.toolName,
         success = event.success,
         summary = event.summary,
+        // The bridge's rendered result is the same text the model saw; it is
+        // redacted again at the presentation layer before display.
+        output = event.summary,
     )
 
     is AgentEvent.ToolCancelled -> AgentStreamEvent.ToolFinished(
         toolName = event.toolName,
         success = false,
         summary = event.reason,
+        output = event.reason,
     )
 
     is AgentEvent.PermissionRequested -> permissionEvent(event.pending, event.sessionId)
 
-    is AgentEvent.SubAgentStarted -> AgentStreamEvent.AgentChanged(
+    is AgentEvent.SubAgentStarted -> AgentStreamEvent.SubAgentStarted(
         role = event.role.name,
         label = displayName(event.role),
+        detail = event.objective,
     )
 
-    is AgentEvent.SubAgentCompleted -> AgentStreamEvent.AgentChanged(
-        role = AgentRole.MAIN.name,
-        label = displayName(AgentRole.MAIN),
-    )
+    is AgentEvent.SubAgentCompleted -> {
+        AgentStreamEvent.SubAgentFinished(
+            role = event.role.name,
+            label = displayName(event.role),
+            success = event.status == AgentStatus.COMPLETED,
+            summary = event.summary,
+        )
+    }
 
     is AgentEvent.OutputDelta -> AgentStreamEvent.Chunk(event.text)
 

@@ -64,6 +64,26 @@ data class ToolActivityUiModel(
 enum class ActivityItemStatus { PENDING, ACTIVE, DONE, FAILED }
 
 /**
+ * What kind of execution step an activity row represents. It is derived from
+ * the real AgentEvent/ToolEvent stream; it only decides presentation.
+ */
+enum class AgentActivityKind {
+    /** A safe model/runtime progress summary, never private reasoning. */
+    THINKING,
+
+    /** The agent delegated to a sub-agent (Explorer, Coder, Reviewer, …). */
+    SUB_AGENT,
+
+    TERMINAL,
+    FILE_READ,
+    FILE_WRITE,
+    SEARCH,
+    TOOL,
+    WAITING,
+    ERROR,
+}
+
+/**
  * A concise, safe execution step shown in the collapsible Agent Activity
  * section. This is derived from real tool/loop events, never from private model
  * chain-of-thought.
@@ -72,9 +92,16 @@ data class AgentActivityUiModel(
     val id: String,
     val label: String,
     val status: ActivityItemStatus,
+    val kind: AgentActivityKind = AgentActivityKind.TOOL,
     val toolName: String? = null,
     val timestampMillis: Long = 0L,
     val elapsedMillis: Long? = null,
+    /** Short safe argument preview (an argument value or the objective). */
+    val detail: String? = null,
+    /** Redacted, truncated output lines for expandable rows (terminal/tool). */
+    val outputLines: List<String> = emptyList(),
+    /** Sub-agent role name when [kind] is [AgentActivityKind.SUB_AGENT]. */
+    val role: String? = null,
 )
 
 /** A human-readable failure, without stack traces by default. */
@@ -106,6 +133,9 @@ data class ChatMessageUiModel(
 
     val isAssistant: Boolean get() = kind == ChatMessageKind.ASSISTANT
 }
+
+/** Outcome of one agent turn, driving the activity block's headline. */
+enum class AgentTurnOutcome { RUNNING, SUCCESS, FAILED, STOPPED }
 
 /** One entry in the Agent session sidebar. */
 data class AgentSessionUiModel(
@@ -143,8 +173,20 @@ data class AgentChatUiState(
     val pendingPermission: PermissionPromptUi? = null,
     val activity: AgentActivity = AgentActivity(AgentActivityStatus.IDLE, "Idle"),
     val currentAgent: String = "Main",
+    /** Model backing the agent, shown as a compact pill in the Agent header. */
+    val modelId: String? = null,
 ) {
     val running: Boolean get() = generation.running
+
+    /** Outcome of the latest turn, from real generation state only. */
+    val turnOutcome: AgentTurnOutcome
+        get() = when {
+            generation.running -> AgentTurnOutcome.RUNNING
+            generation.phase == GenerationPhase.FAILED -> AgentTurnOutcome.FAILED
+            generation.phase == GenerationPhase.STOPPED -> AgentTurnOutcome.STOPPED
+            generation.phase == GenerationPhase.COMPLETED -> AgentTurnOutcome.SUCCESS
+            else -> AgentTurnOutcome.SUCCESS
+        }
 }
 
 /**

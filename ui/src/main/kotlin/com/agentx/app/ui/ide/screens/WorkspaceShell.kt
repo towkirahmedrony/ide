@@ -91,6 +91,8 @@ fun WorkspaceShell(
                     workspaceViewModel.editorState.file?.path
                         ?: dependencies.workspaceSelection.selectedFile()
                 },
+                // The Agent header shows which model backs the agent.
+                modelId = { dependencies.modelManager.activeConfig()?.model?.takeIf { it.isNotBlank() } },
             )
         },
     )
@@ -152,20 +154,28 @@ fun WorkspaceShell(
         )
     }
 
+    // The Agent tab is a dedicated full-screen workspace: it renders its own
+    // compact header (back, sessions, workspace/model context, settings), so the
+    // global top bar would only duplicate controls and waste vertical space.
+    // Every other tab keeps the global header exactly as it was.
+    val agentTabActive = currentTab == WorkspaceTab.AGENT
+
     Scaffold(
         modifier = modifier,
         containerColor = ForgeCanvas,
         topBar = {
-            IdeTopBar(
-                title = workspaceViewModel.project?.name ?: "Workspace",
-                subtitle = currentTab.subtitle,
-                onBack = onExit,
-                actions = {
-                    IconButton(onClick = onOpenSettings) {
-                        Icon(Icons.Filled.Settings, contentDescription = "Settings")
-                    }
-                },
-            )
+            if (!agentTabActive) {
+                IdeTopBar(
+                    title = workspaceViewModel.project?.name ?: "Workspace",
+                    subtitle = currentTab.subtitle,
+                    onBack = onExit,
+                    actions = {
+                        IconButton(onClick = onOpenSettings) {
+                            Icon(Icons.Filled.Settings, contentDescription = "Settings")
+                        }
+                    },
+                )
+            }
         },
         bottomBar = {
             WorkspaceBottomBar(
@@ -208,7 +218,12 @@ fun WorkspaceShell(
                 )
             }
             composable(WorkspaceTab.AGENT.route) {
-                AgentScreen(viewModel = agentViewModel)
+                AgentScreen(
+                    viewModel = agentViewModel,
+                    workspaceName = workspaceViewModel.project?.name,
+                    onBack = onExit,
+                    onOpenSettings = onOpenSettings,
+                )
             }
             composable(WorkspaceTab.GIT.route) {
                 GitScreen(viewModel = gitViewModel)

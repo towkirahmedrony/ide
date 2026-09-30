@@ -44,6 +44,7 @@ import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -79,7 +80,9 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.agentx.app.ui.ide.model.ActivityItemStatus
+import com.agentx.app.ui.ide.model.AgentActivityKind
 import com.agentx.app.ui.ide.model.AgentActivityUiModel
+import com.agentx.app.ui.ide.model.AgentTurnOutcome
 import com.agentx.app.ui.ide.model.ChatMessageKind
 import com.agentx.app.ui.ide.model.ChatMessageUiModel
 import com.agentx.app.ui.ide.model.InlineSpan
@@ -229,7 +232,13 @@ private fun AgentAssistantMessage(
                 Spacer(Modifier.height(10.dp))
                 AgentActivityPanel(
                     activities = message.activities,
-                    live = message.state == MessageState.STREAMING,
+                    outcome = when {
+                        message.state == MessageState.STREAMING -> AgentTurnOutcome.RUNNING
+                        message.state == MessageState.FAILED -> AgentTurnOutcome.FAILED
+                        message.state == MessageState.STOPPED -> AgentTurnOutcome.STOPPED
+                        else -> AgentTurnOutcome.SUCCESS
+                    },
+                    elapsedMillis = message.elapsedMillis ?: 0L,
                 )
             }
 
@@ -427,6 +436,16 @@ private fun AgentErrorCard(
             Spacer(Modifier.height(6.dp))
             Text(text = error.message, style = MaterialTheme.typography.bodySmall, color = ForgeInk)
         }
+        // A failed turn keeps its activity history attached and expanded so the
+        // failing step is inspectable; errors are never hidden.
+        if (message.activities.isNotEmpty()) {
+            Spacer(Modifier.height(10.dp))
+            AgentActivityPanel(
+                activities = message.activities,
+                outcome = AgentTurnOutcome.FAILED,
+                elapsedMillis = message.elapsedMillis ?: 0L,
+            )
+        }
         Spacer(Modifier.height(10.dp))
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             if (error.retryable) {
@@ -445,53 +464,116 @@ private fun AgentErrorCard(
 
 // ───────────────────────────── Agent activity ─────────────────────────────
 
+/**
+ * The collapsible Agent Activity block for one assistant turn.
+ *
+ * While the turn runs it is expanded by default and shows every real execution
+ * step (thinking summaries, tools, terminal commands, sub-agents) under a live
+ * `Working · 7s` headline. On success it collapses automatically to a
+ * `✓ Completed · 12.4s · 6 steps` summary the user can re-open; failures stay
+ * visible so the error is inspectable. The collapsed state is controlled from
+ * the outside so the ViewModel, not recomposition, decides the default.
+ */
 @Composable
 fun AgentActivityPanel(
     activities: List<AgentActivityUiModel>,
-    live: Boolean,
+    outcome: AgentTurnOutcome,
+    elapsedMillis: Long,
     modifier: Modifier = Modifier,
 ) {
-    var expanded by remember { mutableStateOf(true) }
+    val running = outcome == AgentTurnOutcome.RUNNING
+    // Auto behaviour only, no per-item timers: the headline time comes from the
+    // turn's own elapsed clock and frozen per-item durations when finished.
+    var expanded by remember { mutableStateOf(running) }
+    var userToggled by remember { mutableStateOf(false) }
+
+    // Auto-expand while working, auto-collapse on success — but never fight a
+    // manual toggle the user made.
+    LaunchedEffect(running, activities.size) {
+        if (!userToggled) expanded = running || outcome == AgentTurnOutcome.FAILED
+    }
+
+    val headline = remember(activities, outcome, elapsedMillis) {
+        AgentChatPresentation.activityHeadline(
+            outcome = outcome,
+            elapsedMillis = elapsedMillis,
+            activeStepCount = activities.size,
+            activeStepLabel = AgentChatPresentation.activeStepLabel(activities),
+            failedLabel = activities.lastOrNull { it.status == ActivityItemStatus.FAILED }?.label,
+        )
+    }
+    val headlineColor = when {
+        running -> ForgeMint
+        outcome == AgentTurnOutcome.FAILED -> ForgeDanger
+        outcome == AgentTurnOutcome.STOPPED -> ForgeAmber
+        else -> ForgeMint
+    }
     val shape = RoundedCornerShape(12.dp)
+
     Column(
         modifier = modifier
             .fillMaxWidth()
             .clip(shape)
             .background(ForgeSurfaceVariant.copy(alpha = 0.55f))
-            .border(1.dp, ForgeBorder, shape),
+            .border(
+                1.dp,
+                if (running) ForgeMint.copy(alpha = 0.35f) else ForgeBorder,
+                shape,
+            ),
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable { expanded = !expanded }
+                .clickable {
+                    userToggled = true
+                    expanded = !expanded
+                }
                 .padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            when {
+                running -> CircularProgressIndicator(
+                    modifier = Modifier.size(13.dp),
+                    strokeWidth = 2.dp,
+                    color = ForgeMint,
+                )
+
+                outcome == AgentTurnOutcome.FAILED -> Icon(
+                    Icons.Filled.ErrorOutline,
+                    contentDescription = null,
+                    tint = ForgeDanger,
+                    modifier = Modifier.size(15.dp),
+                )
+
+                outcome == AgentTurnOutcome.STOPPED -> Icon(
+                    Icons.Filled.Stop,
+                    contentDescription = null,
+                    tint = ForgeAmber,
+                    modifier = Modifier.size(14.dp),
+                )
+
+                else -> Icon(
+                    Icons.Filled.CheckCircle,
+                    contentDescription = null,
+                    tint = ForgeMint,
+                    modifier = Modifier.size(15.dp),
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = headline,
+                style = MaterialTheme.typography.labelSmall.copy(fontSize = 12.sp),
+                color = headlineColor,
+                fontFamily = FontFamily.Monospace,
+                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
             Icon(
                 imageVector = if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
                 contentDescription = if (expanded) "Collapse agent activity" else "Expand agent activity",
                 tint = ForgeMuted,
                 modifier = Modifier.size(18.dp),
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(
-                text = "Agent Activity",
-                style = MaterialTheme.typography.labelSmall,
-                color = ForgeInk,
-                modifier = Modifier.weight(1f),
-            )
-            if (live) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(12.dp),
-                    strokeWidth = 2.dp,
-                    color = ForgeMint,
-                )
-                Spacer(Modifier.width(8.dp))
-            }
-            Text(
-                text = "${activities.size}",
-                style = MaterialTheme.typography.labelSmall,
-                color = ForgeMuted,
             )
         }
         AnimatedVisibility(visible = expanded) {
@@ -502,58 +584,106 @@ fun AgentActivityPanel(
     }
 }
 
+/** One structured execution step. Terminal, tool and sub-agent rows expand. */
 @Composable
 private fun AgentActivityRow(activity: AgentActivityUiModel) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(modifier = Modifier.size(16.dp), contentAlignment = Alignment.Center) {
-            when (activity.status) {
-                ActivityItemStatus.ACTIVE -> CircularProgressIndicator(
-                    modifier = Modifier.size(12.dp),
-                    strokeWidth = 2.dp,
-                    color = ForgeMint,
+    val failed = activity.status == ActivityItemStatus.FAILED
+    val tint = when {
+        failed -> ForgeDanger
+        activity.status == ActivityItemStatus.ACTIVE -> ForgeMint
+        activity.kind == AgentActivityKind.SUB_AGENT -> ForgePeriwinkle
+        else -> ForgeMint
+    }
+    val expandable = activity.outputLines.isNotEmpty()
+    var showOutput by remember(activity.id) { mutableStateOf(false) }
+
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .then(if (expandable) Modifier.clickable { showOutput = !showOutput } else Modifier),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(modifier = Modifier.size(16.dp), contentAlignment = Alignment.Center) {
+                when (activity.status) {
+                    ActivityItemStatus.ACTIVE -> CircularProgressIndicator(
+                        modifier = Modifier.size(12.dp),
+                        strokeWidth = 2.dp,
+                        color = tint,
+                    )
+                    ActivityItemStatus.DONE -> Icon(
+                        Icons.Filled.CheckCircle,
+                        contentDescription = null,
+                        tint = tint,
+                        modifier = Modifier.size(14.dp),
+                    )
+                    ActivityItemStatus.FAILED -> Icon(
+                        Icons.Filled.Close,
+                        contentDescription = null,
+                        tint = tint,
+                        modifier = Modifier.size(14.dp),
+                    )
+                    ActivityItemStatus.PENDING -> Icon(
+                        Icons.Filled.CheckCircle,
+                        contentDescription = null,
+                        tint = ForgeMuted,
+                        modifier = Modifier.size(14.dp),
+                    )
+                }
+            }
+            Spacer(Modifier.width(8.dp))
+            val label = when {
+                activity.kind == AgentActivityKind.SUB_AGENT && activity.role != null ->
+                    "${activity.role} · ${activity.label}"
+
+                activity.kind == AgentActivityKind.TERMINAL -> "$ ${activity.label}"
+                activity.kind == AgentActivityKind.FILE_WRITE -> "✎ ${activity.label}"
+                else -> activity.label
+            }
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
+                color = if (failed) ForgeDanger else ForgeInk,
+                modifier = Modifier.weight(1f),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            activity.elapsedMillis?.takeIf { it > 0L }?.let { elapsed ->
+                Text(
+                    text = AgentChatPresentation.formatDuration(elapsed),
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 11.sp,
+                    color = ForgeMuted,
                 )
-                ActivityItemStatus.DONE -> Icon(
-                    Icons.Filled.CheckCircle,
-                    contentDescription = null,
-                    tint = ForgeMint,
-                    modifier = Modifier.size(14.dp),
-                )
-                ActivityItemStatus.FAILED -> Icon(
-                    Icons.Filled.Close,
-                    contentDescription = null,
-                    tint = ForgeDanger,
-                    modifier = Modifier.size(14.dp),
-                )
-                ActivityItemStatus.PENDING -> Icon(
-                    Icons.Filled.CheckCircle,
-                    contentDescription = null,
+            }
+            if (expandable) {
+                Icon(
+                    imageVector = if (showOutput) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                    contentDescription = if (showOutput) "Hide output" else "Show output",
                     tint = ForgeMuted,
                     modifier = Modifier.size(14.dp),
                 )
             }
         }
-        Spacer(Modifier.width(8.dp))
-        Text(
-            text = activity.label,
-            style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
-            color = if (activity.status == ActivityItemStatus.FAILED) ForgeDanger else ForgeInk,
-            modifier = Modifier.weight(1f),
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
-        activity.elapsedMillis?.takeIf { it > 0L }?.let { elapsed ->
+        if (showOutput && expandable) {
+            // Bounded preview only; full output lives in the tool card, never dumped here.
             Text(
-                text = AgentChatPresentation.formatDuration(elapsed),
+                text = activity.outputLines.take(TERMINAL_PREVIEW_LINES).joinToString("\n"),
                 fontFamily = FontFamily.Monospace,
                 fontSize = 11.sp,
-                color = ForgeMuted,
+                lineHeight = 15.sp,
+                color = if (failed) ForgeDanger else ForgeMuted,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 24.dp, top = 4.dp)
+                    .background(ForgeCanvas.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
             )
         }
     }
 }
+
+private const val TERMINAL_PREVIEW_LINES = 8
 
 // ───────────────────────────── Markdown ─────────────────────────────
 
