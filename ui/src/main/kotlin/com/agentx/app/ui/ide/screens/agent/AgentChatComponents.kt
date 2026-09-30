@@ -586,8 +586,8 @@ fun AgentMarkdownText(
                 is MessageBlock.Heading -> Text(
                     text = annotated(block.spans),
                     style = MaterialTheme.typography.titleMedium.copy(
-                        fontSize = headingSize(block.level),
-                        lineHeight = headingSize(block.level) + 6.sp,
+                        fontSize = headingFontSize(block.level),
+                        lineHeight = headingLineHeight(block.level),
                     ),
                     color = ForgeInk,
                 )
@@ -646,11 +646,18 @@ fun AgentMarkdownText(
     }
 }
 
-private fun headingSize(level: Int) = when (level) {
+private fun headingFontSize(level: Int) = when (level) {
     1 -> 20.sp
     2 -> 18.sp
     3 -> 16.sp
     else -> 15.sp
+}
+
+private fun headingLineHeight(level: Int) = when (level) {
+    1 -> 26.sp
+    2 -> 24.sp
+    3 -> 22.sp
+    else -> 21.sp
 }
 
 @Composable
