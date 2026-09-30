@@ -48,8 +48,8 @@ import com.agentx.app.model.runtime.RuntimeOutputBuffer
 import com.agentx.app.skills.DefaultSkillManager
 import com.agentx.app.skills.InMemorySkillStore
 import com.agentx.app.skills.SKILLS_LAYER
+import com.agentx.app.skills.SkillDiscoverySource
 import com.agentx.app.skills.SkillManager
-import com.agentx.app.skills.SkillSource
 import com.agentx.app.skills.SkillStore
 import com.agentx.app.tools.BuiltinTools
 import com.agentx.app.tools.DelegatingWorkspaceFileSystemResolver
@@ -101,7 +101,7 @@ object Foundation {
         integrationSetup: IntegrationSetupManager? = null,
         agentPromptStore: AgentPromptStore = InMemoryAgentPromptStore(),
         skillStore: SkillStore = InMemorySkillStore(),
-        skillSources: List<SkillSource> = emptyList(),
+        skillSources: List<SkillDiscoverySource> = emptyList(),
         runtimeOutput: RuntimeOutputBuffer = RuntimeOutputBuffer(),
         monitorModelConnections: Boolean = true,
         contextWorkspace: WorkspaceContextProvider = DelegatingWorkspaceContextProvider(),

@@ -18,7 +18,7 @@ fun interface SkillDocumentSource {
 }
 
 /** A source of already-parsed skills. */
-fun interface SkillSource {
+fun interface SkillDiscoverySource {
     suspend fun discover(): List<SkillDefinition>
 }
 
@@ -200,7 +200,7 @@ object SkillMarkdown {
 class MarkdownSkillSource(
     private val documents: SkillDocumentSource,
     private val fallbackId: (SkillDocument) -> String? = { null },
-) : SkillSource {
+) : SkillDiscoverySource {
 
     override suspend fun discover(): List<SkillDefinition> {
         val discovered = mutableListOf<SkillDefinition>()

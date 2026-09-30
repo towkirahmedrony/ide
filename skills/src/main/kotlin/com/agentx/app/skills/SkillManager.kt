@@ -62,7 +62,7 @@ interface SkillManager : SkillRegistry {
  */
 class DefaultSkillManager(
     private val builtins: List<SkillDefinition> = BuiltinSkills.all(),
-    private val sources: List<SkillSource> = emptyList(),
+    private val sources: List<SkillDiscoverySource> = emptyList(),
     private val store: SkillStore = InMemorySkillStore(),
     private val clock: () -> Long = { System.currentTimeMillis() },
 ) : SkillManager {
