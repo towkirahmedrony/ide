@@ -1007,7 +1007,7 @@ private fun highlighted(code: String, language: String?) = code
 
 private fun isSafeLink(url: String): Boolean = runCatching { Uri.parse(url) }.getOrNull()?.scheme in setOf("http", "https")
 
-private fun copyToClipboard(context: Context, label: String, text: String) {
+fun copyToClipboard(context: Context, label: String, text: String) {
     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
     val clip = ClipData.newPlainText(label, text)
     clipboard?.setPrimaryClip(clip)
