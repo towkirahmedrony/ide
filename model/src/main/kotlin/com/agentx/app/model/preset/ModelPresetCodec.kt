@@ -49,6 +49,7 @@ object ModelPresetCodec {
         fields["startupScript"] = Json.of(preset.startupScript)
         preset.serverPort?.let { fields["serverPort"] = Json.of(it) }
         fields["enabled"] = Json.of(preset.enabled)
+        fields["setupKind"] = Json.of(preset.setupKind)
         fields["createdAtMillis"] = Json.of(preset.createdAtMillis)
         fields["updatedAtMillis"] = Json.of(preset.updatedAtMillis)
         fields["endpoint"] = Json.obj(
@@ -119,6 +120,7 @@ object ModelPresetCodec {
                 ?.takeIf { it.isNotBlank() }
                 ?.let(::ColabRuntimeConfig),
             enabled = json.booleanOrNull("enabled") ?: true,
+            setupKind = json.stringOrNull("setupKind")?.takeIf { it.isNotBlank() } ?: "custom",
             createdAtMillis = json.numberOrNull("createdAtMillis")?.toLong() ?: 0L,
             updatedAtMillis = json.numberOrNull("updatedAtMillis")?.toLong() ?: 0L,
         )

@@ -17,6 +17,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -28,13 +29,17 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import com.agentx.app.model.connect.ModelConnectPhase
+import com.agentx.app.model.connect.ModelSetupKind
 import com.agentx.app.model.preset.EndpointDiscoveryMode
 import com.agentx.app.model.preset.ModelApiProtocol
 import com.agentx.app.model.preset.ModelProviderType
 import com.agentx.app.model.preset.TunnelType
 import com.agentx.app.ui.ide.components.IdeCard
+import com.agentx.app.ui.ide.components.IdeLabelValue
 import com.agentx.app.ui.ide.components.IdeSectionLabel
 import com.agentx.app.ui.ide.components.IdeSpacer
+import com.agentx.app.ui.ide.components.IdeStatusPill
 import com.agentx.app.ui.ide.components.IdeTopBar
 import com.agentx.app.ui.ide.state.ModelEditorState
 import com.agentx.app.ui.theme.ForgeCanvas
@@ -45,9 +50,8 @@ import com.agentx.app.ui.theme.ForgeMuted
 import com.agentx.app.ui.theme.ForgeSurfaceVariant
 
 /**
- * Add/Edit Model form. Only the fields a preset needs are shown, and validation
- * is the domain's job: the errors below the form come straight from the preset
- * validator, so the form can never accept something the manager would reject.
+ * Main Agent model setup. Quick Connect is the primary, phone-sized path;
+ * Advanced keeps the existing manual fields collapsed by default.
  */
 @Composable
 fun ModelEditorScreen(
@@ -55,6 +59,8 @@ fun ModelEditorScreen(
     onBack: () -> Unit,
     onEdit: ((ModelEditorState) -> ModelEditorState) -> Unit,
     onSave: () -> Unit,
+    onConnect: () -> Unit,
+    onToggleAdvanced: () -> Unit,
     onRemoveCredential: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -63,8 +69,8 @@ fun ModelEditorScreen(
         containerColor = ForgeCanvas,
         topBar = {
             IdeTopBar(
-                title = if (state.isEditing) "Edit model" else "Add model",
-                subtitle = "Model preset",
+                title = if (state.isEditing) "Edit model" else "AI Model",
+                subtitle = "Main Agent",
                 onBack = onBack,
             )
         },
@@ -100,109 +106,81 @@ fun ModelEditorScreen(
                 return@Column
             }
 
-            Field(
-                label = "Name",
-                value = state.displayName,
-                onValueChange = { value -> onEdit { it.copy(displayName = value) } },
-            )
+            state.connectedSummary?.let { summary ->
+                IdeCard {
+                    IdeSectionLabel("Connected")
+                    IdeSpacer(8)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = summary.displayName,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = ForgeInk,
+                            modifier = Modifier.weight(1f),
+                        )
+                        IdeStatusPill(summary.state, ForgeMint)
+                    }
+                    IdeLabelValue("API", summary.protocol)
+                    IdeLabelValue("Endpoint", summary.endpoint)
+                    if (summary.modelId.isNotBlank()) {
+                        IdeLabelValue("Model ID", summary.modelId)
+                    }
+                    IdeSpacer(4)
+                    Text(
+                        text = "The Main Agent can use this model now.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = ForgeMuted,
+                    )
+                }
+            }
 
             Choice(
-                label = "Where the model runs",
-                options = ModelProviderType.entries.map { it to it.displayName },
-                selected = state.providerType,
-                onSelect = { provider -> onEdit { it.copy(providerType = provider) } },
-            )
-
-            Field(
-                label = "Model identifier",
-                value = state.modelIdentifier,
-                onValueChange = { value -> onEdit { it.copy(modelIdentifier = value) } },
-            )
-
-            Choice(
-                label = "API protocol",
-                options = ModelApiProtocol.entries.map { it to it.displayName },
-                selected = state.apiProtocol,
-                onSelect = { protocol ->
-                    onEdit { it.copy(apiProtocol = protocol, apiBasePath = protocol.defaultApiBasePath) }
+                label = "Provider",
+                options = ModelSetupKind.entries.map { it to it.displayName },
+                selected = state.setupKind,
+                onSelect = { kind ->
+                    onEdit { current ->
+                        current.copy(
+                            setupKind = kind,
+                            providerType = when (kind) {
+                                ModelSetupKind.CUSTOM -> current.providerType
+                                ModelSetupKind.GEMINI, ModelSetupKind.GROQ ->
+                                    ModelProviderType.REMOTE_OPENAI_COMPATIBLE
+                            },
+                        )
+                    }
                 },
             )
 
-            Field(
-                label = "API base path",
-                value = state.apiBasePath,
-                onValueChange = { value -> onEdit { it.copy(apiBasePath = value) } },
-            )
-
-            Field(
-                label = "Server port",
-                value = state.serverPort,
-                onValueChange = { value -> onEdit { it.copy(serverPort = value.filter(Char::isDigit)) } },
-                keyboardType = KeyboardType.Number,
-            )
-
-            Choice(
-                label = "Endpoint discovery",
-                options = EndpointDiscoveryMode.entries.map { it to it.displayName },
-                selected = state.endpointMode,
-                onSelect = { mode -> onEdit { it.copy(endpointMode = mode) } },
-            )
-
-            Choice(
-                label = "Tunnel",
-                options = TunnelType.entries.map { it to it.displayName },
-                selected = state.tunnelType,
-                onSelect = { tunnel -> onEdit { it.copy(tunnelType = tunnel) } },
-            )
-
-            Field(
-                label = "Runtime output marker",
-                value = state.tunnelMarker,
-                onValueChange = { value -> onEdit { it.copy(tunnelMarker = value) } },
-            )
-
-            if (state.requireEndpointField) {
-                Field(
-                    label = "Endpoint (https://…)",
-                    value = state.explicitEndpoint,
-                    onValueChange = { value -> onEdit { it.copy(explicitEndpoint = value) } },
-                )
-            }
-
-            if (state.requireNotebookUrl) {
-                Field(
-                    label = "Colab notebook URL",
-                    value = state.colabNotebookUrl,
-                    onValueChange = { value -> onEdit { it.copy(colabNotebookUrl = value) } },
-                )
+            IdeCard {
+                IdeSectionLabel("Quick Connect")
+                IdeSpacer(8)
                 Text(
-                    text = "Android cannot start a Colab runtime. The notebook URL is what the " +
-                        "Model Runner opens; you start the runtime there.",
+                    text = state.setupKind.description,
                     style = MaterialTheme.typography.bodyMedium,
                     color = ForgeMuted,
                 )
             }
 
-            MultilineField(
-                label = "Startup script / configuration",
-                value = state.startupScript,
-                onValueChange = { value -> onEdit { it.copy(startupScript = value) } },
-            )
-            Text(
-                text = "Saved with the preset. Wire it up so that the runtime prints the tunnel " +
-                    "endpoint after the marker above — that is how the app finds the model API.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = ForgeMuted,
+            Field(
+                label = "Model Name",
+                value = state.displayName,
+                onValueChange = { value -> onEdit { it.copy(displayName = value) } },
             )
 
-            Field(
-                label = "Health check path (optional)",
-                value = state.healthPath,
-                onValueChange = { value -> onEdit { it.copy(healthPath = value) } },
-            )
+            if (state.setupKind.showsEndpointField) {
+                Field(
+                    label = "Endpoint URL",
+                    value = state.explicitEndpoint,
+                    onValueChange = { value -> onEdit { it.copy(explicitEndpoint = value) } },
+                )
+            }
 
             Field(
-                label = if (state.hasStoredCredential) "Replace API key (optional)" else "API key (optional)",
+                label = when {
+                    state.setupKind.requiresApiKey && !state.hasStoredCredential -> "API Key"
+                    state.hasStoredCredential -> "Replace API key (optional)"
+                    else -> "API Key (optional)"
+                },
                 value = state.credential,
                 onValueChange = { value -> onEdit { it.copy(credential = value) } },
                 visualTransformation = PasswordVisualTransformation(),
@@ -219,20 +197,36 @@ fun ModelEditorScreen(
                 }
             }
 
-            Choice(
-                label = "Availability",
-                options = listOf(true to "Enabled", false to "Disabled"),
-                selected = state.enabled,
-                onSelect = { enabled -> onEdit { it.copy(enabled = enabled) } },
-            )
+            if (state.availableModels.isNotEmpty()) {
+                Choice(
+                    label = "Model",
+                    options = state.availableModels.map { it to it },
+                    selected = state.modelIdentifier,
+                    onSelect = { id -> onEdit { it.copy(modelIdentifier = id) } },
+                )
+            }
+
+            if (state.connecting) {
+                IdeCard {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(color = ForgeMint, modifier = Modifier.size(18.dp))
+                        Text(
+                            text = state.connectPhase?.displayName ?: ModelConnectPhase.CONNECTING.displayName,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = ForgeInk,
+                            modifier = Modifier.padding(start = 10.dp),
+                        )
+                    }
+                }
+            }
 
             if (state.errors.isNotEmpty()) {
                 IdeCard {
-                    IdeSectionLabel("Fix these first")
+                    IdeSectionLabel("Could not connect")
                     IdeSpacer(6)
                     state.errors.forEach { error ->
                         Text(
-                            text = "· $error",
+                            text = error,
                             style = MaterialTheme.typography.bodyMedium,
                             color = ForgeDanger,
                         )
@@ -241,15 +235,152 @@ fun ModelEditorScreen(
             }
 
             Button(
-                onClick = onSave,
-                enabled = !state.saving,
+                onClick = onConnect,
+                enabled = !state.busy,
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Text(if (state.saving) "Saving…" else "Save model")
+                Text(
+                    when {
+                        state.connecting -> state.connectPhase?.displayName ?: "Connecting…"
+                        state.availableModels.isNotEmpty() -> "Connect with selected model"
+                        else -> "Connect"
+                    },
+                )
             }
+
+            TextButton(onClick = onToggleAdvanced, modifier = Modifier.fillMaxWidth()) {
+                Text(if (state.advancedOpen) "Hide Advanced" else "Advanced")
+            }
+
+            if (state.advancedOpen) {
+                AdvancedFields(state = state, onEdit = onEdit)
+                OutlinedButton(
+                    onClick = onSave,
+                    enabled = !state.busy,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(if (state.saving) "Saving…" else "Save without connecting")
+                }
+            }
+
             IdeSpacer(8)
         }
     }
+}
+
+@Composable
+private fun AdvancedFields(
+    state: ModelEditorState,
+    onEdit: ((ModelEditorState) -> ModelEditorState) -> Unit,
+) {
+    Text(
+        text = "Use these only for unusual servers. Quick Connect detects the rest.",
+        style = MaterialTheme.typography.bodyMedium,
+        color = ForgeMuted,
+    )
+
+    Choice(
+        label = "Where the model runs",
+        options = ModelProviderType.entries.map { it to it.displayName },
+        selected = state.providerType,
+        onSelect = { provider -> onEdit { it.copy(providerType = provider) } },
+    )
+
+    Field(
+        label = "Model ID",
+        value = state.modelIdentifier,
+        onValueChange = { value -> onEdit { it.copy(modelIdentifier = value) } },
+    )
+
+    Choice(
+        label = "API protocol",
+        options = ModelApiProtocol.entries.map { it to it.displayName },
+        selected = state.apiProtocol,
+        onSelect = { protocol ->
+            onEdit { it.copy(apiProtocol = protocol, apiBasePath = protocol.defaultApiBasePath) }
+        },
+    )
+
+    Field(
+        label = "Custom API path",
+        value = state.apiBasePath,
+        onValueChange = { value -> onEdit { it.copy(apiBasePath = value) } },
+    )
+
+    Field(
+        label = "Timeout (ms)",
+        value = state.healthTimeoutMillis,
+        onValueChange = { value -> onEdit { it.copy(healthTimeoutMillis = value.filter(Char::isDigit)) } },
+        keyboardType = KeyboardType.Number,
+    )
+
+    Field(
+        label = "Server port",
+        value = state.serverPort,
+        onValueChange = { value -> onEdit { it.copy(serverPort = value.filter(Char::isDigit)) } },
+        keyboardType = KeyboardType.Number,
+    )
+
+    Choice(
+        label = "Endpoint discovery",
+        options = EndpointDiscoveryMode.entries.map { it to it.displayName },
+        selected = state.endpointMode,
+        onSelect = { mode -> onEdit { it.copy(endpointMode = mode) } },
+    )
+
+    Choice(
+        label = "Tunnel",
+        options = TunnelType.entries.map { it to it.displayName },
+        selected = state.tunnelType,
+        onSelect = { tunnel -> onEdit { it.copy(tunnelType = tunnel) } },
+    )
+
+    Field(
+        label = "Runtime output marker",
+        value = state.tunnelMarker,
+        onValueChange = { value -> onEdit { it.copy(tunnelMarker = value) } },
+    )
+
+    if (state.requireEndpointField && state.endpointMode != EndpointDiscoveryMode.CONFIGURED_ENDPOINT) {
+        Field(
+            label = "Endpoint (https://…)",
+            value = state.explicitEndpoint,
+            onValueChange = { value -> onEdit { it.copy(explicitEndpoint = value) } },
+        )
+    }
+
+    if (state.requireNotebookUrl) {
+        Field(
+            label = "Colab notebook URL",
+            value = state.colabNotebookUrl,
+            onValueChange = { value -> onEdit { it.copy(colabNotebookUrl = value) } },
+        )
+        Text(
+            text = "Android cannot start a Colab runtime. The notebook URL is what the " +
+                "Model Runner opens; you start the runtime there.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = ForgeMuted,
+        )
+    }
+
+    MultilineField(
+        label = "Startup script / configuration",
+        value = state.startupScript,
+        onValueChange = { value -> onEdit { it.copy(startupScript = value) } },
+    )
+
+    Field(
+        label = "Health check path (optional)",
+        value = state.healthPath,
+        onValueChange = { value -> onEdit { it.copy(healthPath = value) } },
+    )
+
+    Choice(
+        label = "Availability",
+        options = listOf(true to "Enabled", false to "Disabled"),
+        selected = state.enabled,
+        onSelect = { enabled -> onEdit { it.copy(enabled = enabled) } },
+    )
 }
 
 @Composable
@@ -272,7 +403,6 @@ private fun Field(
     )
 }
 
-/** Same field, sized for a script. */
 @Composable
 private fun MultilineField(
     label: String,

@@ -6,6 +6,9 @@ import com.agentx.app.core.ForgeResult
 import com.agentx.app.core.failure
 import com.agentx.app.core.success
 import com.agentx.app.model.ModelConfig
+import com.agentx.app.model.connect.ModelConnectOutcome
+import com.agentx.app.model.connect.ModelConnectPhase
+import com.agentx.app.model.connect.ModelConnectRequest
 import com.agentx.app.model.preset.ModelPreset
 import com.agentx.app.model.runtime.ModelHealth
 import com.agentx.app.model.runtime.ModelLifecycleState
@@ -61,6 +64,15 @@ interface ModelManager {
     ): ForgeResult<ModelPreset, ForgeError>
 
     suspend fun deletePreset(id: String): ForgeResult<Unit, ForgeError>
+
+    /**
+     * Quick Connect: normalize the endpoint, detect the API, verify chat, save
+     * the preset and bring it online. The UI never talks HTTP itself.
+     */
+    suspend fun connectQuick(
+        request: ModelConnectRequest,
+        onPhase: (ModelConnectPhase) -> Unit = {},
+    ): ForgeResult<ModelConnectOutcome, ForgeError>
 
     /** "Use": selects the preset and brings it online without restarting a healthy runtime. */
     suspend fun selectModel(id: String): ForgeResult<ModelRuntimeStatus, ForgeError>

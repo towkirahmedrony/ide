@@ -292,6 +292,8 @@ fun ForgeIdeApp(
                 onBack = { navController.popBackStack() },
                 onEdit = editorViewModel::edit,
                 onSave = editorViewModel::save,
+                onConnect = editorViewModel::connect,
+                onToggleAdvanced = editorViewModel::toggleAdvanced,
                 onRemoveCredential = editorViewModel::removeStoredCredential,
             )
         }

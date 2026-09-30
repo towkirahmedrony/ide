@@ -31,6 +31,7 @@ internal class FakeHttpTransport(
     var streamLines: List<String> = emptyList(),
     var onExecute: (() -> Unit)? = null,
     var onStream: (() -> Unit)? = null,
+    var executeHandler: ((HttpRequestSpec) -> HttpResponseSpec)? = null,
 ) : HttpTransport {
 
     val requests = mutableListOf<HttpRequestSpec>()
@@ -40,7 +41,7 @@ internal class FakeHttpTransport(
     override suspend fun execute(request: HttpRequestSpec): HttpResponseSpec {
         requests += request
         onExecute?.invoke()
-        return response
+        return executeHandler?.invoke(request) ?: response
     }
 
     override suspend fun executeStreaming(request: HttpRequestSpec, onLine: (String) -> Unit): HttpResponseSpec {

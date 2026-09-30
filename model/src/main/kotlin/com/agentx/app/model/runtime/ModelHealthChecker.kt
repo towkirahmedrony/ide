@@ -69,6 +69,13 @@ class HttpModelHealthChecker(
         val latency = clock() - started
 
         if (response.statusCode !in 200..299) {
+            if (response.statusCode == 404 && !preset.health.requireModelInList) {
+                return ModelHealth(
+                    status = ModelHealthStatus.DEGRADED,
+                    detail = "The model list was not found; the chat endpoint was not re-checked here",
+                    latencyMillis = latency,
+                )
+            }
             return ModelHealth(
                 status = ModelHealthStatus.UNHEALTHY,
                 detail = httpMessage(response.statusCode),

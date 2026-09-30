@@ -9,7 +9,17 @@ import com.agentx.app.core.logging.ForgeLoggers
 import com.agentx.app.core.logging.LogLevel
 import com.agentx.app.core.success
 import com.agentx.app.core.valueOrNull
+import com.agentx.app.model.DefaultModelGateway
 import com.agentx.app.model.ModelConfig
+import com.agentx.app.model.connect.ChatCapabilityProbe
+import com.agentx.app.model.connect.ModelApiDiscovery
+import com.agentx.app.model.connect.ModelConnectOutcome
+import com.agentx.app.model.connect.ModelConnectPhase
+import com.agentx.app.model.connect.ModelConnectRequest
+import com.agentx.app.model.connect.ModelConnectService
+import com.agentx.app.model.http.HttpTransport
+import com.agentx.app.model.http.UrlConnectionHttpTransport
+import com.agentx.app.model.provider.openai.OpenAiCompatibleProvider
 import com.agentx.app.model.preset.ModelCredentialResolver
 import com.agentx.app.model.preset.ModelPreset
 import com.agentx.app.model.preset.ModelPresetRepository
@@ -64,7 +74,27 @@ class DefaultModelManager(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     /** Monitoring can be disabled by configuration; the model still works. */
     private val monitorEnabled: Boolean = true,
+    transport: HttpTransport = UrlConnectionHttpTransport(),
+    connectServiceFactory: ((ModelManager) -> ModelConnectService)? = null,
 ) : ModelManager {
+
+    private val connectService: ModelConnectService =
+        connectServiceFactory?.invoke(this) ?: ModelConnectService(
+            manager = this,
+            transport = transport,
+            discovery = ModelApiDiscovery(transport),
+            chatProbe = ChatCapabilityProbe(
+                gateway = DefaultModelGateway(),
+                providerFactory = { protocol ->
+                    OpenAiCompatibleProvider(
+                        id = protocol.providerId,
+                        transport = transport,
+                        chatPath = protocol.chatPath,
+                    )
+                },
+            ),
+            resolveStoredCredential = { preset -> io { credentials.resolve(preset) } },
+        )
 
     private val log: ForgeLogger = logger
 
@@ -201,6 +231,11 @@ class DefaultModelManager(
     }
 
     // --- lifecycle ---------------------------------------------------------
+
+    override suspend fun connectQuick(
+        request: ModelConnectRequest,
+        onPhase: (ModelConnectPhase) -> Unit,
+    ): ForgeResult<ModelConnectOutcome, ForgeError> = connectService.connect(request, onPhase)
 
     override suspend fun selectModel(id: String): ForgeResult<ModelRuntimeStatus, ForgeError> =
         withPreset(id) { preset ->

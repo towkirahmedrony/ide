@@ -127,6 +127,7 @@ object ModelManagers {
             clock = clock,
             ioDispatcher = ioDispatcher,
             monitorEnabled = monitorEnabled,
+            transport = transport,
         )
     }
 }

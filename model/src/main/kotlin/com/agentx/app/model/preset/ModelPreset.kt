@@ -173,6 +173,11 @@ data class ModelPreset(
     val health: HealthCheckConfig = HealthCheckConfig(),
     val colab: ColabRuntimeConfig? = null,
     val enabled: Boolean = true,
+    /**
+     * Quick-connect catalog id (`custom`, `gemini`, `groq`). Informational only;
+     * the gateway still sees a normal OpenAI-compatible preset.
+     */
+    val setupKind: String = "custom",
     val createdAtMillis: Long = 0L,
     val updatedAtMillis: Long = 0L,
 ) {
