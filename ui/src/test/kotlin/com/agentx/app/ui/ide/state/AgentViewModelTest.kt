@@ -233,7 +233,7 @@ class AgentViewModelTest {
         viewModel.onInputChange("What does this project do?")
         viewModel.send()
 
-        assertEquals(listOf("saf-project" to "src/Main.kt"), captured)
+        assertEquals(listOf<Pair<String?, String?>>("saf-project" to "src/Main.kt"), captured)
         openFile = "README.md"
         viewModel.onInputChange("summarise the readme")
         viewModel.send()
