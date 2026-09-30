@@ -62,6 +62,12 @@ data class AgentSession(
     val createdAtMillis: Long,
     val updatedAtMillis: Long,
     val workspaceId: String? = null,
+    /** User-visible title; derived from the first user message when blank. */
+    val title: String? = null,
+    /** Model provider last used by this session, when known. */
+    val modelProviderId: String? = null,
+    /** Model identifier last used by this session, when known. */
+    val modelId: String? = null,
 )
 
 data class AgentResult(

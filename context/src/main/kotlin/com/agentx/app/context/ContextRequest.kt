@@ -31,6 +31,13 @@ data class ContextRequest(
     /** Prior conversation turns, oldest first. */
     val conversation: List<ModelMessage> = emptyList(),
     val agentState: ContextAgentState? = null,
+    /**
+     * Compact session memory (current task, completed work, important files).
+     * Rendered as supporting context; never replaces the current user message.
+     */
+    val sessionSummary: String? = null,
+    /** Structured execution state for the current session. */
+    val taskState: ContextAgentState? = null,
     /** Overrides the engine's default budget for this request only. */
     val budget: ContextBudget? = null,
 )

@@ -1,7 +1,11 @@
 package com.agentx.app.agent
 
+import com.agentx.app.agent.conversation.ConversationHistory
+import com.agentx.app.agent.conversation.ConversationStore
+import com.agentx.app.agent.conversation.InMemoryConversationStore
 import com.agentx.app.agent.main.MainAgent
 import com.agentx.app.agent.orchestrator.AgentOrchestrator
+import com.agentx.app.agent.orchestrator.AgentSessionStore
 import com.agentx.app.agent.orchestrator.DefaultAgentOrchestrator
 import com.agentx.app.agent.orchestrator.InMemoryAgentSessionStore
 import com.agentx.app.agent.prompt.PromptManager
@@ -46,9 +50,24 @@ class AgentModule(
         // context and the skill-context resolver.
         val engine = contextEngine ?: DefaultContextEngine()
         val skillContext = skills?.let { SkillContextProvider(skills, engine) }
-        val assembled = assemble(gateway, registry, router, engine, timeoutMillis, prompts, skillContext)
+        val sessionStore = context.services.get<AgentSessionStore>(ServiceKeys.AGENT_SESSION_STORE)
+            ?: InMemoryAgentSessionStore()
+        val conversationStore = context.services.get<ConversationStore>(ServiceKeys.AGENT_CONVERSATION_STORE)
+            ?: InMemoryConversationStore()
+        val assembled = assemble(
+            gateway = gateway,
+            registry = registry,
+            router = router,
+            contextEngine = engine,
+            timeoutMillis = timeoutMillis,
+            prompts = prompts,
+            skillContext = skillContext,
+            sessions = sessionStore,
+            conversations = conversationStore,
+        )
         context.services.register(ServiceKeys.AGENT_ORCHESTRATOR, assembled.orchestrator)
         context.services.register(ServiceKeys.AGENT_REGISTRY, assembled.specialized)
+        context.services.register(ServiceKeys.AGENT_HISTORY, assembled.history)
     }
 
     companion object {
@@ -68,6 +87,8 @@ class AgentModule(
             timeoutMillis: Long = DefaultAgentOrchestrator.DEFAULT_TIMEOUT_MILLIS,
             prompts: PromptManager? = null,
             skillContext: SkillContextResolver? = null,
+            sessions: AgentSessionStore = InMemoryAgentSessionStore(),
+            conversations: ConversationStore = InMemoryConversationStore(),
         ): AgentRuntime {
             val engine = contextEngine ?: DefaultContextEngine()
             val bridge = AgentToolBridge(registry)
@@ -85,14 +106,21 @@ class AgentModule(
                 availableTools = { registry.names() },
             ).createAll()
             val mainAgent = MainAgent(loop = loop, bridge = bridge)
+            val history = ConversationHistory(conversations = conversations, sessions = sessions)
             val orchestrator = DefaultAgentOrchestrator(
                 mainAgent = mainAgent,
                 specialized = specialized,
-                sessions = InMemoryAgentSessionStore(),
+                sessions = sessions,
                 contextEngine = engine,
+                history = history,
                 defaultTimeoutMillis = timeoutMillis,
             )
-            return AgentRuntime(orchestrator = orchestrator, specialized = specialized, mainAgent = mainAgent)
+            return AgentRuntime(
+                orchestrator = orchestrator,
+                specialized = specialized,
+                mainAgent = mainAgent,
+                history = history,
+            )
         }
     }
 }
@@ -101,4 +129,5 @@ data class AgentRuntime(
     val orchestrator: AgentOrchestrator,
     val specialized: com.agentx.app.agent.specialized.SpecializedAgentRegistry,
     val mainAgent: MainAgent,
+    val history: ConversationHistory = ConversationHistory(),
 )

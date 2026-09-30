@@ -1,5 +1,9 @@
 package com.agentx.app.agent.orchestrator
 
+import com.agentx.app.agent.conversation.ConversationAssembler
+import com.agentx.app.agent.conversation.ConversationHistory
+import com.agentx.app.agent.conversation.MessageRole
+import com.agentx.app.agent.conversation.SessionTitle
 import com.agentx.app.agent.domain.AgentError
 import com.agentx.app.agent.domain.AgentErrorCode
 import com.agentx.app.agent.domain.AgentEvent
@@ -20,6 +24,7 @@ import com.agentx.app.agent.runtime.ResumedPermission
 import com.agentx.app.agent.runtime.SubAgentInvoker
 import com.agentx.app.agent.specialized.SpecializedAgentRegistry
 import com.agentx.app.agent.specialized.unknownSubAgent
+import com.agentx.app.context.ContextAgentState
 import com.agentx.app.context.ContextBudget
 import com.agentx.app.context.ContextEngine
 import com.agentx.app.context.ContextRequest
@@ -27,6 +32,7 @@ import com.agentx.app.core.logging.ForgeLogger
 import com.agentx.app.core.logging.ForgeLoggers
 import com.agentx.app.core.logging.LogLevel
 import com.agentx.app.model.ModelConfig
+import com.agentx.app.model.ModelMessage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
@@ -57,6 +63,9 @@ interface AgentOrchestrator {
     fun sessions(): List<AgentSession>
 
     fun cancel(sessionId: String): Boolean
+
+    /** Session-scoped conversation history, when persistence is wired. */
+    fun history(): ConversationHistory? = null
 }
 
 class DefaultAgentOrchestrator(
@@ -65,6 +74,8 @@ class DefaultAgentOrchestrator(
     private val sessions: AgentSessionStore = InMemoryAgentSessionStore(),
     /** Supplies the workspace, conversation and tool-result context of a task. */
     private val contextEngine: ContextEngine? = null,
+    /** Session-scoped conversation history. Optional so tests can omit it. */
+    private val history: ConversationHistory? = null,
     private val defaultTimeoutMillis: Long = DEFAULT_TIMEOUT_MILLIS,
     private val clock: () -> Long = { System.currentTimeMillis() },
     private val logger: ForgeLogger = ForgeLoggers.create(LogLevel.INFO, baseFields = mapOf("layer" to "orchestrator")),
@@ -110,30 +121,50 @@ class DefaultAgentOrchestrator(
         val sessionId = request.sessionId ?: AgentIds.newId()
         cancellations.remove(sessionId)
         val now = clock()
+        val existing = sessions.find(sessionId)
         val task = AgentTask(
-            id = AgentIds.newId(),
+            id = existing?.task?.id ?: AgentIds.newId(),
             prompt = request.prompt,
-            workspaceId = request.workspaceId,
+            workspaceId = request.workspaceId ?: existing?.workspaceId,
         )
+        val title = existing?.title?.takeIf { !SessionTitle.isPlaceholder(it) }
+            ?: SessionTitle.derive(request.prompt)
         val session = AgentSession(
             id = sessionId,
-            parentSessionId = null,
-            role = AgentRole.MAIN,
+            parentSessionId = existing?.parentSessionId,
+            role = existing?.role ?: AgentRole.MAIN,
             status = AgentStatus.RUNNING,
             task = task,
-            createdAtMillis = now,
+            plan = existing?.plan,
+            steps = existing?.steps.orEmpty(),
+            createdAtMillis = existing?.createdAtMillis ?: now,
             updatedAtMillis = now,
-            workspaceId = request.workspaceId,
+            workspaceId = request.workspaceId ?: existing?.workspaceId,
+            title = title,
+            modelProviderId = modelConfig.providerId,
+            modelId = modelConfig.model,
         )
         sessions.save(session)
-        sink.emit(
-            AgentEvent.SessionCreated(
-                sessionId = sessionId,
-                role = AgentRole.MAIN,
-                parentSessionId = null,
-                timestampMillis = now,
-            ),
+        history?.ensureSession(
+            sessionId = sessionId,
+            workspaceId = session.workspaceId,
+            role = session.role,
+            parentSessionId = session.parentSessionId,
+            modelProviderId = modelConfig.providerId,
+            modelId = modelConfig.model,
+            prompt = request.prompt,
         )
+        history?.markStatus(sessionId, AgentStatus.RUNNING)
+        if (existing == null) {
+            sink.emit(
+                AgentEvent.SessionCreated(
+                    sessionId = sessionId,
+                    role = session.role,
+                    parentSessionId = session.parentSessionId,
+                    timestampMillis = now,
+                ),
+            )
+        }
 
         val timeout = request.timeoutMillis ?: defaultTimeoutMillis
         val job = coroutineContext[Job]
@@ -159,6 +190,7 @@ class DefaultAgentOrchestrator(
                     onCancelled = { isCancelled(sessionId) },
                 )
             }
+            rememberTurn(sessionId, request.prompt, result)
             sessions.update(sessionId) { it.withStatus(result.status, clock()) }
             if (result.status == AgentStatus.WAITING_FOR_PERMISSION && result.pendingPermission != null) {
                 pausedPermissions[sessionId] = PausedRun(
@@ -179,14 +211,16 @@ class DefaultAgentOrchestrator(
                 sessionId = sessionId,
                 cause = error,
             )
-            sessions.update(sessionId) { it.withStatus(AgentStatus.FAILED, clock()) }
-            sink.emit(AgentEvent.Failed(sessionId, agentError, clock()))
-            AgentResult(
+            val failed = AgentResult(
                 sessionId = sessionId,
                 status = AgentStatus.FAILED,
                 summary = agentError.message,
                 errors = listOf(agentError),
             )
+            rememberTurn(sessionId, request.prompt, failed)
+            sessions.update(sessionId) { it.withStatus(AgentStatus.FAILED, clock()) }
+            sink.emit(AgentEvent.Failed(sessionId, agentError, clock()))
+            failed
         } catch (cancelled: CancellationException) {
             val cancelledResult = AgentResult(
                 sessionId = sessionId,
@@ -200,6 +234,7 @@ class DefaultAgentOrchestrator(
                     ),
                 ),
             )
+            rememberTurn(sessionId, request.prompt, cancelledResult)
             sessions.update(sessionId) { it.withStatus(AgentStatus.CANCELLED, clock()) }
             sink.emit(AgentEvent.Cancelled(sessionId, "Cancelled", clock()))
             if (isCancelled(sessionId)) cancelledResult else throw cancelled
@@ -210,14 +245,16 @@ class DefaultAgentOrchestrator(
                 sessionId = sessionId,
                 cause = error,
             )
-            sessions.update(sessionId) { it.withStatus(AgentStatus.FAILED, clock()) }
-            sink.emit(AgentEvent.Failed(sessionId, agentError, clock()))
-            AgentResult(
+            val failed = AgentResult(
                 sessionId = sessionId,
                 status = AgentStatus.FAILED,
                 summary = agentError.message,
                 errors = listOf(agentError),
             )
+            rememberTurn(sessionId, request.prompt, failed)
+            sessions.update(sessionId) { it.withStatus(AgentStatus.FAILED, clock()) }
+            sink.emit(AgentEvent.Failed(sessionId, agentError, clock()))
+            failed
         } finally {
             jobs.remove(sessionId)
             // The engine's per-run items are only needed while the run is live;
@@ -266,6 +303,7 @@ class DefaultAgentOrchestrator(
                     onCancelled = { isCancelled(sessionId) },
                 )
             }
+            rememberTurn(sessionId, session.task.prompt, result)
             sessions.update(sessionId) { it.withStatus(result.status, clock()) }
             if (result.status == AgentStatus.WAITING_FOR_PERMISSION && result.pendingPermission != null) {
                 pausedPermissions[sessionId] = PausedRun(
@@ -327,9 +365,15 @@ class DefaultAgentOrchestrator(
         }
     }
 
-    override fun session(id: String): AgentSession? = sessions.find(id)
+    override fun session(id: String): AgentSession? =
+        history?.conversation(id)?.session ?: sessions.find(id)
 
-    override fun sessions(): List<AgentSession> = sessions.all()
+    override fun sessions(): List<AgentSession> {
+        val stored = history?.conversations()?.map { it.session }
+        return stored ?: sessions.all()
+    }
+
+    override fun history(): ConversationHistory? = history
 
     override fun cancel(sessionId: String): Boolean {
         cancellations[sessionId] = true
@@ -345,6 +389,7 @@ class DefaultAgentOrchestrator(
                 current
             }
         }
+        history?.markStatus(sessionId, AgentStatus.CANCELLED)
         return true
     }
 
@@ -370,8 +415,21 @@ class DefaultAgentOrchestrator(
                 createdAtMillis = now,
                 updatedAtMillis = now,
                 workspaceId = request.workspaceId,
+                title = SessionTitle.derive(request.task),
+                modelProviderId = modelConfig.providerId,
+                modelId = modelConfig.model,
             ),
         )
+        history?.ensureSession(
+            sessionId = request.sessionId,
+            workspaceId = request.workspaceId,
+            role = request.role,
+            parentSessionId = request.parentSessionId,
+            modelProviderId = modelConfig.providerId,
+            modelId = modelConfig.model,
+            prompt = request.task,
+        )
+        history?.recordUser(request.sessionId, request.task)
         sink.emit(
             AgentEvent.SessionCreated(
                 sessionId = request.sessionId,
@@ -392,6 +450,15 @@ class DefaultAgentOrchestrator(
         }
         sessions.update(request.sessionId) { it.withStatus(result.status, clock()) }
         sessions.update(request.parentSessionId) { it.withStatus(AgentStatus.RUNNING, clock()) }
+        val asAgent = result.toAgentResult()
+        history?.applyTurn(request.sessionId, request.task, asAgent)
+        history?.recordSubAgent(
+            sessionId = request.parentSessionId,
+            childSessionId = request.sessionId,
+            role = request.role,
+            summary = result.summary,
+            success = result.status == AgentStatus.COMPLETED,
+        )
         return result
     }
 
@@ -406,6 +473,28 @@ class DefaultAgentOrchestrator(
     private suspend fun assembleContext(request: AgentRunRequest, sessionId: String): String {
         val parts = mutableListOf<String>()
         if (request.context.isNotBlank()) parts += request.context
+        val stored = history?.conversation(sessionId)
+        val conversation = reconstructConversation(request, stored)
+        val summaryText = stored?.summary?.render()?.takeIf { it.isNotBlank() }
+        val taskState = stored?.taskState?.let { state ->
+            if (state.isEmpty()) {
+                null
+            } else {
+                ContextAgentState(
+                    role = stored.role.name,
+                    status = stored.status.name,
+                    progress = buildString {
+                        state.activeTask?.let { append("task=").append(it).append('\n') }
+                        state.currentStep?.let { append("step=").append(it).append('\n') }
+                        if (state.relevantFiles.isNotEmpty()) {
+                            append("files=").append(state.relevantFiles.joinToString(", ")).append('\n')
+                        }
+                        state.lastToolResult?.let { append("lastTool=").append(it).append('\n') }
+                        state.lastError?.let { append("lastError=").append(it) }
+                    }.trim().takeIf { it.isNotEmpty() },
+                )
+            }
+        }
         val engine = contextEngine ?: return parts.joinToString("\n\n")
         val assembled = engine.buildContext(
             ContextRequest(
@@ -415,7 +504,9 @@ class DefaultAgentOrchestrator(
                 includeTask = false,
                 mentionedFiles = request.mentionedFiles,
                 selectedFile = request.selectedFile,
-                conversation = request.conversation,
+                conversation = conversation,
+                agentState = taskState,
+                sessionSummary = summaryText,
                 budget = request.contextBudget,
             ),
         )
@@ -429,9 +520,70 @@ class DefaultAgentOrchestrator(
                 "contextChars" to parts.sumOf { it.length },
                 "engineItems" to assembled.items.size,
                 "engineEmpty" to assembled.isEmpty,
+                "historyMessages" to (stored?.messages?.size ?: 0),
+                "conversationMessages" to conversation.size,
             ),
         )
         return parts.joinToString("\n\n")
+    }
+
+    /**
+     * Rebuilds the model-facing conversation for this turn. Stored history is
+     * complete; only a budgeted slice is sent. Caller-supplied [AgentRunRequest.conversation]
+     * is used when no history exists yet (tests, first turn).
+     */
+    private fun reconstructConversation(
+        request: AgentRunRequest,
+        stored: com.agentx.app.agent.conversation.AgentConversation?,
+    ): List<ModelMessage> {
+        if (stored != null && stored.messages.isNotEmpty()) {
+            return ConversationAssembler.modelConversation(stored, request.contextBudget)
+        }
+        return request.conversation
+    }
+
+    private fun rememberTurn(sessionId: String, prompt: String, result: AgentResult) {
+        val store = history ?: return
+        val existing = store.conversation(sessionId)
+        val alreadyRecorded = existing?.messages?.any { message ->
+            message.role == MessageRole.USER && message.content.text == prompt.trim()
+        } == true
+        if (!alreadyRecorded && prompt.isNotBlank()) {
+            store.recordUser(sessionId, prompt.trim())
+        }
+        val afterUser = store.conversation(sessionId)
+        val hasAssistant = afterUser?.messages?.any { message ->
+            message.role == MessageRole.ASSISTANT || message.role == MessageRole.ERROR
+        } == true
+        if (!hasAssistant && result.summary.isNotBlank()) {
+            val role = if (result.status == AgentStatus.FAILED || result.status == AgentStatus.CANCELLED) {
+                MessageRole.ERROR
+            } else {
+                MessageRole.ASSISTANT
+            }
+            val status = if (role == MessageRole.ERROR) {
+                com.agentx.app.agent.conversation.MessageStatus.ERROR
+            } else {
+                com.agentx.app.agent.conversation.MessageStatus.COMPLETED
+            }
+            store.append(
+                sessionId,
+                com.agentx.app.agent.conversation.ConversationMessage(
+                    id = AgentIds.newId(),
+                    sessionId = sessionId,
+                    role = role,
+                    content = com.agentx.app.agent.conversation.MessageContent(
+                        text = result.errors.firstOrNull()?.message ?: result.summary,
+                        errorCode = result.errors.firstOrNull()?.code?.name,
+                    ),
+                    metadata = com.agentx.app.agent.conversation.MessageMetadata(
+                        status = status,
+                        timestampMillis = clock(),
+                    ),
+                ),
+            )
+        }
+        store.applyTurn(sessionId, prompt, result)
     }
 
     /**

@@ -11,6 +11,11 @@ interface AgentSessionStore {
     fun update(id: String, transform: (AgentSession) -> AgentSession): AgentSession?
 
     fun all(): List<AgentSession>
+
+    fun delete(id: String): Boolean = false
+
+    fun findByWorkspace(workspaceId: String?): List<AgentSession> =
+        all().filter { session -> session.workspaceId == workspaceId && session.parentSessionId == null }
 }
 
 class InMemoryAgentSessionStore : AgentSessionStore {
@@ -34,7 +39,13 @@ class InMemoryAgentSessionStore : AgentSessionStore {
 
     @Synchronized
     override fun all(): List<AgentSession> = sessions.values.toList()
+
+    @Synchronized
+    override fun delete(id: String): Boolean = sessions.remove(id) != null
 }
 
 fun AgentSession.withStatus(status: AgentStatus, now: Long): AgentSession =
     copy(status = status, updatedAtMillis = now)
+
+fun AgentSession.withTitle(title: String, now: Long): AgentSession =
+    copy(title = title, updatedAtMillis = now)

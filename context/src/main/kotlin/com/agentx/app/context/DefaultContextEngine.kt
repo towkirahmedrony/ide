@@ -84,6 +84,10 @@ class DefaultContextEngine(
             candidates += userRequestItem(request.task, now)
         }
         request.agentState?.let { candidates += agentStateItem(it, now) }
+        request.taskState?.let { candidates += agentStateItem(it, now, id = "agent:task-state") }
+        request.sessionSummary?.takeIf { it.isNotBlank() }?.let { summary ->
+            candidates += sessionSummaryItem(summary, now)
+        }
         snapshot?.let { candidates += workspaceInfoItem(it, now) }
 
         request.toolResults.forEachIndexed { index, result ->
@@ -438,8 +442,27 @@ class DefaultContextEngine(
         createdAtMillis = now,
     )
 
-    private fun agentStateItem(state: ContextAgentState, now: Long): ContextItem = ContextItem(
-        id = "agent:state",
+    private fun sessionSummaryItem(summary: String, now: Long): ContextItem = ContextItem(
+        id = "session:summary",
+        source = ContextSource.AGENT_STATE,
+        content = summary.trim(),
+        priority = ContextPriority.NORMAL,
+        relevance = ContextRelevance.AGENT_STATE,
+        title = "Session memory",
+        metadata = ContextMetadata(
+            reason = "Compact memory of this agent session",
+            selectedBecause = ContextReason.AGENT_STATE,
+            timestampMillis = now,
+        ),
+        createdAtMillis = now,
+    )
+
+    private fun agentStateItem(
+        state: ContextAgentState,
+        now: Long,
+        id: String = "agent:state",
+    ): ContextItem = ContextItem(
+        id = id,
         source = ContextSource.AGENT_STATE,
         content = buildString {
             append("role=").append(state.role ?: "unknown")

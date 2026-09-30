@@ -14,6 +14,9 @@ object ServiceKeys {
     const val MODEL_MANAGER = "forge.model.manager"
     const val AGENT_ORCHESTRATOR = "forge.agent.orchestrator"
     const val AGENT_REGISTRY = "forge.agent.registry"
+    const val AGENT_SESSION_STORE = "forge.agent.sessions"
+    const val AGENT_CONVERSATION_STORE = "forge.agent.conversations"
+    const val AGENT_HISTORY = "forge.agent.history"
 
     /** Central agent system-prompt manager (defaults + user overrides). */
     const val AGENT_PROMPTS = "forge.agent.prompts"
