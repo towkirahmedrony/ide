@@ -514,18 +514,9 @@ fun AgentActivityPanel(
         outcome == AgentTurnOutcome.STOPPED -> ForgeAmber
         else -> ForgeMint
     }
-    val shape = RoundedCornerShape(12.dp)
-
     Column(
         modifier = modifier
-            .fillMaxWidth()
-            .clip(shape)
-            .background(ForgeSurfaceVariant.copy(alpha = 0.55f))
-            .border(
-                1.dp,
-                if (running) ForgeMint.copy(alpha = 0.35f) else ForgeBorder,
-                shape,
-            ),
+            .fillMaxWidth(),
     ) {
         Row(
             modifier = Modifier
@@ -534,7 +525,7 @@ fun AgentActivityPanel(
                     userToggled = true
                     expanded = !expanded
                 }
-                .padding(horizontal = 12.dp, vertical = 10.dp),
+                .padding(vertical = 7.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             when {
@@ -583,7 +574,7 @@ fun AgentActivityPanel(
             )
         }
         AnimatedVisibility(visible = expanded) {
-            Column(modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 10.dp)) {
+            Column(modifier = Modifier.padding(start = 4.dp, end = 4.dp, bottom = 4.dp)) {
                 // The runtime's plan first, then the real execution steps that
                 // carried it out. No plan means no plan block.
                 if (planSteps.isNotEmpty()) {
