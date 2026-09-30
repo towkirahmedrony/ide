@@ -180,10 +180,16 @@ object EndpointResolver {
      */
     internal fun normalizePath(rawPath: String): String {
         if (rawPath.isBlank() || rawPath == "/") return ""
-        var decoded = runCatching { URI(null, null, rawPath, null).path }.getOrNull() ?: rawPath
-        decoded = decoded.trim()
-        val slashCollapsed = decoded.replace(DUPLICATE_SLASHES, "/")
-        val withoutChat = stripChatSuffix(slashCollapsed)
+        // Fold repeated slashes *before* the path is handed to URI(). A path that
+        // starts with "//" is read back as an authority component, so the first
+        // segment would be dropped ("//v1/" came back as "/"). Collapsing first
+        // keeps the parser from reinterpreting the input.
+        val slashCollapsed = rawPath.replace(DUPLICATE_SLASHES, "/").trim()
+        val decoded = runCatching { URI(null, null, slashCollapsed, null).path }
+            .getOrNull()
+            ?.replace(DUPLICATE_SLASHES, "/")
+            ?: slashCollapsed
+        val withoutChat = stripChatSuffix(decoded)
         val segments = withoutChat.split('/').filter { it.isNotEmpty() && it != "." }
         val collapsed = ArrayList<String>(segments.size)
         for (segment in segments) {
