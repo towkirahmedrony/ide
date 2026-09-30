@@ -131,7 +131,12 @@ data class HealthCheckConfig(
     val requireModelInList: Boolean = true,
 ) {
     companion object {
-        const val DEFAULT_TIMEOUT_MILLIS: Long = 6_000
+        /**
+         * Bounds one health request. Right after the app starts, or while a
+         * Colab/ngrok tunnel reconnects, the model list can take a while to
+         * answer, so this must not be tighter than the discovery read timeout.
+         */
+        const val DEFAULT_TIMEOUT_MILLIS: Long = 20_000
         const val DEFAULT_INTERVAL_MILLIS: Long = 30_000
     }
 }

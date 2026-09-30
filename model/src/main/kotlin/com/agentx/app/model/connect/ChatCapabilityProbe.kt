@@ -140,6 +140,12 @@ class ChatCapabilityProbe(
     }
 
     companion object {
-        const val DEFAULT_TIMEOUT_MILLIS: Long = 12_000
+        /**
+         * The probe asks for a single token, but the *first* chat request is what
+         * makes a local runtime load the model into memory. Depending on the
+         * runtime and the model size that takes far longer than generating from a
+         * warm one, so this bounds the load rather than the reply.
+         */
+        const val DEFAULT_TIMEOUT_MILLIS: Long = 60_000
     }
 }

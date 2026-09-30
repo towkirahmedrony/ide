@@ -99,6 +99,21 @@ class EndpointResolverTest {
     }
 
     @Test
+    fun `scheme-less ngrok free dev host becomes https`() {
+        val resolved = ok("armored-fantasy-stuffing.ngrok-free.dev")
+        assertEquals("https://armored-fantasy-stuffing.ngrok-free.dev", resolved.origin)
+    }
+
+    @Test
+    fun `http on an ngrok free dev host is upgraded to https`() {
+        // ngrok-free.dev is the current free-tier domain; without it in the tunnel
+        // list the endpoint stayed http:// and remote validation rejected it.
+        val resolved = ok("http://armored-fantasy-stuffing.ngrok-free.dev")
+        assertEquals("https://armored-fantasy-stuffing.ngrok-free.dev", resolved.origin)
+        assertTrue(resolved.requireHttps)
+    }
+
+    @Test
     fun `localhost is a device-local http endpoint`() {
         val resolved = ok("http://127.0.0.1:11434")
         assertEquals(ModelProviderType.LOCAL_PHONE, resolved.inferredProviderType)

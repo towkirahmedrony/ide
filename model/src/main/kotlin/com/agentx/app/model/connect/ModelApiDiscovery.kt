@@ -63,7 +63,21 @@ sealed interface DiscoveryResult {
  */
 class ModelApiDiscovery(
     private val transport: HttpTransport = UrlConnectionHttpTransport(),
-    private val timeoutMillis: Int = DEFAULT_TIMEOUT_MILLIS,
+    private val connectTimeoutMillis: Int = DEFAULT_CONNECT_TIMEOUT_MILLIS,
+    private val readTimeoutMillis: Int = DEFAULT_READ_TIMEOUT_MILLIS,
+    /**
+     * Extra attempts allowed for a probe that timed out.
+     *
+     * A Colab/ngrok/Cloudflare endpoint can accept the connection and still hold
+     * the very first request while the tunnel finishes coming up: the request
+     * reaches the server *after* the client has already given up, so the server
+     * logs a 200 for a request the app reported as a timeout. One warm-up retry
+     * turns that first-contact stall into a successful connect.
+     */
+    private val timeoutRetries: Int = DEFAULT_TIMEOUT_RETRIES,
+    /** Overall cap for the candidate fan-out, so retries cannot grow unbounded. */
+    private val overallTimeoutMillis: Long = DEFAULT_OVERALL_TIMEOUT_MILLIS,
+    private val clock: () -> Long = System::currentTimeMillis,
 ) {
 
     suspend fun discover(
@@ -97,7 +111,7 @@ class ModelApiDiscovery(
             apiBasePath = spec.apiBasePath,
             reason = spec.kind.displayName,
         )
-        val result = probeCandidate(
+        val result = probeWithWarmUp(
             candidate = candidate,
             protocol = spec.protocol,
             credential = credential,
@@ -157,11 +171,15 @@ class ModelApiDiscovery(
         var last: DiscoveryResult.Failed? = null
         var sawReachableUnsupported = false
         var sawAuth = false
+        val deadline = clock() + overallTimeoutMillis
 
-        for (candidate in candidates) {
+        candidates@ for (candidate in candidates) {
             for (protocol in protocols) {
+                // Always make at least one attempt; the deadline only stops the
+                // fan-out once a real answer exists to report.
+                if (last != null && clock() >= deadline) break@candidates
                 when (
-                    val result = probeCandidate(
+                    val result = probeWithWarmUp(
                         candidate = candidate,
                         protocol = protocol,
                         credential = credential,
@@ -227,8 +245,8 @@ class ModelApiDiscovery(
                     method = "GET",
                     url = url,
                     headers = headers,
-                    connectTimeoutMillis = timeoutMillis,
-                    readTimeoutMillis = timeoutMillis,
+                    connectTimeoutMillis = connectTimeoutMillis,
+                    readTimeoutMillis = readTimeoutMillis,
                 ),
             )
         } catch (cancelled: CancellationException) {
@@ -256,7 +274,7 @@ class ModelApiDiscovery(
             )
             408 -> DiscoveryResult.Failed(
                 kind = DiscoveryFailureKind.TIMEOUT,
-                message = "The model endpoint did not respond in time.",
+                message = TIMEOUT_MESSAGE,
                 httpStatus = 408,
                 reachable = true,
             )
@@ -278,6 +296,35 @@ class ModelApiDiscovery(
                 httpStatus = response.statusCode,
                 reachable = true,
             )
+        }
+    }
+
+    /**
+     * Retries a probe that timed out, within [timeoutRetries].
+     *
+     * Only timeouts are retried: 401/404/429 and the like are real answers and
+     * repeating them would just be noise. The retry exists for the cold-tunnel
+     * case, where the first request is what brings the tunnel up.
+     */
+    private suspend fun probeWithWarmUp(
+        candidate: EndpointResolver.Candidate,
+        protocol: ModelApiProtocol,
+        credential: String?,
+        preferredModelId: String?,
+        catalogPreferred: String?,
+    ): DiscoveryResult {
+        var attempt = 0
+        while (true) {
+            val result = probeCandidate(
+                candidate = candidate,
+                protocol = protocol,
+                credential = credential,
+                preferredModelId = preferredModelId,
+                catalogPreferred = catalogPreferred,
+            )
+            if (result !is DiscoveryResult.Failed || result.kind != DiscoveryFailureKind.TIMEOUT) return result
+            if (attempt >= timeoutRetries) return result
+            attempt++
         }
     }
 
@@ -344,7 +391,7 @@ class ModelApiDiscovery(
     }
 
     private fun transportMessage(error: Throwable): String = when (error) {
-        is SocketTimeoutException -> "The model endpoint did not respond in time."
+        is SocketTimeoutException -> TIMEOUT_MESSAGE
         is UnknownHostException -> "The model endpoint host could not be resolved."
         is ConnectException -> "The model endpoint refused the connection."
         is IOException -> "The model endpoint could not be reached."
@@ -352,6 +399,30 @@ class ModelApiDiscovery(
     }
 
     companion object {
-        const val DEFAULT_TIMEOUT_MILLIS: Int = 8_000
+        /** Reaching the Colab/ngrok/Cloudflare edge. */
+        const val DEFAULT_CONNECT_TIMEOUT_MILLIS: Int = 15_000
+
+        /**
+         * Waiting for the model list. Deliberately larger than the connect
+         * timeout: on first contact a free tunnel can hold the request while it
+         * finishes coming up.
+         */
+        const val DEFAULT_READ_TIMEOUT_MILLIS: Int = 30_000
+
+        const val DEFAULT_TIMEOUT_RETRIES: Int = 1
+
+        /**
+         * Hard cap for trying every candidate/protocol combination, so a
+         * pathological endpoint cannot leave the app in "Discovering API…".
+         */
+        const val DEFAULT_OVERALL_TIMEOUT_MILLIS: Long = 90_000
+
+        /**
+         * Shown before any retry has been exhausted, so it tells the user what
+         * to do rather than only what failed.
+         */
+        private const val TIMEOUT_MESSAGE: String =
+            "The model endpoint did not respond in time. A Colab or ngrok tunnel " +
+                "can be slow on its first request — try again."
     }
 }

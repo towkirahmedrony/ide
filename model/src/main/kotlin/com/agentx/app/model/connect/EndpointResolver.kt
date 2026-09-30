@@ -153,12 +153,7 @@ object EndpointResolver {
         if (uri.scheme.equals("https", ignoreCase = true)) return uri
         if (inferred == ModelProviderType.LOCAL_PHONE) return uri
         val host = uri.host.orEmpty().lowercase()
-        val publicTunnel = host.endsWith(".ngrok-free.app") ||
-            host.endsWith(".ngrok.io") ||
-            host.endsWith(".ngrok.app") ||
-            host.endsWith(".trycloudflare.com") ||
-            host.endsWith(".cfargotunnel.com")
-        if (!publicTunnel) return uri
+        if (PUBLIC_TUNNEL_SUFFIXES.none { host.endsWith(it) }) return uri
         return URI("https", uri.userInfo, uri.host, uri.port, uri.path, uri.query, uri.fragment)
     }
 
@@ -265,6 +260,21 @@ object EndpointResolver {
         if (extra.isEmpty() || extra == "/") return base
         return base + if (extra.startsWith("/")) extra else "/$extra"
     }
+
+    /**
+     * Tunnel hosts that only ever serve TLS, so a typed `http://` is a typo
+     * rather than an intent. `ngrok-free.dev` is the current free-tier domain
+     * and was missing here, which left `http://<x>.ngrok-free.dev` unreachable.
+     */
+    private val PUBLIC_TUNNEL_SUFFIXES = listOf(
+        ".ngrok-free.app",
+        ".ngrok-free.dev",
+        ".ngrok.app",
+        ".ngrok.dev",
+        ".ngrok.io",
+        ".trycloudflare.com",
+        ".cfargotunnel.com",
+    )
 
     private val DUPLICATE_SLASHES = Regex("/{2,}")
     private val PRIVATE_172 = Regex("""^172\.(\d{1,3})\.\d{1,3}\.\d{1,3}$""")

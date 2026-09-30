@@ -110,6 +110,61 @@ class ModelApiDiscoveryTest {
     }
 
     @Test
+    fun `a cold tunnel that times out once is retried and then connects`() = runBlocking {
+        var calls = 0
+        val transport = FakeHttpTransport(
+            executeHandler = { request ->
+                calls++
+                // The first request is what brings a free tunnel up: the app gives
+                // up on it while the server still logs a 200 afterwards.
+                if (calls == 1) throw SocketTimeoutException("read timed out")
+                if (request.url.endsWith("/v1/models")) {
+                    HttpResponseSpec(200, modelsJson("qwen-coder"))
+                } else {
+                    HttpResponseSpec(404, "")
+                }
+            },
+        )
+
+        val result = ModelApiDiscovery(transport).discover("https://host.example")
+
+        val found = assertIs<DiscoveryResult.Found>(result)
+        assertEquals("qwen-coder", found.api.selectedModelId)
+        assertEquals(2, calls)
+    }
+
+    @Test
+    fun `a timeout that survives the retry still explains what to do`() = runBlocking {
+        val transport = FakeHttpTransport()
+        transport.executeHandler = { throw SocketTimeoutException("read timed out") }
+
+        val result = ModelApiDiscovery(transport).discover("https://host.example")
+
+        val failed = assertIs<DiscoveryResult.Failed>(result)
+        assertEquals(DiscoveryFailureKind.TIMEOUT, failed.kind)
+        assertTrue(failed.message.contains("try again"))
+    }
+
+    @Test
+    fun `the overall deadline bounds the candidate fan-out`() = runBlocking {
+        val transport = FakeHttpTransport()
+        transport.executeHandler = { throw SocketTimeoutException("read timed out") }
+        var now = 0L
+
+        val result = ModelApiDiscovery(
+            transport = transport,
+            timeoutRetries = 0,
+            overallTimeoutMillis = 10_000,
+            clock = { now += 6_000; now },
+        ).discover("https://host.example")
+
+        assertEquals(DiscoveryFailureKind.TIMEOUT, assertIs<DiscoveryResult.Failed>(result).kind)
+        // Two candidates times two protocols would be four attempts; the deadline
+        // stops the fan-out instead of letting retries run away.
+        assertEquals(2, transport.requests.size)
+    }
+
+    @Test
     fun `unreachable endpoint is reported cleanly`() = runBlocking {
         val transport = FakeHttpTransport()
         transport.executeHandler = { throw ConnectException("Connection refused") }
