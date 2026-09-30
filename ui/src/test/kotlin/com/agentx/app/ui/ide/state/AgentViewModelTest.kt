@@ -263,7 +263,8 @@ class AgentViewModelTest {
 
         val tool = assertNotNull(vm.uiState.messages.single { it.kind == ChatMessageKind.TOOL }.tool)
         assertEquals(ToolRunStatus.FAILED, tool.status)
-        assertEquals(AgentActivityStatus.TOOL_FAILURE, vm.uiState.activity.status)
+        val assistant = vm.uiState.messages.last { it.kind == ChatMessageKind.ASSISTANT }
+        assertEquals(ActivityItemStatus.FAILED, assistant.activities.single().status)
     }
 
     // ───────────────────────────── Composer guards ─────────────────────────────
