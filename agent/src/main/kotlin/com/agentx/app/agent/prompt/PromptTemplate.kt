@@ -50,8 +50,15 @@ data class PromptResolution(
  */
 object PromptTemplate {
 
-    /** `{{name}}` with optional surrounding whitespace. */
-    private val TOKEN = Regex("""\{\{\s*([A-Za-z0-9_]+)\s*}}""")
+    /**
+     * `{{name}}` with optional surrounding whitespace.
+     *
+     * Both braces are deliberately escaped. Android's regex engine is ICU4C, which
+     * requires a literal `}` to be escaped; desktop Java/Kotlin silently accepts a
+     * bare `}`, so an unescaped closing brace compiles in JVM unit tests and then
+     * throws `PatternSyntaxException` on device.
+     */
+    private val TOKEN = Regex("""\{\{\s*([A-Za-z0-9_]+)\s*\}\}""")
 
     /** Variables the Settings UI documents, resolved by the app when available. */
     val SUPPORTED: List<SupportedPromptVariable> = listOf(
