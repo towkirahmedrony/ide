@@ -8,7 +8,6 @@ import com.agentx.app.agent.domain.AgentEventSink
 import com.agentx.app.agent.domain.AgentResult
 import com.agentx.app.agent.domain.AgentRole
 import com.agentx.app.agent.domain.AgentStatus
-import com.agentx.app.agent.domain.AgentStep
 import com.agentx.app.agent.domain.AgentStepStats
 import com.agentx.app.agent.domain.PermissionLevel
 import com.agentx.app.agent.domain.PendingPermission
@@ -183,7 +182,6 @@ class AgentLoop(
         val filesInspected = mutableListOf<String>()
         val filesChanged = mutableListOf<String>()
         val errors = mutableListOf<AgentError>()
-        val steps = mutableListOf<AgentStep>()
         val output = StringBuilder()
         var modelCalls = 0
         var toolCalls = 0
@@ -284,14 +282,6 @@ class AgentLoop(
             }
 
             stepIndex += 1
-            val step = AgentStep(
-                index = stepIndex,
-                title = "Model step $stepIndex",
-                role = request.definition.role,
-                status = AgentStatus.RUNNING,
-            )
-            steps += step
-            sink.emit(AgentEvent.StepProgress(request.sessionId, step, clock()))
             sink.emit(
                 AgentEvent.StatsUpdated(
                     request.sessionId,
@@ -305,9 +295,6 @@ class AgentLoop(
                     complete(request.modelConfig, context.messages(), toolSpecs, sink, request.sessionId),
                 )
             } catch (timeout: TimeoutCancellationException) {
-                // A model request that ran past its own budget is a recoverable
-                // agent error, not a user cancellation: report it as a timeout so
-                // it can never be confused with Stop/Cancel.
                 val agentError = modelTimeout(timeout, request)
                 errors += agentError
                 sink.emit(AgentEvent.Failed(request.sessionId, agentError, clock()))
@@ -386,8 +373,6 @@ class AgentLoop(
                         sink = sink,
                     )
                 }
-                // Structured tool call straight from the Model Gateway: the raw
-                // request is surfaced before any validation or routing happens.
                 sink.emit(
                     AgentEvent.ToolRequested(
                         sessionId = request.sessionId,
@@ -449,9 +434,6 @@ class AgentLoop(
                         )
                         when (outcome) {
                             is ToolOutcome.Paused -> {
-                                // Park the call and end this run in a
-                                // WAITING_FOR_PERMISSION state; the orchestrator
-                                // resumes with the user's decision later.
                                 sink.emit(
                                     AgentEvent.PermissionRequested(
                                         sessionId = request.sessionId,
@@ -522,11 +504,6 @@ class AgentLoop(
         return finished
     }
 
-    /**
-     * Executes one tool call strictly through the scoped router: allow-list and
-     * permission-ceiling check, then permission policy, then executor. Tool
-     * failures are captured as data; they never crash the loop.
-     */
     private suspend fun handleTool(
         request: AgentLoopRequest,
         call: ModelToolCall,
@@ -570,7 +547,6 @@ class AgentLoop(
                 timestampMillis = clock(),
             ),
         )
-        // A denied resume never reaches the tool: the decision is final.
         if (forcedApproval == false) {
             val message = "The user denied '${call.name}'"
             errors += AgentError(
@@ -592,7 +568,6 @@ class AgentLoop(
             )
             return ToolOutcome.Completed("ERROR: $message", success = false)
         }
-        // The call cleared the scope and permission layers; it is about to execute.
         sink.emit(
             AgentEvent.ToolProgress(
                 sessionId = request.sessionId,
@@ -602,9 +577,6 @@ class AgentLoop(
                 timestampMillis = clock(),
             ),
         )
-        // Each tool gets the budget its own category deserves — a file read and a
-        // Gradle build must not share one constant. An explicitly supplied
-        // per-call budget is never overridden.
         val callContext = context.copy(
             timeoutMillis = context.timeoutMillis ?: toolTimeout(call.name),
             approval = if (forcedApproval == true) {
@@ -620,8 +592,6 @@ class AgentLoop(
                 context = callContext,
             )
         } catch (cancelled: CancellationException) {
-            // A tool interrupted mid-flight is reported as cancelled, then the
-            // cancellation is re-thrown so the orchestrator can finish the run.
             sink.emit(
                 AgentEvent.ToolCancelled(
                     sessionId = request.sessionId,
@@ -633,7 +603,6 @@ class AgentLoop(
             )
             throw cancelled
         } catch (error: Throwable) {
-            // A misbehaving tool must never take down the orchestration.
             ToolResult.Failure(
                 toolName = call.name,
                 error = ToolExecutionError(
@@ -682,8 +651,6 @@ class AgentLoop(
             }
 
             is ToolResult.ApprovalRequired -> {
-                // Not an error: the call is parked for the user to decide and
-                // the loop ends in WAITING_FOR_PERMISSION.
                 return ToolOutcome.Paused(
                     PendingPermission(
                         toolName = call.name,
@@ -768,7 +735,7 @@ class AgentLoop(
                 success = false,
             )
         }
-        val childId = AgentIds.newId()
+        val childId = com.agentx.app.agent.runtime.AgentIds.newId()
         val childRequest = SubAgentRequest(
             role = role,
             task = task,
@@ -843,11 +810,6 @@ class AgentLoop(
         )
     }
 
-    /**
-     * The central budget for [toolName], chosen from its declared category and
-     * capabilities. An unknown tool gets the generic tool budget, never a short
-     * default.
-     */
     private fun toolTimeout(toolName: String): Long {
         val definition = bridge.definitionsFor(listOf(toolName)).firstOrNull()
         return ToolTimeouts.forCall(
@@ -857,7 +819,6 @@ class AgentLoop(
         )
     }
 
-    /** Maps a tool outcome onto the status the Context Engine records for it. */
     private fun statusOf(success: Boolean): ToolContextStatus =
         if (success) ToolContextStatus.SUCCESS else ToolContextStatus.FAILURE
 
@@ -932,7 +893,6 @@ class AgentLoop(
         )
     }
 
-    /** A model request that exceeded its own budget; distinct from a cancellation. */
     private fun modelTimeout(error: TimeoutCancellationException, request: AgentLoopRequest): AgentError =
         AgentError(
             code = AgentErrorCode.TIMEOUT,
@@ -966,13 +926,6 @@ class AgentLoop(
         )
     }
 
-    /**
-     * Sends one request through the Model Gateway. Provider-agnostic: the
-     * request carries only gateway types (config, messages, tool specs). When
-     * the model config enables streaming, text deltas are surfaced to the UI
-     * as [AgentEvent.OutputDelta] while the final response is still returned
-     * as a single normalized [ModelResponse].
-     */
     private suspend fun complete(
         config: ModelConfig,
         messages: List<ModelMessage>,
@@ -998,8 +951,6 @@ class AgentLoop(
                 val delta = event as? ModelStreamEvent.TextDelta
                 if (delta != null && delta.text.isNotEmpty()) {
                     streamed.append(delta.text)
-                    // Hold JSON-shaped deltas until the completed response is known
-                    // not to be a tool call, so tool-call JSON never reaches the chat.
                     if (withheld || shouldWithholdStreaming(streamed.toString())) {
                         withheld = true
                     } else {
@@ -1029,10 +980,6 @@ class AgentLoop(
         }
     }
 
-    /**
-     * True when [text] looks like a JSON / fenced payload that may turn into a
-     * tool call. User-facing prose is streamed immediately.
-     */
     private fun shouldWithholdStreaming(text: String): Boolean {
         if (ContentToolCallParser.parse(text).isNotEmpty()) return true
         if (ContentToolCallParser.isLikelyToolCallText(text)) return true
@@ -1077,11 +1024,6 @@ class AgentLoop(
         }
     }
 
-    /**
-     * Resolves the role's active system prompt through the PromptManager.
-     * Falls back to the definition's built-in instructions when no manager is
-     * wired or resolution fails, so an agent is never left without a prompt.
-     */
     private suspend fun resolveBasePrompt(request: AgentLoopRequest): String {
         val manager = prompts ?: return request.definition.systemInstructions
         return runCatching { manager.resolve(request.definition.role, request.promptVariables).text }
@@ -1089,10 +1031,6 @@ class AgentLoop(
             .ifBlank { request.definition.systemInstructions }
     }
 
-    /**
-     * Resolves the enabled skills for this role as budgeted, structured context.
-     * Failures degrade to "no skills" rather than breaking the run.
-     */
     private suspend fun resolveSkillContext(request: AgentLoopRequest): String {
         val resolver = skillContext ?: return ""
         return runCatching { resolver.resolve(request.definition.role.name, request.contextBudget).rendered }
@@ -1115,8 +1053,6 @@ class AgentLoop(
                 append("\nThis task is about the workspace. Inspect it with the filesystem tools before answering.")
                 append("\nDo not guess the project type or invent files; list the workspace first.")
             } else {
-                // The user said "Hi", not "describe my project": no inspection is
-                // ordered, and the agent is told not to volunteer one.
                 append("\nThis message is not about the workspace. Reply conversationally.")
                 append("\nDo not list, read or summarise the project unless the user asks about it.")
             }
