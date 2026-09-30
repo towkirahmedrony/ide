@@ -468,6 +468,14 @@ class AgentViewModel(
                     setActivity(AgentActivityStatus.TOOL_FAILURE, "Tool failed · ${event.toolName}")
                 }
             }
+            
+            is AgentStreamEvent.OutputDelta -> {
+                appendActivityOutput(assistantId, event.text)
+            }
+
+            is AgentStreamEvent.ToolProgress -> {
+                updateActivityDetail(assistantId, event.toolName, event.detail)
+            }
 
             is AgentStreamEvent.PermissionRequired -> {
                 uiState = uiState.copy(
@@ -818,6 +826,53 @@ class AgentViewModel(
         val list = withContext(ioDispatcher) { session.listSessions() }
         val activeId = uiState.activeSessionId
         uiState = uiState.copy(sessions = list.map { info -> info.toUiModel(activeId) })
+    }
+
+    private fun appendActivityOutput(assistantId: String, text: String) {
+        if (text.isEmpty()) return
+        uiState = uiState.copy(
+            messages = uiState.messages.map { message ->
+                if (message.id != assistantId) {
+                    message
+                } else {
+                    val activities = message.activities.toMutableList()
+                    val index = activities.indexOfLast { it.status == ActivityItemStatus.ACTIVE }
+                    if (index < 0) {
+                        message
+                    } else {
+                        val currentText = activities[index].outputLines.joinToString("\n")
+                        val newText = currentText + text
+                        activities[index] = activities[index].copy(
+                            outputLines = AgentChatPresentation.outputLines(
+                                AgentChatPresentation.redactOutput(newText)
+                            )
+                        )
+                        message.copy(activities = activities)
+                    }
+                }
+            }
+        )
+    }
+
+    private fun updateActivityDetail(assistantId: String, toolName: String, detail: String) {
+        uiState = uiState.copy(
+            messages = uiState.messages.map { message ->
+                if (message.id != assistantId) {
+                    message
+                } else {
+                    val activities = message.activities.toMutableList()
+                    val index = activities.indexOfLast { it.toolName == toolName && it.status == ActivityItemStatus.ACTIVE }
+                    if (index < 0) {
+                        message
+                    } else {
+                        val clean = AgentChatPresentation.sanitizeToolDetail(detail)
+                        val subject = AgentChatPresentation.toolSubject(toolName, clean)
+                        activities[index] = activities[index].copy(detail = subject ?: clean)
+                        message.copy(activities = activities)
+                    }
+                }
+            }
+        )
     }
 
     private companion object {
