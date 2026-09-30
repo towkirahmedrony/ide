@@ -1038,7 +1038,7 @@ private fun AgentAvatar() {
 @Composable
 private fun MessageTimestamp(timestampMillis: Long?) {
     timestampMillis?.let {
-        MetaText(AgentChatPresentation.formatTimestamp(it))
+        MetaText(AgentChatPresentation.formatClockTime(it))
     }
 }
 
