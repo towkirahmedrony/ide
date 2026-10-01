@@ -88,6 +88,13 @@ interface ModelManager {
     /** The config the agent should use, or null when no model is online. */
     fun activeConfig(): ModelConfig?
 
+    /**
+     * Every connected provider's configuration, keyed by provider identity, so a
+     * role can resolve a provider that is simultaneously connected beside the
+     * active one. Empty when nothing is online.
+     */
+    fun connections(): Map<String, ModelConfig> = emptyMap()
+
     /** Called by the Model Runner browser; records session state only. */
     fun onRunnerSessionChanged(presetId: String, attached: Boolean)
 

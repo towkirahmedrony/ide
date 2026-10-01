@@ -25,6 +25,7 @@ import com.agentx.app.core.module.ForgeModule
 import com.agentx.app.core.module.ModuleContext
 import com.agentx.app.model.DefaultModelGateway
 import com.agentx.app.model.ModelGateway
+import com.agentx.app.model.manager.ModelManager
 import com.agentx.app.skills.SkillManager
 import com.agentx.app.tools.DefaultToolRegistry
 import com.agentx.app.tools.DefaultToolRouter
@@ -58,6 +59,12 @@ class AgentModule(
             ?: InMemoryAgentSessionStore()
         val conversationStore = context.services.get<ConversationStore>(ServiceKeys.AGENT_CONVERSATION_STORE)
             ?: InMemoryConversationStore()
+        // The Model Manager owns the live provider connections. Reading them
+        // through this lambda (rather than a snapshot) lets a role resolve its
+        // own provider as soon as that provider is connected, beside the active
+        // one. When no manager is registered the resolver sees no connections
+        // and every role falls back to the active model, exactly as before.
+        val modelManager = context.services.get<ModelManager>(ServiceKeys.MODEL_MANAGER)
         val assembled = assemble(
             gateway = gateway,
             registry = registry,
@@ -72,7 +79,10 @@ class AgentModule(
             conversations = conversationStore,
             // The app boots with the target role → model mapping in place; every
             // role falls back to the active model until its provider is connected.
-            modelResolver = AgentModelResolver(AgentModelPreferences.DEFAULT),
+            modelResolver = AgentModelResolver(
+                preferences = AgentModelPreferences.DEFAULT,
+                connections = { modelManager?.connections().orEmpty() },
+            ),
         )
         context.services.register(ServiceKeys.AGENT_ORCHESTRATOR, assembled.orchestrator)
         context.services.register(ServiceKeys.AGENT_REGISTRY, assembled.specialized)

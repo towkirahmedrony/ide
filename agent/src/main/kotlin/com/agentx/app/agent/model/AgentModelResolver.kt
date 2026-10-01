@@ -3,6 +3,7 @@ package com.agentx.app.agent.model
 import com.agentx.app.agent.domain.AgentDefinition
 import com.agentx.app.agent.domain.AgentRole
 import com.agentx.app.model.ModelConfig
+import com.agentx.app.model.preset.ModelProviderIds
 
 /**
  * Logical provider identifiers the role → model mapping refers to.
@@ -13,9 +14,17 @@ import com.agentx.app.model.ModelConfig
  * request, so a role may name a provider that is not connected yet.
  */
 object AgentModelProviders {
-    const val GEMINI = "gemini"
-    const val GROQ = "groq"
-    const val OPENAI_COMPATIBLE_LOCAL = "openai-compatible-local"
+    const val GEMINI = ModelProviderIds.GEMINI
+    const val GROQ = ModelProviderIds.GROQ
+    const val OPENAI_COMPATIBLE = ModelProviderIds.OPENAI_COMPATIBLE
+
+    /**
+     * The local model runtime (for example Qwen 2.5 Coder). It shares the
+     * [OPENAI_COMPATIBLE] identity: one provider family, distinguished per
+     * connection by its endpoint and model. Kept as an alias so the Phase 1
+     * role mapping and its tests keep compiling unchanged.
+     */
+    const val OPENAI_COMPATIBLE_LOCAL = ModelProviderIds.OPENAI_COMPATIBLE
 }
 
 /** Model identifiers the target role mapping asks for. */

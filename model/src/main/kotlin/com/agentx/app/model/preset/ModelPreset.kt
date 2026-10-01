@@ -189,6 +189,14 @@ data class ModelPreset(
     /** Whether the preset contains a usable connection description. */
     val isConfigured: Boolean get() = validate().isEmpty()
 
+    /**
+     * Stable provider identity this preset connects as, used by
+     * [com.agentx.app.model.ModelConfig.providerId] so several providers can be
+     * registered at once without one replacing another. Derived from the saved
+     * [setupKind]/[apiProtocol]; nothing new is persisted.
+     */
+    val providerId: String get() = ModelProviderIds.forPreset(setupKind, apiProtocol)
+
     /** Normalized API base path (may be empty when the endpoint already has one). */
     val normalizedApiBasePath: String get() = normalizePath(apiBasePath)
 

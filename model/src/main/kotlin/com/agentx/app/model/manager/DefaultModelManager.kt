@@ -196,16 +196,18 @@ class DefaultModelManager(
         val result = io { repository.update(preset.copy(credentialRef = ref)) }
         result.valueOrNull()?.let { stored ->
             // Connection-relevant edits invalidate an existing connection; say so
-            // instead of silently keeping a stale endpoint.
-            if (registry.activePresetId() == stored.id) {
+            // instead of silently keeping a stale endpoint. Only this preset's
+            // connection is dropped — a different provider stays connected.
+            if (registry.isConnected(stored.id)) {
+                val wasActive = registry.activePresetId() == stored.id
                 registry.disconnect(stored.id)
-                stopMonitor()
+                if (wasActive) stopMonitor()
                 runnerFor(stored)?.markStale(
                     stored.id,
                     "Configuration changed — start the model again to reconnect",
                     ModelLifecycleState.STOPPED,
                 )
-                mutableState.update { it.copy(activeConfig = null) }
+                mutableState.update { it.copy(activeConfig = registry.activeConfig()) }
             }
             reloadPresets()
         }
@@ -220,11 +222,7 @@ class DefaultModelManager(
 
         existing.credentialRef?.let { ref -> io { secretStore.remove(ref) } }
         runners.forEach { it.forget(id) }
-        if (registry.activePresetId() == id) {
-            registry.disconnect(id)
-            stopMonitor()
-            mutableState.update { it.copy(activeConfig = null) }
-        }
+        releaseConnection(existing)
         mutableState.update { it.copy(statuses = it.statuses - id) }
         reloadPresets()
         return success(Unit)
@@ -287,6 +285,8 @@ class DefaultModelManager(
         }
 
     override fun activeConfig(): ModelConfig? = mutableState.value.activeConfig
+
+    override fun connections(): Map<String, ModelConfig> = registry.connections()
 
     override fun onRunnerSessionChanged(presetId: String, attached: Boolean) {
         // Purely informational: the Model Runner browser is a control surface for
@@ -363,10 +363,11 @@ class DefaultModelManager(
     }
 
     private fun releaseConnection(preset: ModelPreset) {
-        if (registry.activePresetId() != preset.id) return
+        val wasActive = registry.activePresetId() == preset.id
         registry.disconnect(preset.id)
-        stopMonitor()
-        mutableState.update { it.copy(activeConfig = null) }
+        if (wasActive) stopMonitor()
+        // Another provider may still be connected; only its own connection is gone.
+        mutableState.update { it.copy(activeConfig = registry.activeConfig()) }
     }
 
     private fun startMonitor(preset: ModelPreset) {
