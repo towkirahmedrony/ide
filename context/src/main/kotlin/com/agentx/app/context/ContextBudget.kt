@@ -37,6 +37,15 @@ data class ContextBudget(
     val maxSkillItems: Int = DEFAULT_MAX_SKILL_ITEMS,
     /** Maximum characters kept from one skill's instructions. */
     val maxSkillChars: Int = DEFAULT_MAX_SKILL_CHARS,
+    /**
+     * Maximum characters the whole skill block may occupy.
+     *
+     * The skill block is appended to the system instruction, so it is bounded
+     * separately from the general context ceiling: a long list of skills can
+     * never grow the system prompt past what the model was configured for. The
+     * effective limit is the smaller of this and [charLimit].
+     */
+    val maxSkillTotalChars: Int = DEFAULT_MAX_SKILL_TOTAL_CHARS,
 ) {
 
     /** Effective character ceiling, honoring both the char and token limits. */
@@ -74,6 +83,7 @@ data class ContextBudget(
         if (maxConversationChars <= 0) problems += "maxConversationChars must be positive"
         if (maxSkillItems < 0) problems += "maxSkillItems must not be negative"
         if (maxSkillChars <= 0) problems += "maxSkillChars must be positive"
+        if (maxSkillTotalChars <= 0) problems += "maxSkillTotalChars must be positive"
         return problems
     }
 
@@ -91,6 +101,12 @@ data class ContextBudget(
         const val DEFAULT_MAX_CONVERSATION_CHARS = 24_000
         const val DEFAULT_MAX_SKILL_ITEMS = 6
         const val DEFAULT_MAX_SKILL_CHARS = 2_500
+
+        /**
+         * Whole-block skill ceiling. A quarter of the default context, so skills
+         * stay a supporting instruction set rather than the bulk of the prompt.
+         */
+        const val DEFAULT_MAX_SKILL_TOTAL_CHARS = 12_000
 
         /** Rough size of one rendered directory entry. */
         private const val AVERAGE_DIRECTORY_ENTRY_CHARS = 64

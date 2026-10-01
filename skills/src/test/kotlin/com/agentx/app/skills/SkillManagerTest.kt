@@ -188,4 +188,66 @@ class SkillManagerTest {
         val refresh = manager.refresh()
         assertEquals(listOf("builtin", "global", "good-one").sorted(), refresh.installed.map { it.id }.sorted())
     }
+
+    // --- Main Agent assignment ---------------------------------------------
+
+    @Test
+    fun `MAIN is a valid skill target`() = run {
+        val manager = newManager()
+        manager.refresh()
+        manager.setEnabled("builtin", true)
+
+        manager.setRoles("builtin", setOf("MAIN"))
+
+        assertEquals(setOf("MAIN"), manager.rolesOf("builtin"))
+        assertEquals(listOf("builtin"), manager.resolveForAgent("MAIN").map { it.id })
+        // The role set is now exactly MAIN, so the previous CODER assignment is gone.
+        assertTrue(manager.resolveForAgent("CODER").none { it.id == "builtin" })
+    }
+
+    @Test
+    fun `a skill assigned to MAIN persists across manager instances`() = run {
+        val store = InMemorySkillStore()
+        val first = newManager(store = store)
+        first.refresh()
+        first.setEnabled("builtin", true)
+        first.setRoles("builtin", setOf("MAIN"))
+
+        val second = newManager(store = store)
+        second.refresh()
+
+        assertTrue(second.isEnabled("builtin"))
+        assertEquals(setOf("MAIN"), second.rolesOf("builtin"))
+        assertEquals(listOf("builtin"), second.resolveForAgent("MAIN").map { it.id })
+        assertTrue(second.resolveForAgent("REVIEWER").none { it.id == "builtin" })
+    }
+
+    @Test
+    fun `assigning MAIN leaves other roles and globals untouched`() = run {
+        val store = InMemorySkillStore()
+        val manager = newManager(store = store)
+        manager.refresh()
+        manager.setEnabled("builtin", true)
+        manager.setEnabled("global", true)
+        manager.setRoles("builtin", setOf("CODER"))
+
+        manager.setRoles("builtin", setOf("MAIN"))
+
+        // The global skill keeps applying to every agent, MAIN included.
+        assertTrue(manager.resolveForAgent("MAIN").any { it.id == "global" })
+        assertTrue(manager.resolveForAgent("CODER").any { it.id == "global" })
+        // And no other role gained the newly MAIN-assigned skill.
+        assertEquals(setOf("builtin", "global"), manager.resolveForAgent("MAIN").map { it.id }.toSet())
+        assertEquals(listOf("global"), manager.resolveForAgent("REVIEWER").map { it.id })
+    }
+
+    @Test
+    fun `a disabled skill never resolves for MAIN`() = run {
+        val manager = newManager()
+        manager.refresh()
+        manager.setRoles("builtin", setOf("MAIN"))
+
+        assertTrue(manager.resolveForAgent("MAIN").isEmpty())
+        assertEquals(setOf("MAIN"), manager.rolesOf("builtin"))
+    }
 }

@@ -22,6 +22,7 @@ import com.agentx.app.agent.tools.intOrNull
 import com.agentx.app.agent.tools.stringOrNull
 import com.agentx.app.context.ContextBudget
 import com.agentx.app.context.RunContextFactory
+import com.agentx.app.context.SkillContext
 import com.agentx.app.context.SkillContextResolver
 import com.agentx.app.context.ToolContextStatus
 import com.agentx.app.model.ContentToolCallParser
@@ -164,16 +165,25 @@ class AgentLoop(
         // the loop only drives them. [context.messages] is the budgeted,
         // model-ready form of that context.
         val context = runContexts.create(request.sessionId, request.contextBudget)
+        // Resolved once per run, never per loop iteration: the system instruction
+        // must stay identical for every model call of this run.
+        val basePrompt = resolveBasePrompt(request)
+        val skillContext = resolveSkillContext(request)
+        val systemPrompt = buildSystemPrompt(
+            request = request,
+            basePrompt = basePrompt.text,
+            skillBlock = skillContext.rendered,
+        )
+        logPromptAssembly(request, basePrompt, skillContext, systemPrompt)
         if (request.resumeContext.isNotEmpty()) {
             // Resuming a run that paused for a permission: restore the saved
-            // conversation instead of a fresh system+user seed.
+            // conversation and keep its tool/call state, but refresh the system
+            // instruction so a Main Agent prompt or skill change made while the
+            // run was paused reaches the next model request. Exactly one system
+            // message survives, still first.
             context.restore(request.resumeContext)
+            context.updateSystemPrompt(systemPrompt)
         } else {
-            val systemPrompt = buildSystemPrompt(
-                request = request,
-                basePrompt = resolveBasePrompt(request),
-                skillBlock = resolveSkillContext(request),
-            )
             context.start(systemPrompt, buildUserPrompt(request))
         }
 
@@ -1024,17 +1034,50 @@ class AgentLoop(
         }
     }
 
-    private suspend fun resolveBasePrompt(request: AgentLoopRequest): String {
-        val manager = prompts ?: return request.definition.systemInstructions
-        return runCatching { manager.resolve(request.definition.role, request.promptVariables).text }
-            .getOrDefault(request.definition.systemInstructions)
-            .ifBlank { request.definition.systemInstructions }
+    /** The system instruction of a run plus the layer that supplied it. */
+    private data class BasePrompt(val text: String, val source: String)
+
+    private suspend fun resolveBasePrompt(request: AgentLoopRequest): BasePrompt {
+        val fallback = request.definition.systemInstructions
+        val manager = prompts ?: return BasePrompt(fallback, PROMPT_SOURCE_DEFINITION)
+        return runCatching {
+            val resolved = manager.resolve(request.definition.role, request.promptVariables)
+            BasePrompt(
+                text = resolved.text.ifBlank { fallback },
+                source = if (resolved.text.isBlank()) PROMPT_SOURCE_DEFINITION else resolved.source.name,
+            )
+        }.getOrDefault(BasePrompt(fallback, PROMPT_SOURCE_DEFINITION))
     }
 
-    private suspend fun resolveSkillContext(request: AgentLoopRequest): String {
-        val resolver = skillContext ?: return ""
-        return runCatching { resolver.resolve(request.definition.role.name, request.contextBudget).rendered }
-            .getOrDefault("")
+    private suspend fun resolveSkillContext(request: AgentLoopRequest): SkillContext {
+        val resolver = skillContext ?: return SkillContext.EMPTY
+        return runCatching { resolver.resolve(request.definition.role.name, request.contextBudget) }
+            .getOrDefault(SkillContext.EMPTY)
+    }
+
+    /**
+     * Records what this run's system instruction is made of: which layer supplied
+     * the prompt, how large each part is, and how every installed skill was
+     * resolved (included, shortened, or withheld and why).
+     *
+     * Skill ids, statuses and sizes only — no instruction text is ever logged.
+     */
+    private fun logPromptAssembly(
+        request: AgentLoopRequest,
+        basePrompt: BasePrompt,
+        skills: SkillContext,
+        systemPrompt: String,
+    ) {
+        val fields = linkedMapOf<String, Any?>(
+            "sessionId" to request.sessionId,
+            "role" to request.definition.role.name,
+            "resuming" to request.resumeContext.isNotEmpty(),
+            "promptSource" to basePrompt.source,
+            "promptChars" to basePrompt.text.length,
+            "systemPromptChars" to systemPrompt.length,
+        )
+        fields.putAll(skills.diagnosticFields())
+        logger.info("System prompt assembled", fields)
     }
 
     private fun buildSystemPrompt(
@@ -1078,5 +1121,10 @@ class AgentLoop(
             append("\n\nScoped context:\n")
             append(request.scopedContext.trim())
         }
+    }
+
+    private companion object {
+        /** The instruction came from the agent definition, with no prompt manager wired. */
+        const val PROMPT_SOURCE_DEFINITION = "definition-default"
     }
 }

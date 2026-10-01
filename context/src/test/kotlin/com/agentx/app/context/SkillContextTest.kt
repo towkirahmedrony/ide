@@ -96,4 +96,157 @@ class SkillContextTest {
         assertTrue(item.truncated, "expected the skill body to be truncated")
         assertTrue(item.chars <= 400, "kept ${item.chars} characters")
     }
+
+    // --- Main Agent delivery -----------------------------------------------
+
+    @Test
+    fun `a skill assigned to MAIN reaches the main agent context`() = run {
+        val manager = manager(skill("main-rules", roles = setOf("MAIN")))
+        manager.setEnabled("main-rules", true)
+        val provider = SkillContextProvider(manager, DefaultContextEngine())
+
+        val context = provider.resolve("MAIN", ContextBudget.DEFAULT)
+
+        assertEquals(listOf("skill:main-rules"), context.items.map { it.id })
+        assertTrue(context.rendered.contains("follow the main-rules instructions"))
+        assertEquals("MAIN", context.items.single().metadata.attribute("targetAgent"))
+        assertEquals(
+            listOf(SkillContextStatus.INCLUDED),
+            context.entries.map { it.status },
+        )
+    }
+
+    @Test
+    fun `an unassigned enabled skill is reported, not silently dropped`() = run {
+        val manager = manager(skill("other-role", roles = setOf("REVIEWER")))
+        manager.setEnabled("other-role", true)
+        val provider = SkillContextProvider(manager, DefaultContextEngine())
+
+        val context = provider.resolve("MAIN", ContextBudget.DEFAULT)
+
+        assertTrue(context.isEmpty)
+        assertEquals(SkillContextStatus.NOT_ASSIGNED, context.entries.single().status)
+        assertTrue(context.entries.single().reason.contains("REVIEWER"))
+        assertEquals(1, context.count(SkillContextStatus.NOT_ASSIGNED))
+    }
+
+    @Test
+    fun `a disabled skill assigned to MAIN is reported as disabled`() = run {
+        val manager = manager(skill("main-rules", roles = setOf("MAIN")))
+        val provider = SkillContextProvider(manager, DefaultContextEngine())
+
+        val context = provider.resolve("MAIN", ContextBudget.DEFAULT)
+
+        assertTrue(context.isEmpty)
+        assertEquals(SkillContextStatus.DISABLED, context.entries.single().status)
+        assertEquals("disabled in Settings", context.entries.single().reason)
+    }
+
+    @Test
+    fun `a global skill reaches MAIN`() = run {
+        val manager = manager(skill("everywhere", roles = emptySet()))
+        manager.setEnabled("everywhere", true)
+        val provider = SkillContextProvider(manager, DefaultContextEngine())
+
+        assertEquals(listOf("skill:everywhere"), provider.resolve("MAIN", ContextBudget.DEFAULT).items.map { it.id })
+    }
+
+    // --- Overflow is observable --------------------------------------------
+
+    @Test
+    fun `a skill over the count limit is excluded with an explicit reason`() = run {
+        val manager = manager(
+            skill("a", roles = setOf("MAIN")),
+            skill("b", roles = setOf("MAIN")),
+            skill("c", roles = setOf("MAIN")),
+        )
+        listOf("a", "b", "c").forEach { manager.setEnabled(it, true) }
+        val provider = SkillContextProvider(manager, DefaultContextEngine())
+
+        val context = provider.resolve("MAIN", ContextBudget(maxSkillItems = 1))
+
+        assertEquals(1, context.items.size)
+        assertEquals(2, context.count(SkillContextStatus.EXCLUDED_DUE_TO_LIMIT))
+        assertTrue(context.withheld.all { it.reason.contains("skill limit reached") })
+    }
+
+    @Test
+    fun `a skill over the block ceiling is excluded due to budget`() = run {
+        val manager = manager(
+            skill("long", roles = setOf("MAIN"), instructions = "line of instructions\n".repeat(200)),
+        )
+        manager.setEnabled("long", true)
+        val provider = SkillContextProvider(manager, DefaultContextEngine())
+
+        val context = provider.resolve("MAIN", ContextBudget(maxSkillChars = 20_000, maxSkillTotalChars = 200))
+
+        assertTrue(context.isEmpty, "the block ceiling is the only limit that can hold the skill back")
+        assertEquals(SkillContextStatus.EXCLUDED_DUE_TO_BUDGET, context.entries.single().status)
+        assertEquals(0, context.entries.single().keptChars)
+    }
+
+    @Test
+    fun `the skill block never exceeds the block ceiling`() = run {
+        val manager = manager(
+            *Array(8) { index -> skill("skill-$index", roles = setOf("MAIN"), instructions = "y".repeat(3_000)) },
+        )
+        (0..7).forEach { manager.setEnabled("skill-$it", true) }
+        val provider = SkillContextProvider(manager, DefaultContextEngine())
+
+        val context = provider.resolve("MAIN", ContextBudget(maxSkillTotalChars = 5_000))
+
+        assertTrue(context.usedChars <= 5_000, "skill block used ${context.usedChars} characters")
+        assertEquals(8, context.entries.size, "every installed skill must be accounted for")
+        assertTrue(context.entries.all { it.reason.isNotBlank() }, "every outcome needs a reason")
+        assertEquals(8, context.count(SkillContextStatus.INCLUDED) + context.count(SkillContextStatus.TRUNCATED) +
+            context.count(SkillContextStatus.EXCLUDED_DUE_TO_LIMIT) + context.count(SkillContextStatus.EXCLUDED_DUE_TO_BUDGET))
+    }
+
+    @Test
+    fun `an invalid skill is reported as invalid`() = run {
+        val broken = skill("broken", roles = setOf("MAIN")).copy(problems = listOf("front matter is missing a 'name'"))
+        val manager = manager(broken)
+        manager.setEnabled("broken", true)
+        val provider = SkillContextProvider(manager, DefaultContextEngine())
+
+        val context = provider.resolve("MAIN", ContextBudget.DEFAULT)
+
+        assertTrue(context.isEmpty)
+        assertEquals(SkillContextStatus.INVALID, context.entries.single().status)
+    }
+
+    @Test
+    fun `exclusion and truncation are deterministic`() = run {
+        val manager = manager(
+            skill("a", roles = setOf("MAIN"), instructions = "a-line\n".repeat(400)),
+            skill("b", roles = setOf("MAIN"), instructions = "b-line\n".repeat(400)),
+        )
+        listOf("a", "b").forEach { manager.setEnabled(it, true) }
+        val provider = SkillContextProvider(manager, DefaultContextEngine())
+        val budget = ContextBudget(maxSkillChars = 300, maxSkillTotalChars = 400)
+
+        val first = provider.resolve("MAIN", budget)
+        val second = provider.resolve("MAIN", budget)
+
+        assertEquals(first.items.map { it.id }, second.items.map { it.id })
+        assertEquals(first.rendered, second.rendered)
+        assertEquals(first.entries, second.entries)
+        assertTrue(first.rendered.contains("skill instructions truncated"))
+        // Whole lines only: every kept instruction line is complete, never a fragment.
+        val keptLines = first.rendered.lines()
+        assertTrue(keptLines.any { it == "a-line" })
+        assertTrue(keptLines.none { it.isNotBlank() && it != "a-line" && it.endsWith("a-lin") })
+    }
+
+    @Test
+    fun `diagnostics never contain instruction text`() = run {
+        val manager = manager(skill("secretive", roles = setOf("MAIN"), instructions = "do the secret thing"))
+        manager.setEnabled("secretive", true)
+        val provider = SkillContextProvider(manager, DefaultContextEngine())
+
+        val fields = provider.resolve("MAIN", ContextBudget.DEFAULT).diagnosticFields()
+
+        assertTrue(fields.values.none { it.toString().contains("do the secret thing") })
+        assertEquals(1, fields["skillsIncluded"])
+    }
 }

@@ -116,6 +116,17 @@ interface RunContext {
     /** Restores a conversation snapshot (for example when resuming a run). */
     fun restore(messages: List<ModelMessage>)
 
+    /**
+     * Replaces the system instruction of the current conversation, keeping every
+     * other message exactly as it is.
+     *
+     * Used when a run is resumed: the conversation and tool results must be
+     * preserved, while the instruction that is prepended to the next model
+     * request is resolved again so a Settings change takes effect. The
+     * conversation ends up with exactly one system message, always first.
+     */
+    fun updateSystemPrompt(text: String)
+
     fun addAssistant(content: String, toolCalls: List<ModelToolCall> = emptyList())
 
     /**

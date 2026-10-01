@@ -43,6 +43,22 @@ class DefaultRunContext(
         messages += saved
     }
 
+    override fun updateSystemPrompt(text: String) {
+        val instruction = ModelMessage.system(text)
+        val existing = messages.indexOfFirst { it.role == ModelRole.SYSTEM }
+        if (existing < 0) {
+            // A restored snapshot without an instruction gets one, still first.
+            messages.add(0, instruction)
+            return
+        }
+        messages[existing] = instruction
+        // One conversation, one instruction: a stale duplicate would otherwise
+        // stay in the request and contradict the refreshed one.
+        for (index in messages.indices.reversed()) {
+            if (index != existing && messages[index].role == ModelRole.SYSTEM) messages.removeAt(index)
+        }
+    }
+
     override fun addAssistant(content: String, toolCalls: List<ModelToolCall>) {
         messages += ModelMessage.assistant(content, toolCalls)
     }

@@ -19,6 +19,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -124,6 +125,13 @@ fun WorkspaceShell(
         key = "git-$workspaceId",
         factory = IdeViewModelFactory { GitViewModel(workspaceId, dependencies.git) },
     )
+
+    // A workspace can carry its own `skills/<id>/SKILL.md` folders, and they are only
+    // readable once this workspace is the open one. Discovery re-runs when the shell
+    // is entered for a workspace; enablement and role assignment are unchanged by it.
+    LaunchedEffect(workspaceId) {
+        runCatching { dependencies.skills.refresh() }
+    }
 
     val innerNavController = rememberNavController()
     val backStackEntry by innerNavController.currentBackStackEntryAsState()

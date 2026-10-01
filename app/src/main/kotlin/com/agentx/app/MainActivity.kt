@@ -18,6 +18,7 @@ import com.agentx.app.app.rememberAndroidWorkspacePicker
 import com.agentx.app.context.DelegatingWorkspaceContextProvider
 import com.agentx.app.context.WorkspaceRuntimeContextProvider
 import com.agentx.app.context.WorkspaceSelectionState
+import com.agentx.app.context.WorkspaceSkillSource
 import com.agentx.app.core.config.ForgeConfig
 import com.agentx.app.core.config.ForgeConfigLoader
 import com.agentx.app.core.config.OAuthConfig
@@ -106,8 +107,13 @@ class MainActivity : ComponentActivity() {
             callbacks = callbacks,
             setupStore = SharedPreferencesIntegrationSetupStore(applicationContext),
         )
+        // The Context Engine's workspace port is created here rather than inside boot,
+        // so the same live port backs both context building and workspace skill
+        // discovery. It is pointed at the Workspace Runtime further down.
+        val contextWorkspace = DelegatingWorkspaceContextProvider()
         val foundation = Foundation.boot(
             config = ForgeConfig(oauth = oauthConfig),
+            contextWorkspace = contextWorkspace,
             presetStore = SharedPreferencesModelPresetStore(applicationContext),
             secretStore = KeystoreModelSecretStore(applicationContext),
             connectionStore = SharedPreferencesConnectionStore(applicationContext),
@@ -126,6 +132,10 @@ class MainActivity : ComponentActivity() {
                 config = SharedPreferencesSkillConfigStore(applicationContext),
                 files = FilesystemSkillFileStore(File(applicationContext.filesDir, SKILLS_DIRECTORY)),
             ),
+            // Workspace skills come from the open workspace's `skills/<id>/SKILL.md`
+            // folders, read through the Context Engine's workspace port. Built-in and
+            // imported skills are unaffected; with no workspace open nothing is read.
+            skillSources = listOf(WorkspaceSkillSource.discovery(contextWorkspace)),
         )
 
         // The saved role → model assignments are restored off the main thread;
