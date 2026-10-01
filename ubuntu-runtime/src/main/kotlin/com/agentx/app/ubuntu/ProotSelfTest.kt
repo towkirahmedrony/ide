@@ -4,8 +4,12 @@ package com.agentx.app.ubuntu
  * Proof that the APK actually shipped a PRoot runtime into [NativeRuntimeLayout.nativeLibraryDir].
  *
  * Source-tree files and a downloaded Ubuntu rootfs are not this check. Android only extracts
- * packaged `lib/<abi>/*.so` into `applicationInfo.nativeLibraryDir`; if those files are missing
- * the APK was built without the native runtime and Ubuntu must not be downloaded to "fix" it.
+ * the packaged `lib/<abi>/` libraries into `applicationInfo.nativeLibraryDir`; if they are
+ * missing the APK was built without the native runtime, and Ubuntu must not be downloaded to
+ * "fix" it.
+ *
+ * The ABI directory is named without its library glob on purpose: Kotlin nests block comments, so
+ * spelling the glob out would open a second comment here and swallow the rest of this file.
  */
 data class ProotSelfTestResult(
     val nativeLibraryDir: String,
