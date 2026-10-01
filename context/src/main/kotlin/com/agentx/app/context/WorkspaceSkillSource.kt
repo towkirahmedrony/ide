@@ -54,7 +54,7 @@ class WorkspaceSkillSource(
             .mapNotNull { load(fileSystem, root, it) }
     }.getOrDefault(emptyList())
 
-    private fun load(
+    private suspend fun load(
         fileSystem: WorkspaceFileSystem,
         root: String,
         directory: WorkspaceDirectory,
