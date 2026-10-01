@@ -6,7 +6,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.agentx.app.termux.TerminalDiagnostics
 import com.agentx.app.termux.TerminalSessionAdapter
+import com.agentx.app.termux.TerminalSessionState
 import com.agentx.app.termux.TermuxProvisioning
 import com.agentx.app.termux.TermuxProvisioningState
 import com.agentx.app.termux.TermuxSession
@@ -17,6 +19,7 @@ import com.agentx.app.termux.TermuxTerminalHost
 import com.agentx.app.termux.TermuxWorkspaceBinding
 import com.agentx.app.ubuntu.AgentxRuntimeState
 import com.agentx.app.ubuntu.LocalUbuntuRuntime
+import com.agentx.app.ubuntu.NativeRuntimeLayout
 import com.agentx.app.ubuntu.RuntimeStatus
 import com.agentx.app.ubuntu.UbuntuWorkspaceMaterialization
 import com.termux.terminal.TerminalSession
@@ -26,7 +29,11 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import kotlin.math.roundToInt
+
+/** How many diagnostic lines the terminal's failure panel shows. */
+private const val DIAGNOSTIC_LINES: Int = 14
 
 /**
  * What the Terminal screen draws.
@@ -40,8 +47,18 @@ data class TerminalUiState(
     val workingDirectory: String = "",
     val sessions: List<TermuxSessionSnapshot> = emptyList(),
     val activeHandle: String? = null,
-    val running: Boolean = false,
+    /**
+     * Lifecycle state of the session the screen is attached to, or null when there is no session
+     * at all.
+     *
+     * There is deliberately no separate `running` flag stored beside it. When there was, the two
+     * could disagree — and the disagreement is exactly what produced a terminal that reported a
+     * shell had "stopped" while no session existed, with Restart disabled and the keyboard gone.
+     */
+    val sessionState: TerminalSessionState? = null,
     val exitStatus: Int? = null,
+    /** Why the active session failed, when it did. */
+    val failure: String? = null,
     val fontSizePx: Int = DEFAULT_FONT_SIZE_PX,
     val provisioning: TermuxProvisioningState = TermuxProvisioningState.Idle,
     /** Why the workspace could not be used as-is, if it could not. */
@@ -61,7 +78,28 @@ data class TerminalUiState(
     val developerRuntimeAvailable: Boolean = false,
     /** True when the live shell is the Ubuntu guest rather than the legacy backend. */
     val usingDeveloperRuntime: Boolean = false,
+    /**
+     * What the native runtime actually looks like on this device: `nativeLibraryDir` and, for each
+     * library the runtime needs, whether it is really there and really executable.
+     *
+     * Present so a startup failure names the real paths instead of only describing a symptom. The
+     * APK's contents are not evidence — the installer decides where these files land, and the
+     * runtime resolves the directory at run time.
+     */
+    val nativeFacts: List<String> = emptyList(),
+    /** Tail of the diagnostic record, so a failure shows something actionable. */
+    val diagnostics: String? = null,
 ) {
+
+    /**
+     * True when the terminal cannot be drawn usefully, so the screen shows the recovery panel
+     * instead of a blank surface: either there is no session, or the session failed to start and
+     * therefore has no emulator to draw.
+     */
+    val showsRecoveryPanel: Boolean
+        get() = !unavailable &&
+            (sessionState == null || sessionState == TerminalSessionState.FAILED)
+
     /** True when the first-run developer-runtime install screen should be shown. */
     val developerRuntimeNeedsInstall: Boolean
         get() = developerRuntimeAvailable && developerRuntime.state == AgentxRuntimeState.NOT_INSTALLED
@@ -85,24 +123,38 @@ data class TerminalUiState(
             provisioning is TermuxProvisioningState.Verifying -> "verifying"
             provisioning is TermuxProvisioningState.Extracting -> "installing"
             provisioning is TermuxProvisioningState.Failed -> "install failed"
-            running -> "running"
-            exitStatus != null -> "exited $exitStatus"
+            sessionState == TerminalSessionState.RUNNING -> "running"
+            sessionState == TerminalSessionState.STARTING -> "starting"
+            sessionState == TerminalSessionState.STOPPING -> "stopping"
+            sessionState == TerminalSessionState.FAILED -> "failed"
+            sessionState == TerminalSessionState.STOPPED -> "exited ${exitStatus ?: 0}"
             else -> "idle"
         }
+
+    /** Whether a live process is attached. Derived, so it cannot disagree with [sessionState]. */
+    val running: Boolean get() = sessionState == TerminalSessionState.RUNNING
+
+    /** True when the screen has no session object at all and must offer to create one. */
+    val needsSession: Boolean get() = !unavailable && sessionState == null
 
     /**
      * Whether the on-screen keyboard may be offered. Only a live process can receive typing;
      * offering it after the process exited would suggest the keys go somewhere.
      */
     val canType: Boolean
-        get() = acceptsInput(unavailable = unavailable, running = running)
+        get() = acceptsInput(unavailable = unavailable, state = sessionState)
 
     /**
      * The readable exit line, or null while the process is running. The process's own stderr is
      * above this line, in the terminal buffer itself.
      */
     val exitLine: String?
-        get() = exitSummary(running = running, exitStatus = exitStatus, lastError = null)
+        get() = sessionState?.let { state ->
+            exitSummary(state = state, exitStatus = exitStatus ?: 0, failure = failure)
+        }
+
+    /** Heading over the recovery panel, so a terminal that cannot be typed into is never blank. */
+    val failureHeading: String? get() = terminalFailureHeading(sessionState)
 
     /** The label for the restart action, which is the whole recovery path once a shell exits. */
     val restartLabel: String get() = restartActionLabel(running)
@@ -263,17 +315,50 @@ class TerminalViewModel(
         open(scratch = false)
     }
 
+    /**
+     * Guarantees the screen has a session to talk to, starting one if there is none.
+     *
+     * This is the app-restart path. Sessions belong to the process, so after a restart the manager
+     * starts empty and no PTY, pid or handle from the previous run is restored — deliberately, since
+     * none of them would still be valid. Rather than adopting stale metadata, this creates a clean
+     * session, which is what makes reopening the app land on a usable terminal.
+     */
+    fun ensureSession() {
+        val current = runtime ?: return
+        if (current.sessions.sessions().isEmpty()) open(scratch = false)
+    }
+
     /** Opens an extra shell rooted at `$HOME`, for commands that are not about the project. */
     fun openScratchShell() {
         scratch = true
         open(scratch = true)
     }
 
+    /**
+     * Destroys the current session and starts a completely new one.
+     *
+     * Deliberately not gated on an active handle existing. It used to return immediately when
+     * `activeHandle` was null, which is exactly the situation after a startup failure — so the one
+     * button that could have recovered the terminal did nothing precisely when it was needed.
+     *
+     * It also does not depend on receiving anything from the old session: `sessions.restart` tears
+     * the old one down and builds the replacement itself, so it works from FAILED, STOPPED and
+     * STARTING alike, and with no session at all.
+     */
     fun restart() {
         val current = runtime ?: return
-        val handle = current.sessions.activeHandle.value ?: return
-        val spec = spec(scratch = scratch || current.sessions.find(handle) == null)
-        current.sessions.restart(handle, spec)?.let { current.sessions.setActive(it.handle) }
+        val handle = current.sessions.activeHandle.value
+        // A handle that is already gone means the shell this screen was on has been removed; fall
+        // back to the workspace shell rather than restarting one that no longer exists.
+        val background = scratch || (handle != null && current.sessions.find(handle) == null)
+        viewModelScope.launch {
+            // Never on the UI thread: resolving the developer spec can copy a SAF project into app
+            // storage, and starting a process must not block a frame either.
+            val spec = withContext(Dispatchers.IO) { spec(background) }
+            current.sessions.restart(handle, spec)?.let { restarted ->
+                current.sessions.setActive(restarted.handle)
+            }
+        }
     }
 
     fun terminateActive() {
@@ -349,10 +434,17 @@ class TerminalViewModel(
         val current = sessions.firstOrNull { it.handle == active } ?: sessions.firstOrNull()
         uiState = uiState.copy(
             sessions = sessions,
-            activeHandle = active,
-            running = current?.running == true,
-            exitStatus = current?.takeIf { !it.running }?.exitStatus,
+            // Falling back to the first session keeps Restart pointed at something real when the
+            // manager's active handle is momentarily unset.
+            activeHandle = active ?: current?.handle,
+            sessionState = current?.state,
+            exitStatus = current?.takeIf { it.terminal }?.exitStatus,
+            failure = current?.failure,
             workingDirectory = current?.workingDirectory.orEmpty(),
+            // Re-read on every publish, not cached: whether these files exist is the single most
+            // useful fact when a shell will not start.
+            nativeFacts = nativeRuntimeFacts(),
+            diagnostics = TerminalDiagnostics.report(DIAGNOSTIC_LINES),
         )
     }
 
@@ -367,7 +459,12 @@ class TerminalViewModel(
         // I/O; the session is opened on the main dispatcher once that is done.
         val key = workspaceKey(scratch)
         viewModelScope.launch {
-            val spec = withContext(Dispatchers.IO) { developerSpec(current, developer, key, scratch) }
+            // A failure while resolving the developer spec (an unreadable SAF project, say) must
+            // fall through to the system shell rather than end the coroutine and leave the screen
+            // with no session at all — which is the state it could not recover from.
+            val spec = withContext(Dispatchers.IO) {
+                runCatching { developerSpec(current, developer, key, scratch) }.getOrNull()
+            }
             if (spec != null) {
                 // The primary backend: a real Ubuntu guest shell. The workspace note is cleared
                 // because the project is bind-mounted, not copied.
@@ -409,7 +506,12 @@ class TerminalViewModel(
         val current = checkNotNull(runtime) { "Termux runtime is not available" }
         val developer = developerRuntime
         if (developer != null) {
-            developerSpecNow(current, developer, workspaceKey(scratch), scratch)?.let { return it }
+            // Resolving the developer spec can touch the filesystem (a SAF project is materialised
+            // into app storage first). That must not be able to cost the user their terminal, so a
+            // failure here falls through to the system shell, which needs nothing prepared.
+            runCatching { developerSpecNow(current, developer, workspaceKey(scratch), scratch) }
+                .getOrNull()
+                ?.let { return it }
             return current.specFor(
                 workspaceKey = workspaceKey(scratch),
                 binding = binding(current, scratch),
@@ -426,6 +528,35 @@ class TerminalViewModel(
 
     private fun workspaceKey(scratch: Boolean): String =
         if (scratch) "$workspaceId::scratch" else workspaceId
+
+    /**
+     * Reports the native runtime as it is on disk right now.
+     *
+     * Checked live rather than read from a cached probe: the whole question at this point is
+     * whether the files the APK was built with are actually present and executable after the
+     * installer put them somewhere, and a value captured at start-up could answer for a state
+     * that no longer holds.
+     */
+    private fun nativeRuntimeFacts(): List<String> {
+        val developer = developerRuntime ?: return emptyList()
+        val directory = developer.layout.nativeLibraryDir
+        val facts = ArrayList<String>(NativeRuntimeLayout.REQUIRED_LIBRARIES.size + 2)
+        facts += "nativeLibraryDir: $directory"
+        val names = NativeRuntimeLayout.REQUIRED_LIBRARIES + NativeRuntimeLayout.OPTIONAL_LIBRARIES
+        for (name in names) {
+            val file = File("$directory/$name")
+            facts += when {
+                !file.isFile -> "$name: MISSING"
+                file.canExecute() -> "$name: present, executable"
+                else -> "$name: present, NOT executable"
+            }
+        }
+        facts += "PRoot executable: $directory/${NativeRuntimeLayout.PROOT_LIBRARY}"
+        facts += "PROOT_LOADER: $directory/${NativeRuntimeLayout.LOADER_LIBRARY}"
+        facts += "rootfs: ${developer.layout.rootfs}"
+        facts += "rootfs verified: ${developer.isReady()}"
+        return facts
+    }
 
     /**
      * The developer-runtime spec for this session, or null when it cannot be used yet.

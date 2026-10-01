@@ -3,17 +3,14 @@ package com.termux.terminal;
 import android.annotation.SuppressLint;
 import android.os.Handler;
 import android.os.Message;
+import android.os.ParcelFileDescriptor;
 import android.system.ErrnoException;
 import android.system.Os;
 import android.system.OsConstants;
 
 import java.io.File;
 import java.io.FileDescriptor;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
-import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
 
@@ -32,10 +29,23 @@ public final class TerminalSession extends TerminalOutput {
 
     private static final int MSG_NEW_INPUT = 1;
     private static final int MSG_PROCESS_EXITED = 4;
+    /** The pty reported EOF/EIO, which means the slave side is gone. */
+    private static final int MSG_PTY_CLOSED = 5;
+
+    /**
+     * Reported as the exit status when the pty closed without {@link JNI#waitFor} returning a code.
+     * Mirrors a shell killed by SIGHUP, which is what a pty hangup sends.
+     */
+    static final int PTY_CLOSED_EXIT_STATUS = 128 + 1;
 
     public final String mHandle = UUID.randomUUID().toString();
 
-    TerminalEmulator mEmulator;
+    /**
+     * Written on the launching thread during {@link #initializeEmulator} and read by the UI thread
+     * and the emulator callbacks, so it must not be cached. See the pty-close path below, which can
+     * observe this session from a third thread.
+     */
+    volatile TerminalEmulator mEmulator;
 
     /**
      * A queue written to from a separate thread when the process outputs, and read by main thread to process by
@@ -54,16 +64,29 @@ public final class TerminalSession extends TerminalOutput {
     TerminalSessionClient mClient;
 
     /** The pid of the shell process. 0 if not started and -1 if finished running. */
-    int mShellPid;
+    volatile int mShellPid;
 
     /** The exit status of the shell process. Only valid if ${@link #mShellPid} is -1. */
-    int mShellExitStatus;
+    volatile int mShellExitStatus;
+
+    /** Set once the exit has been announced, so it is announced exactly once. */
+    private volatile boolean mExitDelivered;
+
+    /** Set once the pty has been released, so it is released exactly once. */
+    private volatile boolean mCleanedUp;
 
     /**
      * The file descriptor referencing the master half of a pseudo-terminal pair, resulting from calling
      * {@link JNI#createSubprocess(String, String, String[], String[], int[], int, int, int, int)}.
      */
-    private int mTerminalFileDescriptor;
+    private volatile int mTerminalFileDescriptor;
+
+    /**
+     * Sole owner of the pty master descriptor once the session is initialised, or null before that
+     * and after {@link #cleanupResources}. See {@link #initializeEmulator} for why this exists
+     * rather than a reflected {@link FileDescriptor}.
+     */
+    private volatile ParcelFileDescriptor mPtyDescriptor;
 
     /** Set by the application for user identification of session, not by terminal. */
     public String mSessionName;
@@ -128,21 +151,42 @@ public final class TerminalSession extends TerminalOutput {
         mShellPid = processId[0];
         mClient.setTerminalShellPid(this, mShellPid);
 
-        final FileDescriptor terminalFileDescriptorWrapped = wrapFileDescriptor(mTerminalFileDescriptor, mClient);
+        // The pty master is addressed as a FileDescriptor obtained through public API.
+        //
+        // The vendored code instead rebuilt one by reflecting into java.io.FileDescriptor's private
+        // field. That reflection is a non-SDK interface, an app targeting a modern SDK is refused
+        // it, and the refused path ended in System.exit(1) — which killed the whole process with no
+        // crash report and with no session created, so the terminal had nothing to show and nothing
+        // to restart. adoptFd() is the supported way to get the same thing.
+        //
+        // The descriptor is read and written with android.system.Os rather than wrapped in streams,
+        // so nothing aliases it: the reader and writer share one fd, and owning it here is what
+        // lets cleanupResources() close it exactly once and wake a parked reader.
+        final ParcelFileDescriptor pty = ParcelFileDescriptor.adoptFd(mTerminalFileDescriptor);
+        mPtyDescriptor = pty;
+        final FileDescriptor ptyDescriptor = pty.getFileDescriptor();
 
         new Thread("TermSessionInputReader[pid=" + mShellPid + "]") {
             @Override
             public void run() {
-                try (InputStream termIn = new FileInputStream(terminalFileDescriptorWrapped)) {
-                    final byte[] buffer = new byte[4096];
+                final byte[] buffer = new byte[4096];
+                try {
                     while (true) {
-                        int read = termIn.read(buffer);
-                        if (read == -1) return;
-                        if (!mProcessToTerminalIOQueue.write(buffer, 0, read)) return;
+                        // Raw read(2): EOF is 0, not -1 the way FileInputStream reports it.
+                        int read = Os.read(ptyDescriptor, buffer, 0, buffer.length);
+                        if (read <= 0) break;
+                        if (!mProcessToTerminalIOQueue.write(buffer, 0, read)) break;
                         mMainThreadHandler.sendEmptyMessage(MSG_NEW_INPUT);
                     }
-                } catch (Exception e) {
-                    // Ignore, just shutting down.
+                } catch (ErrnoException | IOException e) {
+                    // EIO is the normal way a pty master read ends once the slave side is gone;
+                    // InterruptedIOException is the other way Os.read gives up.
+                } finally {
+                    // EOF or EIO here means nothing is left on the other end of the pty. Announcing
+                    // it is what stops a session whose process never got reaped from looking alive
+                    // forever: without this the UI waits for an exit that no waiter will report.
+                    // deliverExit() ignores a second announcement, so a normal exit still wins.
+                    mMainThreadHandler.sendEmptyMessage(MSG_PTY_CLOSED);
                 }
             }
         }.start();
@@ -151,14 +195,14 @@ public final class TerminalSession extends TerminalOutput {
             @Override
             public void run() {
                 final byte[] buffer = new byte[4096];
-                try (FileOutputStream termOut = new FileOutputStream(terminalFileDescriptorWrapped)) {
+                try {
                     while (true) {
                         int bytesToWrite = mTerminalToProcessIOQueue.read(buffer, true);
                         if (bytesToWrite == -1) return;
-                        termOut.write(buffer, 0, bytesToWrite);
+                        Os.write(ptyDescriptor, buffer, 0, bytesToWrite);
                     }
-                } catch (IOException e) {
-                    // Ignore.
+                } catch (ErrnoException | IOException e) {
+                    // The pty is gone; the reader thread is what reports it.
                 }
             }
         }.start();
@@ -233,7 +277,20 @@ public final class TerminalSession extends TerminalOutput {
 
     /** Finish this terminal session by sending SIGKILL to the shell. */
     public void finishIfRunning() {
-        if (isRunning()) {
+        // Deliberately `mShellPid > 0` and not isRunning(): isRunning() only means "not reaped
+        // yet", which is also true before the process exists. Os.kill(0, SIGKILL) signals the
+        // *caller's own process group*, so a session that never launched would have taken this
+        // app down with it instead of just being cleaned up.
+        if (mShellPid > 0) {
+            // The JNI forks with setsid(), so the child is a session leader and its pid is its
+            // process-group id. Signalling the group reaches the children PRoot started as well as
+            // PRoot itself, and cannot reach this app, which is in a different group. -N addresses
+            // the group whose id is N, so if setsid had failed this simply finds no group.
+            try {
+                Os.kill(-mShellPid, OsConstants.SIGKILL);
+            } catch (ErrnoException e) {
+                // ESRCH once the group is already gone; the single-process kill below still runs.
+            }
             try {
                 Os.kill(mShellPid, OsConstants.SIGKILL);
             } catch (ErrnoException e) {
@@ -242,17 +299,72 @@ public final class TerminalSession extends TerminalOutput {
         }
     }
 
-    /** Cleanup resources when the process exits. */
+    /** Cleanup resources when the process exits. Safe to call more than once. */
     void cleanupResources(int exitStatus) {
         synchronized (this) {
+            if (mCleanedUp) {
+                mShellExitStatus = exitStatus;
+                return;
+            }
+            mCleanedUp = true;
             mShellPid = -1;
             mShellExitStatus = exitStatus;
+            mExitDelivered = true;
         }
 
-        // Stop the reader and writer threads, and close the I/O streams
+        // Stop the reader and writer threads, and close the I/O streams.
+        //
+        // Closing the pty descriptor is what wakes the reader thread if it is parked in read(2):
+        // it returns EBADF/EIO and the thread ends, which is also how the session learns the pty
+        // is gone. The descriptor has exactly one owner — the ParcelFileDescriptor adopted in
+        // initializeEmulator — so it is closed exactly once. The fallback covers a session that
+        // adopted nothing (a failed launch), where the raw fd is all there is.
         mTerminalToProcessIOQueue.close();
         mProcessToTerminalIOQueue.close();
-        JNI.close(mTerminalFileDescriptor);
+        ParcelFileDescriptor descriptor = mPtyDescriptor;
+        mPtyDescriptor = null;
+        if (descriptor != null) {
+            try {
+                descriptor.close();
+            } catch (IOException e) {
+                // Already gone; nothing left to release.
+            }
+        } else {
+            JNI.close(mTerminalFileDescriptor);
+        }
+    }
+
+    /**
+     * The single place a session's exit is announced.
+     *
+     * @return true when this call was the one that announced it.
+     */
+    private boolean deliverExit(int exitStatus) {
+        synchronized (this) {
+            if (mExitDelivered) return false;
+            mExitDelivered = true;
+        }
+        cleanupResources(exitStatus);
+
+        String exitDescription = "\r\n[Process completed";
+        if (exitStatus > 0) {
+            exitDescription += " (code " + exitStatus + ")";
+        } else if (exitStatus < 0) {
+            exitDescription += " (signal " + (-exitStatus) + ")";
+        }
+        exitDescription += " - press Enter]";
+
+        TerminalEmulator emulator = mEmulator;
+        // A session that failed to launch never built an emulator; there is no screen to write to
+        // and the caller's failure message is what the user sees instead.
+        if (emulator != null) {
+            byte[] bytesToWrite = exitDescription.getBytes(StandardCharsets.UTF_8);
+            emulator.append(bytesToWrite, bytesToWrite.length);
+            notifyScreenUpdate();
+        }
+
+        mClient.onSessionFinished(TerminalSession.this);
+        return true;
     }
 
     @Override
@@ -314,25 +426,6 @@ public final class TerminalSession extends TerminalOutput {
         return null;
     }
 
-    private static FileDescriptor wrapFileDescriptor(int fileDescriptor, TerminalSessionClient client) {
-        FileDescriptor result = new FileDescriptor();
-        try {
-            Field descriptorField;
-            try {
-                descriptorField = FileDescriptor.class.getDeclaredField("descriptor");
-            } catch (NoSuchFieldException e) {
-                // For desktop java:
-                descriptorField = FileDescriptor.class.getDeclaredField("fd");
-            }
-            descriptorField.setAccessible(true);
-            descriptorField.set(result, fileDescriptor);
-        } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
-            Logger.logStackTraceWithMessage(client, LOG_TAG, "Error accessing FileDescriptor#descriptor private field", e);
-            System.exit(1);
-        }
-        return result;
-    }
-
     @SuppressLint("HandlerLeak")
     class MainThreadHandler extends Handler {
 
@@ -342,29 +435,17 @@ public final class TerminalSession extends TerminalOutput {
         public void handleMessage(Message msg) {
             int bytesRead = mProcessToTerminalIOQueue.read(mReceiveBuffer, false);
             if (bytesRead > 0) {
-                mEmulator.append(mReceiveBuffer, bytesRead);
-                notifyScreenUpdate();
+                TerminalEmulator emulator = mEmulator;
+                if (emulator != null) {
+                    emulator.append(mReceiveBuffer, bytesRead);
+                    notifyScreenUpdate();
+                }
             }
 
             if (msg.what == MSG_PROCESS_EXITED) {
-                int exitCode = (Integer) msg.obj;
-                cleanupResources(exitCode);
-
-                String exitDescription = "\r\n[Process completed";
-                if (exitCode > 0) {
-                    // Non-zero process exit.
-                    exitDescription += " (code " + exitCode + ")";
-                } else if (exitCode < 0) {
-                    // Negated signal.
-                    exitDescription += " (signal " + (-exitCode) + ")";
-                }
-                exitDescription += " - press Enter]";
-
-                byte[] bytesToWrite = exitDescription.getBytes(StandardCharsets.UTF_8);
-                mEmulator.append(bytesToWrite, bytesToWrite.length);
-                notifyScreenUpdate();
-
-                mClient.onSessionFinished(TerminalSession.this);
+                deliverExit((Integer) msg.obj);
+            } else if (msg.what == MSG_PTY_CLOSED) {
+                deliverExit(PTY_CLOSED_EXIT_STATUS);
             }
         }
 

@@ -10,33 +10,52 @@ import kotlin.test.assertTrue
 
 class TermuxSessionManagerTest {
 
-    /** Stand-in for a PTY-backed session; the manager must not care which it is. */
+    /**
+     * Stand-in for a PTY-backed session; the manager must not care which it is.
+     *
+     * `isRunning` is deliberately not implemented here: it is derived from [state] on the
+     * interface, and the whole point of the state machine is that the two cannot disagree.
+     */
     private class FakeSession(
         override val handle: String,
         override val executable: String? = TermuxShellResolver.SYSTEM_SHELL,
         override val temporarySystemShell: Boolean = executable == TermuxShellResolver.SYSTEM_SHELL,
     ) : TermuxSession {
-        override var isRunning: Boolean = true
+        override var state: TerminalSessionState = TerminalSessionState.IDLE
             private set
         override var exitStatus: Int = -1
             private set
+        override var failure: String? = null
+            private set
         override var title: String? = null
         override var workingDirectory: String? = null
+        var startCount: Int = 0
+            private set
         var finishCount: Int = 0
             private set
+
+        override fun start() {
+            startCount += 1
+            state = TerminalSessionState.RUNNING
+        }
 
         override fun write(bytes: ByteArray, offset: Int, count: Int) = Unit
         override fun updateSize(columns: Int, rows: Int, cellWidthPixels: Int, cellHeightPixels: Int) = Unit
 
         override fun finish() {
             finishCount += 1
-            isRunning = false
+            state = TerminalSessionState.STOPPED
             exitStatus = 137
         }
 
         fun exitOnItsOwn(code: Int) {
-            isRunning = false
+            state = TerminalSessionState.STOPPED
             exitStatus = code
+        }
+
+        fun failToStart(reason: String) {
+            state = TerminalSessionState.FAILED
+            failure = reason
         }
     }
 
@@ -237,5 +256,113 @@ class TermuxSessionManagerTest {
         assertFalse(restarted.single().temporarySystemShell)
         assertEquals(1, manager.sessions().size)
         assertEquals(2, recorder.specs.size)
+    }
+
+    @Test
+    fun `the manager starts every session it creates`() {
+        val recorder = Recorder()
+        val manager = TermuxSessionManager(recorder.factory())
+
+        manager.open(spec())
+
+        // A created-but-unstarted session reports RUNNING in the vendored class, so the manager
+        // must be the thing that actually launches it.
+        assertEquals(1, recorder.sessions.single().startCount)
+        assertEquals(TerminalSessionState.RUNNING, manager.sessions().single().state)
+    }
+
+    @Test
+    fun `a session that could not be created still leaves one to restart`() {
+        // The regression this guards: a factory that threw used to leave the manager with an empty
+        // list, no active handle, no reason on screen, and a Restart action that did nothing.
+        val manager = TermuxSessionManager(
+            TermuxSessionFactory { error("no pty available") },
+        )
+
+        val session = manager.open(spec())
+
+        assertEquals(1, manager.sessions().size)
+        assertEquals(TerminalSessionState.FAILED, session?.state)
+        assertEquals("no pty available", session?.failure)
+        assertEquals(session?.handle, manager.activeHandle.value)
+        assertEquals(listOf(TerminalSessionState.FAILED), manager.snapshots.value.map { it.state })
+    }
+
+    @Test
+    fun `a session whose start failed is reported as failed rather than stopped`() {
+        val recorder = Recorder()
+        val manager = TermuxSessionManager(recorder.factory())
+
+        val session = manager.open(spec())!!
+        recorder.sessions.single().failToStart("the pty did not report a shell pid")
+        manager.refresh()
+
+        val snapshot = manager.snapshots.value.single()
+        assertEquals(TerminalSessionState.FAILED, snapshot.state)
+        assertEquals("the pty did not report a shell pid", snapshot.failure)
+        // Never RUNNING, so nothing may claim the shell is still there.
+        assertFalse(snapshot.running)
+        assertFalse(snapshot.state == TerminalSessionState.STOPPED)
+    }
+
+    @Test
+    fun `restart works with no active handle at all`() {
+        // Restart has to be usable from a state where no session exists, because that is exactly
+        // what a failed start can leave behind.
+        val recorder = Recorder()
+        val manager = TermuxSessionManager(recorder.factory())
+
+        val session = manager.restart(handle = null, spec = spec())
+
+        assertEquals(1, manager.sessions().size)
+        assertEquals(TerminalSessionState.RUNNING, session?.state)
+    }
+
+    @Test
+    fun `restart replaces a failed session with a running one`() {
+        val recorder = Recorder()
+        val manager = TermuxSessionManager(recorder.factory())
+
+        val failed = manager.open(spec())!!
+        recorder.sessions.single().failToStart("PRoot could not start")
+        manager.refresh()
+        assertEquals(TerminalSessionState.FAILED, manager.snapshots.value.single().state)
+
+        val restarted = manager.restart(failed.handle, spec())!!
+
+        assertNotEquals(failed.handle, restarted.handle)
+        assertEquals(TerminalSessionState.RUNNING, restarted.state)
+        assertEquals(1, recorder.sessions.first().finishCount)
+        assertEquals(1, manager.sessions().size)
+        assertEquals(restarted.handle, manager.activeHandle.value)
+    }
+
+    @Test
+    fun `restart is not blocked by a handle that is already gone`() {
+        val recorder = Recorder()
+        val manager = TermuxSessionManager(recorder.factory())
+
+        val first = manager.open(spec())!!
+        manager.terminate(first.handle)
+        assertTrue(manager.sessions().isEmpty())
+
+        val restarted = manager.restart(first.handle, spec())
+
+        assertEquals(TerminalSessionState.RUNNING, restarted?.state)
+        assertEquals(1, manager.sessions().size)
+    }
+
+    @Test
+    fun `a finished session is evicted before the cap refuses to open`() {
+        val recorder = Recorder()
+        val manager = TermuxSessionManager(recorder.factory(), maxSessions = 1)
+
+        manager.open(spec(key = "a"))!!
+        recorder.sessions.single().exitOnItsOwn(0)
+
+        // The cap must never be what wedges the terminal: a dead session costs nothing to drop.
+        val replacement = manager.open(spec(key = "b"))
+        assertEquals(1, manager.sessions().size)
+        assertEquals("b", replacement?.let { manager.snapshots.value.single().workspaceKey })
     }
 }

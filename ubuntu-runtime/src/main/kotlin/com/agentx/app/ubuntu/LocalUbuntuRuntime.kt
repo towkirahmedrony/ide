@@ -3,6 +3,7 @@ package com.agentx.app.ubuntu
 import android.content.Context
 import android.net.ConnectivityManager
 import android.util.Log
+import com.agentx.app.termux.TerminalDiagnostics
 import com.agentx.app.termux.TermuxShellSpec
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
@@ -197,12 +198,20 @@ class LocalUbuntuRuntime(
     private suspend fun verifyRootfs() {
         statusFlow.value = RuntimeStatus(AgentxRuntimeState.VALIDATING)
         val verification = withContext(ioDispatcher) { verifier.verify() }
+        TerminalDiagnostics.record(
+            TAG,
+            "rootfs verification ok=${verification.ok} summary=${verification.summary}",
+        )
         if (verification.ok) {
             markVerified()
             installer.writeInstallMarker()
             statusFlow.value = RuntimeStatus.Ready
             Log.i(TAG, verification.summary)
+            TerminalDiagnostics.record(TAG, "rootfs verified; marker written in ${layout.rootfs}")
         } else {
+            // Recorded verbatim: this is where an extracted-but-unrunnable rootfs is caught, and
+            // the failure text names the probe (`/bin/sh`, `/bin/bash`, `id`, `pwd`) that failed.
+            TerminalDiagnostics.record(TAG, "rootfs verification FAILED: ${verification.failure}")
             clearVerified()
             installer.clearInstallMarker()
             statusFlow.value = RuntimeStatus(
@@ -253,6 +262,24 @@ class LocalUbuntuRuntime(
         Log.i(TAG, "PROOT_LOADER=${layout.loader}")
         val listing = File(layout.nativeLibraryDir).listFiles()?.joinToString { it.name } ?: "(unreadable)"
         Log.i(TAG, "nativeLibraryDir contents: $listing")
+
+        // Recorded at run time, not read from the build script: the question is what the installer
+        // actually unpacked and whether it may be executed, not what the APK was built with.
+        TerminalDiagnostics.record(TAG, "nativeLibraryDir=${layout.nativeLibraryDir}")
+        TerminalDiagnostics.record(TAG, "nativeLibraryDir contents: $listing")
+        for (name in NativeRuntimeLayout.REQUIRED_LIBRARIES + NativeRuntimeLayout.OPTIONAL_LIBRARIES) {
+            val file = File("${layout.nativeLibraryDir}/$name")
+            TerminalDiagnostics.record(
+                TAG,
+                "  $name exists=${file.isFile} executable=${file.canExecute()}",
+            )
+        }
+        TerminalDiagnostics.record(
+            TAG,
+            "PROOT_LOADER=${layout.loader} PROOT_TMP_DIR=${layout.tmp} PROOT_L2S_DIR=${layout.l2s}",
+        )
+        TerminalDiagnostics.record(TAG, "rootfs=${layout.rootfs} installed=${installer.isInstalled()}")
+
         val result = ProotSelfTest.run(
             layout = layout,
             exists = ::nativeExists,
@@ -261,9 +288,16 @@ class LocalUbuntuRuntime(
         )
         if (result.ok) {
             Log.i(TAG, result.summary)
-            result.versionOutput?.let { Log.i(TAG, "PRoot -V: ${it.take(300)}") }
+            TerminalDiagnostics.record(TAG, "PRoot self-test passed: ${result.summary}")
+            result.versionOutput?.let {
+                TerminalDiagnostics.record(TAG, "PRoot -V: ${it.take(300)}")
+                Log.i(TAG, "PRoot -V: ${it.take(300)}")
+            }
         } else {
             Log.w(TAG, result.summary)
+            // The first gate in the chain. If this fails nothing after it can work, and the
+            // summary names the file that is missing or not executable.
+            TerminalDiagnostics.record(TAG, "PRoot self-test FAILED: ${result.summary}")
         }
         return result
     }

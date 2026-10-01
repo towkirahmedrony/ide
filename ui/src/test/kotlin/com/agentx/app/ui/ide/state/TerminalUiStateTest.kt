@@ -1,5 +1,6 @@
 package com.agentx.app.ui.ide.state
 
+import com.agentx.app.termux.TerminalSessionState
 import com.agentx.app.termux.TermuxProvisioning
 import com.agentx.app.termux.TermuxProvisioningState
 import kotlin.test.Test
@@ -16,8 +17,22 @@ class TerminalUiStateTest {
     @Test
     fun `status reflects the running session`() {
         assertEquals("idle", TerminalUiState().statusLabel)
-        assertEquals("running", TerminalUiState(running = true).statusLabel)
-        assertEquals("exited 130", TerminalUiState(exitStatus = 130).statusLabel)
+        assertEquals("running", TerminalUiState(sessionState = TerminalSessionState.RUNNING).statusLabel)
+        assertEquals("starting", TerminalUiState(sessionState = TerminalSessionState.STARTING).statusLabel)
+        // A session that could not start says so; it is not indistinguishable from an exit.
+        assertEquals("failed", TerminalUiState(sessionState = TerminalSessionState.FAILED).statusLabel)
+        assertEquals(
+            "exited 130",
+            TerminalUiState(sessionState = TerminalSessionState.STOPPED, exitStatus = 130).statusLabel,
+        )
+    }
+
+    @Test
+    fun `running is derived from the session state so the two cannot disagree`() {
+        assertTrue(TerminalUiState(sessionState = TerminalSessionState.RUNNING).running)
+        assertFalse(TerminalUiState(sessionState = TerminalSessionState.STARTING).running)
+        assertFalse(TerminalUiState(sessionState = TerminalSessionState.FAILED).running)
+        assertFalse(TerminalUiState().running)
     }
 
     @Test
@@ -44,7 +59,7 @@ class TerminalUiStateTest {
     fun `install is offered only when it can actually work`() {
         assertTrue(TerminalUiState().canInstall)
         // The temporary Android shell may stay running while the Termux userland is installed.
-        assertTrue(TerminalUiState(running = true).canInstall)
+        assertTrue(TerminalUiState(sessionState = TerminalSessionState.RUNNING).canInstall)
         // And nothing to install when the prefix cannot host the packages.
         assertFalse(TerminalUiState(prefixNote = "wrong prefix").canInstall)
         assertFalse(

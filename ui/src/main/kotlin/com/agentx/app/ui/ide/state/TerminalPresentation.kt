@@ -1,5 +1,6 @@
 package com.agentx.app.ui.ide.state
 
+import com.agentx.app.termux.TerminalSessionState
 import com.agentx.app.termux.TermuxBootstrapCatalog
 import com.agentx.app.termux.TermuxInstallStage
 import com.agentx.app.termux.TermuxProvisioningState
@@ -84,27 +85,69 @@ fun installStageGuidance(stage: TermuxInstallStage?): String = when (stage) {
 /**
  * Can the screen offer the on-screen keyboard?
  *
- * Only while a live process is attached. After the process exits, offering the keyboard would
- * suggest typing goes somewhere when it does not.
+ * Only while a live process is attached. Offering it while a shell is still starting up, or after
+ * it has stopped, would suggest typing goes somewhere when it does not. Note this is driven by the
+ * session's own state, not by a separate "running" flag that could disagree with it.
  */
-fun acceptsInput(unavailable: Boolean, running: Boolean): Boolean = running && !unavailable
+fun acceptsInput(unavailable: Boolean, state: TerminalSessionState?): Boolean =
+    !unavailable && state == TerminalSessionState.RUNNING
 
 /**
- * The exit line for a session that has stopped, with the process's own error output when there is
- * any. Null while the process is running.
+ * The line shown under the terminal for a session that is not running, or null while it is.
+ *
+ * This is the function that used to emit "the shell stopped before reporting a status" for a
+ * session that did not exist. There is no such case any more: a session that never started is
+ * [TerminalSessionState.FAILED] and carries its own reason, so the message always names something
+ * real. [TerminalSessionState.STARTING] maps to null on purpose — a shell that is coming up has
+ * nothing to report, and an exit line there would make a healthy launch look like a failure.
  */
-fun exitSummary(running: Boolean, exitStatus: Int?, lastError: String?): String? {
-    if (running) return null
-    val status = exitStatus ?: 1
-    val reason = when {
-        exitStatus == null -> "the shell stopped before reporting a status"
-        status == 0 -> "the shell exited normally"
-        status == 1 -> "the shell exited with status 1 (a startup failure, such as a missing prefix or shell)"
-        status == 9 -> "the shell was killed (signal 9)"
-        status == 137 -> "the shell was killed (SIGKILL)"
-        status > 128 -> "the shell was killed by signal ${status - 128}"
-        else -> "the shell exited with status $status"
-    }
+fun exitSummary(
+    state: TerminalSessionState,
+    exitStatus: Int,
+    failure: String?,
+    lastError: String? = null,
+): String? = when (state) {
+    TerminalSessionState.RUNNING,
+    TerminalSessionState.STARTING,
+    TerminalSessionState.STOPPING,
+    TerminalSessionState.IDLE,
+    -> null
+
+    TerminalSessionState.FAILED -> appendProcessError(
+        failure?.takeIf { it.isNotBlank() }
+            ?: "the shell exited with status $exitStatus before it started",
+        lastError,
+    )
+
+    TerminalSessionState.STOPPED -> appendProcessError(stopReason(exitStatus), lastError)
+}
+
+/** The heading over the recovery panel, so a terminal that cannot be typed into is never blank. */
+fun terminalFailureHeading(state: TerminalSessionState?): String? = when (state) {
+    TerminalSessionState.FAILED -> "Terminal failed to start"
+    TerminalSessionState.STOPPED -> "The shell session has ended"
+    TerminalSessionState.IDLE -> "Terminal is not started"
+    else -> null
+}
+
+/**
+ * What to show when the screen has no session object at all.
+ *
+ * Distinct from a stopped shell: there is nothing to describe and nothing to type into. The screen
+ * still offers the action that fixes it.
+ */
+fun noSessionSummary(): String = "No shell session is open."
+
+private fun stopReason(status: Int): String = when {
+    status == 0 -> "the shell exited normally"
+    status == 1 -> "the shell exited with status 1 (a startup failure, such as a missing prefix or shell)"
+    status == 9 -> "the shell was killed (signal 9)"
+    status == 137 -> "the shell was killed (SIGKILL)"
+    status > 128 -> "the shell was killed by signal ${status - 128}"
+    else -> "the shell exited with status $status"
+}
+
+private fun appendProcessError(reason: String, lastError: String?): String {
     val error = lastError?.trim()?.lines()?.lastOrNull { it.isNotBlank() }
     return if (error.isNullOrEmpty()) reason else "$reason — $error"
 }

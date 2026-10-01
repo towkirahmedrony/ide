@@ -1,5 +1,6 @@
 package com.agentx.app.termux
 
+import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -13,8 +14,16 @@ import kotlinx.coroutines.flow.asStateFlow
  * `npm run dev` therefore keeps streaming while the user edits files.
  *
  * No coroutine scope and no `GlobalScope`: process lifetime is owned by the sessions themselves
- * (Termux's `TerminalSession` spawns its own reader/writer/waiter threads and closes them on
- * exit), and this class only tracks them.
+ * (the vendored `TerminalSession` spawns its own reader/writer/waiter threads and closes them on
+ * exit, and [TerminalSessionAdapter] owns the launch and timeout bookkeeping), and this class only
+ * tracks them.
+ *
+ * ## The invariant
+ *
+ * [open] and [restart] always resolve to a session object — including when the process could not be
+ * created — unless the workspace cap is genuinely full of live shells. Nothing here may leave the
+ * list empty while the terminal screen is asking for a shell, because an empty list is a terminal
+ * with no handle, no reason and no way back.
  */
 class TermuxSessionManager(
     private val factory: TermuxSessionFactory,
@@ -26,6 +35,9 @@ class TermuxSessionManager(
     private val lock = Any()
     private val ordered = ArrayList<TermuxSession>()
     private val byWorkspaceKey = LinkedHashMap<String, String>()
+
+    /** Handles for sessions that could not be constructed; never reused. */
+    private var failureCounter = 0
 
     private val snapshotFlow = MutableStateFlow<List<TermuxSessionSnapshot>>(emptyList())
     private val activeFlow = MutableStateFlow<String?>(null)
@@ -50,43 +62,75 @@ class TermuxSessionManager(
     /**
      * Returns the session for [spec]'s workspace, starting one only when there is none running.
      *
-     * A session that already exited is replaced, so a "restart after crash" is a plain call to
-     * this method. Returns null only when the capacity limit would be exceeded.
+     * A session that already finished is replaced, so "restart after a crash" is a plain call to
+     * this method. Returns null only when the cap is full of *live* shells; a finished or failed
+     * session is evicted to make room instead, because the cap must never be what wedges the
+     * terminal.
      */
     fun open(spec: TermuxShellSpec): TermuxSession? {
-        val created = synchronized(lock) {
+        val disposals = ArrayList<TermuxSession>()
+        val created: TermuxSession
+        val superseded: String?
+        synchronized(lock) {
             val existingHandle = byWorkspaceKey[spec.workspaceKey]
+            superseded = existingHandle
             val existing = existingHandle?.let { handle -> ordered.firstOrNull { it.handle == handle } }
-            when {
-                existing != null && existing.isRunning -> return@synchronized existing
-                existing != null -> {
-                    // Dead leftover: drop it from the tracking lists before replacing it.
-                    detachLocked(existing.handle)
-                    existing.finish()
-                }
+            if (existing != null && existing.isRunning) return existing
+            if (existing != null) {
+                // Detached before the replacement is built so the two never coexist under one
+                // workspace key; finished outside the lock, because that kills a process.
+                detachLocked(existing.handle)?.let(disposals::add)
             }
-            if (ordered.size >= maxSessions) return null
-            // A factory that throws (no pty available, JNI missing) propagates: the caller
-            // reports it instead of the terminal silently showing nothing.
-            val session = factory.create(spec)
-            ordered += session
-            byWorkspaceKey[spec.workspaceKey] = session.handle
-            session
+            if (ordered.size >= maxSessions) {
+                val evictable = ordered.firstOrNull { it.state.isTerminal } ?: return null
+                detachLocked(evictable.handle)?.let(disposals::add)
+            }
+            created = createLocked(spec)
+            ordered += created
+            byWorkspaceKey[spec.workspaceKey] = created.handle
         }
-        if (activeFlow.value == null || activeFlow.value == created.handle) {
+
+        val previousActive = activeFlow.value
+        if (previousActive == null ||
+            previousActive == superseded ||
+            find(previousActive) == null ||
+            disposals.any { it.handle == previousActive }
+        ) {
             activeFlow.value = created.handle
         }
+
+        // Published before the old sessions are killed and before the new one is started, so the UI
+        // always has a handle to draw and to restart from — even if the start below fails outright.
+        publish()
+        disposals.forEach { session ->
+            Log.i(TAG, "replacing dead session handle=${session.handle} state=${session.state}")
+            runCatching { session.finish() }
+        }
+        created.start()
         publish()
         return created
     }
 
     /**
-     * Kills [handle] and starts a fresh session for [spec]. The old handle is never reused, so a
-     * stale terminal view cannot drive the replacement's pty.
+     * Kills [handle] if it exists and starts a fresh session for [spec].
+     *
+     * [handle] is nullable and may be stale on purpose. Restart is the only way out of a failed
+     * session, and it used to be gated on `activeHandle != null` — which is exactly the condition
+     * that is false after a start failure, so the button did nothing when it mattered. Restart now
+     * does not depend on the old session existing or on receiving anything from it.
      */
-    fun restart(handle: String, spec: TermuxShellSpec): TermuxSession? {
-        val previous = find(handle)
-        if (previous != null) terminate(handle)
+    fun restart(handle: String?, spec: TermuxShellSpec): TermuxSession? {
+        Log.i(TAG, "restart from handle=${handle ?: "(none)"} workspace=${spec.workspaceKey}")
+        TerminalDiagnostics.record(
+            TAG,
+            "restart requested from=${handle ?: "(no handle)"} workspace=${spec.workspaceKey} " +
+                "sessions=${sessions().size}",
+        )
+        if (handle != null) {
+            // Detached without publishing so the UI never observes a gap with no session at all.
+            val removed = synchronized(lock) { detachLocked(handle) }
+            removed?.let { runCatching { it.finish() } }
+        }
         return open(spec)
     }
 
@@ -122,12 +166,16 @@ class TermuxSessionManager(
     }
 
     /**
-     * Called when the shell exits on its own, so the snapshot stops claiming it is running and
-     * the workspace stops pointing at a dead handle.
+     * The single authoritative exit path. Called when a shell exits on its own — whether it was
+     * running, or it died before it ever came up.
+     *
+     * Everything that needs to know a process ended goes through here, so no two components can
+     * disagree about whether the shell is alive.
      */
     fun onSessionFinished(handle: String) {
         val session = find(handle) ?: return
         if (session.isRunning) return
+        Log.i(TAG, "exit handle=$handle state=${session.state} exit=${session.exitStatus}")
         synchronized(lock) {
             byWorkspaceKey.entries.removeAll { it.value == handle }
         }
@@ -150,6 +198,31 @@ class TermuxSessionManager(
         return removed
     }
 
+    /**
+     * Builds the session, turning a construction failure into a session that reports it.
+     *
+     * `Throwable`, not `Exception`: the PTY is reached through JNI, and a missing or unloadable
+     * native library surfaces as `UnsatisfiedLinkError`, which is an `Error`. That case used to
+     * escape `open` entirely and leave the list empty.
+     */
+    private fun createLocked(spec: TermuxShellSpec): TermuxSession = try {
+        factory.create(spec)
+    } catch (error: Throwable) {
+        val handle = "failed-${failureCounter++}"
+        Log.e(TAG, "could not create session for ${spec.workspaceKey} on $handle", error)
+        TerminalDiagnostics.recordFailure(
+            TAG,
+            "session creation failed workspace=${spec.workspaceKey} executable=${spec.executable}",
+            error,
+        )
+        UnstartableTermuxSession(
+            handle = handle,
+            executable = spec.executable,
+            temporarySystemShell = spec.temporarySystemShell,
+            failure = error.message?.takeIf { it.isNotBlank() } ?: error.javaClass.simpleName,
+        )
+    }
+
     private fun publish() {
         val snapshots = synchronized(lock) { ordered.map { it.toSnapshot() } }
         snapshotFlow.value = snapshots
@@ -161,8 +234,9 @@ class TermuxSessionManager(
         workspaceKey = synchronized(lock) {
             byWorkspaceKey.entries.firstOrNull { it.value == handle }?.key
         } ?: handle,
-        running = isRunning,
+        state = state,
         exitStatus = exitStatus,
+        failure = failure,
         title = title,
         workingDirectory = workingDirectory,
         temporarySystemShell = temporarySystemShell,
@@ -171,5 +245,6 @@ class TermuxSessionManager(
 
     companion object {
         const val DEFAULT_MAX_SESSIONS: Int = 8
+        private const val TAG = "TermuxSessionManager"
     }
 }

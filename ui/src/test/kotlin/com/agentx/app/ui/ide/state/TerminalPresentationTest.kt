@@ -1,5 +1,6 @@
 package com.agentx.app.ui.ide.state
 
+import com.agentx.app.termux.TerminalSessionState
 import com.agentx.app.termux.TermuxBootstrapCatalog
 import com.agentx.app.termux.TermuxInstallStage
 import com.agentx.app.termux.TermuxProvisioning
@@ -59,31 +60,65 @@ class TerminalPresentationTest {
 
     @Test
     fun `the keyboard is offered only while a process is attached`() {
-        assertTrue(acceptsInput(unavailable = false, running = true))
-        assertFalse(acceptsInput(unavailable = false, running = false))
-        assertFalse(acceptsInput(unavailable = true, running = true))
+        assertTrue(acceptsInput(unavailable = false, state = TerminalSessionState.RUNNING))
+        // A shell that is still coming up cannot receive typing either.
+        assertFalse(acceptsInput(unavailable = false, state = TerminalSessionState.STARTING))
+        assertFalse(acceptsInput(unavailable = false, state = TerminalSessionState.STOPPED))
+        assertFalse(acceptsInput(unavailable = false, state = TerminalSessionState.FAILED))
+        assertFalse(acceptsInput(unavailable = false, state = null))
+        assertFalse(acceptsInput(unavailable = true, state = TerminalSessionState.RUNNING))
     }
 
     @Test
     fun `an exited process explains the status instead of printing a bare number`() {
-        assertNull(exitSummary(running = true, exitStatus = null, lastError = null))
+        // A shell that is still starting has nothing to report; an exit line there would make a
+        // healthy launch look like a failure.
+        assertNull(exitSummary(TerminalSessionState.STARTING, exitStatus = 1, failure = null))
+        assertNull(exitSummary(TerminalSessionState.RUNNING, exitStatus = 1, failure = null))
 
-        val startupFailure = assertNotNull(exitSummary(running = false, exitStatus = 1, lastError = null))
+        val startupFailure = assertNotNull(exitSummary(TerminalSessionState.STOPPED, 1, null))
         assertTrue(startupFailure.contains("startup failure"), startupFailure)
 
-        val killed = assertNotNull(exitSummary(running = false, exitStatus = 9, lastError = null))
+        val killed = assertNotNull(exitSummary(TerminalSessionState.STOPPED, 9, null))
         assertTrue(killed.contains("signal 9"), killed)
 
-        val clean = assertNotNull(exitSummary(running = false, exitStatus = 0, lastError = null))
+        val clean = assertNotNull(exitSummary(TerminalSessionState.STOPPED, 0, null))
         assertTrue(clean.contains("exited normally"), clean)
 
-        val unknown = assertNotNull(exitSummary(running = false, exitStatus = null, lastError = null))
-        assertTrue(unknown.contains("before reporting a status"), unknown)
-
         val withError = assertNotNull(
-            exitSummary(running = false, exitStatus = 1, lastError = "warning\nsh: no such file"),
+            exitSummary(TerminalSessionState.STOPPED, 1, null, lastError = "warning\nsh: no such file"),
         )
         assertTrue(withError.contains("sh: no such file"), withError)
+    }
+
+    @Test
+    fun `a shell that never started is never described as one that stopped`() {
+        // The regression this guards: the old wording blamed a shell for stopping when in fact no
+        // session existed at all, which made the failure unreadable and hid the way out.
+        val failed = assertNotNull(
+            exitSummary(
+                state = TerminalSessionState.FAILED,
+                exitStatus = 1,
+                failure = "could not start /data/app/.../libproot.so",
+            ),
+        )
+        assertTrue(failed.contains("could not start"), failed)
+        assertFalse(failed.contains("before reporting a status"), failed)
+
+        // Even with no reason recorded, it must not claim the shell ran and then stopped.
+        val bare = assertNotNull(exitSummary(TerminalSessionState.FAILED, 1, failure = null))
+        assertFalse(bare.contains("before reporting a status"), bare)
+        assertTrue(bare.contains("before it started"), bare)
+    }
+
+    @Test
+    fun `a failed terminal offers a heading and something to read`() {
+        assertEquals("Terminal failed to start", terminalFailureHeading(TerminalSessionState.FAILED))
+        assertEquals("The shell session has ended", terminalFailureHeading(TerminalSessionState.STOPPED))
+        assertNull(terminalFailureHeading(TerminalSessionState.RUNNING))
+        assertNull(terminalFailureHeading(TerminalSessionState.STARTING))
+        // No session at all still says so rather than leaving the panel blank.
+        assertTrue(noSessionSummary().isNotBlank())
     }
 
     @Test
@@ -131,13 +166,54 @@ class TerminalPresentationTest {
 
     @Test
     fun `an exited session shows the restart label and hides the keyboard`() {
-        val exited = TerminalUiState(running = false, exitStatus = 1)
+        val exited = TerminalUiState(sessionState = TerminalSessionState.STOPPED, exitStatus = 1)
         assertFalse(exited.canType)
         assertEquals("Restart terminal", exited.restartLabel)
         assertTrue(assertNotNull(exited.exitLine).contains("status 1"))
 
-        val live = TerminalUiState(running = true)
+        val live = TerminalUiState(sessionState = TerminalSessionState.RUNNING)
         assertTrue(live.canType)
         assertNull(live.exitLine)
     }
+
+    @Test
+    fun `a failed session stays readable and restartable from the ui state alone`() {
+        val failed = TerminalUiState(
+            sessionState = TerminalSessionState.FAILED,
+            failure = "the pty did not report a shell pid",
+        )
+        assertFalse(failed.canType)
+        assertEquals("failed", failed.statusLabel)
+        assertEquals("Terminal failed to start", failed.failureHeading)
+        assertTrue(assertNotNull(failed.exitLine).contains("did not report a shell pid"))
+        // Restart is the whole recovery path, so it must still be offered.
+        assertEquals("Restart terminal", failed.restartLabel)
+    }
+
+    @Test
+    fun `a session that is still starting offers no exit line and no keyboard`() {
+        val starting = TerminalUiState(sessionState = TerminalSessionState.STARTING)
+        assertEquals("starting", starting.statusLabel)
+        assertNull(starting.exitLine)
+        assertNull(starting.failureHeading)
+        assertFalse(starting.canType)
+        assertFalse(starting.needsSession)
+    }
+
+    @Test
+    fun `no session at all is a state the screen can describe and leave`() {
+        val empty = TerminalUiState()
+        // The screen notices and asks for one rather than waiting for a status that never arrives.
+        assertTrue(empty.needsSession)
+        assertNull(empty.sessionState)
+        assertFalse(empty.canType)
+        assertNull(empty.failureHeading)
+        // There is no shell to describe, so there is no exit line — and in particular no claim that
+        // a shell stopped. That wording was only ever produced by this state.
+        assertNull(empty.exitLine)
+        assertFalse(exitLineOrNoSession(empty).contains("before reporting a status"))
+    }
+
+    private fun exitLineOrNoSession(state: TerminalUiState): String =
+        state.exitLine ?: noSessionSummary()
 }

@@ -56,6 +56,17 @@ class TermuxRuntime(
     /** Whether the official Termux artifacts can live in [paths]. */
     val prefixSupport: TermuxPrefixSupport = TermuxPrefixPolicy.evaluate(paths)
 
+    init {
+        // The sink lives in app storage so the last run survives a process death, which several
+        // failures in this chain cause and which takes logcat with it.
+        TerminalDiagnostics.attach(File(appContext.filesDir, DIAGNOSTICS_FILE))
+        TerminalDiagnostics.record(
+            TAG,
+            "TermuxRuntime created filesDir=${appContext.filesDir.absolutePath} abis=${supportedAbis()}",
+        )
+        TerminalDiagnostics.record(TAG, "legacy prefix support=${prefixSupport.javaClass.simpleName}")
+    }
+
     private val installer = TermuxBootstrapInstaller(
         paths = paths,
         supportedAbis = supportedAbis(),
@@ -267,7 +278,30 @@ class TermuxRuntime(
         if (sessions.sessions().none { it.isRunning }) TermuxSessionService.stopIfIdle(appContext)
     }
 
+    /**
+     * Builds the session object. It does **not** launch the process: [TermuxSession.start] does
+     * that, off the main thread, and records a failure on the session itself instead of throwing.
+     *
+     * Constructing rather than launching here is also what makes `STARTING` observable: the
+     * vendored session reports `isRunning` for a process that was never spawned, so "created" and
+     * "running" have to be distinguished by whoever owns the lifecycle.
+     */
     private fun createSession(spec: TermuxShellSpec): TermuxSession {
+        // The exact invocation, recorded before anything can fail: this is the line that answers
+        // "what was PRoot actually asked to run".
+        TerminalDiagnostics.record(
+            TAG,
+            "session spec workspace=${spec.workspaceKey} executable=${spec.executable} " +
+                "cwd=${spec.workingDirectory} temporarySystemShell=${spec.temporarySystemShell} " +
+                "fullTermux=${spec.fullTermux}",
+        )
+        TerminalDiagnostics.record(TAG, "argv=${spec.arguments.joinToString(" ")}")
+        // Variable *names* only. The environment carries tokens and endpoint URLs, and the
+        // question here is only whether PRoot received the variables it needs.
+        TerminalDiagnostics.record(
+            TAG,
+            "env keys=${spec.environment.map { it.substringBefore('=') }.sorted().joinToString()}",
+        )
         val terminal = try {
             TerminalSession(
                 spec.executable,
@@ -277,7 +311,16 @@ class TermuxRuntime(
                 spec.transcriptRows,
                 sessionClient,
             )
-        } catch (error: Exception) {
+        } catch (error: Throwable) {
+            // The class name and stack go to the diagnostics file: for a linkage failure the
+            // message is often the missing library rather than the failure, and for an
+            // ExceptionInInitializerError it is null.
+            TerminalDiagnostics.recordFailure(
+                TAG,
+                "could not construct a terminal session for ${spec.executable}",
+                error,
+            )
+            // Named so the UI's failure line can say which executable could not be started.
             throw IllegalStateException(
                 TermuxShellStartFailure(
                     executable = spec.executable,
@@ -287,11 +330,12 @@ class TermuxRuntime(
                 error,
             )
         }
-        terminal.updateSize(defaultColumns, defaultRows, 0, 0)
         return TerminalSessionAdapter(
             delegate = terminal,
             executable = spec.executable,
             temporarySystemShell = spec.temporarySystemShell,
+            columns = defaultColumns,
+            rows = defaultRows,
         )
     }
 
@@ -305,6 +349,9 @@ class TermuxRuntime(
         const val DEFAULT_COLUMNS: Int = 80
         const val DEFAULT_ROWS: Int = 24
         const val DEFAULT_TRANSCRIPT_ROWS: Int = 2000
+
+        /** App-private file the diagnostic recorder appends to, so a crash does not erase it. */
+        const val DIAGNOSTICS_FILE: String = "terminal-diagnostics.log"
 
         private val LOCK = Any()
 
