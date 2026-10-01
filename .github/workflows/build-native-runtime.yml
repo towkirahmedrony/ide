@@ -1,0 +1,64 @@
+name: Build AgentX Native Developer Runtime
+
+# Cross-compiles PRoot, its loader, talloc and android-shmem from pinned upstream sources with
+# the Android NDK, verifies the artifacts and publishes them under a fixed release tag. The APK
+# build downloads that tag into `ubuntu-runtime/src/main/jniLibs/<abi>/`.
+#
+# Manual on purpose: it takes a while, and it must never be able to fail the APK build. Run it,
+# read the logs, then re-run `Build Android Release APK`.
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish the verified artifacts to a release"
+        type: boolean
+        default: false
+      tag:
+        description: "Release tag to publish to (required when publish is true)"
+        type: string
+        default: ""
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Android NDK
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27c
+
+      - name: Build PRoot runtime (arm64-v8a)
+        env:
+          NDK: ${{ steps.ndk.outputs.ndk-path }}
+        run: sh tools/ubuntu-runtime/build-proot.sh arm64-v8a out/artifacts
+
+      - name: Verify artifacts
+        run: sh tools/ubuntu-runtime/verify-native.sh arm64-v8a out/artifacts
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentx-native-runtime-arm64-v8a
+          path: out/artifacts/*
+
+      - name: Publish release
+        if: ${{ inputs.publish }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          if [ -z "$TAG" ]; then
+            echo "publish requested without a tag" >&2
+            exit 1
+          fi
+          gh release create "$TAG" \
+            --title "AgentX native developer runtime $TAG" \
+            --notes "PRoot v5.1.107.95 (termux/proot d4d2a19081c3c07f75250e4ce2980b9fa2f5720f), GPL-2.0-or-later. See third_party/proot." \
+            out/artifacts/*

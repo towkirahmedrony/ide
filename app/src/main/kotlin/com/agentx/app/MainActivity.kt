@@ -54,6 +54,7 @@ import com.agentx.app.ui.ide.IdeDependencies
 import com.agentx.app.ui.ide.data.mock.MockGitRepository
 import com.agentx.app.termux.TermuxRuntime
 import com.agentx.app.termux.TermuxRuntimeHolder
+import com.agentx.app.ubuntu.LocalUbuntuRuntime
 import com.agentx.app.ui.theme.ForgeTheme
 import com.agentx.app.workspace.DefaultWorkspaceManager
 import com.agentx.app.workspace.android.SafWorkspaceBackend
@@ -147,6 +148,12 @@ class MainActivity : ComponentActivity() {
         val termuxRuntime = TermuxRuntime.get(applicationContext)
         TermuxRuntimeHolder.install(termuxRuntime)
 
+        // The primary developer runtime is process-scoped for the same reason: its rootfs
+        // install must survive an Activity recreation, and its status drives the Terminal tab.
+        // It is intentionally separate from the legacy Termux runtime, which stays installed
+        // as the fallback backend while the new runtime is validated on devices.
+        val developerRuntime = LocalUbuntuRuntime.get(applicationContext)
+
         val modelManager = foundation.services.get<ModelManager>(ServiceKeys.MODEL_MANAGER)
         val connectionManager = foundation.services.get<ConnectionManager>(ServiceKeys.CONNECTION_MANAGER)
         val integrationSetup = foundation.services.get<IntegrationSetupManager>(ServiceKeys.INTEGRATION_SETUP)
@@ -225,6 +232,7 @@ class MainActivity : ComponentActivity() {
                             modelConfig = { modelManagerOrDefault(modelManager) },
                         ),
                         terminalRuntime = termuxRuntime,
+                        developerRuntime = developerRuntime,
                         git = MockGitRepository(),
                         modelManager = checkNotNull(modelManager) { "Model manager is not registered" },
                         connectionManager = checkNotNull(connectionManager) { "Connection manager is not registered" },

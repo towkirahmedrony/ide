@@ -3,6 +3,7 @@ package com.agentx.app.ui.ide.state
 import com.agentx.app.termux.TermuxBootstrapCatalog
 import com.agentx.app.termux.TermuxInstallStage
 import com.agentx.app.termux.TermuxProvisioningState
+import com.agentx.app.ubuntu.UbuntuInstallStage
 
 /**
  * The wording rules of the Terminal screen.
@@ -29,6 +30,31 @@ fun bootstrapAvailabilityNote(entry: TermuxBootstrapCatalog.Entry?): String? = w
             "The terminal still runs the system shell."
 
     else -> null
+}
+
+/**
+ * One line naming the step that failed for the primary developer runtime and what to do next.
+ *
+ * The stages mirror [UbuntuInstallStage]; a checksum mismatch and a validation failure are
+ * different problems and must read differently.
+ */
+fun developerRuntimeStageGuidance(stage: UbuntuInstallStage?): String = when (stage) {
+    UbuntuInstallStage.DOWNLOAD ->
+        "Download failed: the Ubuntu rootfs could not be fetched. Check the connection and retry."
+    UbuntuInstallStage.CHECKSUM ->
+        "Checksum failed: the downloaded rootfs does not match the pinned SHA-256. It was deleted; retry to fetch it again."
+    UbuntuInstallStage.EXTRACTION ->
+        "Extraction failed: the verified rootfs could not be unpacked. The archive may be corrupt."
+    UbuntuInstallStage.VALIDATION ->
+        "Validation failed: the extracted tree does not contain a usable Ubuntu userland (bash, apt, dpkg)."
+    UbuntuInstallStage.CONFIGURATION ->
+        "Setup failed: the runtime directories or apt configuration could not be written."
+    UbuntuInstallStage.ACTIVATION ->
+        "Activation failed: the validated rootfs could not be moved into place."
+    UbuntuInstallStage.RUNTIME ->
+        "Runtime failed: the rootfs installed but the install marker or required files are missing."
+    null ->
+        "Runtime install failed."
 }
 
 /** One line naming the step that failed and what the user can do about it. */

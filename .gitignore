@@ -26,6 +26,13 @@ captures/
 *.jks
 *.keystore
 
+# Native developer runtime (PRoot + loader + talloc + android-shmem). Built from pinned
+# upstream sources by .github/workflows/build-native-runtime.yml and dropped into jniLibs by
+# the APK build; never committed, because a rebuildable binary does not belong in the tree.
+ubuntu-runtime/src/main/jniLibs/
+tools/ubuntu-runtime/out/
+tools/ubuntu-runtime/build/
+
 # Local integration patch produced for offline hand-off; not part of the source tree.
 termux-terminal-integration.patch
 ci-workflow-changes.patch

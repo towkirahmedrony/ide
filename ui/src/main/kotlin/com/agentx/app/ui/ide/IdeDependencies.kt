@@ -25,6 +25,7 @@ import com.agentx.app.ui.ide.data.mock.mockWorkspacePicker
 import com.agentx.app.skills.DefaultSkillManager
 import com.agentx.app.skills.SkillManager
 import com.agentx.app.termux.TermuxRuntime
+import com.agentx.app.ubuntu.LocalUbuntuRuntime
 import com.agentx.app.workspace.WorkspaceManager
 
 /**
@@ -55,6 +56,12 @@ data class IdeDependencies(
      * without a pty; when it is absent the screen says so instead of showing a fake shell.
      */
     val terminalRuntime: TermuxRuntime? = null,
+    /**
+     * The primary embedded developer runtime (Ubuntu ARM64 through PRoot). When present and
+     * ready it supplies the terminal's process; when it is absent or not installed, the legacy
+     * [terminalRuntime] remains the backend, so the terminal is never without a shell.
+     */
+    val developerRuntime: LocalUbuntuRuntime? = null,
     val git: GitRepository,
     val modelManager: ModelManager,
     val connectionManager: ConnectionManager,

@@ -1,0 +1,8 @@
+ubuntu-base
+release: 24.04.5 LTS (noble)
+arch: arm64
+asset: ubuntu-base-24.04.5-base-arm64.tar.gz
+url: https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.5-base-arm64.tar.gz
+size: 29936675
+sha256: a91d5a93010193712d346d761372b7c9db6dfcf093893161c64ca107f05914f2
+install: downloaded and SHA-256 verified on first run; never bundled in the APK

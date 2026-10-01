@@ -33,6 +33,10 @@ include(":codeintel")
 include(":termux-terminal-emulator")
 include(":termux-terminal-view")
 
+// The primary embedded developer runtime (Ubuntu ARM64 through PRoot). It depends on
+// `:termux-runtime` only for the shared terminal layer; see docs/developer-runtime.md.
+include(":ubuntu-runtime")
+
 // Android-facing layers.
 include(":termux-runtime")
 include(":ui")

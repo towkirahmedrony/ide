@@ -108,6 +108,7 @@ fun WorkspaceShell(
                         ?.workspace?.metadata?.displayLocation
                 },
                 runtime = dependencies.terminalRuntime,
+                developerRuntime = dependencies.developerRuntime,
             )
         },
     )

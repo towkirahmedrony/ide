@@ -23,9 +23,12 @@ android {
     defaultConfig {
         applicationId = "com.agentx.app"
         minSdk = 26
-        // Android 10+ blocks execve() of binaries under app-private data for targetSdk >= 29.
-        // Termux intentionally targets 28 so its self-contained userland can start from $PREFIX.
-        targetSdk = 28
+        // AgentX targets a modern SDK. Executing the developer runtime no longer depends on the
+        // legacy targetSdk 28 exemption: the primary backend is PRoot, and only the native
+        // executables under `nativeLibraryDir` are started directly by Android, while guest
+        // binaries go through the PRoot loader. `libtermux.so` (the pty JNI) is a native library
+        // too, so the whole terminal path is inside the allowed execution location.
+        targetSdk = 37
         versionCode = 1
         versionName = "0.1.0"
     }
@@ -45,10 +48,13 @@ android {
         }
     }
 
-    // This app is distributed as a sideloaded APK while the embedded Termux runtime requires
-    // targetSdk 28. AGP's Play-policy lint would otherwise reject the artifact before packaging.
-    lint {
-        disable += "ExpiredTargetSdkVersion"
+    // Extract packaged `jniLibs/<abi>/*.so` to `nativeLibraryDir` on install. This is what
+    // makes `libproot.so` and `libproot_loader.so` real, executable files at runtime, which is
+    // a hard requirement of the embedded developer runtime (and of the vendored pty JNI).
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
     }
 
     compileOptions {
@@ -133,7 +139,9 @@ dependencies {
 
     // Android-facing layers.
     implementation(project(":ui"))
-    // The embedded Termux terminal runtime and its vendored terminal libraries.
+    // The embedded terminal: the primary Ubuntu developer runtime plus the legacy Termux
+    // runtime it falls back to, and their shared vendored terminal libraries.
+    implementation(project(":ubuntu-runtime"))
     implementation(project(":termux-runtime"))
     implementation(project(":codeintel-android"))
     implementation(project(":workspace-android"))

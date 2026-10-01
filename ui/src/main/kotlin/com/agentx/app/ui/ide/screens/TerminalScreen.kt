@@ -52,6 +52,8 @@ import com.agentx.app.termux.TermuxProvisioningState
 import com.agentx.app.termux.TermuxTerminalHost
 import com.agentx.app.termux.TermuxViewClient
 import com.agentx.app.termux.TermuxViewHost
+import com.agentx.app.ubuntu.AgentxRuntimeState
+import com.agentx.app.ui.ide.state.developerRuntimeStageGuidance
 import com.agentx.app.ui.ide.state.TerminalUiState
 import com.agentx.app.ui.ide.state.TerminalViewModel
 import com.agentx.app.ui.theme.ForgeAmber
@@ -334,6 +336,12 @@ private fun ExitedBanner(line: String, label: String, onRestart: () -> Unit) {
 
 @Composable
 private fun ProvisioningBanner(state: TerminalUiState, onInstall: () -> Unit) {
+    // The primary developer runtime owns the banner when it is wired in: it is the backend a
+    // real shell comes from, and the legacy Termux bootstrap is only the fallback.
+    if (state.developerRuntimeAvailable) {
+        DeveloperRuntimeBanner(state = state, onInstall = onInstall)
+        return
+    }
     val provisioning = state.provisioning
     when {
         provisioning is TermuxProvisioningState.Downloading -> {
@@ -377,6 +385,85 @@ private fun ProvisioningBanner(state: TerminalUiState, onInstall: () -> Unit) {
                     Icon(Icons.Filled.Download, contentDescription = null)
                     Spacer(Modifier.width(4.dp))
                     Text("Install")
+                }
+            }
+        }
+    }
+}
+
+/**
+ * The first-run experience for the embedded Ubuntu runtime.
+ *
+ * Nothing is installed silently: the screen names what the runtime is for, shows the download,
+ * verification and setup progress as they happen, and offers a single Install action. After a
+ * successful install the shell is replaced automatically, so there is no bootstrap command to
+ * type.
+ */
+@Composable
+private fun DeveloperRuntimeBanner(state: TerminalUiState, onInstall: () -> Unit) {
+    val status = state.developerRuntime
+    when {
+        status.state == AgentxRuntimeState.DOWNLOADING -> {
+            Column(modifier = Modifier.fillMaxWidth().background(ForgeSurfaceVariant)) {
+                LinearProgressIndicator(
+                    progress = { status.progressPercent / 100f },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    text = "Downloading Ubuntu ARM64 rootfs \u00b7 ${status.progressPercent}%" +
+                        if (status.totalBytes > 0) {
+                            " (${status.installedBytes / (1024 * 1024)}/${status.totalBytes / (1024 * 1024)} MB)"
+                        } else {
+                            ""
+                        },
+                    style = TerminalMetaStyle.copy(color = ForgeMuted),
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                )
+            }
+        }
+
+        status.isBusy -> {
+            Column(modifier = Modifier.fillMaxWidth().background(ForgeSurfaceVariant)) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                Text(
+                    text = when (status.state) {
+                        AgentxRuntimeState.VERIFYING -> "Verifying SHA-256\u2026"
+                        AgentxRuntimeState.EXTRACTING -> "Extracting Ubuntu rootfs\u2026"
+                        AgentxRuntimeState.INSTALLING -> "Configuring the developer runtime\u2026"
+                        else -> "Preparing the developer runtime\u2026"
+                    },
+                    style = TerminalMetaStyle.copy(color = ForgeMuted),
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                )
+            }
+        }
+
+        status.state == AgentxRuntimeState.ERROR -> {
+            val stage = status.stage?.let { "Failed at ${it.wireName}: " }.orEmpty()
+            NoteStrip(
+                text = "$stage${status.message.orEmpty()} " +
+                    "${developerRuntimeStageGuidance(status.stage)} Tap Install Runtime to retry.",
+                tone = ForgeDanger,
+            )
+        }
+
+        state.developerRuntimeNeedsInstall -> {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(ForgeSurfaceVariant)
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+            ) {
+                Text("AgentX Developer Runtime", style = MaterialTheme.typography.labelLarge, color = ForgeInk)
+                Text("Ubuntu ARM64", style = TerminalMetaStyle.copy(color = ForgeMint))
+                Text(
+                    "Required for Terminal, Git, Python, Node and local development.",
+                    style = TerminalMetaStyle.copy(color = ForgeMuted),
+                )
+                TextButton(onClick = onInstall) {
+                    Icon(Icons.Filled.Download, contentDescription = null)
+                    Spacer(Modifier.width(4.dp))
+                    Text("Install Runtime")
                 }
             }
         }

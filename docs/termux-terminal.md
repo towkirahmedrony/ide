@@ -1,3 +1,10 @@
+> **Legacy / fallback.** The primary terminal backend is now the embedded Ubuntu ARM64
+> developer runtime (`:ubuntu-runtime`), documented in [developer-runtime.md](developer-runtime.md).
+> This Termux path is kept intact and still builds, and the Terminal tab falls back to it when
+> the developer runtime is absent or not installed. No bootstrap asset, catalog entry or release
+> was regenerated. It is slated for removal in a later cleanup phase, after the developer runtime
+> passes a real-device run.
+
 # Embedded Termux terminal
 
 The Terminal tab runs a real Termux environment: Termux's own terminal emulator rendering

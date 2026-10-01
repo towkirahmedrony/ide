@@ -31,6 +31,26 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
+      - name: Vendor native developer runtime
+        # Downloads the pinned PRoot runtime (see .github/workflows/build-native-runtime.yml)
+        # into the module's jniLibs, so the APK packages it into nativeLibraryDir.
+        #
+        # Tolerant on purpose: until that workflow has published a release, the APK still
+        # builds, and at runtime the developer runtime reports its native components as missing
+        # rather than the build failing.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p ubuntu-runtime/src/main/jniLibs/arm64-v8a
+          gh release download agentx-native-runtime-2026.10.01-r1 \
+            --pattern '*.so' --dir /tmp/agentx-native \
+            || echo "::warning::native developer runtime release not published yet"
+          if [ -d /tmp/agentx-native ]; then
+            cp /tmp/agentx-native/*.so ubuntu-runtime/src/main/jniLibs/arm64-v8a/ || true
+          fi
+          ls -l ubuntu-runtime/src/main/jniLibs/arm64-v8a || true
+
       - name: Run unit tests
         run: ./gradlew test --stacktrace
 

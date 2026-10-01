@@ -15,6 +15,9 @@ import com.agentx.app.termux.TermuxShellSpec
 import com.agentx.app.termux.TermuxRuntime
 import com.agentx.app.termux.TermuxTerminalHost
 import com.agentx.app.termux.TermuxWorkspaceBinding
+import com.agentx.app.ubuntu.AgentxRuntimeState
+import com.agentx.app.ubuntu.LocalUbuntuRuntime
+import com.agentx.app.ubuntu.RuntimeStatus
 import com.termux.terminal.TerminalSession
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collect
@@ -49,10 +52,32 @@ data class TerminalUiState(
      * an artifact is catalogued; it says nothing about whether installing would succeed.
      */
     val bootstrapNote: String? = null,
+    /** Status of the primary embedded developer runtime (Ubuntu ARM64 through PRoot). */
+    val developerRuntime: RuntimeStatus = RuntimeStatus.NotInstalled,
+    /** True when a developer runtime is wired into this build (not a preview/test). */
+    val developerRuntimeAvailable: Boolean = false,
+    /** True when the live shell is the Ubuntu guest rather than the legacy backend. */
+    val usingDeveloperRuntime: Boolean = false,
 ) {
+    /** True when the first-run developer-runtime install screen should be shown. */
+    val developerRuntimeNeedsInstall: Boolean
+        get() = developerRuntimeAvailable && developerRuntime.state == AgentxRuntimeState.NOT_INSTALLED
+
+    /** True while the developer runtime is downloading or installing. */
+    val developerRuntimeBusy: Boolean
+        get() = developerRuntimeAvailable && developerRuntime.isBusy
+
+    /** True when the developer-runtime install failed and can be retried. */
+    val developerRuntimeFailed: Boolean
+        get() = developerRuntimeAvailable && developerRuntime.state == AgentxRuntimeState.ERROR
+
     val statusLabel: String
         get() = when {
             unavailable -> "unavailable"
+            developerRuntimeBusy && developerRuntime.state == AgentxRuntimeState.DOWNLOADING ->
+                "installing ${developerRuntime.progressPercent}%"
+            developerRuntimeBusy -> "installing"
+            developerRuntimeFailed -> "install failed"
             provisioning is TermuxProvisioningState.Downloading -> "installing ${provisioning.percent}%"
             provisioning is TermuxProvisioningState.Verifying -> "verifying"
             provisioning is TermuxProvisioningState.Extracting -> "installing"
@@ -115,6 +140,11 @@ class TerminalViewModel(
     private val workspaceLocation: () -> String?,
     private val runtime: TermuxRuntime?,
     /**
+     * The primary developer runtime. When it is present and ready it supplies the terminal's
+     * process (PRoot → Ubuntu guest); otherwise the legacy [runtime] does, unchanged.
+     */
+    private val developerRuntime: LocalUbuntuRuntime? = null,
+    /**
      * The catalog entry for this device, injected so the screen's unavailable-ABI behaviour is
      * testable. Defaults to the real catalog resolved against the device's ABIs.
      */
@@ -152,6 +182,10 @@ class TerminalViewModel(
             observe(current)
             open(scratch = false)
         }
+        uiState = uiState.copy(
+            developerRuntimeAvailable = developerRuntime != null,
+            developerRuntime = developerRuntime?.status?.value ?: RuntimeStatus.NotInstalled,
+        )
     }
 
     /** The screen publishes itself here so emulator callbacks reach the view it renders. */
@@ -177,6 +211,19 @@ class TerminalViewModel(
 
     fun provision() {
         val current = runtime ?: return
+        val developer = developerRuntime
+        if (developer != null && developer.needsInstall()) {
+            // The primary path: install the Ubuntu ARM64 rootfs, then replace the shell that was
+            // running before it existed. The legacy bootstrap is not touched.
+            viewModelScope.launch {
+                developer.provision()
+                val settled = developer.status.first { status ->
+                    status.state == AgentxRuntimeState.READY || status.state == AgentxRuntimeState.ERROR
+                }
+                if (settled.state == AgentxRuntimeState.READY) restart()
+            }
+            return
+        }
         uiState = uiState.copy(prefixNote = null)
         viewModelScope.launch {
             current.provision()
@@ -274,6 +321,12 @@ class TerminalViewModel(
             launch {
                 current.provisioning.collect { state -> uiState = uiState.copy(provisioning = state) }
             }
+            val developer = developerRuntime
+            if (developer != null) {
+                launch {
+                    developer.status.collect { status -> uiState = uiState.copy(developerRuntime = status) }
+                }
+            }
         }
     }
 
@@ -293,22 +346,70 @@ class TerminalViewModel(
 
     private fun open(scratch: Boolean) {
         val current = runtime ?: return
+        val key = workspaceKey(scratch)
+        val developerSpec = developerSpec(current, key, scratch)
+        if (developerSpec != null) {
+            // The primary backend: a real Ubuntu guest shell. The workspace note is cleared
+            // because the project is bind-mounted, not copied.
+            uiState = uiState.copy(usingDeveloperRuntime = true, workspaceNote = null)
+            current.openSession(developerSpec)
+            return
+        }
         val binding = binding(current, scratch)
         uiState = uiState.copy(
+            usingDeveloperRuntime = false,
             workspaceNote = workspaceNoteFor(binding)?.let(::trimNote),
         )
-        val key = if (scratch) "$workspaceId::scratch" else workspaceId
         current.openSession(current.specFor(key, binding, extraEnvironment(scratch)))
     }
 
     private fun spec(scratch: Boolean): TermuxShellSpec {
         val current = checkNotNull(runtime) { "Termux runtime is not available" }
+        developerSpec(current, workspaceKey(scratch), scratch)?.let { return it }
         return current.specFor(
-            workspaceKey = if (scratch) "$workspaceId::scratch" else workspaceId,
+            workspaceKey = workspaceKey(scratch),
             binding = binding(current, scratch),
             extraEnvironment = extraEnvironment(scratch),
         )
     }
+
+    private fun workspaceKey(scratch: Boolean): String =
+        if (scratch) "$workspaceId::scratch" else workspaceId
+
+    /**
+     * The developer-runtime spec for this session, or null when it cannot be used yet.
+     *
+     * Null means the runtime is missing, not installed, or its native components are absent; the
+     * caller then falls back to the legacy backend so the terminal is never left without a shell.
+     */
+    private fun developerSpec(
+        current: TermuxRuntime,
+        key: String,
+        scratch: Boolean,
+    ): TermuxShellSpec? {
+        val developer = developerRuntime ?: return null
+        if (!developer.isReady()) return null
+        val projectHostPath = if (scratch) null else legacyHostPath(current)
+        return developer.specFor(
+            workspaceKey = key,
+            projectHostPath = projectHostPath,
+            displayLocation = workspaceLocation(),
+            extraEnvironment = extraEnvironment(scratch),
+        )
+    }
+
+    /**
+     * The real host directory of the workspace, when it has one.
+     *
+     * A SAF tree with no path yields null: the developer runtime then starts in the guest home
+     * instead of binding a directory that does not exist.
+     */
+    private fun legacyHostPath(current: TermuxRuntime): String? =
+        when (val resolved = binding(current, scratch = false)) {
+            is TermuxWorkspaceBinding.Direct -> resolved.path
+            is TermuxWorkspaceBinding.Mirrored -> resolved.termuxPath
+            else -> null
+        }
 
     private fun binding(current: TermuxRuntime, scratch: Boolean): TermuxWorkspaceBinding =
         if (scratch) {

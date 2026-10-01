@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+        Reading the active network's DNS servers (so the generated `/etc/resolv.conf` is
+        correct) is an auto-granted normal permission.
+    -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!--
+        The developer runtime needs the network to download the Ubuntu rootfs on first use and,
+        once installed, for `apt`, `git`, `gh`, `pip` and `npm` to reach their own endpoints.
+        The app module already declares INTERNET; this module owns only what it starts.
+
+        No second foreground service is declared: terminal keep-alive is owned by the existing
+        `TermuxSessionService` in `:termux-runtime`, so the new runtime does not compete with it
+        (see AGENTS.md and docs/developer-runtime.md).
+    -->
+
+</manifest>

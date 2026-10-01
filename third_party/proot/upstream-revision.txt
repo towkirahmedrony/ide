@@ -1,0 +1,7 @@
+termux/proot
+revision: d4d2a19081c3c07f75250e4ce2980b9fa2f5720f
+tag: v5.1.107.95
+license: GPL-2.0-or-later
+original: proot-me/proot (STMicroelectronics)
+built by: tools/ubuntu-runtime/build-proot.sh
+published as: libproot.so, libproot_loader.so

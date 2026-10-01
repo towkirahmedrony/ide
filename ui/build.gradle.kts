@@ -42,6 +42,8 @@ dependencies {
     api(project(":codeintel"))
     // The Terminal tab renders the vendored Termux terminal; the runtime owns the pty sessions.
     api(project(":termux-runtime"))
+    // The primary embedded developer runtime, which supplies the terminal spec when ready.
+    api(project(":ubuntu-runtime"))
 
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.viewmodel.ktx)
