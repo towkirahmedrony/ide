@@ -230,6 +230,41 @@ class TermuxSessionManager(
         return targets.mapNotNull { snapshot -> restart(snapshot.handle, specFor(snapshot)) }
     }
 
+    /**
+     * Forgets the sessions that can no longer run and that the workspace should no longer point at.
+     *
+     * A recorded FAILED session exists so that a failure can be shown. Once the condition behind
+     * that failure has gone — the runtime was installed and verified — keeping it means the screen
+     * still presents a stale reason and a handle that can never start, which is how a successful
+     * install left the terminal on `unstartable-0` with a NOT_INSTALLED message beside it. Restart
+     * replaces the active session; this clears the leftovers it does not own.
+     *
+     * @param workspaceKey when given, only that workspace's bound session is considered.
+     * @return how many sessions were removed, so the caller can tell whether anything changed.
+     */
+    fun discardUnusable(workspaceKey: String? = null): Int {
+        val doomed = ArrayList<TermuxSession>(2)
+        synchronized(lock) {
+            for (session in ordered.toList()) {
+                if (!session.state.isTerminal || session.isRunning) continue
+                if (workspaceKey != null && byWorkspaceKey[workspaceKey] != session.handle) continue
+                detachLocked(session.handle)?.let(doomed::add)
+            }
+        }
+        if (doomed.isEmpty()) return 0
+        doomed.forEach { runCatching { it.finish() } }
+        // Keep the active handle pointing at something that exists, so a caller reading it next
+        // does not try to restart a session that is already gone.
+        synchronized(lock) {
+            val active = activeFlow.value
+            if (active != null && ordered.none { it.handle == active }) {
+                activeFlow.value = ordered.firstOrNull()?.handle
+            }
+        }
+        publish()
+        return doomed.size
+    }
+
     /** Kills the process and forgets the session. */
     fun terminate(handle: String) {
         val removed = synchronized(lock) { detachLocked(handle) }

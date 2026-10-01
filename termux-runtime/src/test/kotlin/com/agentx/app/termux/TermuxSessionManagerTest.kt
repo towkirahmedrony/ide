@@ -365,4 +365,45 @@ class TermuxSessionManagerTest {
         assertEquals(1, manager.sessions().size)
         assertEquals("b", replacement?.let { manager.snapshots.value.single().workspaceKey })
     }
+
+    @Test
+    fun `discarding unusable sessions clears the failure a finished install left behind`() {
+        val recorder = Recorder()
+        val manager = TermuxSessionManager(recorder.factory())
+
+        // The workspace was opened before the runtime existed, so it is bound to a recorded failure
+        // carrying the reason from that moment.
+        val failed = manager.openUnstartable(
+            workspaceKey = "demo",
+            executable = "/native/libproot.so",
+            reason = "The Ubuntu runtime is not ready, so no shell was started. installMarker=false",
+        )
+        assertEquals(TerminalSessionState.FAILED, failed.state)
+        assertEquals(failed.handle, manager.activeHandle.value)
+        assertEquals(1, manager.sessions().size)
+
+        // The runtime has since been installed and verified, so that failure is no longer the
+        // workspace's session and must not be what the screen presents.
+        assertEquals(1, manager.discardUnusable("demo"))
+        assertEquals(0, manager.sessions().size)
+        assertNull(manager.activeHandle.value)
+
+        // What the post-install path does next: open the guest shell, with no handle to reuse.
+        val opened = manager.open(spec("demo"))!!
+        assertEquals(TerminalSessionState.RUNNING, opened.state)
+        assertEquals(opened.handle, manager.activeHandle.value)
+        assertNotEquals(failed.handle, opened.handle)
+    }
+
+    @Test
+    fun `a running shell is never discarded as unusable`() {
+        val recorder = Recorder()
+        val manager = TermuxSessionManager(recorder.factory())
+        manager.open(spec())!!
+
+        // Discarding is for sessions that cannot run. A live shell is left completely alone.
+        assertEquals(0, manager.discardUnusable())
+        assertEquals(1, manager.sessions().size)
+        assertEquals(TerminalSessionState.RUNNING, manager.sessions().single().state)
+    }
 }

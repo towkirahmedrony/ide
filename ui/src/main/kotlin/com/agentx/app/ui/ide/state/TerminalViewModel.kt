@@ -286,7 +286,7 @@ class TerminalViewModel(
                 // The signal settles on the value *this* attempt produced, so a stale ERROR from
                 // a previous attempt cannot be mistaken for this one's outcome.
                 val settled = developer.provision().await()
-                if (settled.state == AgentxRuntimeState.READY) restart()
+                if (settled.state == AgentxRuntimeState.READY) switchToInstalledRuntime(developer)
             }
             return
         }
@@ -306,6 +306,30 @@ class TerminalViewModel(
 
     fun selectSession(handle: String) {
         runtime?.sessions?.setActive(handle)
+    }
+
+    /**
+     * Moves the terminal onto the runtime that has just been installed.
+     *
+     * Three steps, in this order, because each is what the next depends on: re-read the runtime's
+     * persisted state so the screen reports READY rather than whatever was set last, drop the
+     * sessions that only existed because the runtime was missing, and only then open the guest
+     * shell.
+     *
+     * The middle step is the one that was missing. Without it the FAILED session opened before the
+     * install stayed bound to the workspace, with its NOT_INSTALLED reason frozen inside it, so the
+     * screen kept presenting that failure next to a runtime that had since become usable.
+     */
+    private fun switchToInstalledRuntime(developer: LocalUbuntuRuntime) {
+        val current = runtime ?: return
+        // Read from disk through the same isReady() the terminal spec is gated on, so the state
+        // shown and the decision to open a shell come from one source of truth.
+        developer.refresh()
+        current.sessions.discardUnusable(workspaceKey(scratch))
+        uiState = uiState.copy(usingDeveloperRuntime = true, workspaceNote = null)
+        // restart is what actually creates the new session; it needs no handle, so a workspace whose
+        // session was just discarded still gets a completely fresh one.
+        restart()
     }
 
     /**
