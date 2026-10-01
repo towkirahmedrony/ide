@@ -430,6 +430,7 @@ private fun DeveloperRuntimeBanner(state: TerminalUiState, onInstall: () -> Unit
                         AgentxRuntimeState.VERIFYING -> "Verifying SHA-256\u2026"
                         AgentxRuntimeState.EXTRACTING -> "Extracting Ubuntu rootfs\u2026"
                         AgentxRuntimeState.INSTALLING -> "Configuring the developer runtime\u2026"
+                        AgentxRuntimeState.VALIDATING -> "Verifying the Ubuntu guest through PRoot\u2026"
                         else -> "Preparing the developer runtime\u2026"
                     },
                     style = TerminalMetaStyle.copy(color = ForgeMuted),

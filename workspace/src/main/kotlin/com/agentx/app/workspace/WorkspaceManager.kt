@@ -12,6 +12,16 @@ interface WorkspaceManager {
     /** The currently opened workspace, if any. */
     val current: WorkspaceSession?
 
+    /**
+     * The opaque handle the current workspace was opened with, when it is known.
+     *
+     * Still opaque to the domain: it is the platform's identifier (`content://` tree URI, or a
+     * path), and callers must not parse it. It exists so a backend that needs to *materialise*
+     * the workspace on disk — the embedded Ubuntu runtime bind-mounts a real directory at
+     * `/workspace/project` — can ask for it instead of guessing. `null` when nothing is open.
+     */
+    val currentHandle: String? get() = null
+
     /** Recently opened workspaces, most recent first. */
     suspend fun recent(): WorkspaceResult<List<WorkspaceMetadata>>
 

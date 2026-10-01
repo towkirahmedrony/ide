@@ -162,10 +162,22 @@ class TermuxRuntime(
      * `/system/bin/sh` until then, so the terminal is usable — with a real pty — even before a
      * bootstrap is in place.
      */
+    /**
+     * @param forceTemporarySystemShell skips the prefix entirely and starts Android's own
+     *   `/system/bin/sh`.
+     *
+     *   The primary terminal backend is the embedded Ubuntu developer runtime. While that runtime
+     *   is still being downloaded/installed, the terminal must still give a real pty — but it must
+     *   **not** start `$PREFIX/bin/login` from app-private storage. Android forbids executing an
+     *   app-private binary on a modern `targetSdk`, which is exactly what produced
+     *   `exec(".../files/usr/bin/login"): Permission denied`. The legacy prefix is therefore
+     *   bypassed when the developer runtime owns the terminal.
+     */
     fun specFor(
         workspaceKey: String,
         binding: TermuxWorkspaceBinding,
         extraEnvironment: Map<String, String> = emptyMap(),
+        forceTemporarySystemShell: Boolean = false,
     ): TermuxShellSpec {
         val workingDirectory = when (binding) {
             is TermuxWorkspaceBinding.Direct -> binding.path
@@ -175,12 +187,25 @@ class TermuxRuntime(
             is TermuxWorkspaceBinding.Home -> binding.path
             is TermuxWorkspaceBinding.Unavailable -> paths.home
         }
-        val resolved = TermuxShellResolver.resolve(
-            paths = paths,
-            isExecutable = { path -> File(path).let { it.isFile && it.canExecute() } },
-            prefixSupport = prefixSupport,
-            allowTemporarySystemShell = true,
-        )
+        val resolved = if (forceTemporarySystemShell) {
+            // Deliberately not `TermuxShellResolver.resolve`: the prefix may hold a `login`
+            // binary that Android will refuse to exec, and the caller has already decided that
+            // the embedded Ubuntu runtime is the shell that matters.
+            TermuxShellResolver.Resolved(
+                executable = TermuxShellResolver.SYSTEM_SHELL,
+                processName = "sh",
+                login = false,
+                kind = TermuxShellResolver.Kind.TEMPORARY_SYSTEM,
+                reason = "The AgentX developer runtime (Ubuntu ARM64) is not installed yet.",
+            )
+        } else {
+            TermuxShellResolver.resolve(
+                paths = paths,
+                isExecutable = { path -> File(path).let { it.isFile && it.canExecute() } },
+                prefixSupport = prefixSupport,
+                allowTemporarySystemShell = true,
+            )
+        }
 
         val environment = environmentFor(
             workingDirectory = workingDirectory,

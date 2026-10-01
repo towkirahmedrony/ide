@@ -65,14 +65,35 @@ data class NativeRuntimeLayout(
     /** Generated `resolv.conf`, bind-mounted into the guest as `/etc/resolv.conf`. */
     val resolvConf: String get() = "$runtimeDir/etc/resolv.conf"
 
+    /**
+     * Where a SAF project is materialised so the guest can bind-mount it at
+     * `/workspace/project`. A `content://` tree has no POSIX path, so it is copied here first;
+     * PRoot is never handed a `content://` URI.
+     */
+    val workspaces: String get() = "$runtimeDir/$WORKSPACES_DIR"
+
     /** Install marker, written only after the extracted tree has been validated. */
     val marker: String get() = "$rootfs/$MARKER_PATH"
+
+    /**
+     * Written only after the installed rootfs has been *run* through PRoot and answered the
+     * guest probes in [UbuntuRuntimeVerifier]. The terminal refuses to start until it exists, so
+     * a rootfs that extracted but cannot execute a shell is never presented as READY.
+     */
+    val verificationMarker: String get() = "$runtimeDir/$VERIFICATION_MARKER"
+
+    /**
+     * Written once the developer toolchain (git, gh, python3, node, npm, …) has been installed
+     * by the guest's own `apt-get`. It is not part of READY: the shell is usable before apt has
+     * finished, and the install is repeated on a later attempt if it failed.
+     */
+    val toolchainMarker: String get() = "$runtimeDir/$TOOLCHAIN_MARKER"
 
     /** The guest path of [runtimeDir] is not needed; only the pieces above are bound. */
 
     /** All directories the runtime needs before it can start, in creation order. */
     val requiredDirectories: List<String>
-        get() = listOf(runtimeDir, downloads, tmp, l2s, "$runtimeDir/etc")
+        get() = listOf(runtimeDir, downloads, tmp, l2s, workspaces, "$runtimeDir/etc")
 
     companion object {
         const val PROOT_LIBRARY: String = "libproot.so"
@@ -86,8 +107,11 @@ data class NativeRuntimeLayout(
         const val L2S_DIR: String = "l2s"
         const val TMP_DIR: String = "tmp"
         const val DOWNLOADS_DIR: String = "downloads"
+        const val WORKSPACES_DIR: String = "workspaces"
 
         const val MARKER_PATH: String = "etc/agentx/developer-runtime.ok"
+        const val VERIFICATION_MARKER: String = "rootfs-verified.ok"
+        const val TOOLCHAIN_MARKER: String = "toolchain.ok"
 
         /**
          * Libraries that must be present in [nativeLibraryDir] before a guest process can be

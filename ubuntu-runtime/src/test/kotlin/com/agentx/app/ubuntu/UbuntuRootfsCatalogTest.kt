@@ -47,6 +47,23 @@ class UbuntuRootfsCatalogTest {
     }
 
     @Test
+    fun `the archive's hard links are declared as relationships`() {
+        // Measured against the published archive, whose SHA-256 is pinned in the catalog:
+        //   usr/bin/perl5.38.2  link to  usr/bin/perl
+        //   usr/bin/uncompress  link to  usr/bin/gunzip
+        val pairs = UbuntuRootfsCatalog.REQUIRED_HARD_LINKS
+        assertEquals(2, pairs.size)
+        assertTrue(pairs.any { it.file == "usr/bin/perl" && it.link == "usr/bin/perl5.38.2" })
+        assertTrue(pairs.any { it.file == "usr/bin/gunzip" && it.link == "usr/bin/uncompress" })
+        // Both names of every pair are also required guest files, so a missing pair is reported
+        // as an unusable userland rather than as a mysterious link failure later.
+        for (pair in pairs) {
+            assertTrue(UbuntuRootfsCatalog.REQUIRED_GUEST_FILES.contains(pair.file), pair.file)
+            assertTrue(UbuntuRootfsCatalog.REQUIRED_GUEST_FILES.contains(pair.link), pair.link)
+        }
+    }
+
+    @Test
     fun `an incomplete entry is not available`() {
         val base = assertNotNull(UbuntuRootfsCatalog.forAbi("arm64-v8a"))
         assertFalse(base.copy(sha256 = "not-a-digest").available)

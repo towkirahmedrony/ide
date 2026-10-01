@@ -28,6 +28,74 @@ object UbuntuRootfsCatalog {
     /** Rough extracted size of the 24.04 arm64 base image, for the install screen's estimate. */
     const val INSTALLED_SIZE_APPROX_BYTES: Long = 110L * 1024L * 1024L
 
+    /**
+     * The platform `tar` the extraction is piped through PRoot.
+     *
+     * It is Android's own toybox tar. The extraction never runs it directly: it is started
+     * *by* PRoot with `-l` so that the archive's hard links become symlinks, see
+     * [UbuntuRootfsInstaller].
+     */
+    const val HOST_TAR: String = "/system/bin/tar"
+
+    /**
+     * Packages the developer toolchain is made of, installed with the guest's own `apt-get`.
+     *
+     * Nothing here is a Termux package: these come from Ubuntu's `ports.ubuntu.com/ubuntu-ports`
+     * archive, which is what a real Ubuntu userland expects. `git`, `gh`, `python3`, `nodejs`
+     * and `npm` are ordinary Ubuntu packages, not a re-created package ecosystem.
+     */
+    val TOOLCHAIN_PACKAGES: List<String> = listOf(
+        "bash",
+        "apt",
+        "apt-utils",
+        "dpkg",
+        "git",
+        "gh",
+        "python3",
+        "python3-pip",
+        "nodejs",
+        "npm",
+        "curl",
+        "wget",
+        "ca-certificates",
+        "openssh-client",
+        "ripgrep",
+    )
+
+    /**
+     * A hard link the Ubuntu Base archive contains.
+     *
+     * [file] is stored as a regular file, [link] as a hard link to it. Ubuntu Base 24.04.5 arm64
+     * contains exactly two of them, both verified against the published archive's SHA-256
+     * (`third_party/ubuntu/README.md`):
+     *
+     * ```text
+     * usr/bin/perl5.38.2  link to  usr/bin/perl
+     * usr/bin/uncompress  link to  usr/bin/gunzip
+     * ```
+     *
+     * They are the reason a plain `tar -x` cannot install this rootfs: Android's SELinux policy
+     * forbids an untrusted app from creating a hard link at all, so `tar` fails with
+     * `can't link ... : Permission denied`. See [UbuntuRootfsInstaller].
+     */
+    data class HardLink(
+        /** Absolute guest path of the regular file the archive stores. */
+        val file: String,
+        /** Absolute guest path of the hard link the archive stores. */
+        val link: String,
+    )
+
+    /**
+     * The hard links extraction must preserve, stated as relationships rather than paths.
+     *
+     * Validation checks that the two entries really name the same file after extraction (a
+     * real hard link, or PRoot's emulated one), not merely that both paths exist.
+     */
+    val REQUIRED_HARD_LINKS: List<HardLink> = listOf(
+        HardLink(file = "usr/bin/perl", link = "usr/bin/perl5.38.2"),
+        HardLink(file = "usr/bin/gunzip", link = "usr/bin/uncompress"),
+    )
+
     data class Entry(
         val androidAbi: String,
         val ubuntuRelease: String,
@@ -74,6 +142,12 @@ object UbuntuRootfsCatalog {
         "usr/bin/env",
         "usr/bin/ls",
         "bin/bash",
+        // The hard-link pairs are part of "usable", because dpkg and coreutils resolve through
+        // them; see [REQUIRED_HARD_LINKS] and the relationship check in the installer.
+        "usr/bin/perl",
+        "usr/bin/perl5.38.2",
+        "usr/bin/gunzip",
+        "usr/bin/uncompress",
     )
 
     val entries: List<Entry> = listOf(

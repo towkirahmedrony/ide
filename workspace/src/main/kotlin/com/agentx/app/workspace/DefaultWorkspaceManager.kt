@@ -17,8 +17,11 @@ class DefaultWorkspaceManager(
 ) : WorkspaceManager {
 
     private var session: WorkspaceSession? = null
+    private var currentHandleValue: String? = null
 
     override val current: WorkspaceSession? get() = session
+
+    override val currentHandle: String? get() = currentHandleValue
 
     override suspend fun recent(): WorkspaceResult<List<WorkspaceMetadata>> = runCatching {
         store.records()
@@ -48,6 +51,7 @@ class DefaultWorkspaceManager(
         val newSession = DefaultWorkspaceSession(refreshed)
         session?.close()
         session = newSession
+        currentHandleValue = normalizedHandle
 
         runCatching {
             store.save(WorkspaceRecord(metadata = metadata, handle = normalizedHandle))
@@ -71,6 +75,7 @@ class DefaultWorkspaceManager(
     override suspend fun close() {
         session?.close()
         session = null
+        currentHandleValue = null
     }
 
     override suspend fun forget(id: WorkspaceId): WorkspaceResult<Unit> {
@@ -79,6 +84,7 @@ class DefaultWorkspaceManager(
         if (session?.workspace?.id == id) {
             session?.close()
             session = null
+            currentHandleValue = null
         }
         return success(Unit)
     }

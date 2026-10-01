@@ -100,4 +100,31 @@ class ProotCommandTest {
         assertEquals("/dev", BindMount("/dev").spec)
         assertEquals("/a:/b", BindMount("/a", "/b").spec)
     }
+
+    @Test
+    fun `the rootfs archive is unpacked through PRoot with link-to-symlink`() {
+        val invocation = ProotCommand.extraction(
+            layout = layout,
+            hostTar = "/system/bin/tar",
+            archivePath = "/x/ubuntu-base.tar.gz",
+            intoDir = "/x/rootfs-staging",
+        )
+
+        assertEquals("${layout.nativeLibraryDir}/libproot.so", invocation.executable)
+        assertEquals(
+            listOf(
+                "proot",
+                "-l",
+                "-w", "/",
+                "/system/bin/tar",
+                "-xzf", "/x/ubuntu-base.tar.gz",
+                "-C", "/x/rootfs-staging",
+            ),
+            invocation.arguments,
+        )
+        // No -r: PRoot is the link interposer here, not a guest root.
+        assertFalse(invocation.arguments.contains("-r"))
+        assertEquals("${layout.nativeLibraryDir}/libproot_loader.so", invocation.environment["PROOT_LOADER"])
+        assertEquals(layout.l2s, invocation.environment["PROOT_L2S_DIR"])
+    }
 }

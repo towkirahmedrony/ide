@@ -1,7 +1,8 @@
 # AgentX embedded developer runtime (Ubuntu ARM64)
 
 The primary execution backend is a real Ubuntu ARM64 userland run through PRoot. The legacy
-Termux bootstrap is kept intact as a fallback; nothing was deleted in this phase.
+Termux bootstrap is kept intact as a fallback **and is not part of this runtime**: nothing below
+downloads, installs, initialises or reads it, and the Ubuntu path does not fall back to it.
 
 ## Execution chain
 
@@ -19,45 +20,140 @@ Only `libproot.so` (and the vendored pty's `libtermux.so`) are executed directly
 Guest binaries are never `execve`d from `filesDir`; they are addressed through the PRoot loader.
 This is what allows `targetSdk = 37` without a downgrade or a compatibility workaround.
 
+It is deliberately **not** `AgentX → Termux bootstrap → Ubuntu`. The legacy bootstrap sits
+outside the chain entirely.
+
 ## Module
 
-`:ubuntu-runtime` (`com.agentx.app.ubuntu`) is a new Android library that is deliberately
-isolated from the legacy bootstrap. It depends on `:termux-runtime` **only** for the terminal
-layer that is not bootstrap code: the vendored `TerminalSession`/PTY, `TermuxShellSpec` and the
-terminal host/client ports. It never references `TermuxBootstrapCatalog`, `TermuxBootstrapInstaller`
-or `TermuxPrefixPolicy`.
+`:ubuntu-runtime` (`com.agentx.app.ubuntu`) is an Android library deliberately isolated from the
+legacy bootstrap. It depends on `:termux-runtime` **only** for layers that are not bootstrap
+code: the vendored `TerminalSession`/PTY, `TermuxShellSpec`, the terminal host/client ports and
+the reusable SAF copy engine (`TermuxWorkspaceMirror`, `MirrorSource`/`MirrorSink`). It never
+references `TermuxBootstrapCatalog`, `TermuxBootstrapInstaller`, `TermuxPrefixPolicy`,
+`TermuxShellResolver` or `TermuxBootstrapArchive`.
 
 | File | Responsibility |
 | --- | --- |
-| `UbuntuRuntimeState.kt` | `AgentxRuntimeState` (NOT_INSTALLED … ERROR) and `RuntimeStatus`, the single source of truth for the UI. |
-| `NativeRuntime.kt` | `NativeRuntimeLayout` (nativeLibraryDir + app-private runtime storage) and the native library probe. |
-| `ProotCommand.kt` | The `proot -0 -l -r <rootfs> -b … -w … <cmd>` builder, bind mounts and `PROOT_LOADER`/`PROOT_L2S_DIR`/`PROOT_TMP_DIR`. |
-| `UbuntuRootfsCatalog.kt` | The pinned Ubuntu Base arm64 entry (URL, SHA-256, size) and the required guest files. |
-| `UbuntuRootfsInstaller.kt` | Download → SHA-256 → tar extraction → validation → apt/resolv configuration → activation → marker. |
+| `UbuntuRuntimeState.kt` | `AgentxRuntimeState` (NOT_INSTALLED … VALIDATING … ERROR) and `RuntimeStatus`, the single source of truth for the UI. |
+| `NativeRuntime.kt` | `NativeRuntimeLayout` (nativeLibraryDir + app-private runtime storage, the verification marker and the workspaces directory) and the native library probe. |
+| `ProotCommand.kt` | The `proot -0 -l -r <rootfs> -b … -w … <cmd>` builder, the extraction invocation, bind mounts and `PROOT_LOADER`/`PROOT_L2S_DIR`/`PROOT_TMP_DIR`. |
+| `UbuntuRootfsCatalog.kt` | The pinned Ubuntu Base arm64 entry (URL, SHA-256, size), the required guest files, the required **hard links**, the toolchain package list and the platform tar path. |
+| `UbuntuRootfsInstaller.kt` | Download → SHA-256 → PRoot extraction → validation (files **and** hard-link relationships) → apt/resolv configuration → activation → marker, plus `repairIncompleteInstallation()`. |
+| `UbuntuRuntimeVerifier.kt` | Runs the installed rootfs *through PRoot* and only then lets it become READY. |
 | `UbuntuEnvironment.kt` | The guest `HOME`/`USER`/`PATH`/`TERM`/`TMPDIR`/`AGENTX_RUNTIME` environment, with credential filtering. |
 | `UbuntuWorkspaceBinding.kt` | How a project is bind-mounted (or why it is not). |
+| `UbuntuWorkspaceMaterializer.kt` | Copies a SAF `content://` project into app storage so it can be bind-mounted. |
 | `AgentxExecution.kt` | The backend-agnostic `execute(command, workingDirectory)` seam for future agents. |
-| `LocalUbuntuRuntime.kt` | The runtime: status flow, provisioning, terminal spec, process execution. |
+| `LocalUbuntuRuntime.kt` | The runtime: status flow, provisioning + verification, project preparation, terminal spec, toolchain install, process execution. |
+
+## Rootfs extraction: the hard-link problem, and its fix
+
+Ubuntu Base stores two entries as hard links (verified against the published archive; see
+[`third_party/ubuntu/README.md`](../third_party/ubuntu/README.md)):
+
+```text
+usr/bin/perl5.38.2 link to usr/bin/perl
+usr/bin/uncompress link to usr/bin/gunzip
+```
+
+Android's SELinux policy forbids an `untrusted_app` from creating a hard link at all — a
+`neverallow` rule in `platform/system/sepolicy` — so running the platform `tar` directly stops at
+the first of them:
+
+```text
+tar: can't link 'usr/bin/perl5.38.2' -> 'usr/bin/perl': Permission denied
+tar: can't link 'usr/bin/uncompress' -> 'usr/bin/gunzip': Permission denied
+tar: had errors
+```
+
+and leaves a tree that is missing both entries. The fix is not to touch the archive: the
+extraction is executed by the runtime's own **PRoot** with `-l` (link-to-symlink), the same
+mechanism Termux's `proot --link2symlink tar` uses. Each `link(2)`/`linkat(2)` becomes a symlink
+to the same content, which PRoot keeps in `PROOT_L2S_DIR`; both names still lead to one file, and
+nothing is copied, dropped or duplicated. The archive's SHA-256 is checked immediately before the
+extraction and is not weakened by any of this.
+
+`ProotCommand.extraction` builds exactly:
+
+```
+libproot.so -l -w / /system/bin/tar -xzf <archive> -C <rootfs-staging>
+```
+
+with `PROOT_LOADER`, `PROOT_TMP_DIR` and `PROOT_L2S_DIR` set. No `-r` is passed: PRoot is acting
+as the link interposer for this one step, not as the guest root. If the native PRoot/loader pair
+is missing from `nativeLibraryDir`, provisioning fails with a `runtime`-stage error that names the
+missing libraries instead of extracting something that could never run.
+
+### Extraction order
+
+```
+download
+  ↓
+SHA-256 verify
+  ↓
+temporary extraction (rootfs-staging)
+  ↓
+rootfs validation (required files + hard-link relationships)
+  ↓
+apt / resolv / markers configuration
+  ↓
+atomic activation (rename staging → rootfs)
+  ↓
+guest verification through PRoot
+  ↓
+READY
+```
+
+Nothing is ever extracted into the final `rootfs` directory. A failure removes the incomplete
+staging tree, leaves the runtime in `ERROR`, and a retry starts again — the verified archive is
+kept, so retrying costs no download.
+
+### Hard-link validation
+
+Checking that `usr/bin/perl` and `usr/bin/perl5.38.2` merely exist is not enough: an extractor
+that wrote each entry as an independent copy would pass that test while silently doubling a
+64-bit `perl` binary and breaking `dpkg`. Validation therefore checks the **relationship**: both
+paths must resolve (symlinks followed) to the same file — which is true for a real hard link and
+for PRoot's emulation, and false for two copies, for a dangling link, or for a missing entry.
+
+## PRoot + loader
+
+`PROOT_LOADER` is always set to `nativeLibraryDir/libproot_loader.so` — the actual interposer, not
+a copy, and never inside `filesDir`. `PROOT_L2S_DIR` points at `<runtimeDir>/l2s`, outside the
+rootfs subtree, created before any session and never replaced by an extraction, because a rootfs
+extracted with `-l` refers into it. `PROOT_LOADER32` is only set when a 32-bit guest process is
+started, which this runtime does not do.
 
 ## Rootfs
 
 Not bundled. On first run the official Ubuntu Base 24.04.5 arm64 archive is downloaded (≈ 30 MB),
-checked against the SHA-256 pinned in `UbuntuRootfsCatalog`, extracted **with the system `tar`**
-(so Ubuntu's symlinks, hard links and modes survive — a hand-rolled reader cannot be trusted to),
-validated for `bash`, `sh`, `dash`, `apt-get`, `dpkg`, `env` and `ls`, configured for PRoot, and
-only then moved into place and marked installed. The extraction is roughly 110 MB on disk. A
-checksum mismatch deletes the archive and aborts; there is no insecure skip.
+checked against the SHA-256 pinned in `UbuntuRootfsCatalog`, extracted **through PRoot** as
+described above, validated for `bash`, `sh`, `dash`, `apt-get`, `dpkg`, `env`, `ls` and the two
+hard-link pairs, configured for PRoot/apt/DNS, and only then moved into place and marked
+installed. The extraction is roughly 110 MB on disk. A checksum mismatch deletes the archive and
+aborts; there is no insecure skip.
 
 `apt` is configured for `ports.ubuntu.com/ubuntu-ports` (`noble`, `-updates`, `-security`), with
 `APT::Sandbox::User "root"` and `Install-Recommends "false"`.
 
-## L2S
+## Verification before READY
 
-`PROOT_L2S_DIR` points at `<runtimeDir>/l2s`, outside the rootfs subtree, created before any
-session and never replaced by an extraction. Without it, link-to-symlink emulation fails and
-Ubuntu's `coreutils`, `ln` and `dpkg` break. The directory's existence and writability are the
-first thing a session needs, and a missing one produces a clear runtime error rather than a
-broken guest.
+Having the files on disk is not the same as having a working guest, so the terminal is not started
+until the installed rootfs has been **run through PRoot** and answered:
+
+```text
+/bin/sh -c 'echo AgentX Ubuntu OK'
+/bin/bash --version
+/usr/bin/id            → uid=0(root), PRoot's fake root
+/usr/bin/pwd           → /root
+/usr/bin/apt-get --version
+/usr/bin/dpkg --version
+```
+
+The marker `<runtimeDir>/rootfs-verified.ok` is written only after every probe passes, and
+`isReady()` requires it. A failure leaves the runtime in `ERROR` naming the probe that failed, and
+the next attempt re-verifies the existing rootfs rather than downloading it again. A rootfs that
+extracted but cannot execute a shell is therefore never presented as a working terminal.
 
 ## Terminal
 
@@ -67,18 +163,34 @@ the guest command; the session manager, foreground keep-alive service, key handl
 Ctrl+D, arrows, tab), resize and ANSI rendering are all the ones that already existed. There is
 no second foreground service. The primary shell is `/bin/bash --login` inside the guest.
 
+While the rootfs is not yet installed/verified, the terminal still gets a real pty on Android's
+own `/system/bin/sh` — but it deliberately does **not** start `$PREFIX/bin/login`. Android refuses
+to execute an app-private binary on a modern `targetSdk`, which is what produced the reported
+`exec("/data/data/com.agentx.app/files/usr/bin/login"): Permission denied`; the legacy prefix is
+bypassed (`TermuxRuntime.specFor(..., forceTemporarySystemShell = true)`) whenever the Ubuntu
+runtime owns the terminal.
+
 ## First run
 
 When the rootfs is missing the Terminal tab shows the **AgentX Developer Runtime** card —
 "Ubuntu ARM64 · Required for Terminal, Git, Python, Node and local development · [Install
-Runtime]" — followed by download, verification, extraction and setup progress. On success the
-shell is replaced automatically; no bootstrap command is typed.
+Runtime]" — followed by download, verification, extraction, setup and guest-verification
+progress. On success the shell is replaced automatically; no bootstrap command is typed.
 
 ## Workspaces
 
-A project with a real host path is bind-mounted to `/workspace/project`, so a file created in
-the terminal is the same file the IDE's Files and editor see. A `content://` tree has no POSIX
-path, so the shell runs in the guest home with a note; the project is not silently copied.
+A project with a real host path is bind-mounted to `/workspace/project`, so a file created in the
+terminal is the same file the IDE's Files and editor see.
+
+A project opened through Android's Storage Access Framework is a `content://` tree and has no
+POSIX path — a `content://` URI is **never** passed to PRoot. `UbuntuWorkspaceMaterializer`
+copies the tree into `<runtimeDir>/workspaces/<name>-<hash>` (bounded, path-safe, using the same
+hostile-name-checked copier as the legacy runtime), marks it complete, and *that* directory is
+bound at `/workspace/project`. The copy is one-way and is labelled as a copy: commands run against
+it and nothing is written back to the original tree. If the copy cannot be made, the shell runs in
+the guest home with the reason, and the terminal stays usable.
+
+With no project selected or in a scratch shell, the terminal starts in `/root` (the guest home).
 
 ## Networking
 
@@ -87,19 +199,78 @@ reachable from Android at `http://127.0.0.1:8080` with no proxy or tunnel. Guest
 by a generated `resolv.conf`, built from the active network's DNS servers and bind-mounted as
 `/etc/resolv.conf`.
 
+## Developer toolchain
+
+The base image already ships `bash`, `apt`/`apt-get`, `dpkg`, `coreutils`, `tar` and `gzip`. The
+rest of the toolchain is installed by the guest's **own** `apt-get` — `LocalUbuntuRuntime
+.installToolchain()` runs
+
+```
+apt-get update && apt-get install -y --no-install-recommends \
+  bash apt apt-utils dpkg git gh python3 python3-pip nodejs npm \
+  curl wget ca-certificates openssh-client ripgrep
+```
+
+from `ports.ubuntu.com/ubuntu-ports`. There is no Termux package repository, no Termux package and
+no second package ecosystem: these are the Ubuntu packages the Ubuntu userland expects.
+
+The install runs automatically once, right after the runtime first reaches READY — and the
+caller is released *before* it starts, so the first shell is never delayed by apt. It is never
+fatal: the shell is already usable, a failure is logged, and a later provisioning attempt retries
+it. A completion marker means it is not repeated after it succeeds.
+
+## Runtime states
+
+`NOT_INSTALLED → DOWNLOADING → VERIFYING → EXTRACTING → INSTALLING → VALIDATING → READY →
+STARTING → RUNNING`, with `ERROR` reachable from any step and carrying the stage that failed
+(`download`, `checksum`, `extraction`, `validation`, `configuration`, `activation`, `runtime`).
+`READY` is only entered after the complete rootfs has been extracted, validated and then verified
+through PRoot.
+
+## Retry
+
+Because a device may hold a partially extracted rootfs from an earlier attempt,
+`UbuntuRootfsInstaller.repairIncompleteInstallation()` runs at the start of every provisioning: it
+deletes `rootfs-staging`, deletes a `rootfs` that has no install marker (never a complete one),
+and clears the verification marker when it removed anything. The downloaded archive and the
+link-to-symlink store are preserved. The user never has to delete app-internal files by hand.
+
 ## Legacy bootstrap
 
 `:termux-runtime` and the Termux bootstrap stay in the tree and keep building. They are now the
-fallback: if the developer runtime is absent or not installed, the Terminal tab uses the legacy
-backend exactly as before. No bootstrap asset, catalog entry or release was regenerated or
-changed. A cleanup phase can remove the legacy path once the developer runtime has passed a
-real-device run.
+fallback for a build with no developer runtime wired in (previews/tests); when the Ubuntu runtime
+is present it owns the terminal and the legacy prefix's login shell is not started. No bootstrap
+asset, catalog entry or release was regenerated or changed, and nothing in the Ubuntu runtime
+references any of it. It is slated for removal in a later cleanup phase, after the developer
+runtime passes a real-device run.
 
 ## Verification status
 
 **Not verified on a device.** This change was authored in an environment with no JDK, Android
 SDK, NDK or ARM64 device, and this repository's rule is that Android artifacts are built only by
-GitHub Actions. The Kotlin logic is unit tested in CI (`:ubuntu-runtime:test`), the APK is built
-in CI, and the native binaries are cross-compiled and verified in CI. The on-device checklist
-(runtime, apt, git, gh, python, node, local server, Ctrl+C/D, resize, background, workspace
-round-trip) is still open and must not be described as working until it passes.
+GitHub Actions.
+
+Verified here, by executing it:
+
+- the pinned Ubuntu Base archive re-downloaded and hashed: the SHA-256 and the size in
+  `UbuntuRootfsCatalog` both match (`a91d5a93…14f2`, 29,936,675 bytes);
+- the archive's contents listed: 3,413 entries, 194 symlinks and **exactly two** hard links —
+  `usr/bin/perl` ↔ `usr/bin/perl5.38.2` and `usr/bin/gunzip` ↔ `usr/bin/uncompress` — both with
+  the target before the link entry, which is what `REQUIRED_HARD_LINKS` pins;
+- the PRoot revision that provides `-l` and `PROOT_L2S_DIR` read from source
+  (`termux/proot` at the pinned revision): the extension handles both `link` and `linkat`, which is
+  what the platform tar uses.
+
+The Kotlin is unit tested in CI (`:ubuntu-runtime:test` — catalog, PRoot command line including the
+extraction invocation, environment, bindings, native layout and the guest-probe verifier). The APK
+is built in CI, and the native binaries are cross-compiled and verified in CI.
+
+**Still open, and it must not be described as working until it passes** — the on-device checklist:
+
+1. the archive downloads, verifies and extracts without the `can't link … Permission denied`
+   failure, and both hard-link pairs are present afterwards;
+2. the six guest probes pass and the runtime reaches READY;
+3. `/bin/bash --login` starts interactively with a working PTY (typing, Ctrl+C, Ctrl+D, resize);
+4. `apt-get` and `dpkg` work, and `installToolchain()` installs git, gh, python3, node and npm;
+5. a project is visible at `/workspace/project` and `touch` there appears in the IDE's file tree;
+6. `python3 -m http.server 8080` stays reachable at `http://127.0.0.1:8080` and Ctrl+C stops it.

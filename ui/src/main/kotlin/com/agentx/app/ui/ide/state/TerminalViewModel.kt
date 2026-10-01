@@ -18,11 +18,14 @@ import com.agentx.app.termux.TermuxWorkspaceBinding
 import com.agentx.app.ubuntu.AgentxRuntimeState
 import com.agentx.app.ubuntu.LocalUbuntuRuntime
 import com.agentx.app.ubuntu.RuntimeStatus
+import com.agentx.app.ubuntu.UbuntuWorkspaceMaterialization
 import com.termux.terminal.TerminalSession
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
 /**
@@ -138,6 +141,14 @@ class TerminalViewModel(
     private val workspaceName: String,
     /** The workspace's location as the workspace runtime reports it. */
     private val workspaceLocation: () -> String?,
+    /**
+     * The workspace's opaque handle (a `content://` tree URI, or a path), when the app has one.
+     *
+     * The embedded Ubuntu runtime binds a real directory at `/workspace/project`; a SAF tree has
+     * no POSIX path, so it has to be materialised first. That needs the handle, which the
+     * workspace manager owns — the display location alone is not enough.
+     */
+    private val workspaceHandle: () -> String? = { null },
     private val runtime: TermuxRuntime?,
     /**
      * The primary developer runtime. When it is present and ready it supplies the terminal's
@@ -212,14 +223,15 @@ class TerminalViewModel(
     fun provision() {
         val current = runtime ?: return
         val developer = developerRuntime
-        if (developer != null && developer.needsInstall()) {
-            // The primary path: install the Ubuntu ARM64 rootfs, then replace the shell that was
-            // running before it existed. The legacy bootstrap is not touched.
+        if (developer != null && !developer.isReady()) {
+            // The primary path: install and *verify* the Ubuntu ARM64 rootfs, then replace the
+            // shell that was running before it existed. The legacy bootstrap is not touched.
+            // `isReady` (not `needsInstall`) is the condition because an installed rootfs that
+            // has not passed its PRoot verification must be re-verified, not re-downloaded.
             viewModelScope.launch {
-                developer.provision()
-                val settled = developer.status.first { status ->
-                    status.state == AgentxRuntimeState.READY || status.state == AgentxRuntimeState.ERROR
-                }
+                // The signal settles on the value *this* attempt produced, so a stale ERROR from
+                // a previous attempt cannot be mistaken for this one's outcome.
+                val settled = developer.provision().await()
                 if (settled.state == AgentxRuntimeState.READY) restart()
             }
             return
@@ -346,15 +358,45 @@ class TerminalViewModel(
 
     private fun open(scratch: Boolean) {
         val current = runtime ?: return
-        val key = workspaceKey(scratch)
-        val developerSpec = developerSpec(current, key, scratch)
-        if (developerSpec != null) {
-            // The primary backend: a real Ubuntu guest shell. The workspace note is cleared
-            // because the project is bind-mounted, not copied.
-            uiState = uiState.copy(usingDeveloperRuntime = true, workspaceNote = null)
-            current.openSession(developerSpec)
+        val developer = developerRuntime
+        if (developer == null) {
+            openLegacy(current, scratch)
             return
         }
+        // A SAF project may have to be materialised before the guest can bind it, which is disk
+        // I/O; the session is opened on the main dispatcher once that is done.
+        val key = workspaceKey(scratch)
+        viewModelScope.launch {
+            val spec = withContext(Dispatchers.IO) { developerSpec(current, developer, key, scratch) }
+            if (spec != null) {
+                // The primary backend: a real Ubuntu guest shell. The workspace note is cleared
+                // because the project is bind-mounted, not copied.
+                uiState = uiState.copy(usingDeveloperRuntime = true, workspaceNote = null)
+                current.openSession(spec)
+                return@launch
+            }
+            // The Ubuntu rootfs is not installed or verified yet. Keep a real pty on Android's
+            // own shell: the legacy prefix's `login` must not be started, because Android refuses
+            // to execute an app-private binary (`exec(".../files/usr/bin/login"): Permission
+            // denied`), and the legacy bootstrap is deliberately outside this runtime.
+            val binding = binding(current, scratch)
+            uiState = uiState.copy(
+                usingDeveloperRuntime = false,
+                workspaceNote = workspaceNoteFor(binding)?.let(::trimNote),
+            )
+            current.openSession(
+                current.specFor(
+                    workspaceKey = key,
+                    binding = binding,
+                    extraEnvironment = extraEnvironment(scratch),
+                    forceTemporarySystemShell = true,
+                ),
+            )
+        }
+    }
+
+    private fun openLegacy(current: TermuxRuntime, scratch: Boolean) {
+        val key = workspaceKey(scratch)
         val binding = binding(current, scratch)
         uiState = uiState.copy(
             usingDeveloperRuntime = false,
@@ -365,7 +407,16 @@ class TerminalViewModel(
 
     private fun spec(scratch: Boolean): TermuxShellSpec {
         val current = checkNotNull(runtime) { "Termux runtime is not available" }
-        developerSpec(current, workspaceKey(scratch), scratch)?.let { return it }
+        val developer = developerRuntime
+        if (developer != null) {
+            developerSpecNow(current, developer, workspaceKey(scratch), scratch)?.let { return it }
+            return current.specFor(
+                workspaceKey = workspaceKey(scratch),
+                binding = binding(current, scratch),
+                extraEnvironment = extraEnvironment(scratch),
+                forceTemporarySystemShell = true,
+            )
+        }
         return current.specFor(
             workspaceKey = workspaceKey(scratch),
             binding = binding(current, scratch),
@@ -382,20 +433,62 @@ class TerminalViewModel(
      * Null means the runtime is missing, not installed, or its native components are absent; the
      * caller then falls back to the legacy backend so the terminal is never left without a shell.
      */
-    private fun developerSpec(
+    private suspend fun developerSpec(
         current: TermuxRuntime,
+        developer: LocalUbuntuRuntime,
         key: String,
         scratch: Boolean,
     ): TermuxShellSpec? {
-        val developer = developerRuntime ?: return null
         if (!developer.isReady()) return null
-        val projectHostPath = if (scratch) null else legacyHostPath(current)
+        val projectHostPath = if (scratch) null else projectHostPath(current, developer)
         return developer.specFor(
             workspaceKey = key,
             projectHostPath = projectHostPath,
             displayLocation = workspaceLocation(),
             extraEnvironment = extraEnvironment(scratch),
         )
+    }
+
+    /**
+     * The same spec, resolved without suspending.
+     *
+     * Used by [restart], which runs on the main thread. The copy a SAF project needs has already
+     * been made by [open] by the time a session exists, so this normally just reads a cached
+     * path.
+     */
+    private fun developerSpecNow(
+        current: TermuxRuntime,
+        developer: LocalUbuntuRuntime,
+        key: String,
+        scratch: Boolean,
+    ): TermuxShellSpec? {
+        if (!developer.isReady()) return null
+        val projectHostPath = if (scratch) null else (legacyHostPath(current) ?: materialize(developer))
+        return developer.specFor(
+            workspaceKey = key,
+            projectHostPath = projectHostPath,
+            displayLocation = workspaceLocation(),
+            extraEnvironment = extraEnvironment(scratch),
+        )
+    }
+
+    /**
+     * The host directory to bind at `/workspace/project`.
+     *
+     * A real path is used as-is. A SAF tree has none, so it is materialised into app storage
+     * first: a `content://` URI is never handed to PRoot, which could not mount it.
+     */
+    private suspend fun projectHostPath(current: TermuxRuntime, developer: LocalUbuntuRuntime): String? {
+        legacyHostPath(current)?.let { return it }
+        return withContext(Dispatchers.IO) { materialize(developer) }
+    }
+
+    private fun materialize(developer: LocalUbuntuRuntime): String? {
+        val handle = workspaceHandle() ?: return null
+        return when (val prepared = developer.materializeProject(handle, workspaceId)) {
+            is UbuntuWorkspaceMaterialization.Ready -> prepared.hostPath
+            else -> null
+        }
     }
 
     /**

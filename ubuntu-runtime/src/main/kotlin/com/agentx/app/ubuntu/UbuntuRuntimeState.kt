@@ -23,7 +23,14 @@ enum class AgentxRuntimeState(val wireName: String) {
     /** The tree exists and is being configured (apt, sources, resolv, runtime directories). */
     INSTALLING("installing"),
 
-    /** A verified rootfs is present and a guest process can be started. */
+    /**
+     * The extracted tree is being run through PRoot — `/bin/sh`, `/bin/bash`, `id`, `pwd`,
+     * `apt-get`, `dpkg` — before it is accepted. A rootfs that cannot execute a shell is never
+     * promoted to [READY].
+     */
+    VALIDATING("validating"),
+
+    /** A verified rootfs is present, passed its PRoot probes, and can start a guest process. */
     READY("ready"),
 
     /** The first PRoot process is being started. */
@@ -72,6 +79,7 @@ data class RuntimeStatus(
             state == AgentxRuntimeState.VERIFYING ||
             state == AgentxRuntimeState.EXTRACTING ||
             state == AgentxRuntimeState.INSTALLING ||
+            state == AgentxRuntimeState.VALIDATING ||
             state == AgentxRuntimeState.STARTING
 
     val canInstall: Boolean

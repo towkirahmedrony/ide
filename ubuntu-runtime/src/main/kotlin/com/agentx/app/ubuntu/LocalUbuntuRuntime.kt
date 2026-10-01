@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.util.Log
 import com.agentx.app.termux.TermuxShellSpec
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -61,47 +62,199 @@ class LocalUbuntuRuntime(
         dnsServers = ::activeDnsServers,
     )
 
+    /** Copies a SAF project into app storage so it can be bind-mounted as `/workspace/project`. */
+    private val materializer = UbuntuWorkspaceMaterializer(appContext, layout)
+
+    /** Runs the installed rootfs through PRoot before it may be called READY. */
+    private val verifier = UbuntuRuntimeVerifier(layout)
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
-    private val statusFlow = MutableStateFlow(
-        if (installer.isInstalled()) RuntimeStatus.Ready else RuntimeStatus.NotInstalled,
-    )
+    private val statusFlow = MutableStateFlow(initialStatus())
 
     /** The single source of truth for the runtime's lifecycle state. */
     val status: StateFlow<RuntimeStatus> = statusFlow.asStateFlow()
 
-    /** True when the rootfs is installed and the native components are present. */
-    fun isReady(): Boolean = installer.isInstalled() && nativeProbe.ready
+    /**
+     * True when the rootfs is installed, the native PRoot components are present *and* the rootfs
+     * has been run through PRoot successfully. The verification marker is what stops a rootfs
+     * that extracted but cannot execute a shell from being offered as a working terminal.
+     */
+    fun isReady(): Boolean =
+        installer.isInstalled() && nativeProbe.ready && File(layout.verificationMarker).isFile
 
-    /** True when a first-run install is required (native files present, rootfs missing). */
+    /** True when the rootfs itself is not installed yet and must be downloaded. */
     fun needsInstall(): Boolean = !installer.isInstalled()
 
     /** Re-reads install state, e.g. after returning to the screen. */
     fun refresh() {
         statusFlow.value = when {
-            installer.isInstalled() -> RuntimeStatus.Ready
+            isReady() -> RuntimeStatus.Ready
             statusFlow.value.isBusy -> statusFlow.value
+            installer.isInstalled() -> unverifiedStatus()
             else -> RuntimeStatus.NotInstalled
         }
     }
 
     /**
-     * Downloads, verifies and installs the rootfs when missing. Idempotent: a second call while
-     * one is running is ignored, and an installed runtime returns immediately.
+     * Downloads, verifies, extracts and then *runs* the rootfs when it is missing or unverified.
+     *
+     * The returned signal completes with the status this attempt settled on. It exists because
+     * the status flow alone cannot say whether an `ERROR` the caller can see is this attempt's or
+     * the previous one's: a failed attempt and a retry that fails identically produce equal
+     * values. A caller therefore waits on the signal rather than guessing from [status].
+     *
+     * Idempotent: a second call while one is running joins the attempt already in flight, and an
+     * already verified runtime completes immediately. The legacy bootstrap is never consulted
+     * here, whatever its state.
      */
-    fun provision() {
-        if (statusFlow.value.isBusy) return
-        scope.launch {
-            val result = withContext(ioDispatcher) {
-                installer.provision { state -> statusFlow.value = state }
+    fun provision(): CompletableDeferred<RuntimeStatus> {
+        synchronized(attemptLock) {
+            inFlight?.let { running -> return running }
+            val signal = CompletableDeferred<RuntimeStatus>()
+            inFlight = signal
+            scope.launch {
+                val settled = try {
+                    val result = withContext(ioDispatcher) {
+                        installer.provision { state -> statusFlow.value = state }
+                    }
+                    when (result) {
+                        is UbuntuInstallResult.Unavailable -> Log.w(TAG, result.reason)
+                        is UbuntuInstallResult.Failed -> Log.w(TAG, "[${result.stage.wireName}] ${result.message}")
+                        is UbuntuInstallResult.AlreadyInstalled, is UbuntuInstallResult.Installed -> Unit
+                    }
+                    val installed = result is UbuntuInstallResult.AlreadyInstalled ||
+                        result is UbuntuInstallResult.Installed
+                    if (installed) verifyRootfs()
+                    statusFlow.value
+                } catch (failure: Throwable) {
+                    val status = RuntimeStatus(
+                        state = AgentxRuntimeState.ERROR,
+                        stage = UbuntuInstallStage.RUNTIME,
+                        message = failure.message ?: failure.javaClass.simpleName,
+                    )
+                    statusFlow.value = status
+                    status
+                } finally {
+                    synchronized(attemptLock) { inFlight = null }
+                }
+                // The caller is released as soon as the runtime is usable; the toolchain is a
+                // long apt run that must not delay the first shell.
+                signal.complete(settled)
+                if (settled.state == AgentxRuntimeState.READY) ensureToolchain()
             }
-            when (result) {
-                is UbuntuInstallResult.AlreadyInstalled -> statusFlow.value = RuntimeStatus.Ready
-                is UbuntuInstallResult.Installed -> statusFlow.value = RuntimeStatus.Ready
-                is UbuntuInstallResult.Unavailable -> Log.w(TAG, result.reason)
-                is UbuntuInstallResult.Failed -> Log.w(TAG, "[${result.stage.wireName}] ${result.message}")
-            }
+            return signal
         }
+    }
+
+    /**
+     * Installs the developer toolchain once, with the guest's own `apt-get`.
+     *
+     * Never fatal: the shell is already usable and a failure (no network, a repository hiccup)
+     * is logged and retried by the next provisioning attempt, because the marker is only written
+     * on success. The Ubuntu guest installs Ubuntu packages into itself; no Termux package, no
+     * Termux repository and no legacy bootstrap is involved.
+     */
+    private suspend fun ensureToolchain() {
+        if (File(layout.toolchainMarker).isFile) return
+        val result = withContext(ioDispatcher) { installToolchain() }
+        if (result.success) {
+            val marker = File(layout.toolchainMarker)
+            marker.parentFile?.mkdirs()
+            marker.writeText("ok\n")
+            Log.i(TAG, "Developer toolchain installed with apt-get")
+        } else {
+            Log.w(TAG, "Toolchain install did not complete (exit ${result.exitCode}): ${result.stderr.take(300)}")
+        }
+    }
+
+    /**
+     * Runs the guest probes and only then writes the verification marker.
+     *
+     * This is the step that turns "the files are on disk" into "a real Ubuntu shell answered".
+     * A failure here leaves the runtime in ERROR with the probe that failed, and the rootfs is
+     * re-verified (not re-downloaded) on the next attempt.
+     */
+    private suspend fun verifyRootfs() {
+        statusFlow.value = RuntimeStatus(AgentxRuntimeState.VALIDATING)
+        val verification = withContext(ioDispatcher) { verifier.verify() }
+        if (verification.ok) {
+            markVerified()
+            statusFlow.value = RuntimeStatus.Ready
+            Log.i(TAG, verification.summary)
+        } else {
+            clearVerified()
+            statusFlow.value = RuntimeStatus(
+                state = AgentxRuntimeState.ERROR,
+                stage = UbuntuInstallStage.RUNTIME,
+                message = verification.failure,
+            )
+            Log.w(TAG, verification.failure.orEmpty())
+        }
+    }
+
+    private fun markVerified() {
+        val marker = File(layout.verificationMarker)
+        marker.parentFile?.mkdirs()
+        marker.writeText("ok\n${UbuntuEnvironment.RUNTIME_MARKER}\n")
+    }
+
+    private fun clearVerified() {
+        runCatching { File(layout.verificationMarker).delete() }
+    }
+
+    private val attemptLock = Any()
+
+    /** The attempt in flight, if any, so concurrent callers join it instead of racing it. */
+    @Volatile
+    private var inFlight: CompletableDeferred<RuntimeStatus>? = null
+
+    private fun initialStatus(): RuntimeStatus = when {
+        isReady() -> RuntimeStatus.Ready
+        installer.isInstalled() -> unverifiedStatus()
+        else -> RuntimeStatus.NotInstalled
+    }
+
+    /** An installed rootfs that has not been through [UbuntuRuntimeVerifier] yet. */
+    private fun unverifiedStatus(): RuntimeStatus = RuntimeStatus(
+        state = AgentxRuntimeState.ERROR,
+        stage = UbuntuInstallStage.RUNTIME,
+        message = "The Ubuntu rootfs is installed but has not passed its PRoot verification. " +
+            "Install the runtime again to verify it; nothing is downloaded the second time.",
+    )
+
+    /**
+     * Prepares a project for the guest.
+     *
+     * A real directory is bound as-is; a `content://` tree is copied into app storage first, so
+     * PRoot is never handed a URI it cannot mount. Blocking: call it off the main thread.
+     */
+    fun materializeProject(handle: String?, workspaceId: String): UbuntuWorkspaceMaterialization =
+        materializer.materialize(handle, workspaceId)
+
+    /**
+     * Installs the developer toolchain with the guest's own `apt-get`.
+     *
+     * The packages come from Ubuntu's own `ubuntu-ports` archive
+     * ([UbuntuRootfsCatalog.TOOLCHAIN_PACKAGES]): git, gh, python3/pip, nodejs/npm, curl, wget,
+     * ca-certificates, openssh-client and ripgrep. There is no Termux package repository and no
+     * Termux package is installed — this is the Ubuntu userland installing into itself.
+     */
+    fun installToolchain(timeoutSeconds: Long = TOOLCHAIN_TIMEOUT_SECONDS): AgentxCommandResult {
+        if (!isReady()) {
+            return AgentxCommandResult(
+                exitCode = -1,
+                stdout = "",
+                stderr = "The Ubuntu runtime is not ready, so no toolchain can be installed.",
+            )
+        }
+        val packages = UbuntuRootfsCatalog.TOOLCHAIN_PACKAGES.joinToString(" ")
+        val command = buildString {
+            append("export DEBIAN_FRONTEND=noninteractive; ") 
+            append("apt-get update && apt-get install -y --no-install-recommends ")
+            append(packages)
+        }
+        return executeBlocking(command = command, timeoutSeconds = timeoutSeconds)
     }
 
     /**
@@ -296,6 +449,8 @@ class LocalUbuntuRuntime(
         const val DEFAULT_ROWS: Int = 24
         const val DEFAULT_TRANSCRIPT_ROWS: Int = 2000
         const val DEFAULT_TIMEOUT_SECONDS: Long = 120L
+        /** `apt-get install` of the toolchain is slower than a single command. */
+        const val TOOLCHAIN_TIMEOUT_SECONDS: Long = 1800L
 
         private val LOCK = Any()
 

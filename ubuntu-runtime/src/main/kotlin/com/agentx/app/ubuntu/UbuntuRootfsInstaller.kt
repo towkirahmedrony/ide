@@ -35,10 +35,26 @@ interface UbuntuFiles {
     fun rename(from: String, to: String): Boolean
     fun writeText(path: String, text: String)
     fun isDirectory(path: String): Boolean
+
+    /**
+     * Whether [first] and [second] name the same file once symlinks are followed.
+     *
+     * This is the hard-link relationship. It is true both for a real hard link (one inode, two
+     * names) and for PRoot's emulation on Android (two symlinks onto one file in the
+     * link-to-symlink store). It is deliberately *not* true for two independent copies, which is
+     * what the validation has to catch. Returns false when either path is missing or dangling.
+     */
+    fun resolvesToSameFile(first: String, second: String): Boolean
 }
 
-/** Archive handling. The Ubuntu tar preserves symlinks, hard links and modes; a hand-rolled
- *  reader in Kotlin cannot be trusted to, so extraction is delegated to the system tar. */
+/**
+ * Archive handling.
+ *
+ * A Kotlin reader is not used: GNU/BSD `tar` is the only thing that reproduces Ubuntu Base's
+ * symlinks, modes and hard links faithfully. On Android, however, `tar` cannot be allowed to
+ * create hard links itself, so it is started *through* the runtime's PRoot — see
+ * [ProotUbuntuTar].
+ */
 interface UbuntuTar {
     /** Extracts [archivePath] into [intoDir]. Throws on a non-zero exit or a spawn failure. */
     fun extract(archivePath: String, intoDir: String)
@@ -60,7 +76,7 @@ class UbuntuRootfsInstaller(
     private val download: (String, File, (Long, Long) -> Unit) -> File =
         UbuntuRootfsInstaller::defaultDownload,
     private val resolveEntry: (List<String>) -> UbuntuRootfsCatalog.Entry? = UbuntuRootfsCatalog::forAbis,
-    private val tar: UbuntuTar = AndroidUbuntuTar,
+    private val tar: UbuntuTar = ProotUbuntuTar(layout),
     private val files: UbuntuFiles = AndroidUbuntuFiles,
     private val dnsServers: () -> List<String> = { emptyList() },
 ) {
@@ -80,13 +96,44 @@ class UbuntuRootfsInstaller(
         }
     }
 
+    /**
+     * Removes whatever an interrupted or failed install left behind so a retry starts from
+     * verified bytes.
+     *
+     * A `rootfs` without the install marker is a partial tree that must never be treated as an
+     * installation; `staging` is scratch. The downloaded archive is deliberately **kept**:
+     * [fetch] re-checks it against the pinned SHA-256 and reuses it when it still matches, so a
+     * retry after a transient extraction failure costs no download. The link-to-symlink store is
+     * never cleared here — an installed rootfs refers into it.
+     */
+    fun repairIncompleteInstallation(): Boolean {
+        var removed = false
+        if (files.entryExists(layout.staging)) {
+            removed = files.deleteRecursively(layout.staging) || removed
+        }
+        if (!isInstalled() && files.entryExists(layout.rootfs)) {
+            val cleared = files.deleteRecursively(layout.rootfs)
+            removed = cleared || removed
+            if (cleared) {
+                // Both markers describe a rootfs that no longer exists, so a retry must run the
+                // guest probes and the apt toolchain step again rather than trust them.
+                files.deleteRecursively(layout.verificationMarker)
+                files.deleteRecursively(layout.toolchainMarker)
+            }
+        }
+        return removed
+    }
+
     fun provision(onStatus: (RuntimeStatus) -> Unit = {}): UbuntuInstallResult {
         ensureRuntimeDirectories()
 
-        if (isInstalled()) {
-            onStatus(RuntimeStatus.Ready)
-            return UbuntuInstallResult.AlreadyInstalled
-        }
+        // No terminal `Ready` is published here: READY belongs to the runtime, and it is only
+        // reached after the installed tree has been run through PRoot. See
+        // `LocalUbuntuRuntime.verifyRootfs`.
+        if (isInstalled()) return UbuntuInstallResult.AlreadyInstalled
+
+        // A rootfs or staging tree from a previous attempt is not evidence of anything.
+        repairIncompleteInstallation()
 
         val entry = resolveEntry(supportedAbis)
             ?: return fail(
@@ -109,7 +156,6 @@ class UbuntuRootfsInstaller(
         return try {
             val archive = fetch(entry, onStatus)
             val files = extract(entry, archive, onStatus)
-            onStatus(RuntimeStatus.Ready)
             UbuntuInstallResult.Installed(archiveBytes = archive.length(), files = files)
         } catch (io: IOException) {
             fail(UbuntuInstallResult.Failed(UbuntuInstallStage.DOWNLOAD, io.message ?: "download failed"), UbuntuInstallStage.DOWNLOAD, onStatus)
@@ -198,11 +244,16 @@ class UbuntuRootfsInstaller(
             throw UbuntuRootfsException(UbuntuInstallStage.EXTRACTION, "Could not create ${layout.staging}")
         }
 
+        // The extraction is the one step that has to run *through* the native PRoot.
+        requireProotTooling()
+
         val entries = tar.countEntries(archive.absolutePath)
         onStatus(RuntimeStatus(AgentxRuntimeState.EXTRACTING, progressPercent = 0, totalBytes = entries.toLong()))
         try {
             tar.extract(archive.absolutePath, layout.staging)
         } catch (error: Exception) {
+            // Leave nothing half-unpacked behind: the next attempt starts from the archive.
+            files.deleteRecursively(layout.staging)
             throw UbuntuRootfsException(
                 UbuntuInstallStage.EXTRACTION,
                 "Could not extract ${entry.assetName}: ${error.message}",
@@ -248,6 +299,57 @@ class UbuntuRootfsInstaller(
                     "Symlinks or permissions did not survive extraction.",
             )
         }
+        validateHardLinks(tree)
+    }
+
+    /**
+     * Proves the archive's hard links survived *as links*.
+     *
+     * Checking that both paths exist is not enough: a naive extractor that writes each entry as
+     * its own file would satisfy that while silently doubling a binary and breaking dpkg. The
+     * test is therefore that the two names resolve to the same file — a real hard link, or, on
+     * Android where the kernel forbids them, PRoot's link-to-symlink emulation, which is still
+     * one file under two names.
+     */
+    private fun validateHardLinks(tree: String) {
+        for (hardLink in UbuntuRootfsCatalog.REQUIRED_HARD_LINKS) {
+            val file = "$tree/${hardLink.file}"
+            val link = "$tree/${hardLink.link}"
+            if (!files.entryExists(file) || !files.entryExists(link)) {
+                throw UbuntuRootfsException(
+                    UbuntuInstallStage.VALIDATION,
+                    "The extracted rootfs is missing ${hardLink.file} or ${hardLink.link}; the " +
+                        "archive stores them as a hard-link pair and both must survive extraction.",
+                )
+            }
+            if (files.resolvesToSameFile(file, link)) continue
+            throw UbuntuRootfsException(
+                UbuntuInstallStage.VALIDATION,
+                "${hardLink.link} and ${hardLink.file} no longer name the same file after " +
+                    "extraction. Android forbids a hard link, so PRoot's link-to-symlink " +
+                    "emulation must have been used; a plain extraction or an independent copy " +
+                    "cannot be accepted.",
+            )
+        }
+    }
+
+    /**
+     * Fails with the real reason when the native PRoot/loader pair is not in `nativeLibraryDir`.
+     *
+     * Without it the archive cannot be unpacked correctly at all, and a guest could not be run
+     * afterwards either, so the honest outcome is a runtime-stage error rather than a rootfs
+     * extracted in a way that cannot work.
+     */
+    private fun requireProotTooling() {
+        val missing = listOf(NativeRuntimeLayout.PROOT_LIBRARY, NativeRuntimeLayout.LOADER_LIBRARY)
+            .filter { name -> !files.entryExists("${layout.nativeLibraryDir}/$name") }
+        if (missing.isEmpty()) return
+        throw UbuntuRootfsException(
+            UbuntuInstallStage.RUNTIME,
+            "PRoot is not installed in ${layout.nativeLibraryDir} (missing ${missing.joinToString()}). " +
+                "The Ubuntu rootfs is unpacked through PRoot so its hard links are preserved; " +
+                "reinstall the APK with its native libraries and retry.",
+        )
     }
 
     private fun configure(tree: String) {
@@ -401,6 +503,19 @@ object AndroidUbuntuFiles : UbuntuFiles {
 
     override fun isDirectory(path: String): Boolean = File(path).isDirectory
 
+    /**
+     * Compares the *resolved* files. `Os.stat` follows symlinks, so this is true for a real hard
+     * link and for PRoot's link-to-symlink emulation (both names lead to one file) and false for
+     * two independent copies. A dangling symlink or a missing path throws and reports false.
+     */
+    override fun resolvesToSameFile(first: String, second: String): Boolean = try {
+        val left = Os.stat(first)
+        val right = Os.stat(second)
+        left.st_dev == right.st_dev && left.st_ino == right.st_ino
+    } catch (missing: Exception) {
+        false
+    }
+
     private fun isSymlink(file: File): Boolean = try {
         Os.lstat(file.absolutePath).st_mode and 0xF000 == 0xA000
     } catch (missing: Exception) {
@@ -409,23 +524,58 @@ object AndroidUbuntuFiles : UbuntuFiles {
 }
 
 /**
- * Extraction through the platform tar.
+ * Extraction through the platform `tar`, started by the runtime's own PRoot.
  *
- * `tar` is the only tool that preserves Ubuntu's hard links, symlinks and file modes reliably;
- * a Kotlin `ZipInputStream`-style reader cannot, which is why none is used for the rootfs.
- * toybox tar (the Android implementation) supports `-x -z -f -C` and drops ownership, which is
- * correct here because an app cannot chown to root and PRoot presents the guest as root anyway.
+ * Why PRoot is in the middle: Ubuntu Base stores two entries as hard links
+ * ([UbuntuRootfsCatalog.REQUIRED_HARD_LINKS]). Android's SELinux policy forbids `untrusted_app`
+ * from creating a hard link at all — the platform's `neverallow` rule — so running
+ * `/system/bin/tar -xzf` directly stops at
+ *
+ * ```text
+ * tar: can't link 'usr/bin/perl5.38.2' -> 'usr/bin/perl': Permission denied
+ * tar: had errors
+ * ```
+ *
+ * and leaves an unusable tree. PRoot's `-l` extension performs that `link()`/`linkat()` as a
+ * symlink to the same file (`PROOT_L2S_DIR` is where it keeps the contents), so the archive
+ * extracts, the two names still lead to one file, and nothing is copied or dropped. The
+ * archive's SHA-256 is verified before this runs and is not weakened by it.
+ *
+ * `countEntries` is a read-only `-t` listing and is safe to run directly: it creates nothing.
  */
-object AndroidUbuntuTar : UbuntuTar {
-
-    private const val TAR = "/system/bin/tar"
+class ProotUbuntuTar(
+    private val layout: NativeRuntimeLayout,
+    private val hostTar: String = UbuntuRootfsCatalog.HOST_TAR,
+) : UbuntuTar {
 
     override fun extract(archivePath: String, intoDir: String) {
-        run(listOf(TAR, "-xzf", archivePath, "-C", intoDir))
+        val invocation = ProotCommand.extraction(
+            layout = layout,
+            hostTar = hostTar,
+            archivePath = archivePath,
+            intoDir = intoDir,
+        )
+        val builder = ProcessBuilder(invocation.processCommand).redirectErrorStream(true)
+        for ((name, value) in invocation.environment) {
+            builder.environment()[name] = value
+        }
+        val process = builder.start()
+        val output = process.inputStream.bufferedReader().readText()
+        val exit = process.waitFor()
+        if (exit != 0) {
+            throw IOException(
+                "tar under PRoot exited $exit: ${output.take(500)}",
+            )
+        }
+        // toybox tar reports a link it could not create on stderr and still exits non-zero; a
+        // zero exit with 'can't link' in the output would mean the emulation did not run.
+        if (output.contains("can't link") || output.contains("Cannot hard link")) {
+            throw IOException("tar could not preserve the archive's hard links: ${output.take(500)}")
+        }
     }
 
     override fun countEntries(archivePath: String): Int = try {
-        val process = ProcessBuilder(TAR, "-tzf", archivePath)
+        val process = ProcessBuilder(hostTar, "-tzf", archivePath)
             .redirectErrorStream(false)
             .start()
         val count = process.inputStream.bufferedReader().useLines { lines -> lines.count() }
@@ -433,14 +583,5 @@ object AndroidUbuntuTar : UbuntuTar {
         count
     } catch (error: Exception) {
         0
-    }
-
-    private fun run(command: List<String>) {
-        val process = ProcessBuilder(command).redirectErrorStream(true).start()
-        val output = process.inputStream.bufferedReader().readText()
-        val exit = process.waitFor()
-        if (exit != 0) {
-            throw IOException("${command.first()} exited $exit: ${output.take(500)}")
-        }
     }
 }

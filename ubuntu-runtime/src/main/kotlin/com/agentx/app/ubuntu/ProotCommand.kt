@@ -74,6 +74,45 @@ object ProotCommand {
     val LOGIN_SHELL: List<String> = listOf("/bin/bash", "--login")
 
     /**
+     * The invocation that unpacks the Ubuntu archive.
+     *
+     * The platform `tar` is *not* run directly. Android's SELinux policy forbids an untrusted
+     * app from creating a hard link at all (a `neverallow` rule), so `tar -xzf` fails with
+     * `can't link 'usr/bin/perl5.38.2' -> 'usr/bin/perl': Permission denied` on the two hard
+     * links Ubuntu Base contains. Running it under this runtime's own PRoot with `-l`
+     * (link-to-symlink) performs each `link(2)`/`linkat(2)` as a symlink to the same content, so
+     * the tree extracts intact and the two entries still name one file — no copy, no dropped
+     * link, no weakened checksum.
+     *
+     * No `-r` is passed: PRoot is acting purely as the linker here, and the archive's own paths
+     * are what is being written. `PROOT_L2S_DIR` must be set or the emulation has nowhere to keep
+     * the moved contents.
+     */
+    fun extraction(
+        layout: NativeRuntimeLayout,
+        hostTar: String,
+        archivePath: String,
+        intoDir: String,
+    ): ProotInvocation {
+        val arguments = listOf(
+            "proot",
+            "-l",
+            "-w",
+            "/",
+            hostTar,
+            "-xzf",
+            archivePath,
+            "-C",
+            intoDir,
+        )
+        return ProotInvocation(
+            executable = layout.proot,
+            arguments = arguments,
+            environment = prootEnvironment(layout, include32BitLoader = false, hostLibraryPath = null),
+        )
+    }
+
+    /**
      * Builds the invocation.
      *
      * @param layout native library directory and app-private runtime storage.
@@ -111,6 +150,26 @@ object ProotCommand {
         }
         arguments += guestCommand
 
+        return ProotInvocation(
+            executable = layout.proot,
+            arguments = arguments,
+            environment = prootEnvironment(layout, include32BitLoader, hostLibraryPath),
+        )
+    }
+
+    /**
+     * The environment PRoot itself needs.
+     *
+     * `PROOT_LOADER` must name the real interposer in `nativeLibraryDir`; Android executes only
+     * `libproot.so` directly and hands every guest binary to this loader. `PROOT_L2S_DIR` is
+     * where the link-to-symlink emulation keeps the contents it moves, and it has to survive
+     * across sessions — a rootfs extracted with `-l` refers into it.
+     */
+    private fun prootEnvironment(
+        layout: NativeRuntimeLayout,
+        include32BitLoader: Boolean,
+        hostLibraryPath: String?,
+    ): Map<String, String> {
         val environment = LinkedHashMap<String, String>()
         environment["PROOT_LOADER"] = layout.loader
         if (include32BitLoader) {
@@ -121,12 +180,7 @@ object ProotCommand {
         if (!hostLibraryPath.isNullOrBlank()) {
             environment["LD_LIBRARY_PATH"] = hostLibraryPath
         }
-
-        return ProotInvocation(
-            executable = layout.proot,
-            arguments = arguments,
-            environment = environment,
-        )
+        return environment
     }
 
     /**
