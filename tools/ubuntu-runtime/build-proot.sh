@@ -27,6 +27,8 @@ TALLOC_SHA256="dc46c40b9f46bb34dd97fe41f548b0e8b247b77a918576733c528e83abd854dd"
 TALLOC_URL="https://www.samba.org/ftp/talloc/talloc-${TALLOC_VERSION}.tar.gz"
 SHMEM_REPO="https://github.com/termux/libandroid-shmem"
 SHMEM_REV="7f0bd7e25dbdd146265aff7c6a890029e374622d"
+SHMEM_PATCH="libandroid-shmem-proot-tmpdir.patch"
+PROOT_PATCHES="termux-proot-missing-string-header.patch termux-proot-portable-loader-info-awk.patch"
 
 case "$ABI" in
   arm64-v8a) TRIPLE="aarch64-linux-android"; API=26; MACHINE="AArch64" ;;
@@ -61,6 +63,10 @@ echo "libandroid-shmem: $SHMEM_REV"
 
 WORK="$(mktemp -d)"
 mkdir -p "$OUT"
+# Resolve $OUT to an absolute path now. Several steps below run inside a subshell that cds into
+# the build tree, and a relative "$OUT" would then be created there instead of next to the
+# caller — which is how the shmem link line ended up writing into a directory that never existed.
+OUT=$(CDPATH= cd -- "$OUT" && pwd)
 trap 'rm -rf "$WORK"' EXIT
 
 # Host aliases the GNUmakefile invokes as unprefixed tool names.
@@ -129,18 +135,46 @@ fi
 
 # ---------------------------------------------------------------------------------------------
 # libandroid-shmem — System V shared memory for guest processes on Android.
+#
+# shmem.c uses _PATH_TMP, which Android's libc does not define in <paths.h> — it never has, from
+# API 24 through 35 — so the pinned revision does not compile against the NDK as-is. (Termux
+# ships the same package and gets away with it only because termux-packages patches the NDK's
+# paths.h; see ndk-patches/*/paths.h.patch there.) We apply the equivalent change to the source
+# instead so the NDK install stays vanilla.
+#
+# The patch also matters at runtime. _PATH_TMP names the directory shmget() creates its
+# per-key symlink in, and shmget() retries symlink() in an unbounded loop until it succeeds,
+# so a directory that can never be created would spin forever and hang the caller. /tmp does
+# not exist on Android; PROOT_TMP_DIR always names a directory PRoot has already proven it can
+# write, so the patch prefers it and keeps the platform default otherwise.
 # ---------------------------------------------------------------------------------------------
-echo "==> libandroid-shmem $SHMEM_REV"
+echo "==> libandroid-shmem $SHMEM_REV (patched by $SHMEM_PATCH)"
 (
   cd "$WORK"
   git clone "$SHMEM_REPO" shmem
   cd shmem
   git checkout "$SHMEM_REV"
+  git apply "$SCRIPT_DIR/patches/$SHMEM_PATCH"
   "$CC" -O2 -fPIC -shared -std=c11 -Wall -Wextra \
     -Wl,--version-script=exports.txt \
     -o "$OUT/libandroid-shmem.so" \
     shmem.c -llog -landroid
 )
+
+# libandroid-shmem's header is part of its contract, not an optional extra: upstream's Makefile
+# installs it as <prefix>/include/sys/shm.h precisely so that it shadows the NDK's own
+# <sys/shm.h> in every consumer. PRoot depends on that. The header is what declares
+# libandroid_shmat_fd()/libandroid_shmdt_fd(), and its #defines are what redirect
+# shmget()/shmat()/shmdt()/shmctl() to the libandroid_* implementations this library exports.
+# Without the shadowing include path PRoot compiles against bionic's sys/shm.h and stops on the
+# undeclared libandroid_* helpers — and, if it were only the declarations, it would silently
+# link the guest's shm calls against the platform's absent shmget instead.
+#
+# PRoot 5.1.107.95 has exactly one <sys/shm.h> consumer (extension/sysvipc/sysvipc_shm.c, under
+# WITH_LIBANDROID_SHMEM), so shadowing it cannot disturb anything else.
+SHMEM_INCLUDE="$WORK/shmem-include"
+mkdir -p "$SHMEM_INCLUDE/sys"
+cp "$WORK/shmem/shm.h" "$SHMEM_INCLUDE/sys/shm.h"
 
 # ---------------------------------------------------------------------------------------------
 # PRoot + unbundled loader
@@ -161,15 +195,57 @@ echo "==> PRoot $PROOT_REV"
   git checkout "$PROOT_REV"
   git rev-parse HEAD > "$OUT/proot-source.rev"
 
+  # Two upstream defects that only surface when this code is built for Android with a modern
+  # toolchain. Neither is fixable by a flag we would actually want to set:
+  #   * extension/ashmem_memfd/ashmem_memfd.c calls strcmp()/memset() without including
+  #     <string.h>. It is Android-only, so no upstream build compiles that translation unit and
+  #     nobody has noticed; clang 16+ rejects the implicit declarations. Patch in the missing
+  #     header rather than passing -Wno-implicit-function-declaration, which would also silence
+  #     every real one across all of PRoot.
+  #   * src/loader/loader-info.awk relies on gawk (strtonum, \y). Ubuntu's awk is mawk, which
+  #     errors on strtonum and — worse — silently matches nothing for \y, which would emit an
+  #     empty offset instead of failing.
+  for patch in $PROOT_PATCHES; do
+    git apply "$SCRIPT_DIR/patches/$patch"
+  done
+
   # Dummy fallback directory: the runtime always sets PROOT_LOADER to nativeLibraryDir.
   # aarch64 arch.h sets HAS_LOADER_32BIT, which builds loader-m32 with -m32. The Android
   # NDK aarch64 toolchain cannot do that. Ubuntu ARM64 does not start 32-bit guests, so
   # the 32-bit loader is disabled for this ABI. Do not pass HAS_LOADER_32BIT= on the make
   # command line: GNU make treats an empty command-line variable as still defined.
   if [ "$ABI" = "arm64-v8a" ]; then
-    sed -i 's/#define HAS_LOADER_32BIT true/\/* HAS_LOADER_32BIT disabled: Android NDK aarch64 *\//' src/arch.h
+    sed -i 's|#define HAS_LOADER_32BIT true|/* HAS_LOADER_32BIT disabled: Android NDK aarch64 */|' src/arch.h
+    # src/GNUmakefile reads HAS_LOADER_32BIT back out of arch.h to decide whether to build
+    # loader-m32. If this substitution ever stops matching, the -m32 build comes back and the
+    # whole build fails much further downstream, so check it here instead.
+    if grep -q 'define HAS_LOADER_32BIT' src/arch.h; then
+      echo "arch.h still defines HAS_LOADER_32BIT for arm64-v8a" >&2
+      exit 1
+    fi
   fi
 
+  # CPPFLAGS/CFLAGS/LDFLAGS travel in the environment, not on the make command line. GNU make
+  # lets a command-line value win outright and ignores every ordinary assignment for it,
+  # including `+=`, so passing them as arguments would silently discard the three `+=` blocks
+  # src/GNUmakefile depends on: `-D_GNU_SOURCE -I. -I$(VPATH)` (nothing would find tracee/,
+  # cli/, …), `-DWITH_LIBANDROID_SHMEM` (PRoot would never call libandroid-shmem at all) and
+  # `-DPROOT_UNBUNDLE_LOADER` (the loader would be re-bundled, which is exactly what
+  # PROOT_LOADER exists to avoid). Environment values are appended to by `+=`.
+  #
+  # The rpath needs the single quotes: make rewrites `$$` to `$` before the shell sees the
+  # recipe, so an unquoted `$$ORIGIN` reaches the shell as `$ORIGIN`, expands to nothing and
+  # links with an empty -rpath.
+  #
+  # --as-needed discards the bare `-ltalloc` that src/GNUmakefile appends unconditionally.
+  # TALLOC_LIBS is already the static archive at that point, so talloc is resolved before
+  # `-ltalloc` is reached — but without --as-needed the linker still records
+  # `DT_NEEDED libtalloc.so.2`, which is talloc's SONAME rather than a file name. Android only
+  # extracts `lib*.so` from an APK into nativeLibraryDir, so nothing packaged could ever satisfy
+  # that name and libproot.so would fail to load outright.
+  CPPFLAGS="-DARG_MAX=131072 -DVERSION=\\\"${PROOT_TAG}\\\" -DANDROID -I${SHMEM_INCLUDE}" \
+  CFLAGS="-O2 -fPIC ${TALLOC_CFLAGS} -DANDROID" \
+  LDFLAGS="-Wl,--as-needed -Wl,-z,noexecstack -Wl,-rpath,'\$\$ORIGIN' -Wl,--enable-new-dtags -L${OUT} -landroid-shmem -llog ${TALLOC_LIBS}" \
   make -C src \
     V=1 \
     CC="$CC" \
@@ -179,10 +255,7 @@ echo "==> PRoot $PROOT_REV"
     OBJCOPY="$OBJCOPY" \
     OBJDUMP="$OBJDUMP" \
     PROOT_UNBUNDLE_LOADER=/nonexistent/agentx-proot-loader \
-    PROOT_WITH_LIBANDROID_SHMEM=true \
-    CPPFLAGS="-DARG_MAX=131072 -DVERSION=\\\"${PROOT_TAG}\\\" -DANDROID" \
-    CFLAGS="-O2 -fPIC ${TALLOC_CFLAGS} -DANDROID" \
-    LDFLAGS="-Wl,-z,noexecstack -Wl,-rpath,\$\$ORIGIN -Wl,--enable-new-dtags -L${OUT} -landroid-shmem -llog ${TALLOC_LIBS}"
+    PROOT_WITH_LIBANDROID_SHMEM=true
 
   if [ ! -f src/proot ]; then
     echo "PRoot binary was not produced (src/proot)" >&2

@@ -1,0 +1,29 @@
+diff --git a/src/loader/loader-info.awk b/src/loader/loader-info.awk
+index 578c843..1380d67 100644
+--- a/src/loader/loader-info.awk
++++ b/src/loader/loader-info.awk
+@@ -1,6 +1,22 @@
+ # Note: This file is included only for targets which have pokedata workaround
+-/\ypokedata_workaround\y/{pokedata_workaround=strtonum("0x" $2)}
+-/\y_start\y/{start=strtonum("0x" $2)}
++#
++# AgentX: this must run under any POSIX awk. The default awk on Ubuntu (and therefore on the
++# CI runner) is mawk, which fails on this script's original gawk-only constructs: strtonum()
++# is reported as undefined, and \y word boundaries silently match nothing at all, which would
++# emit an empty offset without any error. Parse the hexadecimal readelf addresses by hand and
++# select the symbols by their name field instead.
++function hex2dec(s,    i, c, d, n) {
++	n = 0
++	for (i = 1; i <= length(s); i++) {
++		c = tolower(substr(s, i, 1))
++		d = index("0123456789abcdef", c) - 1
++		if (d >= 0)
++			n = n * 16 + d
++	}
++	return n
++}
++$NF == "pokedata_workaround" { pokedata_workaround = hex2dec($2) }
++$NF == "_start" { start = hex2dec($2) }
+ END {
+ 	print "#include <unistd.h>"
+ 	print "const ssize_t offset_to_pokedata_workaround=" (pokedata_workaround-start) ";"

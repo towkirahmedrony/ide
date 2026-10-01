@@ -9,11 +9,14 @@ set -eu
 ABI="${1:?android abi}"
 DIR="${2:?artifact directory}"
 
+# `file` and `readelf` spell the same machine differently — "ARM aarch64" against "AArch64",
+# "x86-64" against "X86-64" — so each tool gets the spelling it actually prints. The readelf
+# machine is the precise check; the `file` one is a sanity net for when only `file` is present.
 case "$ABI" in
-  arm64-v8a) MACHINE="AArch64"; ELF_MACHINE="AArch64" ;;
-  armeabi-v7a) MACHINE="ARM"; ELF_MACHINE="ARM" ;;
-  x86_64) MACHINE="X86-64"; ELF_MACHINE="X86-64" ;;
-  x86) MACHINE="Intel 80386"; ELF_MACHINE="Intel 80386" ;;
+  arm64-v8a) FILE_MACHINE="aarch64"; ELF_MACHINE="AArch64" ;;
+  armeabi-v7a) FILE_MACHINE="ARM"; ELF_MACHINE="ARM" ;;
+  x86_64) FILE_MACHINE="x86-64"; ELF_MACHINE="X86-64" ;;
+  x86) FILE_MACHINE="Intel 80386"; ELF_MACHINE="Intel 80386" ;;
   *) echo "Unsupported ABI: $ABI" >&2; exit 2 ;;
 esac
 
@@ -33,7 +36,7 @@ for name in $REQUIRED; do
   if command -v file >/dev/null 2>&1; then
     info=$(file "$path")
     echo "$info" | grep -q ELF || fail "$name is not an ELF: $info"
-    echo "$info" | grep -q "$MACHINE" || fail "$name is not built for $ABI ($MACHINE): $info"
+    echo "$info" | grep -q "$FILE_MACHINE" || fail "$name is not built for $ABI ($FILE_MACHINE): $info"
   fi
   if command -v readelf >/dev/null 2>&1; then
     header=$(readelf -h "$path" 2>/dev/null || true)

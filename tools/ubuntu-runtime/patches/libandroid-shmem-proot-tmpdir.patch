@@ -1,0 +1,49 @@
+diff --git a/shmem.c b/shmem.c
+index f95fc07..562d376 100644
+--- a/shmem.c
++++ b/shmem.c
+@@ -23,7 +23,34 @@
+ #include "shm.h"
+ 
+ #define DBG(...) __android_log_print(ANDROID_LOG_INFO, "shmem", __VA_ARGS__)
+-#define ASHV_KEY_SYMLINK_PATH _PATH_TMP "ashv_key_%d"
++/*
++ * AgentX: Android's libc does not define _PATH_TMP, so upstream's definition below does not
++ * compile against the NDK's <paths.h> (Termux works around this by patching the NDK instead).
++ * "/tmp" is also the wrong directory on Android, where it does not exist: shmget() further
++ * down retries symlink() in a loop until it succeeds, so a directory that can never be
++ * created would spin forever and hang the caller. PROOT_TMP_DIR always names a directory
++ * PRoot has already proven it can write, so prefer it and keep the platform default
++ * otherwise (that is the upstream behaviour on a normal Linux host).
++ */
++#ifndef _PATH_TMP
++#define _PATH_TMP "/tmp/"
++#endif
++
++static const char *ashv_key_symlink_dir(void)
++{
++	static char dir[200];
++	const char *base;
++
++	if (dir[0] != '\0')
++		return dir;
++
++	base = getenv("PROOT_TMP_DIR");
++	if (base == NULL || base[0] != '/')
++		base = _PATH_TMP;
++
++	snprintf(dir, sizeof(dir), "%s%s", base, base[strlen(base) - 1] == '/' ? "" : "/");
++	return dir;
++}
+ #define ANDROID_SHMEM_SOCKNAME "/dev/shm/%08x"
+ #define ROUND_UP(N, S) ((((N) + (S) - 1) / (S)) * (S))
+ 
+@@ -349,7 +376,7 @@ int shmget(key_t key, size_t size, int flags)
+ 		// (3) If connected and opened, done. If connection refused
+ 		//     take ownership of the key and create the symlink.
+ 		// (4) If no symlink, create it.
+-		sprintf(symlink_path, ASHV_KEY_SYMLINK_PATH, key);
++		snprintf(symlink_path, sizeof(symlink_path), "%sashv_key_%d", ashv_key_symlink_dir(), key);
+ 		char path_buffer[256];
+ 		char num_buffer[64];
+ 		while (true) {

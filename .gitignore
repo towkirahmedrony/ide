@@ -21,6 +21,10 @@ local.properties
 captures/
 .cxx/
 .externalNativeBuild/
+# android-build.yml writes the PRoot runtime to <repo>/out/artifacts before vendoring it into
+# jniLibs, so the directory the workflow actually uses has to be ignored, not just the
+# tools/ubuntu-runtime one below.
+/out/
 
 # Android signing keys
 *.jks
