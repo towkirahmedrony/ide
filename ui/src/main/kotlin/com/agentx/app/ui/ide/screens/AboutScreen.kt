@@ -16,6 +16,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -31,6 +32,7 @@ import com.agentx.app.ui.ide.components.IdeSpacer
 import com.agentx.app.ui.ide.components.IdeTopBar
 import com.agentx.app.ui.theme.ForgeCanvas
 import com.agentx.app.ui.theme.ForgeInk
+import com.agentx.app.ui.theme.ForgeMint
 import com.agentx.app.ui.theme.ForgeMuted
 
 @Composable
@@ -102,12 +104,22 @@ fun DeveloperScreen(
     layers: List<LayerDescriptor>,
     health: HealthReport?,
     onBack: () -> Unit,
+    onOpenLogs: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Scaffold(
         modifier = modifier.fillMaxSize(),
         containerColor = ForgeCanvas,
-        topBar = { IdeTopBar(title = "Developer", subtitle = "Foundation status", onBack = onBack) },
+        topBar = {
+            IdeTopBar(
+                title = "Developer",
+                subtitle = "Foundation status",
+                onBack = onBack,
+                actions = {
+                    TextButton(onClick = onOpenLogs) { Text("Logs", color = ForgeMint) }
+                },
+            )
+        },
     ) { padding ->
         if (health == null) {
             Box(

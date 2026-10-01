@@ -31,6 +31,7 @@ import com.agentx.app.ui.ide.screens.AgentPromptEditorScreen
 import com.agentx.app.ui.ide.screens.AgentPromptsScreen
 import com.agentx.app.ui.ide.screens.ConnectionEditorScreen
 import com.agentx.app.ui.ide.screens.ConnectionsScreen
+import com.agentx.app.ui.ide.screens.DeveloperLogsScreen
 import com.agentx.app.ui.ide.screens.DeveloperScreen
 import com.agentx.app.ui.ide.screens.HomeScreen
 import com.agentx.app.ui.ide.screens.ModelEditorScreen
@@ -47,6 +48,7 @@ import com.agentx.app.ui.ide.state.AgentPromptEditorViewModel
 import com.agentx.app.ui.ide.state.AgentPromptsViewModel
 import com.agentx.app.ui.ide.state.ConnectionEditorViewModel
 import com.agentx.app.ui.ide.state.ConnectionsViewModel
+import com.agentx.app.ui.ide.state.DeveloperLogsViewModel
 import com.agentx.app.ui.ide.state.HomeViewModel
 import com.agentx.app.ui.ide.state.IdeViewModelFactory
 import com.agentx.app.ui.ide.state.ModelEditorViewModel
@@ -503,6 +505,24 @@ fun ForgeIdeApp(
             DeveloperScreen(
                 layers = layers,
                 health = health,
+                onBack = { navController.popBackStack() },
+                onOpenLogs = { navController.navigate(IdeDestinations.DEVELOPER_LOGS) },
+            )
+        }
+
+        composable(IdeDestinations.DEVELOPER_LOGS) {
+            val logsViewModel: DeveloperLogsViewModel = viewModel(
+                key = "developer-logs",
+                factory = IdeViewModelFactory {
+                    DeveloperLogsViewModel(
+                        appVersion = version,
+                        terminalRuntime = dependencies.terminalRuntime,
+                        developerRuntime = dependencies.developerRuntime,
+                    )
+                },
+            )
+            DeveloperLogsScreen(
+                viewModel = logsViewModel,
                 onBack = { navController.popBackStack() },
             )
         }

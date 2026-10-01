@@ -27,6 +27,7 @@ object IdeDestinations {
 
     const val ABOUT = "about"
     const val DEVELOPER = "developer"
+    const val DEVELOPER_LOGS = "developer/logs"
 
     /** Saved model presets: the Model Manager screen. */
     const val MODELS = "models"

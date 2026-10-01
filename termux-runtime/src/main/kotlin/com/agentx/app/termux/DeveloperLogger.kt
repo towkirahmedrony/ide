@@ -1,5 +1,8 @@
 package com.agentx.app.termux
 
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
 import java.io.RandomAccessFile
 import java.text.SimpleDateFormat
@@ -53,17 +56,23 @@ object DeveloperLogger {
     )
 
     private val lock = Any()
-    private val lines = ArrayDeque<String>()
+    private val memory = ArrayDeque<String>()
     private val timestamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US)
+    private val linesFlow = MutableStateFlow<List<String>>(emptyList())
 
     private var sink: File? = null
     private var maxFileBytes: Long = DEFAULT_MAX_FILE_BYTES
+
+    /** In-memory tail, oldest first. Bounded to [MAX_MEMORY_LINES]. */
+    val lines: StateFlow<List<String>> = linesFlow.asStateFlow()
 
     fun attach(file: File?, maxBytes: Long = DEFAULT_MAX_FILE_BYTES) {
         synchronized(lock) {
             sink = file
             maxFileBytes = maxBytes.coerceAtLeast(1024L)
             file?.parentFile?.mkdirs()
+            seedFromSinkLocked()
+            publishLocked()
         }
     }
 
@@ -91,17 +100,18 @@ object DeveloperLogger {
 
     fun clear() {
         synchronized(lock) {
-            lines.clear()
+            memory.clear()
             runCatching { sink?.writeText("") }
+            publishLocked()
         }
     }
 
     fun readAll(): String = synchronized(lock) {
         val file = sink
         if (file != null && file.isFile) {
-            runCatching { file.readText() }.getOrElse { lines.joinToString("\n") }
+            runCatching { file.readText() }.getOrElse { memory.joinToString("\n") }
         } else {
-            lines.joinToString("\n")
+            memory.joinToString("\n")
         }
     }
 
@@ -137,6 +147,19 @@ object DeveloperLogger {
             }
         }
         return values
+    }
+
+    /**
+     * Appends a structured runtime snapshot already assembled by the caller.
+     *
+     * Each snapshot line is recorded through the normal logger so it stays in the
+     * persistent file and on the live [lines] flow.
+     */
+    fun captureSnapshot(body: String) {
+        info(DeveloperLogCategory.TERMINAL, "Runtime snapshot captured")
+        body.lineSequence().forEach { line ->
+            info(DeveloperLogCategory.TERMINAL, line)
+        }
     }
 
     fun logProcessLaunch(executable: String, arguments: List<String>, workingDirectory: String) {
@@ -176,10 +199,26 @@ object DeveloperLogger {
     private fun append(level: DeveloperLogLevel, category: DeveloperLogCategory, message: String) {
         synchronized(lock) {
             val stamped = "${timestamp.format(Date())} ${level.name} [$category] $message"
-            lines.addLast(stamped)
-            while (lines.size > MAX_MEMORY_LINES) lines.removeFirst()
+            memory.addLast(stamped)
+            while (memory.size > MAX_MEMORY_LINES) memory.removeFirst()
             runCatching { writeToSink(stamped) }
+            publishLocked()
         }
+    }
+
+    private fun seedFromSinkLocked() {
+        val file = sink ?: return
+        if (!file.isFile) return
+        val loaded = runCatching {
+            file.readLines().filter { it.isNotEmpty() }
+        }.getOrDefault(emptyList())
+        if (loaded.isEmpty()) return
+        memory.clear()
+        loaded.takeLast(MAX_MEMORY_LINES).forEach { memory.addLast(it) }
+    }
+
+    private fun publishLocked() {
+        linesFlow.value = memory.toList()
     }
 
     private fun writeToSink(line: String) {

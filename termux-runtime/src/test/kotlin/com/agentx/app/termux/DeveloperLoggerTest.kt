@@ -101,6 +101,24 @@ class DeveloperLoggerTest {
     }
 
     @Test
+    fun `lines flow updates when a log is written and when cleared`() {
+        DeveloperLogger.info(DeveloperLogCategory.PROCESS, "Starting process")
+        val afterWrite = DeveloperLogger.lines.value
+        kotlin.test.assertTrue(afterWrite.any { it.contains("[PROCESS] Starting process") }, afterWrite.toString())
+        DeveloperLogger.clear()
+        kotlin.test.assertTrue(DeveloperLogger.lines.value.isEmpty())
+    }
+
+    @Test
+    fun `captureSnapshot appends structured body through the logger`() {
+        DeveloperLogger.captureSnapshot("=== AgentX Runtime Snapshot ===\nApp version: 0.1.0")
+        val contents = DeveloperLogger.readAll()
+        kotlin.test.assertTrue(contents.contains("Runtime snapshot captured"), contents)
+        kotlin.test.assertTrue(contents.contains("=== AgentX Runtime Snapshot ==="), contents)
+        kotlin.test.assertTrue(contents.contains("App version: 0.1.0"), contents)
+    }
+
+    @Test
     fun `flagValues extracts bind mounts without changing the command`() {
         val arguments = listOf(
             "proot",
