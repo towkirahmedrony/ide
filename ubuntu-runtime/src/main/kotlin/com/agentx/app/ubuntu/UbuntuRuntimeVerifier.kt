@@ -71,6 +71,21 @@ class UbuntuRuntimeVerifier(
             expectOutput = "GNU bash",
         ),
         UbuntuGuestProbe(
+            label = "os-release",
+            // The check that identifies the *root*, not the architecture. `uname -m` answers
+            // aarch64 from an Android shell too, and the host `id` answers u0_a1005, so neither
+            // distinguishes the guest from the host. This does.
+            command = listOf("/usr/bin/cat", "/etc/os-release"),
+            expectOutput = "Ubuntu",
+        ),
+        UbuntuGuestProbe(
+            label = "ls-root",
+            // The guest `/` must be the rootfs. If PRoot had not switched roots this would list
+            // Android's root or fail outright.
+            command = listOf("/usr/bin/ls", "/"),
+            expectOutput = "usr",
+        ),
+        UbuntuGuestProbe(
             label = "id",
             // PRoot's -0 fake-root: uid 0 without Android root, Magisk or a system change.
             command = listOf("/usr/bin/id"),
@@ -98,12 +113,16 @@ class UbuntuRuntimeVerifier(
         for (probe in probes) {
             val result = try {
                 runner(probe)
-            } catch (error: Exception) {
+            } catch (error: Throwable) {
+                // Throwable, and the class name is kept. Starting a process here can fail as an
+                // Error rather than an Exception — an unloadable native library reaches this code
+                // as UnsatisfiedLinkError — and an empty message would make that indistinguishable
+                // from a probe that merely printed nothing.
                 UbuntuProbeResult(
                     label = probe.label,
                     command = probe.command,
                     exitCode = -1,
-                    output = error.message.orEmpty(),
+                    output = "${error.javaClass.name}: ${error.message.orEmpty()}",
                 )
             }
             results += result

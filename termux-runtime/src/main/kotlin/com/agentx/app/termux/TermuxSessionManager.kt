@@ -134,6 +134,61 @@ class TermuxSessionManager(
         return open(spec)
     }
 
+    /**
+     * Records a session whose shell could not even be described, and makes it the active one.
+     *
+     * This is what replaces a silent fallback to some other shell. When the Ubuntu runtime is not
+     * ready there is no PRoot command to run, and the honest outcome is a FAILED session carrying
+     * the reason — the screen draws it, the keyboard stays off, and Restart retries for real.
+     * Opening an Android shell here instead is worse than failing: it looks like success while the
+     * terminal is not the guest the user asked for, and it hides which link is broken.
+     */
+    fun openUnstartable(
+        workspaceKey: String,
+        executable: String?,
+        reason: String,
+        temporarySystemShell: Boolean = false,
+    ): TermuxSession {
+        val disposals = ArrayList<TermuxSession>(1)
+        val created = synchronized(lock) {
+            val existingHandle = byWorkspaceKey[workspaceKey]
+            val existing = existingHandle?.let { handle -> ordered.firstOrNull { it.handle == handle } }
+            if (existing != null && existing.isRunning) return existing
+            if (existing != null) detachLocked(existing.handle)?.let(disposals::add)
+
+            val session = UnstartableTermuxSession(
+                handle = "unstartable-${failureCounter++}",
+                executable = executable,
+                temporarySystemShell = temporarySystemShell,
+                failure = reason,
+            )
+            ordered += session
+            byWorkspaceKey[workspaceKey] = session.handle
+            session
+        }
+        activeFlow.value = created.handle
+        publish()
+        disposals.forEach { runCatching { it.finish() } }
+        Log.w(TAG, "session could not be built workspace=$workspaceKey reason=$reason")
+        TerminalDiagnostics.record(TAG, "FAILED session workspace=$workspaceKey reason=$reason")
+        return created
+    }
+
+    /** Kills [handle] and replaces it with a recorded failure. Restart's counterpart to [restart]. */
+    fun restartUnstartable(
+        handle: String?,
+        workspaceKey: String,
+        executable: String?,
+        reason: String,
+    ): TermuxSession {
+        // Detached without publishing, so the UI never observes a gap with no session at all.
+        if (handle != null) {
+            val removed = synchronized(lock) { detachLocked(handle) }
+            removed?.let { runCatching { it.finish() } }
+        }
+        return openUnstartable(workspaceKey, executable, reason)
+    }
+
     fun restartTemporarySystemShells(specFor: (TermuxSessionSnapshot) -> TermuxShellSpec): List<TermuxSession> {
         val targets = synchronized(lock) {
             ordered.map { it.toSnapshot() }.filter { snapshot ->

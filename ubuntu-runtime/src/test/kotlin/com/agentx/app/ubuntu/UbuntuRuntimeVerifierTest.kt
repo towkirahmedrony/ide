@@ -27,8 +27,46 @@ class UbuntuRuntimeVerifierTest {
         }.verify()
 
         assertTrue(result.ok, result.failure)
-        assertEquals(6, result.results.size)
+        assertEquals(8, result.results.size)
         assertTrue(result.summary.contains("Guest verified through PRoot"))
+    }
+
+    @Test
+    fun `the guest root is proven, not just the device architecture`() {
+        // `uname -m` answers aarch64 from an Android shell too, and the host `id` answers u0_a1005,
+        // so neither can tell the guest from the host — which is how an Android shell passed for a
+        // working terminal. These two probes can: the guest's own os-release and its own root.
+        val probes = verifier { probe ->
+            UbuntuProbeResult(probe.label, probe.command, 0, probe.expectOutput ?: "")
+        }.probes
+
+        assertTrue(
+            probes.any { it.command.contains("/etc/os-release") && it.expectOutput == "Ubuntu" },
+            "the verifier must identify the guest root by /etc/os-release",
+        )
+        assertTrue(
+            probes.any { it.command == listOf("/usr/bin/ls", "/") },
+            "the verifier must list the guest root",
+        )
+    }
+
+    @Test
+    fun `an android root is refused even when every command exits zero`() {
+        val result = verifier { probe ->
+            val output = when (probe.label) {
+                "sh" -> "AgentX Ubuntu OK"
+                "bash" -> "GNU bash, version 5.2.21(1)-release"
+                // What an Android host root would answer: the commands run, the root is wrong.
+                "os-release" -> "ID=android\nPRETTY_NAME=\"Android\""
+                else -> probe.expectOutput ?: ""
+            }
+            UbuntuProbeResult(probe.label, probe.command, 0, output)
+        }.verify()
+
+        assertFalse(result.ok)
+        // sh, bash and os-release ran; the sequence stops at the probe that named the wrong root.
+        assertEquals(3, result.results.size)
+        assertTrue(result.failure!!.contains("Ubuntu"), result.failure!!)
     }
 
     @Test

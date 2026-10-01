@@ -47,6 +47,21 @@ data class NativeRuntimeLayout(
     val staging: String get() = "$runtimeDir/$STAGING_DIR"
 
     /**
+     * The guest shell, inside the rootfs. Not to be confused with an Android shell on the host:
+     * this file is only reachable through PRoot, and its presence is what says the rootfs is
+     * complete rather than merely extracted.
+     */
+    val guestShell: String get() = "$rootfs/$GUEST_SHELL_PATH"
+
+    /**
+     * The guest's `/etc/os-release`.
+     *
+     * The one check that identifies the guest root itself. `uname -m` cannot: it reports the
+     * Android device's architecture either way, so an Android shell answers `aarch64` too.
+     */
+    val guestOsRelease: String get() = "$rootfs/$GUEST_OS_RELEASE_PATH"
+
+    /**
      * PRoot's link-to-symlink store (`PROOT_L2S_DIR`).
      *
      * It must exist, be writable, live on a filesystem that supports symlinks (the app's data
@@ -110,6 +125,12 @@ data class NativeRuntimeLayout(
         const val WORKSPACES_DIR: String = "workspaces"
 
         const val MARKER_PATH: String = "etc/agentx/developer-runtime.ok"
+
+        /** Guest `/bin/bash`, relative to the rootfs. */
+        const val GUEST_SHELL_PATH: String = "bin/bash"
+
+        /** Guest `/etc/os-release`, relative to the rootfs. */
+        const val GUEST_OS_RELEASE_PATH: String = "etc/os-release"
         const val VERIFICATION_MARKER: String = "rootfs-verified.ok"
         const val TOOLCHAIN_MARKER: String = "toolchain.ok"
 

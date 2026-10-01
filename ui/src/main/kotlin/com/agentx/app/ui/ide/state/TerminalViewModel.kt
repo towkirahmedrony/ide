@@ -354,10 +354,32 @@ class TerminalViewModel(
         viewModelScope.launch {
             // Never on the UI thread: resolving the developer spec can copy a SAF project into app
             // storage, and starting a process must not block a frame either.
-            val spec = withContext(Dispatchers.IO) { spec(background) }
-            current.sessions.restart(handle, spec)?.let { restarted ->
-                current.sessions.setActive(restarted.handle)
+            val resolved = withContext(Dispatchers.IO) { runCatching { spec(background) } }
+            val spec = resolved.getOrNull()
+            if (spec != null) {
+                current.sessions.restart(handle, spec)?.let { restarted ->
+                    current.sessions.setActive(restarted.handle)
+                }
+                return@launch
             }
+            // Same rule as opening: retry the real path and report why it could not be taken,
+            // rather than restarting into an Android shell.
+            val developer = developerRuntime
+            val reason = withContext(Dispatchers.IO) {
+                if (developer != null) {
+                    developerUnavailableReason(developer, resolved)
+                } else {
+                    "The shell could not be prepared: " +
+                        (resolved.exceptionOrNull()?.message ?: "unknown error")
+                }
+            }
+            uiState = uiState.copy(usingDeveloperRuntime = developer != null, workspaceNote = reason)
+            current.sessions.restartUnstartable(
+                handle = handle,
+                workspaceKey = workspaceKey(background),
+                executable = developer?.layout?.proot,
+                reason = reason,
+            )
         }
     }
 
@@ -459,12 +481,10 @@ class TerminalViewModel(
         // I/O; the session is opened on the main dispatcher once that is done.
         val key = workspaceKey(scratch)
         viewModelScope.launch {
-            // A failure while resolving the developer spec (an unreadable SAF project, say) must
-            // fall through to the system shell rather than end the coroutine and leave the screen
-            // with no session at all — which is the state it could not recover from.
-            val spec = withContext(Dispatchers.IO) {
-                runCatching { developerSpec(current, developer, key, scratch) }.getOrNull()
+            val resolved = withContext(Dispatchers.IO) {
+                runCatching { developerSpec(current, developer, key, scratch) }
             }
+            val spec = resolved.getOrNull()
             if (spec != null) {
                 // The primary backend: a real Ubuntu guest shell. The workspace note is cleared
                 // because the project is bind-mounted, not copied.
@@ -472,24 +492,41 @@ class TerminalViewModel(
                 current.openSession(spec)
                 return@launch
             }
-            // The Ubuntu rootfs is not installed or verified yet. Keep a real pty on Android's
-            // own shell: the legacy prefix's `login` must not be started, because Android refuses
-            // to execute an app-private binary (`exec(".../files/usr/bin/login"): Permission
-            // denied`), and the legacy bootstrap is deliberately outside this runtime.
-            val binding = binding(current, scratch)
-            uiState = uiState.copy(
-                usingDeveloperRuntime = false,
-                workspaceNote = workspaceNoteFor(binding)?.let(::trimNote),
-            )
-            current.openSession(
-                current.specFor(
-                    workspaceKey = key,
-                    binding = binding,
-                    extraEnvironment = extraEnvironment(scratch),
-                    forceTemporarySystemShell = true,
-                ),
+            // No Android shell is opened in its place. This used to fall back to
+            // `/system/bin/sh` with the host's Termux home as the working directory, which looked
+            // like a working terminal while actually being the Android host: `id` reported
+            // u0_a1005, `/` was unreadable and `/etc/os-release` did not exist. A terminal that
+            // opens as the wrong system is harder to diagnose than one that says it failed, so the
+            // failure is recorded and shown instead, and Restart retries the real path.
+            val reason = withContext(Dispatchers.IO) {
+                developerUnavailableReason(developer, resolved)
+            }
+            uiState = uiState.copy(usingDeveloperRuntime = true, workspaceNote = reason)
+            current.sessions.openUnstartable(
+                workspaceKey = key,
+                executable = developer.layout.proot,
+                reason = reason,
             )
         }
+    }
+
+    /**
+     * The reason no Ubuntu shell could be prepared, preferring the real error.
+     *
+     * When resolving the spec threw, that throwable *is* the answer and is reported verbatim —
+     * class name included, because for a native or linkage failure the message alone is often not
+     * enough. Otherwise the runtime is asked which of its gates is not satisfied.
+     */
+    private fun developerUnavailableReason(
+        developer: LocalUbuntuRuntime,
+        resolved: Result<TermuxShellSpec?>,
+    ): String {
+        val error = resolved.exceptionOrNull()
+        if (error != null) {
+            return "The Ubuntu shell could not be prepared: ${error.javaClass.name}: " +
+                "${error.message ?: "(no message)"}"
+        }
+        return developer.notReadyReason()
     }
 
     private fun openLegacy(current: TermuxRuntime, scratch: Boolean) {
@@ -502,22 +539,22 @@ class TerminalViewModel(
         current.openSession(current.specFor(key, binding, extraEnvironment(scratch)))
     }
 
-    private fun spec(scratch: Boolean): TermuxShellSpec {
+    /**
+     * The spec for the current workspace, or null when a developer runtime is configured but cannot
+     * produce one.
+     *
+     * Null is only ever returned in that case, and it means "no shell can be described" — not
+     * "use something else". The callers report it; none of them substitutes another shell, because
+     * the terminal's contract in the developer runtime is a Ubuntu guest or a visible failure.
+     */
+    private fun spec(scratch: Boolean): TermuxShellSpec? {
         val current = checkNotNull(runtime) { "Termux runtime is not available" }
         val developer = developerRuntime
         if (developer != null) {
-            // Resolving the developer spec can touch the filesystem (a SAF project is materialised
-            // into app storage first). That must not be able to cost the user their terminal, so a
-            // failure here falls through to the system shell, which needs nothing prepared.
-            runCatching { developerSpecNow(current, developer, workspaceKey(scratch), scratch) }
-                .getOrNull()
-                ?.let { return it }
-            return current.specFor(
-                workspaceKey = workspaceKey(scratch),
-                binding = binding(current, scratch),
-                extraEnvironment = extraEnvironment(scratch),
-                forceTemporarySystemShell = true,
-            )
+            // Resolving this can touch the filesystem (a SAF project is materialised into app
+            // storage first). A failure there propagates: the caller turns it into a visible
+            // failure with the real error rather than quietly opening a different shell.
+            return developerSpecNow(current, developer, workspaceKey(scratch), scratch)
         }
         return current.specFor(
             workspaceKey = workspaceKey(scratch),

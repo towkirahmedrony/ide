@@ -91,6 +91,41 @@ class LocalUbuntuRuntime(
     /** True when the rootfs itself is not on disk yet and must be downloaded. */
     fun needsInstall(): Boolean = !installer.isInstalled() && !installer.hasExtractedRootfs()
 
+    /**
+     * Why the developer terminal cannot start, naming every gate rather than summarising.
+     *
+     * Shown in place of a shell, so it has to be actionable: it reports each condition separately —
+     * where the rootfs is, whether it was extracted, whether the guest shell and `/etc/os-release`
+     * are actually in it, whether the install marker and the verification marker were written, and
+     * which native libraries are missing — because "the terminal did not start" is not something
+     * anyone can act on. The last recorded runtime message is appended when there is one, which is
+     * where a failed guest probe states its own reason.
+     */
+    fun notReadyReason(): String {
+        val rootfs = File(layout.rootfs)
+        val guestShell = File(layout.guestShell)
+        val osRelease = File(layout.guestOsRelease)
+        val installed = installer.isInstalled()
+        val native = nativeProbe.ready
+        val verified = File(layout.verificationMarker).isFile
+        val status = statusFlow.value
+
+        return buildString {
+            append("The Ubuntu runtime is not ready, so no shell was started.")
+            append(" rootfs=${layout.rootfs}")
+            append(" rootfsExtracted=${rootfs.isDirectory}")
+            append(" bin/bash=${guestShell.isFile}")
+            append(" etc/os-release=${osRelease.isFile}")
+            append(" installMarker=$installed")
+            append(" nativeLibraries=$native")
+            if (!native) append(" missing=${nativeProbe.missing.joinToString(",")}")
+            append(" guestVerified=$verified")
+            append(" proot=${File(layout.proot).isFile}")
+            append(" lastStatus=${status.state}")
+            status.message?.takeIf { it.isNotBlank() }?.let { append(" message=$it") }
+        }
+    }
+
     /** Re-reads install state, e.g. after returning to the screen. */
     fun refresh() {
         statusFlow.value = when {
