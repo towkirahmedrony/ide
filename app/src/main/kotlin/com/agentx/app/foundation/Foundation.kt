@@ -4,6 +4,10 @@ import com.agentx.app.agent.AGENT_LAYER
 import com.agentx.app.agent.AgentModule
 import com.agentx.app.agent.conversation.ConversationStore
 import com.agentx.app.agent.conversation.InMemoryConversationStore
+import com.agentx.app.agent.model.AgentRoleModelRegistry
+import com.agentx.app.agent.model.AgentRoleModelStore
+import com.agentx.app.agent.model.DefaultAgentRoleModelRepository
+import com.agentx.app.agent.model.InMemoryAgentRoleModelStore
 import com.agentx.app.agent.prompt.AgentPromptStore
 import com.agentx.app.agent.prompt.DefaultAgentPromptRepository
 import com.agentx.app.agent.prompt.InMemoryAgentPromptStore
@@ -83,6 +87,11 @@ data class FoundationState(
     val codeIntelligenceParsers: SyntaxParserProvider,
     /** Central agent system-prompt manager (defaults + user overrides). */
     val promptManager: PromptManager,
+    /**
+     * The single authoritative role → model configuration. Settings writes here
+     * and the Agent Core's model resolver reads here, so the two never disagree.
+     */
+    val agentRoleModels: AgentRoleModelRegistry,
     /** Central skills registry and manager. */
     val skillManager: SkillManager,
     /** Per-operation execution budgets shared by every agent layer. */
@@ -105,6 +114,8 @@ object Foundation {
         connectionProviders: ConnectionProviderRegistry = ConnectionProviderRegistry.EMPTY,
         integrationSetup: IntegrationSetupManager? = null,
         agentPromptStore: AgentPromptStore = InMemoryAgentPromptStore(),
+        /** Persisted per-role model assignments; defaults when none are stored. */
+        agentRoleModelStore: AgentRoleModelStore = InMemoryAgentRoleModelStore(),
         conversationStore: ConversationStore = InMemoryConversationStore(),
         skillStore: SkillStore = InMemorySkillStore(),
         skillSources: List<SkillDiscoverySource> = emptyList(),
@@ -134,6 +145,12 @@ object Foundation {
         val skillManager = DefaultSkillManager(sources = skillSources, store = skillStore)
         services.register(ServiceKeys.AGENT_PROMPTS, promptManager)
         services.register(ServiceKeys.SKILLS, skillManager)
+        // The role → model configuration is created before the Agent Core so the
+        // resolver can read it live instead of owning a private mapping.
+        val roleModels = AgentRoleModelRegistry(
+            DefaultAgentRoleModelRepository(agentRoleModelStore),
+        )
+        services.register(ServiceKeys.AGENT_ROLE_MODELS, roleModels)
         // Execution budgets are registered before the agent modules so every
         // layer resolves the same configuration instead of a private constant.
         services.register(ServiceKeys.AGENT_TIMEOUTS, timeouts)
@@ -224,6 +241,7 @@ object Foundation {
             codeIntelligenceParsers = codeIntelligenceParsers,
             promptManager = promptManager,
             skillManager = skillManager,
+            agentRoleModels = roleModels,
             timeouts = timeouts,
         )
     }

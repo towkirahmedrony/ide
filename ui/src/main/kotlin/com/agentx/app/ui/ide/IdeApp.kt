@@ -30,6 +30,7 @@ import com.agentx.app.ui.ide.components.IdeEmptyState
 import com.agentx.app.ui.ide.components.IdeTopBar
 import com.agentx.app.ui.ide.nav.IdeDestinations
 import com.agentx.app.ui.ide.screens.AboutScreen
+import com.agentx.app.ui.ide.screens.AgentModelsScreen
 import com.agentx.app.ui.ide.screens.AgentPromptEditorScreen
 import com.agentx.app.ui.ide.screens.AgentPromptsScreen
 import com.agentx.app.ui.ide.screens.ConnectionEditorScreen
@@ -47,6 +48,7 @@ import com.agentx.app.ui.ide.screens.SettingsSection
 import com.agentx.app.ui.ide.screens.SkillDetailScreen
 import com.agentx.app.ui.ide.screens.SkillsScreen
 import com.agentx.app.ui.ide.screens.WorkspaceShell
+import com.agentx.app.ui.ide.state.AgentModelsViewModel
 import com.agentx.app.ui.ide.state.AgentPromptEditorViewModel
 import com.agentx.app.ui.ide.state.AgentPromptsViewModel
 import com.agentx.app.ui.ide.state.ConnectionEditorViewModel
@@ -155,6 +157,7 @@ fun ForgeIdeApp(
                         SettingsSection.MODEL -> IdeDestinations.MODELS
                         SettingsSection.CONNECTIONS -> IdeDestinations.CONNECTIONS
                         SettingsSection.AGENT -> IdeDestinations.AGENT_PROMPTS
+                        SettingsSection.AGENT_MODELS -> IdeDestinations.AGENT_MODELS
                         SettingsSection.SKILLS -> IdeDestinations.SKILLS
                         SettingsSection.ABOUT -> IdeDestinations.ABOUT
                         else -> IdeDestinations.settingsDetail(section.id)
@@ -199,6 +202,26 @@ fun ForgeIdeApp(
                 onReset = editorViewModel::reset,
                 onDiscard = editorViewModel::discard,
                 onDismissMessage = editorViewModel::dismissMessage,
+            )
+        }
+
+        composable(IdeDestinations.AGENT_MODELS) {
+            val modelsViewModel: AgentModelsViewModel = viewModel(
+                key = "agent-models",
+                factory = IdeViewModelFactory {
+                    AgentModelsViewModel(dependencies.agentRoleModels, dependencies.modelManager)
+                },
+            )
+            LaunchedEffect(Unit) { modelsViewModel.refresh() }
+            AgentModelsScreen(
+                rows = modelsViewModel.rows,
+                options = modelsViewModel.options,
+                loading = modelsViewModel.loading,
+                message = modelsViewModel.message,
+                onBack = { navController.popBackStack() },
+                onSave = modelsViewModel::save,
+                onReset = modelsViewModel::reset,
+                onDismissMessage = modelsViewModel::dismissMessage,
             )
         }
 

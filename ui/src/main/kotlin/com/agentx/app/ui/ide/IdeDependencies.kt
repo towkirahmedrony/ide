@@ -1,5 +1,8 @@
 package com.agentx.app.ui.ide
 
+import com.agentx.app.agent.model.AgentRoleModelRegistry
+import com.agentx.app.agent.model.DefaultAgentRoleModelRepository
+import com.agentx.app.agent.model.InMemoryAgentRoleModelStore
 import com.agentx.app.agent.prompt.PromptManager
 import com.agentx.app.codeintel.CodeIntelligence
 import com.agentx.app.context.WorkspaceSelectionState
@@ -79,6 +82,13 @@ data class IdeDependencies(
     val modelRuntimeOutput: RuntimeOutputBuffer,
     /** Agent system-prompt manager: built-in defaults plus user overrides. */
     val agentPrompts: PromptManager = PromptManager(),
+    /**
+     * The single authoritative per-role model configuration. Settings writes it
+     * and the Agent Core's model resolver reads it, so the two never disagree.
+     */
+    val agentRoleModels: AgentRoleModelRegistry = AgentRoleModelRegistry(
+        DefaultAgentRoleModelRepository(InMemoryAgentRoleModelStore()),
+    ),
     /** Central skills registry and manager. */
     val skills: SkillManager = DefaultSkillManager(),
 ) {

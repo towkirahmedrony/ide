@@ -27,9 +27,15 @@ object AgentModelProviders {
     const val OPENAI_COMPATIBLE_LOCAL = ModelProviderIds.OPENAI_COMPATIBLE
 }
 
-/** Model identifiers the target role mapping asks for. */
+/**
+ * Model identifiers the target role mapping asks for.
+ *
+ * `GEMINI` is the Flash model the provider catalog offers as its preferred
+ * model, so the default mapping names a model that actually exists in the
+ * configured catalog rather than an arbitrary one.
+ */
 object AgentModelIds {
-    const val GEMINI = "gemini-1.5-pro"
+    const val GEMINI = "gemini-2.0-flash"
     const val GROQ = "llama-3.3-70b-versatile"
     const val QWEN_CODER = "qwen2.5-coder-14b"
 }
@@ -82,13 +88,19 @@ data class AgentModelPreferences(
          */
         val DEFAULT: AgentModelPreferences = AgentModelPreferences(
             mapOf(
-                AgentRole.MAIN to RoleModelPreference(AgentModelProviders.GEMINI),
-                AgentRole.EXPLORER to RoleModelPreference(AgentModelProviders.GROQ),
-                AgentRole.RESEARCHER to RoleModelPreference(AgentModelProviders.GEMINI),
-                AgentRole.CODER to RoleModelPreference(AgentModelProviders.OPENAI_COMPATIBLE_LOCAL),
-                AgentRole.DEBUGGER to RoleModelPreference(AgentModelProviders.OPENAI_COMPATIBLE_LOCAL),
-                AgentRole.REVIEWER to RoleModelPreference(AgentModelProviders.GROQ),
-                AgentRole.TESTER to RoleModelPreference(AgentModelProviders.GROQ),
+                AgentRole.MAIN to RoleModelPreference(AgentModelProviders.GEMINI, AgentModelIds.GEMINI),
+                AgentRole.EXPLORER to RoleModelPreference(AgentModelProviders.GROQ, AgentModelIds.GROQ),
+                AgentRole.RESEARCHER to RoleModelPreference(AgentModelProviders.GEMINI, AgentModelIds.GEMINI),
+                AgentRole.CODER to RoleModelPreference(
+                    AgentModelProviders.OPENAI_COMPATIBLE_LOCAL,
+                    AgentModelIds.QWEN_CODER,
+                ),
+                AgentRole.DEBUGGER to RoleModelPreference(
+                    AgentModelProviders.OPENAI_COMPATIBLE_LOCAL,
+                    AgentModelIds.QWEN_CODER,
+                ),
+                AgentRole.REVIEWER to RoleModelPreference(AgentModelProviders.GROQ, AgentModelIds.GROQ),
+                AgentRole.TESTER to RoleModelPreference(AgentModelProviders.GROQ, AgentModelIds.GROQ),
             ),
         )
     }
@@ -118,7 +130,17 @@ class AgentModelResolver(
      * [RoleModelPreference.providerId]. Empty means "only the active model".
      */
     private val connections: () -> Map<String, ModelConfig> = { emptyMap() },
+    /**
+     * Optional live source consulted on every [resolve]. Settings writes through
+     * [com.agentx.app.agent.model.AgentRoleModelRegistry] and the resolver picks
+     * the new mapping up without being rebuilt. When null the fixed
+     * [preferences] value is used.
+     */
+    private val livePreferences: (() -> AgentModelPreferences)? = null,
 ) {
+
+    /** The mapping in effect for this resolution: the live source when present. */
+    private fun currentPreferences(): AgentModelPreferences = livePreferences?.invoke() ?: preferences
 
     /** Resolves [role]'s configuration from the role mapping alone. */
     fun resolve(role: AgentRole, default: ModelConfig): ModelConfig =
@@ -134,10 +156,14 @@ class AgentModelResolver(
      *   model is used.
      */
     fun resolve(role: AgentRole, preferredModel: String?, default: ModelConfig): ModelConfig {
-        val preference = preferences[role] ?: return default
+        val preference = currentPreferences()[role] ?: return default
         val providerId = preference.providerId
-        val model = preferredModel?.takeIf { it.isNotBlank() }
-            ?: preference.model?.takeIf { it.isNotBlank() }
+        // The role's own mapping (the user's Settings choice, or the built-in
+        // default) wins over the agent definition's static model; the definition
+        // is only consulted when the role names a provider but no model. That is
+        // what makes a model picked in Settings take effect at run time.
+        val model = preference.model?.takeIf { it.isNotBlank() }
+            ?: preferredModel?.takeIf { it.isNotBlank() }
 
         if (providerId == default.providerId) return withModel(default, model)
         val connection = connections()[providerId] ?: return default
@@ -145,7 +171,7 @@ class AgentModelResolver(
     }
 
     /** The configured preference for [role], when any. */
-    fun preference(role: AgentRole): RoleModelPreference? = preferences[role]
+    fun preference(role: AgentRole): RoleModelPreference? = currentPreferences()[role]
 
     private fun withModel(config: ModelConfig, model: String?): ModelConfig =
         if (model == null || model == config.model) config else config.copy(model = model)

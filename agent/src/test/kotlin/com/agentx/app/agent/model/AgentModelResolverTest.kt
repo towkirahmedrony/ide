@@ -130,11 +130,13 @@ class AgentModelResolverTest {
     }
 
     @Test
-    fun `a definition preference takes precedence over the role preference model`() {
+    fun `a role preference model overrides the definition default`() {
+        // The role mapping — what Settings writes and the registry overlays — is the
+        // user's choice and wins over the agent definition's built-in model.
         val preferences = AgentModelPreferences()
             .with(AgentRole.CODER, RoleModelPreference(active.providerId, model = "coder-alt"))
         val resolved = AgentModelResolver(preferences).resolve(AgentCatalog.CODER, active)
-        assertEquals(AgentModelIds.QWEN_CODER, resolved.model)
+        assertEquals("coder-alt", resolved.model)
     }
 
     @Test

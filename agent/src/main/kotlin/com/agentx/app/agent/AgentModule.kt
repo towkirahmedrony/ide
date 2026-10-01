@@ -6,6 +6,7 @@ import com.agentx.app.agent.conversation.InMemoryConversationStore
 import com.agentx.app.agent.main.MainAgent
 import com.agentx.app.agent.model.AgentModelPreferences
 import com.agentx.app.agent.model.AgentModelResolver
+import com.agentx.app.agent.model.AgentRoleModelRegistry
 import com.agentx.app.agent.orchestrator.AgentOrchestrator
 import com.agentx.app.agent.orchestrator.AgentSessionStore
 import com.agentx.app.agent.orchestrator.DefaultAgentOrchestrator
@@ -65,6 +66,11 @@ class AgentModule(
         // one. When no manager is registered the resolver sees no connections
         // and every role falls back to the active model, exactly as before.
         val modelManager = context.services.get<ModelManager>(ServiceKeys.MODEL_MANAGER)
+        // Settings owns the per-role model configuration through this registry; the
+        // resolver reads it live, so a change takes effect on the next run without
+        // rebuilding the agent core. When no registry is registered the resolver
+        // keeps the built-in default mapping.
+        val roleModels = context.services.get<AgentRoleModelRegistry>(ServiceKeys.AGENT_ROLE_MODELS)
         val assembled = assemble(
             gateway = gateway,
             registry = registry,
@@ -82,6 +88,7 @@ class AgentModule(
             modelResolver = AgentModelResolver(
                 preferences = AgentModelPreferences.DEFAULT,
                 connections = { modelManager?.connections().orEmpty() },
+                livePreferences = roleModels?.let { registry -> { registry.preferences() } },
             ),
         )
         context.services.register(ServiceKeys.AGENT_ORCHESTRATOR, assembled.orchestrator)

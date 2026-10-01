@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -56,6 +57,7 @@ enum class SettingsSection(
     MODEL("model", "Models", "Saved models, runners and the active connection", Icons.Filled.Memory),
     CONNECTIONS("connections", "Connections", "External services the agent may use through tools", Icons.Filled.Hub),
     AGENT("agent", "Agents", "System prompts for the Main agent and each sub-agent", Icons.Filled.AutoAwesome),
+    AGENT_MODELS("agent-models", "Agent Models", "Assign a provider and model to each agent", Icons.Filled.Tune),
     SKILLS("skills", "Skills", "Installed skills, enablement and agent assignment", Icons.Filled.Extension),
     TOOLS("tools", "Tools", "Enable or disable agent tools", Icons.Filled.Handyman),
     PERMISSIONS("permissions", "Permissions", "Allow, ask or deny per capability", Icons.Filled.Security),

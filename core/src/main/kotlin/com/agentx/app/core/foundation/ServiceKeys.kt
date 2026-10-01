@@ -22,6 +22,12 @@ object ServiceKeys {
     const val AGENT_PROMPTS = "forge.agent.prompts"
 
     /**
+     * The single authoritative role → model configuration shared by Settings and
+     * the Agent Core's model resolver.
+     */
+    const val AGENT_ROLE_MODELS = "forge.agent.roleModels"
+
+    /**
      * Central, per-operation execution budgets shared by the Agent Core, the Tool
      * System and the Model Gateway. One source of truth for every timeout.
      */

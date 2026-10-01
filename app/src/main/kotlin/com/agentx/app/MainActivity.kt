@@ -34,6 +34,7 @@ import com.agentx.app.integrations.setup.IntegrationSetupManager
 import com.agentx.app.oauth.IntentOAuthBrowserLauncher
 import com.agentx.app.settings.FilesystemSkillFileStore
 import com.agentx.app.settings.SharedPreferencesAgentPromptStore
+import com.agentx.app.settings.SharedPreferencesAgentRoleModelStore
 import com.agentx.app.settings.SharedPreferencesSkillConfigStore
 import com.agentx.app.skills.CompositeSkillStore
 import com.agentx.app.tools.ToolRegistry
@@ -113,6 +114,7 @@ class MainActivity : ComponentActivity() {
             connectionProviders = built.registry,
             integrationSetup = built.setup,
             agentPromptStore = SharedPreferencesAgentPromptStore(applicationContext),
+            agentRoleModelStore = SharedPreferencesAgentRoleModelStore(applicationContext),
             // Agent sessions persist as one JSON file each, so a session can be
             // reopened (or deleted) without touching another session's history.
             conversationStore = FilesystemConversationStore(
@@ -123,6 +125,12 @@ class MainActivity : ComponentActivity() {
                 files = FilesystemSkillFileStore(File(applicationContext.filesDir, SKILLS_DIRECTORY)),
             ),
         )
+
+        // The saved role → model assignments are restored off the main thread;
+        // until this completes the registry serves the built-in default mapping.
+        backgroundScope.launch {
+            runCatching { foundation.agentRoleModels.load() }
+        }
 
         // Skills are discovered from the filesystem off the main thread; until
         // this completes, the manager serves the built-in catalog only.
@@ -238,6 +246,7 @@ class MainActivity : ComponentActivity() {
                         connectionManager = checkNotNull(connectionManager) { "Connection manager is not registered" },
                         integrationSetup = integrationSetup,
                         agentPrompts = foundation.promptManager,
+                        agentRoleModels = foundation.agentRoleModels,
                         skills = foundation.skillManager,
                         oauthBrowser = IntentOAuthBrowserLauncher(applicationContext),
                         oauthCallbacks = oauthCallbacks,

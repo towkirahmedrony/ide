@@ -20,6 +20,9 @@ object IdeDestinations {
     const val AGENT_PROMPT_EDITOR = "settings/agents/{role}"
     const val ARG_ROLE = "role"
 
+    /** Settings → Agent Models: per-role provider/model assignment. */
+    const val AGENT_MODELS = "settings/agent-models"
+
     /** Settings → Skills: the installed list and one skill's detail. */
     const val SKILLS = "settings/skills"
     const val SKILL_DETAIL = "settings/skills/{skillId}"
