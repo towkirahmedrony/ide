@@ -10,8 +10,10 @@ import com.agentx.app.integrations.ConnectionManagers
 import com.agentx.app.integrations.connection.ConnectionManager
 import com.agentx.app.integrations.setup.InMemoryIntegrationSetupStore
 import com.agentx.app.integrations.setup.IntegrationSetupManager
+import com.agentx.app.model.catalog.ModelCatalogRegistry
 import com.agentx.app.model.manager.ModelManager
 import com.agentx.app.model.manager.ModelManagers
+import com.agentx.app.model.ratelimit.RateLimitManager
 import com.agentx.app.model.runtime.RuntimeOutputBuffer
 import com.agentx.app.ui.ide.data.AgentSession
 import com.agentx.app.ui.ide.data.GitRepository
@@ -67,6 +69,10 @@ data class IdeDependencies(
     val developerRuntime: LocalUbuntuRuntime? = null,
     val git: GitRepository,
     val modelManager: ModelManager,
+    /** Central admission control + usage, surfaced in Settings → Agent Models. */
+    val rateLimits: RateLimitManager? = null,
+    /** Dynamic per-provider model catalogs (for example Groq's model list). */
+    val modelCatalog: ModelCatalogRegistry? = null,
     val connectionManager: ConnectionManager,
     /** Personal Client ID / callback setup for this IDE. Optional in previews. */
     val integrationSetup: IntegrationSetupManager? = null,

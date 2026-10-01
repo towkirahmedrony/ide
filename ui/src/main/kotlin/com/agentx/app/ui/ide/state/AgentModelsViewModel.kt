@@ -11,11 +11,15 @@ import com.agentx.app.agent.model.AgentRoleModelRegistry
 import com.agentx.app.agent.model.ProviderModelOption
 import com.agentx.app.agent.model.RoleModelEvaluation
 import com.agentx.app.agent.model.RoleModelState
+import com.agentx.app.model.catalog.ModelCatalogRegistry
 import com.agentx.app.model.connect.KnownModelProviders
 import com.agentx.app.model.connect.ModelSetupKind
 import com.agentx.app.model.manager.ModelManager
 import com.agentx.app.model.manager.ModelManagerState
 import com.agentx.app.model.preset.ModelPreset
+import com.agentx.app.model.ratelimit.RateLimitManager
+import com.agentx.app.model.ratelimit.RateLimitSource
+import com.agentx.app.model.ratelimit.UsageTotals
 import kotlinx.coroutines.launch
 
 /** One role row in Settings → Agent Models. */
@@ -36,13 +40,18 @@ data class AgentModelRow(
  * Settings → Agent Models state.
  *
  * It reads the same [AgentRoleModelRegistry] the Agent Core's model resolver
- * consumes, so what a role is shown as using is what it actually runs on. The
- * screen renders state and forwards intent; every configuration decision belongs
- * to the registry.
+ * consumes, so what a role is shown as using is what it actually runs on. When a
+ * [ModelCatalogRegistry] is supplied, the model choices come from each provider's
+ * live catalog (for example Groq's `/openai/v1/models`) instead of a static list;
+ * deprecated models are marked unavailable rather than silently replaced. The
+ * optional [RateLimitManager] supplies the current per-provider limits and usage
+ * shown in the editor.
  */
 class AgentModelsViewModel(
     private val registry: AgentRoleModelRegistry,
     private val modelManager: ModelManager,
+    private val catalog: ModelCatalogRegistry? = null,
+    private val rateLimits: RateLimitManager? = null,
 ) : ViewModel() {
 
     var rows by mutableStateOf<List<AgentModelRow>>(emptyList())
@@ -52,10 +61,20 @@ class AgentModelsViewModel(
     var options by mutableStateOf<List<ProviderModelOption>>(emptyList())
         private set
 
+    /** Compact rate-limit + usage summary per provider, for the editor. */
+    var providerSummaries by mutableStateOf<Map<String, String>>(emptyMap())
+        private set
+
     var loading by mutableStateOf(true)
         private set
 
     var message by mutableStateOf<String?>(null)
+        private set
+
+    var catalogBusy by mutableStateOf(false)
+        private set
+
+    var catalogMessage by mutableStateOf<String?>(null)
         private set
 
     private var managerState: ModelManagerState = ModelManagerState()
@@ -77,6 +96,10 @@ class AgentModelsViewModel(
             modelManager.refresh()
             rebuild()
             loading = false
+            // A provider connected since the last visit gets its catalog fetched;
+            // a fresh cache is reused, so this never refetches on every open.
+            catalog?.let { runCatching { it.refreshAll(force = false) } }
+            rebuild()
         }
     }
 
@@ -109,6 +132,34 @@ class AgentModelsViewModel(
         message = null
     }
 
+    fun dismissCatalogMessage() {
+        catalogMessage = null
+    }
+
+    /** Manual refresh of the dynamic model catalogs (for example after adding models). */
+    fun refreshCatalog() {
+        val registry = catalog ?: run {
+            catalogMessage = "This build has no dynamic model catalog."
+            return
+        }
+        viewModelScope.launch {
+            catalogBusy = true
+            val providers = options.map { it.providerId }.distinct()
+            if (providers.isEmpty()) {
+                catalogMessage = "Connect a provider first, then refresh its model list."
+            } else {
+                val refreshed = registry.refreshAll(force = true)
+                rebuild()
+                catalogMessage = if (refreshed.isEmpty()) {
+                    "No connected provider exposes a refreshable model list."
+                } else {
+                    "Refreshed: ${refreshed.keys.sorted().joinToString(", ")}."
+                }
+            }
+            catalogBusy = false
+        }
+    }
+
     fun optionsFor(providerId: String?): ProviderModelOption? =
         providerId?.let { id -> options.firstOrNull { it.providerId == id } }
 
@@ -130,12 +181,13 @@ class AgentModelsViewModel(
                 explicit = status.explicit,
             )
         }
+        providerSummaries = current.associate { it.providerId to summaryFor(it) }
     }
 
     /**
-     * Builds the provider catalog from the Model Manager's saved presets: one
-     * option per provider identity, with the models it is known to serve and
-     * whether it is connected right now. Nothing here contacts a provider.
+     * Builds the provider catalog from the Model Manager's saved presets plus any
+     * dynamic model catalog: one option per provider identity, with the models it
+     * can serve, which are deprecated, and whether it is connected right now.
      */
     private fun optionsFor(state: ModelManagerState): List<ProviderModelOption> {
         val grouped = LinkedHashMap<String, MutableList<ModelPreset>>()
@@ -148,15 +200,72 @@ class AgentModelsViewModel(
                 ?.suggestedModels
                 .orEmpty()
             val origin = usable ?: presets.first()
+            val catalogSnapshot = catalog?.snapshot(providerId)
+            val available = LinkedHashSet<String>()
+            catalogSnapshot?.availableModels()?.forEach { available += it.id }
+            presets.forEach { available += it.modelIdentifier }
+            suggested.forEach { available += it }
+            val unavailable = catalogSnapshot
+                ?.models
+                ?.filterNot { it.available }
+                ?.map { it.id }
+                .orEmpty()
             ProviderModelOption(
                 providerId = providerId,
                 providerLabel = RoleModelEvaluation.providerLabel(providerId),
-                models = (presets.map { it.modelIdentifier } + suggested).distinct(),
+                models = available.toList(),
+                unavailableModels = unavailable,
                 connected = usable != null,
                 connectionId = origin.id,
                 connectionLabel = origin.displayName,
                 endpoint = usable?.let { state.status(it.id).endpoint?.url },
             )
+        }
+    }
+
+    /** A one-line, honest summary: where limits came from and what has been used. */
+    private fun summaryFor(option: ProviderModelOption): String {
+        val manager = rateLimits ?: return ""
+        val parts = mutableListOf<String>()
+        val limitLine = limitSummary(manager, option.providerId, option.models.firstOrNull())
+        if (limitLine != null) parts += limitLine
+        val usage = manager.usage.totals(option.providerId).fold(UsageTotals(option.providerId, "")) { acc, total ->
+            acc.copy(
+                requestCount = acc.requestCount + total.requestCount,
+                inputTokens = acc.inputTokens + total.inputTokens,
+                outputTokens = acc.outputTokens + total.outputTokens,
+                totalTokens = acc.totalTokens + total.totalTokens,
+                rateLimitEvents = acc.rateLimitEvents + total.rateLimitEvents,
+            )
+        }
+        if (usage.requestCount > 0 || usage.rateLimitEvents > 0) {
+            parts += "Used ${usage.requestCount} requests · ${usage.totalTokens} tokens" +
+                (if (usage.rateLimitEvents > 0) " · ${usage.rateLimitEvents} rate-limited" else "")
+        }
+        return parts.joinToString("\n")
+    }
+
+    private fun limitSummary(manager: RateLimitManager, providerId: String, modelId: String?): String? {
+        val profile = manager.profile(providerId, modelId) ?: manager.profile(providerId)
+        val source = when (profile?.source) {
+            RateLimitSource.PROVIDER_REPORTED -> "provider-reported"
+            RateLimitSource.APP_CONFIGURED -> "app-configured"
+            RateLimitSource.UNKNOWN -> "safe default (provider limits unknown)"
+            null -> null
+        }
+        val rpm = profile?.requestsPerMinute
+        val tpm = profile?.tokensPerMinute
+        val rpd = profile?.requestsPerDay
+        if (source == null && rpm == null && tpm == null && rpd == null) return null
+        val limits = buildList {
+            rpm?.let { add("$it rpm") }
+            tpm?.let { add("$it tpm") }
+            rpd?.let { add("$it rpd") }
+        }.joinToString(", ")
+        return if (limits.isBlank()) {
+            "Limits: ${source ?: "unknown"}"
+        } else {
+            "Limits: $limits (${source ?: "unknown"})"
         }
     }
 

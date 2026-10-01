@@ -12,6 +12,15 @@ object ServiceKeys {
     const val CONTEXT_ENGINE = "forge.context.engine"
     const val MODEL_GATEWAY = "forge.model.gateway"
     const val MODEL_MANAGER = "forge.model.manager"
+
+    /** Central admission control for remote model traffic (RPM/TPM/RPD/concurrency). */
+    const val RATE_LIMIT_MANAGER = "forge.model.rateLimitManager"
+
+    /** Persistent-ish usage totals recorded by the rate-limit manager. */
+    const val MODEL_USAGE = "forge.model.usage"
+
+    /** Dynamic per-provider model catalogs (for example Groq's `/openai/v1/models`). */
+    const val MODEL_CATALOG = "forge.model.catalog"
     const val AGENT_ORCHESTRATOR = "forge.agent.orchestrator"
     const val AGENT_REGISTRY = "forge.agent.registry"
     const val AGENT_SESSION_STORE = "forge.agent.sessions"

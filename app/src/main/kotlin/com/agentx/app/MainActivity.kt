@@ -50,6 +50,8 @@ import com.agentx.app.model.runtime.RuntimeOutputBuffer
 import com.agentx.app.tools.DelegatingToolConnectionAuthorizer
 import com.agentx.app.tools.DelegatingWorkspaceFileSystemResolver
 import com.agentx.app.tools.WorkspaceManagerFileSystemResolver
+import com.agentx.app.model.catalog.ModelCatalogRegistry
+import com.agentx.app.model.ratelimit.RateLimitManager
 import com.agentx.app.ui.ide.ForgeIdeApp
 import com.agentx.app.ui.ide.IdeDependencies
 import com.agentx.app.ui.ide.data.mock.MockGitRepository
@@ -243,6 +245,8 @@ class MainActivity : ComponentActivity() {
                         developerRuntime = developerRuntime,
                         git = MockGitRepository(),
                         modelManager = checkNotNull(modelManager) { "Model manager is not registered" },
+                        rateLimits = foundation.services.get<RateLimitManager>(ServiceKeys.RATE_LIMIT_MANAGER),
+                        modelCatalog = foundation.services.get<ModelCatalogRegistry>(ServiceKeys.MODEL_CATALOG),
                         connectionManager = checkNotNull(connectionManager) { "Connection manager is not registered" },
                         integrationSetup = integrationSetup,
                         agentPrompts = foundation.promptManager,

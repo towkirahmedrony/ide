@@ -209,7 +209,12 @@ fun ForgeIdeApp(
             val modelsViewModel: AgentModelsViewModel = viewModel(
                 key = "agent-models",
                 factory = IdeViewModelFactory {
-                    AgentModelsViewModel(dependencies.agentRoleModels, dependencies.modelManager)
+                    AgentModelsViewModel(
+                        registry = dependencies.agentRoleModels,
+                        modelManager = dependencies.modelManager,
+                        catalog = dependencies.modelCatalog,
+                        rateLimits = dependencies.rateLimits,
+                    )
                 },
             )
             LaunchedEffect(Unit) { modelsViewModel.refresh() }
@@ -222,6 +227,11 @@ fun ForgeIdeApp(
                 onSave = modelsViewModel::save,
                 onReset = modelsViewModel::reset,
                 onDismissMessage = modelsViewModel::dismissMessage,
+                catalogBusy = modelsViewModel.catalogBusy,
+                catalogMessage = modelsViewModel.catalogMessage,
+                onRefreshCatalog = modelsViewModel::refreshCatalog,
+                onDismissCatalogMessage = modelsViewModel::dismissCatalogMessage,
+                providerSummaries = modelsViewModel.providerSummaries,
             )
         }
 

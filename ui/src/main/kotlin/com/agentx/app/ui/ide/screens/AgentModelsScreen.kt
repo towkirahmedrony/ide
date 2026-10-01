@@ -64,6 +64,11 @@ fun AgentModelsScreen(
     onReset: (AgentRole) -> Unit,
     onDismissMessage: () -> Unit,
     modifier: Modifier = Modifier,
+    catalogBusy: Boolean = false,
+    catalogMessage: String? = null,
+    onRefreshCatalog: () -> Unit = {},
+    onDismissCatalogMessage: () -> Unit = {},
+    providerSummaries: Map<String, String> = emptyMap(),
 ) {
     var editing by remember { mutableStateOf<AgentRole?>(null) }
 
@@ -90,10 +95,24 @@ fun AgentModelsScreen(
                 Text(
                     text = "Each agent runs on its own model. Assign a provider and model per agent; " +
                         "they resolve independently at run time. Nothing here stores an API key — a " +
-                        "provider's credential stays with its connection in Models.",
+                        "provider's credential stays with its connection in Models. Model lists come " +
+                        "from the provider's own catalog; a model it no longer lists is shown as " +
+                        "unavailable rather than being replaced silently.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = ForgeMuted,
                 )
+                IdeSpacer(8)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = if (catalogBusy) "Refreshing models…" else "Refresh model catalogs",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = ForgeMint,
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    TextButton(onClick = onRefreshCatalog, enabled = !catalogBusy) {
+                        Text("Refresh")
+                    }
+                }
             }
             rows.forEach { row ->
                 AgentModelCard(row = row, onClick = { editing = row.role })
@@ -109,6 +128,7 @@ fun AgentModelsScreen(
             AgentModelEditorDialog(
                 row = row,
                 options = options,
+                providerSummaries = providerSummaries,
                 onSave = { providerId, model, connectionId ->
                     editing = null
                     onSave(role, providerId, model, connectionId)
@@ -128,6 +148,15 @@ fun AgentModelsScreen(
             title = { Text("Agent Models") },
             text = { Text(text) },
             confirmButton = { TextButton(onClick = onDismissMessage) { Text("OK") } },
+        )
+    }
+
+    catalogMessage?.let { text ->
+        AlertDialog(
+            onDismissRequest = onDismissCatalogMessage,
+            title = { Text("Model catalog") },
+            text = { Text(text) },
+            confirmButton = { TextButton(onClick = onDismissCatalogMessage) { Text("OK") } },
         )
     }
 }
@@ -185,6 +214,7 @@ private fun AgentModelCard(row: AgentModelRow, onClick: () -> Unit) {
 private fun AgentModelEditorDialog(
     row: AgentModelRow,
     options: List<ProviderModelOption>,
+    providerSummaries: Map<String, String>,
     onSave: (providerId: String, model: String?, connectionId: String?) -> Unit,
     onReset: () -> Unit,
     onDismiss: () -> Unit,
@@ -245,6 +275,32 @@ private fun AgentModelEditorDialog(
                             title = model,
                             subtitle = null,
                             onClick = { selectedModel = model },
+                        )
+                    }
+                }
+                currentProvider?.unavailableModels?.takeIf { it.isNotEmpty() }?.let { models ->
+                    IdeSpacer(10)
+                    IdeSectionLabel("Unavailable")
+                    IdeSpacer(4)
+                    models.forEach { model ->
+                        Text(
+                            text = "$model — no longer listed by the provider",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = ForgeDanger,
+                        )
+                    }
+                }
+                selectedProvider?.let { providerId ->
+                    providerSummaries[providerId]?.takeIf { it.isNotBlank() }?.let { summary ->
+                        IdeSpacer(10)
+                        IdeDivider()
+                        IdeSpacer(10)
+                        IdeSectionLabel("Limits & usage")
+                        IdeSpacer(4)
+                        Text(
+                            text = summary,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = ForgeMuted,
                         )
                     }
                 }

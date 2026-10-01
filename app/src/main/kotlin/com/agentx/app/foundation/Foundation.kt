@@ -46,7 +46,11 @@ import com.agentx.app.integrations.connection.InMemoryConnectionStore
 import com.agentx.app.integrations.setup.IntegrationSetupManager
 import com.agentx.app.model.MODEL_LAYER
 import com.agentx.app.model.ModelModule
+import com.agentx.app.model.catalog.DefaultModelCatalogRegistry
+import com.agentx.app.model.catalog.ModelCatalogRegistry
+import com.agentx.app.model.manager.ModelManager
 import com.agentx.app.model.manager.ModelRuntimeModule
+import com.agentx.app.model.ratelimit.DefaultRateLimitManager
 import com.agentx.app.model.preset.InMemoryModelPresetStore
 import com.agentx.app.model.preset.InMemoryModelSecretStore
 import com.agentx.app.model.preset.ModelPresetStore
@@ -158,6 +162,19 @@ object Foundation {
         // registering the store here means the Agent module binds to it instead of
         // falling back to an in-memory one.
         services.register(ServiceKeys.AGENT_CONVERSATION_STORE, conversationStore)
+
+        // Central rate limiting and usage tracking are registered before the
+        // model module so the published gateway routes every remote request
+        // through one admission point. Local (on-device) runtimes are exempt.
+        val rateLimitManager = DefaultRateLimitManager()
+        services.register(ServiceKeys.RATE_LIMIT_MANAGER, rateLimitManager)
+        services.register(ServiceKeys.MODEL_USAGE, rateLimitManager.usage)
+        // The dynamic model catalog is built lazily from the live provider
+        // connections, so connecting Groq later simply gives it a fresh catalog.
+        val modelCatalog: ModelCatalogRegistry = DefaultModelCatalogRegistry(
+            connections = { services.get<ModelManager>(ServiceKeys.MODEL_MANAGER)?.connections().orEmpty() },
+        )
+        services.register(ServiceKeys.MODEL_CATALOG, modelCatalog)
 
         val layers = forgeLayers()
 

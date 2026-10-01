@@ -16,6 +16,8 @@ enum class ForgeErrorCode {
     MODEL_OPERATION_FAILED,
     /** No runner is registered for the preset's provider type. */
     MODEL_RUNNER_UNAVAILABLE,
+    /** A remote model catalog could not be fetched or parsed. */
+    MODEL_CATALOG_UNAVAILABLE,
     /** A connection failed validation. */
     CONNECTION_INVALID,
     /** No connection exists for the requested id. */

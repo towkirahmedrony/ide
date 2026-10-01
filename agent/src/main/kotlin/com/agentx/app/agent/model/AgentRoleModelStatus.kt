@@ -13,6 +13,12 @@ data class ProviderModelOption(
     val providerLabel: String,
     /** Model identifiers this provider is known to offer; may be empty. */
     val models: List<String> = emptyList(),
+    /**
+     * Models a dynamic catalog previously listed but no longer reports. They are
+     * shown as unavailable rather than being silently dropped, so a saved role
+     * assignment can be reported instead of quietly replaced.
+     */
+    val unavailableModels: List<String> = emptyList(),
     /** True only when the Model Manager already reports this provider usable. */
     val connected: Boolean = false,
     /** Saved connection (model preset) the option was built from, when any. */
@@ -92,6 +98,17 @@ object RoleModelEvaluation {
         }
 
         val model = selection.model
+        if (model != null && model in option.unavailableModels) {
+            return RoleModelStatus(
+                role = selection.role,
+                providerId = providerId,
+                providerLabel = label,
+                model = model,
+                state = RoleModelState.MODEL_UNAVAILABLE,
+                message = "$label no longer lists $model. Refresh the catalog or choose another model.",
+                explicit = selection.explicit,
+            )
+        }
         if (model != null && option.models.isNotEmpty() && model !in option.models) {
             return RoleModelStatus(
                 role = selection.role,

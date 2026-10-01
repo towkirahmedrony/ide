@@ -33,6 +33,12 @@ class ModelProviderError(
     /** Provider-specific error type/code, kept for diagnostics. */
     val providerErrorType: String? = null,
     val retryable: Boolean = false,
+    /**
+     * Provider-supplied `Retry-After` hint in milliseconds, when the response
+     * carried one. Only the rate-limit retry path reads it; it is never logged
+     * with a request body or header.
+     */
+    val retryAfterMillis: Long? = null,
     val details: Map<String, Any?> = emptyMap(),
     cause: Throwable? = null,
 ) : RuntimeException(message, cause) {

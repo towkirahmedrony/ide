@@ -214,7 +214,24 @@ class OpenAiCompatibleProvider(
             httpStatus = status,
             providerErrorType = info.type,
             retryable = status == 429 || status in 500..599,
+            // A provider-supplied Retry-After is a hint for the central rate-limit
+            // retry path; the provider itself never retries.
+            retryAfterMillis = if (status == 429) parseRetryAfter(response.headers) else null,
         )
+    }
+
+    /** Parses a numeric `Retry-After` (seconds). The HTTP-date form falls back to backoff. */
+    private fun parseRetryAfter(headers: Map<String, List<String>>): Long? {
+        val raw = headers.entries
+            .firstOrNull { (name, _) -> name.equals("Retry-After", ignoreCase = true) }
+            ?.value
+            ?.firstOrNull()
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?: return null
+        val seconds = raw.toDoubleOrNull() ?: return null
+        if (seconds < 0.0) return null
+        return (seconds * 1000.0).toLong()
     }
 
     private fun extractErrorInfo(body: String): ProviderErrorInfo {
