@@ -5,179 +5,78 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.agentx.app.core.ForgeError
 import com.agentx.app.core.errorOrNull
 import com.agentx.app.core.valueOrNull
+import com.agentx.app.model.catalog.ModelCatalogRegistry
 import com.agentx.app.model.connect.ModelConnectOutcome
 import com.agentx.app.model.connect.ModelConnectPhase
-import com.agentx.app.model.connect.ModelConnectRequest
 import com.agentx.app.model.connect.ModelSetupKind
 import com.agentx.app.model.manager.ModelManager
-import com.agentx.app.model.preset.ColabRuntimeConfig
-import com.agentx.app.model.preset.EndpointConfig
-import com.agentx.app.model.preset.EndpointDiscoveryMode
-import com.agentx.app.model.preset.HealthCheckConfig
 import com.agentx.app.model.preset.ModelApiProtocol
 import com.agentx.app.model.preset.ModelPreset
-import com.agentx.app.model.preset.ModelProviderType
-import com.agentx.app.model.preset.TunnelConfig
-import com.agentx.app.model.preset.TunnelType
+import com.agentx.app.model.preset.ModelProviderIds
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
 /**
- * Add/Edit Model form.
+ * Add/Edit model state.
  *
- * Quick Connect is the default path. Advanced fields stay available but
- * collapsed. The credential is write-only: it is never read back from storage.
+ * The form is the simplified one: connection type, provider/model, server URL or
+ * API key. Everything else is derived by [ModelSetupForm] and the provider
+ * catalogue, so no Advanced section is needed.
  */
 data class ModelEditorState(
-    val presetId: String? = null,
     val loading: Boolean = true,
     val missing: Boolean = false,
-    val setupKind: ModelSetupKind = ModelSetupKind.CUSTOM,
-    val displayName: String = "",
-    val providerType: ModelProviderType = ModelProviderType.REMOTE_OPENAI_COMPATIBLE,
-    val modelIdentifier: String = "",
-    val apiProtocol: ModelApiProtocol = ModelApiProtocol.OPENAI_COMPATIBLE,
-    val apiBasePath: String = ModelApiProtocol.OPENAI_COMPATIBLE.defaultApiBasePath,
-    val startupScript: String = "",
-    val serverPort: String = "",
-    val endpointMode: EndpointDiscoveryMode = EndpointDiscoveryMode.CONFIGURED_ENDPOINT,
-    val explicitEndpoint: String = "",
-    val tunnelType: TunnelType = TunnelType.NONE,
-    val tunnelMarker: String = TunnelConfig.DEFAULT_MARKER,
-    val healthPath: String = "",
-    val healthTimeoutMillis: String = HealthCheckConfig.DEFAULT_TIMEOUT_MILLIS.toString(),
-    val colabNotebookUrl: String = "",
-    val credential: String = "",
-    val hasStoredCredential: Boolean = false,
-    val clearCredential: Boolean = false,
-    val enabled: Boolean = true,
+    val form: ModelSetupForm = ModelSetupForm(),
+    /** Which model ids the form offers for the current provider. */
+    val models: List<String> = emptyList(),
+    /** True when [models] came from the provider's own catalog, not its suggestions. */
+    val modelsFromCatalog: Boolean = false,
+    val catalogLoading: Boolean = false,
+    /** Set only when a connected provider's catalog could not be read. */
+    val catalogError: String? = null,
+    /** Model ids a connect attempt discovered and wants the user to choose from. */
+    val discoveredModels: List<String> = emptyList(),
     val saving: Boolean = false,
     val connecting: Boolean = false,
     val connectPhase: ModelConnectPhase? = null,
+    /** Set once the model is saved; the screen leaves afterwards. */
     val saved: Boolean = false,
-    val connected: Boolean = false,
-    val connectedSummary: ConnectedSummary? = null,
-    val availableModels: List<String> = emptyList(),
-    val advancedOpen: Boolean = false,
     val errors: List<String> = emptyList(),
 ) {
-    val isEditing: Boolean get() = presetId != null
-
-    val credentialInput: String? get() = credential.takeIf { it.isNotBlank() }
-
-    val requireNotebookUrl: Boolean get() = providerType == ModelProviderType.GOOGLE_COLAB
-
-    val requireEndpointField: Boolean
-        get() = setupKind.showsEndpointField && (
-            endpointMode == EndpointDiscoveryMode.CONFIGURED_ENDPOINT ||
-                (endpointMode == EndpointDiscoveryMode.RUNTIME_OUTPUT && tunnelType == TunnelType.MANUAL)
-            )
-
     val busy: Boolean get() = saving || connecting
 
-    data class ConnectedSummary(
-        val displayName: String,
-        val state: String,
-        val protocol: String,
-        val endpoint: String,
-        val modelId: String,
-    )
+    val isEditing: Boolean get() = form.isEditing
 
-    companion object {
-        fun from(preset: ModelPreset): ModelEditorState = ModelEditorState(
-            presetId = preset.id,
-            loading = false,
-            setupKind = ModelSetupKind.fromId(preset.setupKind),
-            displayName = preset.displayName,
-            providerType = preset.providerType,
-            modelIdentifier = preset.modelIdentifier,
-            apiProtocol = preset.apiProtocol,
-            apiBasePath = preset.apiBasePath,
-            startupScript = preset.startupScript,
-            serverPort = preset.serverPort?.toString().orEmpty(),
-            endpointMode = preset.endpoint.mode,
-            explicitEndpoint = preset.endpoint.explicitUrl.orEmpty(),
-            tunnelType = preset.tunnel.type,
-            tunnelMarker = preset.tunnel.marker,
-            healthPath = preset.health.path.orEmpty(),
-            healthTimeoutMillis = preset.health.timeoutMillis.toString(),
-            colabNotebookUrl = preset.colab?.notebookUrl.orEmpty(),
-            hasStoredCredential = preset.credentialRef != null,
-            enabled = preset.enabled,
-            advancedOpen = preset.endpoint.mode != EndpointDiscoveryMode.CONFIGURED_ENDPOINT ||
-                preset.providerType == ModelProviderType.GOOGLE_COLAB,
-        )
-    }
+    /** True when the model id can be picked from a list. */
+    val hasModelList: Boolean get() = models.isNotEmpty() && !form.manualModel
 
-    fun toPreset(existing: ModelPreset?): ModelPreset {
-        val port = serverPort.trim().toIntOrNull()
-        val health = existing?.health ?: HealthCheckConfig()
-        val timeout = healthTimeoutMillis.trim().toLongOrNull() ?: health.timeoutMillis
-        return ModelPreset(
-            id = presetId ?: "",
-            displayName = displayName.trim(),
-            providerType = providerType,
-            modelIdentifier = modelIdentifier.trim(),
-            apiProtocol = apiProtocol,
-            apiBasePath = apiBasePath.trim().ifBlank { apiProtocol.defaultApiBasePath },
-            credentialRef = existing?.credentialRef?.takeUnless { clearCredential },
-            startupScript = startupScript,
-            serverPort = port,
-            endpoint = EndpointConfig(
-                mode = endpointMode,
-                explicitUrl = explicitEndpoint.trim().ifBlank { null },
-            ),
-            tunnel = TunnelConfig(
-                type = tunnelType,
-                marker = tunnelMarker.trim().ifBlank { TunnelConfig.DEFAULT_MARKER },
-            ),
-            health = health.copy(
-                path = healthPath.trim().ifBlank { null },
-                timeoutMillis = timeout,
-            ),
-            colab = if (providerType == ModelProviderType.GOOGLE_COLAB) {
-                ColabRuntimeConfig(notebookUrl = colabNotebookUrl.trim())
-            } else {
-                null
-            },
-            enabled = enabled,
-            setupKind = setupKind.id,
-            createdAtMillis = existing?.createdAtMillis ?: 0L,
-            updatedAtMillis = existing?.updatedAtMillis ?: 0L,
-        )
-    }
+    fun issue(field: ModelSetupField): String? = form.issueFor(field)
 
-    fun toConnectRequest(): ModelConnectRequest = ModelConnectRequest(
-        presetId = presetId,
-        displayName = displayName.trim(),
-        setupKind = setupKind,
-        endpoint = explicitEndpoint,
-        credential = credentialInput,
-        clearCredential = clearCredential,
-        modelIdentifier = modelIdentifier.trim(),
-        apiProtocol = apiProtocol.takeIf { advancedOpen },
-        apiBasePath = apiBasePath.trim().takeIf { advancedOpen && it.isNotBlank() },
-        providerType = providerType.takeIf { advancedOpen },
-        healthPath = healthPath.trim().ifBlank { null },
-        healthTimeoutMillis = healthTimeoutMillis.trim().toLongOrNull(),
-        serverPort = serverPort.trim().toIntOrNull(),
-        enabled = enabled,
-        startupScript = startupScript,
-        tunnelType = tunnelType.takeIf { advancedOpen },
-        tunnelMarker = tunnelMarker.takeIf { advancedOpen },
-        colabNotebookUrl = colabNotebookUrl.trim().ifBlank { null },
-        endpointMode = endpointMode.takeIf { advancedOpen },
-    )
+    val primaryActionLabel: String
+        get() = when {
+            connecting -> connectPhase?.displayName ?: "Connecting…"
+            isEditing -> "Save and connect"
+            else -> "Add model"
+        }
 }
 
+/**
+ * Drives the Add/Edit model screen.
+ *
+ * The ViewModel keeps user intent, validation and the catalog in one place; all
+ * connection work still happens inside the Model Manager, and nothing here talks
+ * HTTP or invents a connection state.
+ */
 class ModelEditorViewModel(
     private val manager: ModelManager,
     private val presetId: String?,
+    private val catalog: ModelCatalogRegistry? = null,
 ) : ViewModel() {
 
-    var state by mutableStateOf(ModelEditorState(presetId = presetId))
+    var state by mutableStateOf(ModelEditorState())
         private set
 
     private var existing: ModelPreset? = null
@@ -187,95 +86,111 @@ class ModelEditorViewModel(
             val loaded = presetId?.let { manager.preset(it) }
             existing = loaded
             state = when {
-                loaded != null -> ModelEditorState.from(loaded)
+                loaded != null -> state.copy(loading = false, form = ModelSetupForm.from(loaded))
                 presetId != null -> state.copy(loading = false, missing = true)
-                else -> state.copy(loading = false)
+                else -> state.copy(loading = false, form = ModelSetupForm())
             }
+            // A new model offers the provider's models straight away.
+            loadModels(force = false)
         }
     }
 
-    fun edit(block: (ModelEditorState) -> ModelEditorState) {
+    /** Applies a form edit and clears results that no longer apply. */
+    fun edit(block: (ModelSetupForm) -> ModelSetupForm) {
         if (state.busy) return
-        state = block(state).copy(errors = emptyList(), availableModels = emptyList())
+        state = state.copy(
+            form = block(state.form),
+            errors = emptyList(),
+            discoveredModels = emptyList(),
+        )
     }
 
-    fun toggleAdvanced() {
-        if (state.busy) return
-        state = state.copy(advancedOpen = !state.advancedOpen)
+    /** Switches connection type, which also switches the fields on screen. */
+    fun selectConnectionType(type: ModelConnectionType) {
+        if (state.busy || state.form.connectionType == type) return
+        edit { form -> form.copy(connectionType = type) }
+        viewModelScope.launch { loadModels(force = false) }
+    }
+
+    /** Switches API provider; the model list is reloaded for the new provider. */
+    fun selectProvider(kind: ModelSetupKind) {
+        if (state.busy || state.form.apiProvider == kind) return
+        edit { form -> form.copy(apiProvider = kind, manualModel = false) }
+        viewModelScope.launch { loadModels(force = false) }
+    }
+
+    fun selectModel(modelId: String) {
+        edit { form -> form.copy(modelId = modelId) }
+    }
+
+    fun toggleManualModel(enabled: Boolean) {
+        edit { form -> form.copy(manualModel = enabled) }
+    }
+
+    /** Retries the provider catalog after a failure, keeping the typed values. */
+    fun retryCatalog() {
+        if (state.busy || state.catalogLoading) return
+        viewModelScope.launch { loadModels(force = true) }
     }
 
     fun removeStoredCredential() {
-        state = state.copy(clearCredential = true, hasStoredCredential = false)
+        edit { form -> form.copy(clearCredential = true, hasStoredCredential = false) }
     }
 
+    /** Validates, then connects through the Model Manager and saves on success. */
     fun connect() {
         if (state.busy) return
+        val issues = state.form.issues()
+        if (issues.isNotEmpty()) {
+            state = state.copy(errors = issues.map { it.message })
+            return
+        }
         state = state.copy(
             connecting = true,
             errors = emptyList(),
-            availableModels = emptyList(),
+            discoveredModels = emptyList(),
+            catalogError = null,
             connectPhase = ModelConnectPhase.CONNECTING,
-            connected = false,
-            connectedSummary = null,
+            saved = false,
         )
         viewModelScope.launch {
             try {
-                val result = manager.connectQuick(state.toConnectRequest()) { phase ->
+                val duplicate = duplicateTarget()
+                val result = manager.connectQuick(state.form.toConnectRequest(duplicate)) { phase ->
                     state = state.copy(connectPhase = phase)
                 }
                 val failure = result.errorOrNull()
                 if (failure != null) {
-                    val fieldErrors = failure.details["errors"] as? List<*>
                     state = state.copy(
                         connecting = false,
                         connectPhase = null,
-                        errors = fieldErrors?.map { it.toString() }
-                            ?: listOf(failure.message ?: "Could not connect"),
+                        errors = fieldErrorsOf(failure) ?: listOf(failure.message ?: "Could not connect"),
                     )
                     return@launch
                 }
                 when (val outcome = result.valueOrNull()) {
-                    is ModelConnectOutcome.NeedsModelChoice -> {
-                        state = state.copy(
-                            connecting = false,
-                            connectPhase = null,
-                            availableModels = outcome.models,
-                            advancedOpen = true,
-                            errors = listOf(outcome.message),
-                        )
-                    }
+                    is ModelConnectOutcome.NeedsModelChoice -> state = state.copy(
+                        connecting = false,
+                        connectPhase = null,
+                        discoveredModels = outcome.models,
+                        errors = listOf(outcome.message),
+                    )
+
                     is ModelConnectOutcome.Connected -> {
                         existing = outcome.preset
                         state = state.copy(
                             connecting = false,
                             connectPhase = ModelConnectPhase.CONNECTED,
-                            connected = true,
                             saved = true,
-                            presetId = outcome.preset.id,
-                            modelIdentifier = outcome.preset.modelIdentifier,
-                            explicitEndpoint = outcome.preset.endpoint.explicitUrl.orEmpty(),
-                            apiBasePath = outcome.preset.apiBasePath,
-                            apiProtocol = outcome.preset.apiProtocol,
-                            providerType = outcome.preset.providerType,
-                            setupKind = ModelSetupKind.fromId(outcome.preset.setupKind),
-                            hasStoredCredential = outcome.preset.credentialRef != null,
-                            connectedSummary = ModelEditorState.ConnectedSummary(
-                                displayName = outcome.preset.displayName,
-                                state = outcome.status.state.displayName,
-                                protocol = outcome.preset.apiProtocol.displayName,
-                                endpoint = outcome.status.endpoint?.url
-                                    ?: outcome.preset.endpoint.explicitUrl.orEmpty(),
-                                modelId = outcome.preset.modelIdentifier,
-                            ),
+                            form = ModelSetupForm.from(outcome.preset),
                         )
                     }
-                    null -> {
-                        state = state.copy(
-                            connecting = false,
-                            connectPhase = null,
-                            errors = listOf("Could not connect"),
-                        )
-                    }
+
+                    null -> state = state.copy(
+                        connecting = false,
+                        connectPhase = null,
+                        errors = listOf("Could not connect"),
+                    )
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -289,27 +204,42 @@ class ModelEditorViewModel(
         }
     }
 
+    /**
+     * Saves without contacting the endpoint.
+     *
+     * This is the recovery path for a local server that is not up yet: the
+     * configuration is kept, the user is never asked to retype it, and no
+     * connection state is claimed.
+     */
     fun save() {
         if (state.busy) return
+        val issues = state.form.issues()
+        if (issues.isNotEmpty()) {
+            state = state.copy(errors = issues.map { it.message })
+            return
+        }
         state = state.copy(saving = true, errors = emptyList())
         viewModelScope.launch {
             try {
-                val preset = state.toPreset(existing)
-                val credential = state.credentialInput
-                val result = if (existing == null) {
-                    manager.createPreset(preset, credential)
+                val target = existing ?: duplicateTarget()
+                val preset = state.form.toPreset(target)
+                val result = if (target == null) {
+                    manager.createPreset(preset, state.form.credential.takeIf { it.isNotBlank() })
                 } else {
-                    manager.updatePreset(preset, credential, clearCredential = state.clearCredential)
+                    manager.updatePreset(
+                        preset = preset,
+                        credential = state.form.credential.takeIf { it.isNotBlank() },
+                        clearCredential = state.form.clearCredential,
+                    )
                 }
                 val failure = result.errorOrNull()
-                if (failure == null) {
-                    state = state.copy(saving = false, saved = true)
+                state = if (failure == null) {
+                    existing = result.valueOrNull() ?: existing
+                    state.copy(saving = false, saved = true)
                 } else {
-                    val fieldErrors = failure.details["errors"] as? List<*>
-                    state = state.copy(
+                    state.copy(
                         saving = false,
-                        errors = fieldErrors?.map { it.toString() }
-                            ?: listOf(failure.message ?: "The model could not be saved"),
+                        errors = fieldErrorsOf(failure) ?: listOf(failure.message ?: "The model could not be saved"),
                     )
                 }
             } catch (cancelled: CancellationException) {
@@ -322,4 +252,38 @@ class ModelEditorViewModel(
             }
         }
     }
+
+    /** An already-saved preset describing the same connection, if there is one. */
+    private fun duplicateTarget(): ModelPreset? {
+        if (state.form.presetId != null) return null
+        return ModelSetupForm.equivalent(manager.state.value.presets, state.form)
+    }
+
+    private suspend fun loadModels(force: Boolean) {
+        if (state.form.connectionType == ModelConnectionType.LOCAL) {
+            state = state.copy(models = emptyList(), modelsFromCatalog = false, catalogError = null)
+            return
+        }
+        val providerId = ModelProviderIds.forPreset(state.form.setupKind.id, ModelApiProtocol.OPENAI_COMPATIBLE)
+        val registry = catalog
+        state = state.copy(catalogLoading = true, catalogError = null)
+        val failure = if (registry == null) {
+            null
+        } else {
+            runCatching { registry.refresh(providerId, force) }.getOrNull()?.errorOrNull()
+        }
+        val fromCatalog = ModelChoices.catalogModels(registry, providerId)
+        val connected = registry?.catalog(providerId) != null
+        state = state.copy(
+            catalogLoading = false,
+            models = if (fromCatalog.isNotEmpty()) fromCatalog else ModelChoices.suggestions(providerId),
+            modelsFromCatalog = fromCatalog.isNotEmpty(),
+            // Only a connected provider that failed to answer is worth a retry; an
+            // unconnected one simply has no model list yet.
+            catalogError = failure?.message?.takeIf { connected || fromCatalog.isNotEmpty() },
+        )
+    }
+
+    private fun fieldErrorsOf(failure: ForgeError): List<String>? =
+        (failure.details["errors"] as? List<*>)?.map { it.toString() }?.takeIf { it.isNotEmpty() }
 }

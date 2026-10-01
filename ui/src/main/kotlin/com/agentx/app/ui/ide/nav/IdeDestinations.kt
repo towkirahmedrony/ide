@@ -38,6 +38,9 @@ object IdeDestinations {
     const val MODEL_EDITOR = "models/editor/{presetId}"
     const val MODEL_RUNNER = "models/runner/{presetId}"
 
+    /** One saved model: identity, status, assigned roles, usage and actions. */
+    const val MODEL_DETAIL = "models/detail/{presetId}"
+
     /** Sentinel for "the user is adding a model" in [MODEL_EDITOR]. */
     const val NEW_MODEL = "new"
 
@@ -65,6 +68,8 @@ object IdeDestinations {
     fun modelEditor(presetId: String? = null): String = "models/editor/${presetId ?: NEW_MODEL}"
 
     fun modelRunner(presetId: String): String = "models/runner/$presetId"
+
+    fun modelDetail(presetId: String): String = "models/detail/$presetId"
 
     fun serviceDetails(type: String): String = "connections/service/$type"
 

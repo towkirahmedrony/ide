@@ -1,6 +1,7 @@
 package com.agentx.app.ui.ide.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -33,6 +34,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.agentx.app.ui.theme.ForgeBorder
+import com.agentx.app.ui.theme.ForgeDanger
 import com.agentx.app.ui.theme.ForgeInk
 import com.agentx.app.ui.theme.ForgeMuted
 import com.agentx.app.ui.theme.ForgeSurface
@@ -223,4 +225,51 @@ fun IdeSpacer(height: Int) {
 @Composable
 fun IdeSpacerW(width: Int) {
     Spacer(Modifier.width(width.dp))
+}
+
+/**
+ * One compact settings/action row: a label on the left and an optional value on
+ * the right.
+ *
+ * Settings screens use these instead of nested cards so a page stays scannable
+ * and several rows fit on one phone screen.
+ */
+@Composable
+fun IdeSettingRow(
+    label: String,
+    modifier: Modifier = Modifier,
+    value: String? = null,
+    enabled: Boolean = true,
+    danger: Boolean = false,
+    onClick: (() -> Unit)? = null,
+) {
+    val contentColor = when {
+        !enabled -> ForgeMuted
+        danger -> ForgeDanger
+        else -> ForgeInk
+    }
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .then(if (onClick != null) Modifier.clickable(enabled = enabled, onClick = onClick) else Modifier)
+            .padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = contentColor,
+            modifier = Modifier.weight(1f),
+        )
+        if (value != null) {
+            Text(
+                text = value,
+                style = MaterialTheme.typography.bodyMedium,
+                color = ForgeMuted,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(start = 12.dp),
+            )
+        }
+    }
 }

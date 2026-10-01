@@ -38,6 +38,7 @@ import com.agentx.app.ui.ide.screens.ConnectionsScreen
 import com.agentx.app.ui.ide.screens.DeveloperLogsScreen
 import com.agentx.app.ui.ide.screens.DeveloperScreen
 import com.agentx.app.ui.ide.screens.HomeScreen
+import com.agentx.app.ui.ide.screens.ModelDetailScreen
 import com.agentx.app.ui.ide.screens.ModelEditorScreen
 import com.agentx.app.ui.ide.screens.ModelRunnerScreen
 import com.agentx.app.ui.ide.screens.ModelsScreen
@@ -56,6 +57,7 @@ import com.agentx.app.ui.ide.state.ConnectionsViewModel
 import com.agentx.app.ui.ide.state.DeveloperLogsViewModel
 import com.agentx.app.ui.ide.state.HomeViewModel
 import com.agentx.app.ui.ide.state.IdeViewModelFactory
+import com.agentx.app.ui.ide.state.ModelDetailViewModel
 import com.agentx.app.ui.ide.state.ModelEditorViewModel
 import com.agentx.app.ui.ide.state.ModelRunnerViewModel
 import com.agentx.app.ui.ide.state.ModelsViewModel
@@ -299,16 +301,48 @@ fun ForgeIdeApp(
                 credentialsPersistent = modelsViewModel.credentialsPersistent,
                 onBack = { navController.popBackStack() },
                 onAddModel = { navController.navigate(IdeDestinations.modelEditor()) },
-                onEdit = { id -> navController.navigate(IdeDestinations.modelEditor(id)) },
-                onUse = modelsViewModel::use,
-                onStart = modelsViewModel::start,
-                onStop = modelsViewModel::stop,
-                onReconnect = modelsViewModel::reconnect,
-                onCheckHealth = modelsViewModel::checkHealth,
-                onOpenRunner = { id -> navController.navigate(IdeDestinations.modelRunner(id)) },
-                onDelete = modelsViewModel::delete,
+                onOpen = { id -> navController.navigate(IdeDestinations.modelDetail(id)) },
                 onRefresh = modelsViewModel::refresh,
                 onDismissMessage = modelsViewModel::dismissMessage,
+            )
+        }
+
+        composable(
+            route = IdeDestinations.MODEL_DETAIL,
+            arguments = listOf(navArgument(IdeDestinations.ARG_PRESET_ID) { type = NavType.StringType }),
+        ) { entry ->
+            val presetId = entry.arguments?.getString(IdeDestinations.ARG_PRESET_ID).orEmpty()
+            val detailViewModel: ModelDetailViewModel = viewModel(
+                key = "model-detail-$presetId",
+                factory = IdeViewModelFactory {
+                    ModelDetailViewModel(
+                        manager = dependencies.modelManager,
+                        roleModels = dependencies.agentRoleModels,
+                        rateLimits = dependencies.rateLimits,
+                        presetId = presetId,
+                    )
+                },
+            )
+            val managerState by detailViewModel.managerState.collectAsState()
+            LaunchedEffect(detailViewModel.deleted) {
+                if (detailViewModel.deleted) navController.popBackStack()
+            }
+            ModelDetailScreen(
+                preset = detailViewModel.preset,
+                status = managerState.status(presetId),
+                active = managerState.activePresetId == presetId,
+                busy = detailViewModel.busy,
+                assignedRoles = detailViewModel.assignedRoles,
+                usage = detailViewModel.usage,
+                onBack = { navController.popBackStack() },
+                onUse = detailViewModel::use,
+                onStart = detailViewModel::start,
+                onStop = detailViewModel::stop,
+                onReconnect = detailViewModel::reconnect,
+                onCheckHealth = detailViewModel::testConnection,
+                onOpenRunner = { navController.navigate(IdeDestinations.modelRunner(presetId)) },
+                onEdit = { navController.navigate(IdeDestinations.modelEditor(presetId)) },
+                onDelete = detailViewModel::delete,
             )
         }
 
@@ -321,7 +355,11 @@ fun ForgeIdeApp(
             val editorViewModel: ModelEditorViewModel = viewModel(
                 key = "model-editor-${raw.orEmpty()}",
                 factory = IdeViewModelFactory {
-                    ModelEditorViewModel(dependencies.modelManager, presetId)
+                    ModelEditorViewModel(
+                        manager = dependencies.modelManager,
+                        presetId = presetId,
+                        catalog = dependencies.modelCatalog,
+                    )
                 },
             )
             val editorState = editorViewModel.state
@@ -332,9 +370,13 @@ fun ForgeIdeApp(
                 state = editorState,
                 onBack = { navController.popBackStack() },
                 onEdit = editorViewModel::edit,
+                onSelectConnectionType = editorViewModel::selectConnectionType,
+                onSelectProvider = editorViewModel::selectProvider,
+                onSelectModel = editorViewModel::selectModel,
+                onToggleManualModel = editorViewModel::toggleManualModel,
+                onRetryCatalog = editorViewModel::retryCatalog,
                 onSave = editorViewModel::save,
                 onConnect = editorViewModel::connect,
-                onToggleAdvanced = editorViewModel::toggleAdvanced,
                 onRemoveCredential = editorViewModel::removeStoredCredential,
             )
         }
