@@ -6,6 +6,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.agentx.app.termux.DeveloperLogCategory
+import com.agentx.app.termux.DeveloperLogger
 import com.agentx.app.termux.TerminalDiagnostics
 import com.agentx.app.termux.TerminalSessionAdapter
 import com.agentx.app.termux.TerminalSessionState
@@ -347,6 +349,7 @@ class TerminalViewModel(
      */
     fun restart() {
         val current = runtime ?: return
+        DeveloperLogger.info(DeveloperLogCategory.RESTART, "Requested")
         val handle = current.sessions.activeHandle.value
         // A handle that is already gone means the shell this screen was on has been removed; fall
         // back to the workspace shell rather than restarting one that no longer exists.
@@ -372,6 +375,9 @@ class TerminalViewModel(
                     "The shell could not be prepared: " +
                         (resolved.exceptionOrNull()?.message ?: "unknown error")
                 }
+            }
+            resolved.exceptionOrNull()?.let { error ->
+                DeveloperLogger.error(DeveloperLogCategory.ERROR, "restart could not prepare a shell", error)
             }
             uiState = uiState.copy(usingDeveloperRuntime = developer != null, workspaceNote = reason)
             current.sessions.restartUnstartable(
@@ -471,6 +477,7 @@ class TerminalViewModel(
     }
 
     private fun open(scratch: Boolean) {
+        DeveloperLogger.info(DeveloperLogCategory.TERMINAL, "Open requested")
         val current = runtime ?: return
         val developer = developerRuntime
         if (developer == null) {
@@ -500,6 +507,13 @@ class TerminalViewModel(
             // failure is recorded and shown instead, and Restart retries the real path.
             val reason = withContext(Dispatchers.IO) {
                 developerUnavailableReason(developer, resolved)
+            }
+            resolved.exceptionOrNull()?.let { error ->
+                DeveloperLogger.error(
+                    DeveloperLogCategory.ERROR,
+                    "Ubuntu shell could not be prepared",
+                    error,
+                )
             }
             uiState = uiState.copy(usingDeveloperRuntime = true, workspaceNote = reason)
             current.sessions.openUnstartable(
@@ -607,7 +621,17 @@ class TerminalViewModel(
         key: String,
         scratch: Boolean,
     ): TermuxShellSpec? {
-        if (!developer.isReady()) return null
+        DeveloperLogger.info(DeveloperLogCategory.ROOTFS, "RootFS resolution started")
+        DeveloperLogger.info(DeveloperLogCategory.ROOTFS, "RootFS path = ${developer.layout.rootfs}")
+        DeveloperLogger.info(DeveloperLogCategory.PROOT, "PRoot path = ${developer.layout.proot}")
+        DeveloperLogger.info(
+            DeveloperLogCategory.ROOTFS,
+            "RootFS validation ready=${developer.isReady()}",
+        )
+        if (!developer.isReady()) {
+            DeveloperLogger.warn(DeveloperLogCategory.ROOTFS, developer.notReadyReason())
+            return null
+        }
         val projectHostPath = if (scratch) null else projectHostPath(current, developer)
         return developer.specFor(
             workspaceKey = key,
@@ -630,7 +654,14 @@ class TerminalViewModel(
         key: String,
         scratch: Boolean,
     ): TermuxShellSpec? {
-        if (!developer.isReady()) return null
+        DeveloperLogger.info(DeveloperLogCategory.ROOTFS, "RootFS resolution started")
+        DeveloperLogger.info(DeveloperLogCategory.ROOTFS, "RootFS path = ${developer.layout.rootfs}")
+        DeveloperLogger.info(DeveloperLogCategory.PROOT, "Resolving PRoot")
+        DeveloperLogger.info(DeveloperLogCategory.PROOT, "PRoot path = ${developer.layout.proot}")
+        if (!developer.isReady()) {
+            DeveloperLogger.warn(DeveloperLogCategory.ROOTFS, developer.notReadyReason())
+            return null
+        }
         val projectHostPath = if (scratch) null else (legacyHostPath(current) ?: materialize(developer))
         return developer.specFor(
             workspaceKey = key,

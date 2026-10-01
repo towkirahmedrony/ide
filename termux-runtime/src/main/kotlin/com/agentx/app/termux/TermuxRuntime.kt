@@ -60,11 +60,16 @@ class TermuxRuntime(
         // The sink lives in app storage so the last run survives a process death, which several
         // failures in this chain cause and which takes logcat with it.
         TerminalDiagnostics.attach(File(appContext.filesDir, DIAGNOSTICS_FILE))
+        DeveloperLogger.attach(File(appContext.filesDir, DeveloperLogger.RELATIVE_PATH))
         TerminalDiagnostics.record(
             TAG,
             "TermuxRuntime created filesDir=${appContext.filesDir.absolutePath} abis=${supportedAbis()}",
         )
         TerminalDiagnostics.record(TAG, "legacy prefix support=${prefixSupport.javaClass.simpleName}")
+        DeveloperLogger.info(
+            DeveloperLogCategory.TERMINAL,
+            "TermuxRuntime created filesDir=${appContext.filesDir.absolutePath} abis=${supportedAbis()}",
+        )
     }
 
     private val installer = TermuxBootstrapInstaller(
@@ -242,6 +247,7 @@ class TermuxRuntime(
      * killed while the app is in the background.
      */
     fun openSession(spec: TermuxShellSpec, keepAlive: Boolean = true): TermuxSession? {
+        DeveloperLogger.info(DeveloperLogCategory.SESSION, "Session creation started workspace=${spec.workspaceKey}")
         val session = sessions.open(spec) ?: return null
         if (keepAlive) TermuxSessionService.ensureRunning(appContext)
         return session
@@ -302,6 +308,15 @@ class TermuxRuntime(
             TAG,
             "env keys=${spec.environment.map { it.substringBefore('=') }.sorted().joinToString()}",
         )
+        DeveloperLogger.info(DeveloperLogCategory.ENV, "Environment construction")
+        DeveloperLogger.logEnvironment(spec.environment)
+        DeveloperLogger.info(DeveloperLogCategory.PROCESS, "Command construction")
+        DeveloperLogger.info(DeveloperLogCategory.PROCESS, "Starting process")
+        DeveloperLogger.logProcessLaunch(
+            executable = spec.executable,
+            arguments = spec.arguments,
+            workingDirectory = spec.workingDirectory,
+        )
         val terminal = try {
             TerminalSession(
                 spec.executable,
@@ -317,6 +332,11 @@ class TermuxRuntime(
             // ExceptionInInitializerError it is null.
             TerminalDiagnostics.recordFailure(
                 TAG,
+                "could not construct a terminal session for ${spec.executable}",
+                error,
+            )
+            DeveloperLogger.error(
+                DeveloperLogCategory.ERROR,
                 "could not construct a terminal session for ${spec.executable}",
                 error,
             )

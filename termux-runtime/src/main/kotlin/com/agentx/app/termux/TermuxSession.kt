@@ -31,6 +31,25 @@ val TerminalSessionState.isTerminal: Boolean
         this == TerminalSessionState.FAILED ||
         this == TerminalSessionState.IDLE
 
+fun logSessionTransition(
+    from: TerminalSessionState?,
+    to: TerminalSessionState,
+    handle: String? = null,
+    pid: Int? = null,
+    reason: String? = null,
+) {
+    if (from == to) return
+    val details = buildString {
+        if (!handle.isNullOrBlank()) append(" handle=$handle")
+        if (pid != null && pid > 0) append(" pid=$pid")
+        if (!reason.isNullOrBlank()) append(" reason=$reason")
+    }
+    DeveloperLogger.info(
+        DeveloperLogCategory.SESSION,
+        "${from?.name ?: TerminalSessionState.IDLE.name} -> $to$details",
+    )
+}
+
 /**
  * Maps what the vendored `TerminalSession` can be observed to be doing onto a lifecycle state.
  *

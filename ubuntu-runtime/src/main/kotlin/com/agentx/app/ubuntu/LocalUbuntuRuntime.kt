@@ -3,6 +3,8 @@ package com.agentx.app.ubuntu
 import android.content.Context
 import android.net.ConnectivityManager
 import android.util.Log
+import com.agentx.app.termux.DeveloperLogCategory
+import com.agentx.app.termux.DeveloperLogger
 import com.agentx.app.termux.TerminalDiagnostics
 import com.agentx.app.termux.TermuxShellSpec
 import kotlinx.coroutines.CompletableDeferred
@@ -56,6 +58,15 @@ class LocalUbuntuRuntime(
         layout = layout,
         exists = { path -> File(path).let { it.isFile && it.canExecute() } },
     )
+
+    init {
+        DeveloperLogger.attach(File(appContext.filesDir, DeveloperLogger.RELATIVE_PATH))
+        UbuntuDeveloperDiagnostics.logNativeRuntime(
+            layout = layout,
+            abis = android.os.Build.SUPPORTED_ABIS?.toList().orEmpty(),
+        )
+        UbuntuDeveloperDiagnostics.logRootfs(layout)
+    }
 
     private fun nativeExists(path: String): Boolean = File(path).isFile
 
@@ -183,6 +194,11 @@ class LocalUbuntuRuntime(
                         statusFlow.value
                     }
                 } catch (failure: Throwable) {
+                    DeveloperLogger.error(
+                        DeveloperLogCategory.ERROR,
+                        "runtime provision failed",
+                        failure,
+                    )
                     val status = RuntimeStatus(
                         state = AgentxRuntimeState.ERROR,
                         stage = UbuntuInstallStage.RUNTIME,
@@ -236,6 +252,10 @@ class LocalUbuntuRuntime(
         TerminalDiagnostics.record(
             TAG,
             "rootfs verification ok=${verification.ok} summary=${verification.summary}",
+        )
+        DeveloperLogger.info(
+            DeveloperLogCategory.ROOTFS,
+            "RootFS validation ok=${verification.ok} summary=${verification.summary}",
         )
         if (verification.ok) {
             markVerified()
@@ -302,6 +322,12 @@ class LocalUbuntuRuntime(
         // actually unpacked and whether it may be executed, not what the APK was built with.
         TerminalDiagnostics.record(TAG, "nativeLibraryDir=${layout.nativeLibraryDir}")
         TerminalDiagnostics.record(TAG, "nativeLibraryDir contents: $listing")
+        UbuntuDeveloperDiagnostics.logNativeRuntime(
+            layout = layout,
+            abis = android.os.Build.SUPPORTED_ABIS?.toList().orEmpty(),
+        )
+        UbuntuDeveloperDiagnostics.logRootfs(layout)
+        DeveloperLogger.info(DeveloperLogCategory.PROOT, "Native library verification")
         for (name in NativeRuntimeLayout.REQUIRED_LIBRARIES + NativeRuntimeLayout.OPTIONAL_LIBRARIES) {
             val file = File("${layout.nativeLibraryDir}/$name")
             TerminalDiagnostics.record(
@@ -323,6 +349,7 @@ class LocalUbuntuRuntime(
         )
         if (result.ok) {
             Log.i(TAG, result.summary)
+            DeveloperLogger.info(DeveloperLogCategory.PROOT, "PRoot self-test passed: ${result.summary}")
             TerminalDiagnostics.record(TAG, "PRoot self-test passed: ${result.summary}")
             result.versionOutput?.let {
                 TerminalDiagnostics.record(TAG, "PRoot -V: ${it.take(300)}")
@@ -332,6 +359,7 @@ class LocalUbuntuRuntime(
             Log.w(TAG, result.summary)
             // The first gate in the chain. If this fails nothing after it can work, and the
             // summary names the file that is missing or not executable.
+            DeveloperLogger.error(DeveloperLogCategory.PROOT, "PRoot self-test FAILED: ${result.summary}")
             TerminalDiagnostics.record(TAG, "PRoot self-test FAILED: ${result.summary}")
         }
         return result
@@ -342,7 +370,12 @@ class LocalUbuntuRuntime(
         for ((name, value) in invocation.environment) {
             builder.environment()[name] = value
         }
-        val process = builder.start()
+        val process = try {
+            builder.start()
+        } catch (error: Throwable) {
+            DeveloperLogger.error(DeveloperLogCategory.ERROR, "process start failure", error)
+            throw error
+        }
         val output = process.inputStream.bufferedReader().readText()
         val exited = process.waitFor(15, TimeUnit.SECONDS)
         if (!exited) {
@@ -433,6 +466,13 @@ class LocalUbuntuRuntime(
     ): TermuxShellSpec {
         check(nativeProbe.ready) { nativeProbe.summary }
 
+        UbuntuDeveloperDiagnostics.logNativeRuntime(
+            layout = layout,
+            abis = android.os.Build.SUPPORTED_ABIS?.toList().orEmpty(),
+        )
+        UbuntuDeveloperDiagnostics.logRootfs(layout)
+        DeveloperLogger.info(DeveloperLogCategory.ENV, "Environment construction")
+        DeveloperLogger.info(DeveloperLogCategory.PROCESS, "Command construction")
         val invocation = invocationFor(
             binding = binding,
             guestCommand = ProotCommand.LOGIN_SHELL,
@@ -441,6 +481,7 @@ class LocalUbuntuRuntime(
         val hostWorkingDirectory = (binding as? UbuntuProjectBinding.Direct)?.hostPath
             ?.takeIf { File(it).isDirectory }
             ?: layout.runtimeDir
+        UbuntuDeveloperDiagnostics.logLaunch(invocation, hostWorkingDirectory, layout.rootfs)
 
         return TermuxShellSpec(
             workspaceKey = workspaceKey,
@@ -486,7 +527,15 @@ class LocalUbuntuRuntime(
             val separator = entry.indexOf('=')
             if (separator > 0) builder.environment()[entry.substring(0, separator)] = entry.substring(separator + 1)
         }
-        return ProcessAgentxExecution(command, guestCwd, builder.start())
+        UbuntuDeveloperDiagnostics.logLaunch(invocation, hostCwd, layout.rootfs)
+        val process = try {
+            builder.start()
+        } catch (error: Throwable) {
+            DeveloperLogger.error(DeveloperLogCategory.ERROR, "process start failure", error)
+            throw error
+        }
+        DeveloperLogger.info(DeveloperLogCategory.PROCESS, "process created")
+        return ProcessAgentxExecution(command, guestCwd, process)
     }
 
     /**

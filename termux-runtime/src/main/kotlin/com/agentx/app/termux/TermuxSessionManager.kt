@@ -68,6 +68,10 @@ class TermuxSessionManager(
      * terminal.
      */
     fun open(spec: TermuxShellSpec): TermuxSession? {
+        DeveloperLogger.info(
+            DeveloperLogCategory.SESSION,
+            "Session creation started workspace=${spec.workspaceKey} executable=${spec.executable}",
+        )
         val disposals = ArrayList<TermuxSession>()
         val created: TermuxSession
         val superseded: String?
@@ -121,6 +125,12 @@ class TermuxSessionManager(
      */
     fun restart(handle: String?, spec: TermuxShellSpec): TermuxSession? {
         Log.i(TAG, "restart from handle=${handle ?: "(none)"} workspace=${spec.workspaceKey}")
+        val previous = handle?.let(::find)
+        DeveloperLogger.info(DeveloperLogCategory.RESTART, "Requested")
+        DeveloperLogger.info(
+            DeveloperLogCategory.RESTART,
+            "Previous state = ${previous?.state ?: "(none)"} handle=${handle ?: "(no handle)"}",
+        )
         TerminalDiagnostics.record(
             TAG,
             "restart requested from=${handle ?: "(no handle)"} workspace=${spec.workspaceKey} " +
@@ -131,7 +141,13 @@ class TermuxSessionManager(
             val removed = synchronized(lock) { detachLocked(handle) }
             removed?.let { runCatching { it.finish() } }
         }
-        return open(spec)
+        DeveloperLogger.info(DeveloperLogCategory.RESTART, "Creating new session")
+        val created = open(spec)
+        DeveloperLogger.info(
+            DeveloperLogCategory.RESTART,
+            "Result = ${created?.state ?: "null"} handle=${created?.handle ?: "(none)"}",
+        )
+        return created
     }
 
     /**
@@ -171,6 +187,10 @@ class TermuxSessionManager(
         disposals.forEach { runCatching { it.finish() } }
         Log.w(TAG, "session could not be built workspace=$workspaceKey reason=$reason")
         TerminalDiagnostics.record(TAG, "FAILED session workspace=$workspaceKey reason=$reason")
+        DeveloperLogger.warn(
+            DeveloperLogCategory.SESSION,
+            "IDLE -> FAILED handle=${created.handle} reason=$reason",
+        )
         return created
     }
 
@@ -181,12 +201,24 @@ class TermuxSessionManager(
         executable: String?,
         reason: String,
     ): TermuxSession {
+        val previous = handle?.let(::find)
+        DeveloperLogger.info(DeveloperLogCategory.RESTART, "Requested")
+        DeveloperLogger.info(
+            DeveloperLogCategory.RESTART,
+            "Previous state = ${previous?.state ?: "(none)"} handle=${handle ?: "(no handle)"}",
+        )
         // Detached without publishing, so the UI never observes a gap with no session at all.
         if (handle != null) {
             val removed = synchronized(lock) { detachLocked(handle) }
             removed?.let { runCatching { it.finish() } }
         }
-        return openUnstartable(workspaceKey, executable, reason)
+        DeveloperLogger.info(DeveloperLogCategory.RESTART, "Creating new session")
+        val created = openUnstartable(workspaceKey, executable, reason)
+        DeveloperLogger.info(
+            DeveloperLogCategory.RESTART,
+            "Result = ${created.state} handle=${created.handle}",
+        )
+        return created
     }
 
     fun restartTemporarySystemShells(specFor: (TermuxSessionSnapshot) -> TermuxShellSpec): List<TermuxSession> {
@@ -231,6 +263,16 @@ class TermuxSessionManager(
         val session = find(handle) ?: return
         if (session.isRunning) return
         Log.i(TAG, "exit handle=$handle state=${session.state} exit=${session.exitStatus}")
+        DeveloperLogger.info(
+            DeveloperLogCategory.PROCESS,
+            "process exit handle=$handle state=${session.state} exit code=${session.exitStatus}",
+        )
+        logSessionTransition(
+            from = TerminalSessionState.RUNNING,
+            to = session.state,
+            handle = handle,
+            reason = session.failure,
+        )
         synchronized(lock) {
             byWorkspaceKey.entries.removeAll { it.value == handle }
         }
@@ -269,6 +311,17 @@ class TermuxSessionManager(
             TAG,
             "session creation failed workspace=${spec.workspaceKey} executable=${spec.executable}",
             error,
+        )
+        DeveloperLogger.error(
+            DeveloperLogCategory.ERROR,
+            "process start failure workspace=${spec.workspaceKey} executable=${spec.executable}",
+            error,
+        )
+        logSessionTransition(
+            from = TerminalSessionState.IDLE,
+            to = TerminalSessionState.FAILED,
+            handle = handle,
+            reason = error.message?.takeIf { it.isNotBlank() } ?: error.javaClass.simpleName,
         )
         UnstartableTermuxSession(
             handle = handle,

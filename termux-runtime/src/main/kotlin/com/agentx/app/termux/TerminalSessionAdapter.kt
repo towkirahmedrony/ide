@@ -61,6 +61,9 @@ class TerminalSessionAdapter(
     @Volatile
     private var failureValue: String? = null
 
+    @Volatile
+    private var loggedState: TerminalSessionState = TerminalSessionState.IDLE
+
     private var startupGuard: Job? = null
     private var stopGuard: Job? = null
     private val lock = Any()
@@ -68,16 +71,30 @@ class TerminalSessionAdapter(
     override val handle: String get() = delegate.mHandle
 
     override val state: TerminalSessionState
-        get() = if (forcedStopped) {
-            TerminalSessionState.STOPPED
-        } else {
-            terminalSessionState(
-                failure = failureValue,
-                started = started,
-                stopping = stopping,
-                pid = delegate.pid,
-                reachedRunning = reachedRunning,
-            )
+        get() {
+            val next = if (forcedStopped) {
+                TerminalSessionState.STOPPED
+            } else {
+                terminalSessionState(
+                    failure = failureValue,
+                    started = started,
+                    stopping = stopping,
+                    pid = delegate.pid,
+                    reachedRunning = reachedRunning,
+                )
+            }
+            val previous = loggedState
+            if (previous != next) {
+                loggedState = next
+                logSessionTransition(
+                    from = previous,
+                    to = next,
+                    handle = handle,
+                    pid = delegate.pid.takeIf { it > 0 },
+                    reason = failureValue,
+                )
+            }
+            return next
         }
 
     override val exitStatus: Int get() = delegate.exitStatus
@@ -105,6 +122,9 @@ class TerminalSessionAdapter(
             TAG,
             "start handle=$handle executable=$executable cwd=${delegate.cwd ?: "(none)"}",
         )
+        DeveloperLogger.info(DeveloperLogCategory.PROCESS, "process creation started handle=$handle")
+        DeveloperLogger.info(DeveloperLogCategory.PTY, "PTY create START handle=$handle")
+        state
 
         scope.launch {
             try {
@@ -116,6 +136,12 @@ class TerminalSessionAdapter(
                 }
                 val pid = delegate.pid
                 TerminalDiagnostics.record(TAG, "pty created handle=$handle pid=$pid")
+                DeveloperLogger.info(DeveloperLogCategory.PTY, "PTY create SUCCESS handle=$handle")
+                DeveloperLogger.info(DeveloperLogCategory.PTY, "PTY master FD created handle=$handle")
+                DeveloperLogger.info(DeveloperLogCategory.PTY, "PTY reader START handle=$handle")
+                DeveloperLogger.info(DeveloperLogCategory.PTY, "PTY writer START handle=$handle")
+                DeveloperLogger.info(DeveloperLogCategory.PROCESS, "process created handle=$handle pid=$pid")
+                DeveloperLogger.info(DeveloperLogCategory.PROCESS, "PID=$pid")
                 if (pid <= 0) {
                     fail("the pty did not report a shell pid", pid = pid, exit = null)
                     return@launch
@@ -124,6 +150,8 @@ class TerminalSessionAdapter(
                 armStartupTimeout()
                 Log.i(TAG, "RUNNING handle=$handle pid=$pid")
                 TerminalDiagnostics.record(TAG, "RUNNING handle=$handle pid=$pid")
+                DeveloperLogger.info(DeveloperLogCategory.TERMINAL, "Shell startup handle=$handle pid=$pid")
+                state
             } catch (error: Throwable) {
                 // Throwable, not Exception: the pty is reached through JNI, so the failures that
                 // matter here are Errors — UnsatisfiedLinkError, NoClassDefFoundError,
@@ -166,12 +194,25 @@ class TerminalSessionAdapter(
         Log.e(TAG, "FAILED handle=$handle pid=$pid exit=${exit ?: "n/a"} reason=$reason")
         if (error != null) {
             TerminalDiagnostics.recordFailure(TAG, "session failed to start handle=$handle", error)
+            DeveloperLogger.error(
+                DeveloperLogCategory.ERROR,
+                "process start failure handle=$handle pid=$pid",
+                error,
+            )
+            if (error.message.orEmpty().contains("EIO", ignoreCase = true)) {
+                DeveloperLogger.error(DeveloperLogCategory.PTY, "PTY EIO handle=$handle")
+            }
         } else {
             TerminalDiagnostics.record(
                 TAG,
                 "session failed to start handle=$handle pid=$pid reason=$reason",
             )
+            DeveloperLogger.error(
+                DeveloperLogCategory.ERROR,
+                "process start failure handle=$handle pid=$pid reason=$reason",
+            )
         }
+        state
         // The shell is not coming up, so nothing may be left attached to the pty.
         runCatching { delegate.finishIfRunning() }
         armStopTimeout()
@@ -192,7 +233,12 @@ class TerminalSessionAdapter(
         // failure like any other instead.
         runCatching { delegate.updateSize(columns, rows, cellWidthPixels, cellHeightPixels) }
             .onFailure { error ->
-                fail(error.message?.takeIf { it.isNotBlank() } ?: error.javaClass.simpleName, delegate.pid, null)
+                fail(
+                    error.message?.takeIf { it.isNotBlank() } ?: error.javaClass.simpleName,
+                    delegate.pid,
+                    null,
+                    error,
+                )
             }
     }
 
@@ -214,12 +260,15 @@ class TerminalSessionAdapter(
         synchronized(lock) {
             stopping = true
         }
+        state
+        DeveloperLogger.info(DeveloperLogCategory.PTY, "PTY close handle=$handle pid=$pid")
         runCatching { delegate.finishIfRunning() }
 
         // A session that never produced a pid has no waiter thread and therefore no exit callback
         // coming, so there is nothing to wait for.
         if (pid <= 0) {
             forcedStopped = true
+            state
             release()
             return
         }

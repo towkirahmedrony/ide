@@ -86,6 +86,17 @@ class TermuxSessionClient(
     }
 
     override fun onSessionFinished(finishedSession: TerminalSession) {
+        DeveloperLogger.info(
+            DeveloperLogCategory.PTY,
+            "PTY close handle=${finishedSession.mHandle} pid=${finishedSession.pid} exit=${finishedSession.exitStatus}",
+        )
+        if (finishedSession.exitStatus == 129) {
+            DeveloperLogger.info(DeveloperLogCategory.PTY, "PTY EOF handle=${finishedSession.mHandle}")
+        }
+        DeveloperLogger.info(
+            DeveloperLogCategory.PROCESS,
+            "process exit handle=${finishedSession.mHandle} exit code=${finishedSession.exitStatus}",
+        )
         hostProvider()?.onSessionFinished(finishedSession)
     }
 
@@ -110,6 +121,7 @@ class TermuxSessionClient(
     }
 
     override fun setTerminalShellPid(session: TerminalSession, pid: Int) {
+        DeveloperLogger.info(DeveloperLogCategory.PROCESS, "PID=$pid handle=${session.mHandle}")
         hostProvider()?.onShellPid(session, pid)
     }
 
@@ -119,10 +131,15 @@ class TermuxSessionClient(
     // have to be block bodies; an expression body would infer Int and fail to override.
     override fun logError(tag: String, message: String) {
         Log.e(tag, message)
+        DeveloperLogger.error(DeveloperLogCategory.ERROR, "$tag: $message")
+        if (message.contains("EIO", ignoreCase = true)) {
+            DeveloperLogger.error(DeveloperLogCategory.PTY, "PTY EIO $tag: $message")
+        }
     }
 
     override fun logWarn(tag: String, message: String) {
         Log.w(tag, message)
+        DeveloperLogger.warn(DeveloperLogCategory.TERMINAL, "$tag: $message")
     }
 
     override fun logInfo(tag: String, message: String) {
@@ -139,10 +156,12 @@ class TermuxSessionClient(
 
     override fun logStackTraceWithMessage(tag: String, message: String, e: Exception) {
         Log.e(tag, message, e)
+        DeveloperLogger.error(DeveloperLogCategory.ERROR, "$tag: $message", e)
     }
 
     override fun logStackTrace(tag: String, e: Exception) {
         Log.e(tag, "", e)
+        DeveloperLogger.error(DeveloperLogCategory.ERROR, tag, e)
     }
 }
 
