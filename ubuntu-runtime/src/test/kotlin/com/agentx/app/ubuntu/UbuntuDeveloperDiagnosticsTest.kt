@@ -42,7 +42,7 @@ class UbuntuDeveloperDiagnosticsTest {
         )
         File(layout.rootfs).mkdirs()
         File(layout.guestShell).apply { parentFile?.mkdirs(); writeText("bash") }
-        File(layout.guestOsRelease).writeText("NAME=Ubuntu\nVERSION=24.04\n")
+        File(layout.guestOsRelease).apply { parentFile?.mkdirs(); writeText("NAME=Ubuntu\nVERSION=24.04\n") }
         File(layout.rootfs, "usr").mkdirs()
         File(layout.rootfs, "var").mkdirs()
         File(layout.rootfs, "home").mkdirs()
