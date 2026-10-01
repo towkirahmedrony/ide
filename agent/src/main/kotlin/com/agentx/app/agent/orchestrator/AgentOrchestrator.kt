@@ -18,6 +18,7 @@ import com.agentx.app.agent.domain.SubAgentRequest
 import com.agentx.app.agent.domain.SubAgentResult
 import com.agentx.app.agent.main.MainAgent
 import com.agentx.app.agent.main.MainAgentRequest
+import com.agentx.app.agent.model.AgentModelResolver
 import com.agentx.app.agent.prompt.PromptVariables
 import com.agentx.app.agent.runtime.AgentIds
 import com.agentx.app.agent.runtime.ConversationalTurn
@@ -84,6 +85,12 @@ class DefaultAgentOrchestrator(
      * not a short global timeout.
      */
     private val timeouts: AgentTimeouts = AgentTimeouts.DEFAULT,
+    /**
+     * Resolves each role's [ModelConfig] from the active model and the role
+     * mapping. The default resolves every role to the active model, so an
+     * orchestrator without an explicit resolver behaves exactly as before.
+     */
+    private val modelResolver: AgentModelResolver = AgentModelResolver(),
     private val clock: () -> Long = { System.currentTimeMillis() },
     private val logger: ForgeLogger = ForgeLoggers.create(LogLevel.INFO, baseFields = mapOf("layer" to "orchestrator")),
 ) : AgentOrchestrator {
@@ -137,6 +144,9 @@ class DefaultAgentOrchestrator(
         )
         val title = existing?.title?.takeIf { !SessionTitle.isPlaceholder(it) }
             ?: SessionTitle.derive(request.prompt)
+        // MAIN resolves its own model from the active configuration and the role
+        // mapping; the loop and the session metadata then agree on one config.
+        val mainConfig = modelResolver.resolve(mainAgent.definition, modelConfig)
         val session = AgentSession(
             id = sessionId,
             parentSessionId = existing?.parentSessionId,
@@ -149,8 +159,8 @@ class DefaultAgentOrchestrator(
             updatedAtMillis = now,
             workspaceId = request.workspaceId ?: existing?.workspaceId,
             title = title,
-            modelProviderId = modelConfig.providerId,
-            modelId = modelConfig.model,
+            modelProviderId = mainConfig.providerId,
+            modelId = mainConfig.model,
         )
         sessions.save(session)
         history?.ensureSession(
@@ -158,8 +168,8 @@ class DefaultAgentOrchestrator(
             workspaceId = session.workspaceId,
             role = session.role,
             parentSessionId = session.parentSessionId,
-            modelProviderId = modelConfig.providerId,
-            modelId = modelConfig.model,
+            modelProviderId = mainConfig.providerId,
+            modelId = mainConfig.model,
             prompt = request.prompt,
         )
         history?.markStatus(sessionId, AgentStatus.RUNNING)
@@ -192,7 +202,7 @@ class DefaultAgentOrchestrator(
                         sessionId = sessionId,
                         task = task,
                         context = assembled,
-                        modelConfig = modelConfig,
+                        modelConfig = mainConfig,
                         contextBudget = request.contextBudget,
                         promptVariables = variables,
                         requiresWorkspace = requiresWorkspace,
@@ -288,6 +298,7 @@ class DefaultAgentOrchestrator(
         if (session.status != AgentStatus.WAITING_FOR_PERMISSION) return null
 
         val modelConfig = paused.modelConfig
+        val mainConfig = modelResolver.resolve(mainAgent.definition, modelConfig)
         sessions.update(sessionId) { it.withStatus(AgentStatus.RUNNING, clock()) }
         val job = coroutineContext[Job]
         if (job != null) jobs[sessionId] = job
@@ -299,7 +310,7 @@ class DefaultAgentOrchestrator(
                         sessionId = sessionId,
                         task = session.task,
                         context = paused.context,
-                        modelConfig = modelConfig,
+                        modelConfig = mainConfig,
                         contextBudget = paused.contextBudget,
                         resumeContext = paused.resumeContext,
                         resumePermission = ResumedPermission(
@@ -417,6 +428,10 @@ class DefaultAgentOrchestrator(
         onCancelled: () -> Boolean,
     ): SubAgentResult {
         val now = clock()
+        // Each child role resolves its own config from the active model and the
+        // role mapping before it is invoked; the session records the same one.
+        val agent = specialized.get(request.role)
+        val childConfig = agent?.let { modelResolver.resolve(it.definition, modelConfig) } ?: modelConfig
         sessions.save(
             AgentSession(
                 id = request.sessionId,
@@ -433,8 +448,8 @@ class DefaultAgentOrchestrator(
                 updatedAtMillis = now,
                 workspaceId = request.workspaceId,
                 title = SessionTitle.derive(request.task),
-                modelProviderId = modelConfig.providerId,
-                modelId = modelConfig.model,
+                modelProviderId = childConfig.providerId,
+                modelId = childConfig.model,
             ),
         )
         history?.ensureSession(
@@ -442,8 +457,8 @@ class DefaultAgentOrchestrator(
             workspaceId = request.workspaceId,
             role = request.role,
             parentSessionId = request.parentSessionId,
-            modelProviderId = modelConfig.providerId,
-            modelId = modelConfig.model,
+            modelProviderId = childConfig.providerId,
+            modelId = childConfig.model,
             prompt = request.task,
         )
         history?.recordUser(request.sessionId, request.task)
@@ -457,7 +472,6 @@ class DefaultAgentOrchestrator(
         )
         sessions.update(request.parentSessionId) { it.withStatus(AgentStatus.WAITING_FOR_SUBAGENT, clock()) }
 
-        val agent = specialized.get(request.role)
         val result = if (agent == null) {
             unknownSubAgent(request)
         } else {
@@ -466,7 +480,7 @@ class DefaultAgentOrchestrator(
                 // task is not cut short by the Main Agent's remaining time.
                 coroutineScope {
                     withExecutionBudget(timeouts.subAgentTaskMillis) {
-                        agent.run(request, modelConfig, sink, onCancelled)
+                        agent.run(request, childConfig, sink, onCancelled)
                     }
                 }
             } catch (timeout: TimeoutCancellationException) {

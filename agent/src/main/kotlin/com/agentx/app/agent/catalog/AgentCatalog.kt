@@ -3,6 +3,7 @@ package com.agentx.app.agent.catalog
 import com.agentx.app.agent.domain.AgentDefinition
 import com.agentx.app.agent.domain.AgentRole
 import com.agentx.app.agent.domain.PermissionLevel
+import com.agentx.app.agent.model.AgentModelIds
 import com.agentx.app.agent.prompt.DefaultAgentPrompts
 import com.agentx.app.agent.protocol.AgentProtocol
 import com.agentx.app.tools.filesystem.ListDirectoryTool
@@ -38,6 +39,7 @@ object AgentCatalog {
         permissionLevel = PermissionLevel.WORKSPACE_WRITE,
         isReadOnly = false,
         maxSteps = DEFAULT_MAIN_MAX_STEPS,
+        modelPreference = AgentModelIds.GEMINI,
     )
 
     val EXPLORER: AgentDefinition = AgentDefinition(
@@ -52,6 +54,7 @@ object AgentCatalog {
         permissionLevel = PermissionLevel.READ_ONLY,
         isReadOnly = true,
         maxSteps = DEFAULT_SUB_MAX_STEPS,
+        modelPreference = AgentModelIds.GROQ,
     )
 
     val RESEARCHER: AgentDefinition = AgentDefinition(
@@ -62,6 +65,7 @@ object AgentCatalog {
         permissionLevel = PermissionLevel.NETWORK,
         isReadOnly = true,
         maxSteps = DEFAULT_SUB_MAX_STEPS,
+        modelPreference = AgentModelIds.GEMINI,
     )
 
     val CODER: AgentDefinition = AgentDefinition(
@@ -72,6 +76,7 @@ object AgentCatalog {
         permissionLevel = PermissionLevel.WORKSPACE_WRITE,
         isReadOnly = false,
         maxSteps = DEFAULT_SUB_MAX_STEPS,
+        modelPreference = AgentModelIds.QWEN_CODER,
     )
 
     val DEBUGGER: AgentDefinition = AgentDefinition(
@@ -82,6 +87,7 @@ object AgentCatalog {
         permissionLevel = PermissionLevel.COMMAND_EXECUTION,
         isReadOnly = false,
         maxSteps = DEFAULT_SUB_MAX_STEPS,
+        modelPreference = AgentModelIds.QWEN_CODER,
     )
 
     val REVIEWER: AgentDefinition = AgentDefinition(
@@ -92,6 +98,7 @@ object AgentCatalog {
         permissionLevel = PermissionLevel.READ_ONLY,
         isReadOnly = true,
         maxSteps = DEFAULT_SUB_MAX_STEPS,
+        modelPreference = AgentModelIds.GROQ,
     )
 
     val TESTER: AgentDefinition = AgentDefinition(
@@ -102,6 +109,7 @@ object AgentCatalog {
         permissionLevel = PermissionLevel.COMMAND_EXECUTION,
         isReadOnly = false,
         maxSteps = DEFAULT_SUB_MAX_STEPS,
+        modelPreference = AgentModelIds.GROQ,
     )
 
     fun all(): List<AgentDefinition> = listOf(MAIN, EXPLORER, RESEARCHER, CODER, DEBUGGER, REVIEWER, TESTER)

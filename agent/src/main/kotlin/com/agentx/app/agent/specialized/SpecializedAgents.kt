@@ -56,7 +56,6 @@ class DefaultSpecializedAgent(
         }
         val allowed = bridge.filterAllowed(requestedTools, permission)
         val maxSteps = (request.maxSteps ?: definition.maxSteps).coerceAtLeast(1)
-        val preferredConfig = request.modelPreferenceConfig(modelConfig, definition)
 
         val result = loop.run(
             request = AgentLoopRequest(
@@ -70,7 +69,7 @@ class DefaultSpecializedAgent(
                 objective = request.objective,
                 scopedContext = request.scopedContext,
                 workspaceId = request.workspaceId,
-                modelConfig = preferredConfig,
+                modelConfig = modelConfig,
                 promptVariables = request.promptVariables,
             ),
             sink = sink,
@@ -109,14 +108,6 @@ class SpecializedAgentFactory(
     fun createAll(): SpecializedAgentRegistry = SpecializedAgentRegistry(
         AgentRole.entries.filter { it != AgentRole.MAIN }.map(::create),
     )
-}
-
-private fun SubAgentRequest.modelPreferenceConfig(
-    base: ModelConfig,
-    definition: AgentDefinition,
-): ModelConfig {
-    val preference = definition.modelPreference
-    return if (preference.isNullOrBlank()) base else base.copy(model = preference)
 }
 
 fun unknownSubAgent(request: SubAgentRequest): SubAgentResult = SubAgentResult(

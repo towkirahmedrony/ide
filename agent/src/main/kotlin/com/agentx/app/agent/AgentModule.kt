@@ -4,6 +4,8 @@ import com.agentx.app.agent.conversation.ConversationHistory
 import com.agentx.app.agent.conversation.ConversationStore
 import com.agentx.app.agent.conversation.InMemoryConversationStore
 import com.agentx.app.agent.main.MainAgent
+import com.agentx.app.agent.model.AgentModelPreferences
+import com.agentx.app.agent.model.AgentModelResolver
 import com.agentx.app.agent.orchestrator.AgentOrchestrator
 import com.agentx.app.agent.orchestrator.AgentSessionStore
 import com.agentx.app.agent.orchestrator.DefaultAgentOrchestrator
@@ -68,6 +70,9 @@ class AgentModule(
             skillContext = skillContext,
             sessions = sessionStore,
             conversations = conversationStore,
+            // The app boots with the target role → model mapping in place; every
+            // role falls back to the active model until its provider is connected.
+            modelResolver = AgentModelResolver(AgentModelPreferences.DEFAULT),
         )
         context.services.register(ServiceKeys.AGENT_ORCHESTRATOR, assembled.orchestrator)
         context.services.register(ServiceKeys.AGENT_REGISTRY, assembled.specialized)
@@ -93,6 +98,7 @@ class AgentModule(
             skillContext: SkillContextResolver? = null,
             sessions: AgentSessionStore = InMemoryAgentSessionStore(),
             conversations: ConversationStore = InMemoryConversationStore(),
+            modelResolver: AgentModelResolver = AgentModelResolver(),
         ): AgentRuntime {
             val engine = contextEngine ?: DefaultContextEngine()
             val bridge = AgentToolBridge(registry)
@@ -119,6 +125,7 @@ class AgentModule(
                 contextEngine = engine,
                 history = history,
                 timeouts = timeouts,
+                modelResolver = modelResolver,
             )
             return AgentRuntime(
                 orchestrator = orchestrator,
