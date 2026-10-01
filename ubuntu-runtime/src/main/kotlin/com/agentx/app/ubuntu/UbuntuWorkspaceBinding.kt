@@ -15,7 +15,7 @@ sealed interface UbuntuProjectBinding {
     /** The guest directory a shell should start in. */
     val guestPath: String
 
-    data class Direct(val hostPath: String) : UbuntuProjectBinding {
+    data class Direct(override val hostPath: String) : UbuntuProjectBinding {
         override val guestPath: String get() = ProotCommand.GUEST_PROJECT_ROOT
     }
 
