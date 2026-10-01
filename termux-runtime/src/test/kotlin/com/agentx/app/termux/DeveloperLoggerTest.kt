@@ -19,7 +19,7 @@ class DeveloperLoggerTest {
             mkdirs()
         }
         logFile = File(directory, "diagnostics/terminal.log")
-        DeveloperLogger.attach(logFile, maxBytes = 2048)
+        DeveloperLogger.attach(logFile)
         DeveloperLogger.clear()
     }
 
@@ -91,6 +91,7 @@ class DeveloperLoggerTest {
 
     @Test
     fun `file rotates when it exceeds the bound`() {
+        DeveloperLogger.attach(logFile, maxBytes = 2048)
         val payload = "x".repeat(200)
         repeat(30) { index ->
             DeveloperLogger.info(DeveloperLogCategory.OUTPUT, "line-$index $payload")

@@ -113,7 +113,7 @@ fun DeveloperLogsScreen(
             }
             OutlinedTextField(
                 value = viewModel.query,
-                onValueChange = viewModel::setQuery,
+                onValueChange = viewModel::updateQuery,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 8.dp),
@@ -130,7 +130,7 @@ fun DeveloperLogsScreen(
                 DeveloperLogFilter.entries.forEach { item ->
                     FilterChip(
                         selected = viewModel.filter == item,
-                        onClick = { viewModel.setFilter(item) },
+                        onClick = { viewModel.updateFilter(item) },
                         label = { Text(item.label) },
                         colors = FilterChipDefaults.filterChipColors(
                             selectedContainerColor = ForgeMint.copy(alpha = 0.18f),

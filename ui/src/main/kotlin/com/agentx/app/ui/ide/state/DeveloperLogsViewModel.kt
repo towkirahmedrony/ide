@@ -41,11 +41,11 @@ class DeveloperLogsViewModel(
     var autoScroll by mutableStateOf(true)
         private set
 
-    fun setFilter(value: DeveloperLogFilter) {
+    fun updateFilter(value: DeveloperLogFilter) {
         filter = value
     }
 
-    fun setQuery(value: String) {
+    fun updateQuery(value: String) {
         query = value
     }
 

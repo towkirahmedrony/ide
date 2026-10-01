@@ -33,8 +33,8 @@ class DeveloperLogsViewModelTest {
             deviceAbi = { "arm64-v8a" },
         )
         val stored = DeveloperLogger.readAll()
-        viewModel.setFilter(DeveloperLogFilter.ERROR)
-        viewModel.setQuery("127")
+        viewModel.updateFilter(DeveloperLogFilter.ERROR)
+        viewModel.updateQuery("127")
         val visible = viewModel.displayed(viewModel.lines.value)
         assertEquals(1, visible.size)
         assertEquals(stored, DeveloperLogger.readAll())
