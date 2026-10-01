@@ -356,7 +356,13 @@ class ModelSetupFormTest {
         )
 
         val roles = ModelDetailPresentation.assignedRoles(preset) { role ->
-            selections.getValue(role)
+            selections[role] ?: RoleModelSelection(
+                role = role,
+                providerId = null,
+                model = null,
+                connectionId = null,
+                explicit = false,
+            )
         }
 
         assertEquals(listOf(AgentRole.MAIN), roles)
