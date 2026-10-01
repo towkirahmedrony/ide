@@ -1,5 +1,7 @@
 package com.agentx.app.ui.ide
 
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Memory
@@ -23,6 +25,7 @@ import com.agentx.app.agent.domain.AgentRole
 import com.agentx.app.core.architecture.LayerDescriptor
 import com.agentx.app.core.health.HealthReport
 import com.agentx.app.integrations.connection.ConnectionType
+import com.agentx.app.ui.ide.components.DeveloperLogsButton
 import com.agentx.app.ui.ide.components.IdeEmptyState
 import com.agentx.app.ui.ide.components.IdeTopBar
 import com.agentx.app.ui.ide.nav.IdeDestinations
@@ -99,10 +102,13 @@ fun ForgeIdeApp(
         )
     }
 
+    // The logs shortcut floats above the whole graph, so every screen has it
+    // without each screen having to render it itself.
+    Box(modifier = modifier.fillMaxSize()) {
     NavHost(
         navController = navController,
         startDestination = IdeDestinations.HOME,
-        modifier = modifier,
+        modifier = Modifier.fillMaxSize(),
     ) {
         composable(IdeDestinations.HOME) {
             val homeViewModel: HomeViewModel = viewModel(
@@ -526,5 +532,12 @@ fun ForgeIdeApp(
                 onBack = { navController.popBackStack() },
             )
         }
+    }
+
+        DeveloperLogsButton(
+            onClick = {
+                navController.navigate(IdeDestinations.DEVELOPER_LOGS) { launchSingleTop = true }
+            },
+        )
     }
 }
