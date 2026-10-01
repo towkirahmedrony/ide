@@ -38,7 +38,7 @@ references `TermuxBootstrapCatalog`, `TermuxBootstrapInstaller`, `TermuxPrefixPo
 | `NativeRuntime.kt` | `NativeRuntimeLayout` (nativeLibraryDir + app-private runtime storage, the verification marker and the workspaces directory) and the native library probe. |
 | `ProotCommand.kt` | The `proot -0 -l -r <rootfs> -b … -w … <cmd>` builder, the extraction invocation, bind mounts and `PROOT_LOADER`/`PROOT_L2S_DIR`/`PROOT_TMP_DIR`. |
 | `UbuntuRootfsCatalog.kt` | The pinned Ubuntu Base arm64 entry (URL, SHA-256, size), the required guest files, the required **hard links**, the toolchain package list and the platform tar path. |
-| `UbuntuRootfsInstaller.kt` | Download → SHA-256 → PRoot extraction → validation (files **and** hard-link relationships) → apt/resolv configuration → activation → marker, plus `repairIncompleteInstallation()`. |
+| `UbuntuRootfsInstaller.kt` | Download → SHA-256 → PRoot extraction → validation (files **and** hard-link relationships) → apt/resolv configuration → activation. The install marker is written later by `LocalUbuntuRuntime` after guest probes pass. Also `repairIncompleteInstallation()`. |
 | `UbuntuRuntimeVerifier.kt` | Runs the installed rootfs *through PRoot* and only then lets it become READY. |
 | `UbuntuEnvironment.kt` | The guest `HOME`/`USER`/`PATH`/`TERM`/`TMPDIR`/`AGENTX_RUNTIME` environment, with credential filtering. |
 | `UbuntuWorkspaceBinding.kt` | How a project is bind-mounted (or why it is not). |
@@ -95,11 +95,13 @@ temporary extraction (rootfs-staging)
   ↓
 rootfs validation (required files + hard-link relationships)
   ↓
-apt / resolv / markers configuration
+apt / resolv configuration
   ↓
 atomic activation (rename staging → rootfs)
   ↓
 guest verification through PRoot
+  ↓
+install marker
   ↓
 READY
 ```
@@ -231,8 +233,9 @@ through PRoot.
 
 Because a device may hold a partially extracted rootfs from an earlier attempt,
 `UbuntuRootfsInstaller.repairIncompleteInstallation()` runs at the start of every provisioning: it
-deletes `rootfs-staging`, deletes a `rootfs` that has no install marker (never a complete one),
-and clears the verification marker when it removed anything. The downloaded archive and the
+deletes `rootfs-staging` and deletes a `rootfs` that is missing required guest files. A complete
+extracted tree without the install marker is kept and re-verified through PRoot (the marker is
+written only after `/bin/sh` and `/bin/bash` answer). The downloaded archive and the
 link-to-symlink store are preserved. The user never has to delete app-internal files by hand.
 
 ## Legacy bootstrap
@@ -262,8 +265,10 @@ Verified here, by executing it:
   what the platform tar uses.
 
 The Kotlin is unit tested in CI (`:ubuntu-runtime:test` — catalog, PRoot command line including the
-extraction invocation, environment, bindings, native layout and the guest-probe verifier). The APK
-is built in CI, and the native binaries are cross-compiled and verified in CI.
+extraction invocation and `proot -V`, environment, bindings, native layout, PRoot self-test and
+the guest-probe verifier). The APK workflow builds PRoot from pinned upstream with the NDK,
+vendors `jniLibs/arm64-v8a/`, assembles the APK, and fails if `libproot.so` /
+`libproot_loader.so` / `libandroid-shmem.so` are missing from `lib/arm64-v8a/`.
 
 **Still open, and it must not be described as working until it passes** — the on-device checklist:
 

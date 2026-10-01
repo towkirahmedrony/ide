@@ -37,7 +37,8 @@ class NativeRuntimeTest {
         val probe = NativeRuntimeProbe.probe(layout) { false }
         assertFalse(probe.ready)
         assertEquals(NativeRuntimeLayout.REQUIRED_LIBRARIES.size, probe.missing.size)
-        assertTrue(probe.summary.contains("Missing"))
+        assertTrue(probe.summary.contains("missing from this APK"), probe.summary)
+        assertTrue(probe.summary.contains("libproot.so"), probe.summary)
     }
 
     @Test

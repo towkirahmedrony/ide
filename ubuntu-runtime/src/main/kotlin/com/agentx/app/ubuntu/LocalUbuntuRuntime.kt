@@ -56,6 +56,10 @@ class LocalUbuntuRuntime(
         exists = { path -> File(path).let { it.isFile && it.canExecute() } },
     )
 
+    private fun nativeExists(path: String): Boolean = File(path).isFile
+
+    private fun nativeExecutable(path: String): Boolean = File(path).let { it.isFile && it.canExecute() }
+
     private val installer = UbuntuRootfsInstaller(
         layout = layout,
         supportedAbis = android.os.Build.SUPPORTED_ABIS?.toList().orEmpty(),
@@ -83,15 +87,20 @@ class LocalUbuntuRuntime(
     fun isReady(): Boolean =
         installer.isInstalled() && nativeProbe.ready && File(layout.verificationMarker).isFile
 
-    /** True when the rootfs itself is not installed yet and must be downloaded. */
-    fun needsInstall(): Boolean = !installer.isInstalled()
+    /** True when the rootfs itself is not on disk yet and must be downloaded. */
+    fun needsInstall(): Boolean = !installer.isInstalled() && !installer.hasExtractedRootfs()
 
     /** Re-reads install state, e.g. after returning to the screen. */
     fun refresh() {
         statusFlow.value = when {
+            !nativeProbe.ready -> RuntimeStatus(
+                state = AgentxRuntimeState.ERROR,
+                stage = UbuntuInstallStage.RUNTIME,
+                message = nativeProbe.summary,
+            )
             isReady() -> RuntimeStatus.Ready
             statusFlow.value.isBusy -> statusFlow.value
-            installer.isInstalled() -> unverifiedStatus()
+            installer.isInstalled() || installer.hasExtractedRootfs() -> unverifiedStatus()
             else -> RuntimeStatus.NotInstalled
         }
     }
@@ -115,18 +124,28 @@ class LocalUbuntuRuntime(
             inFlight = signal
             scope.launch {
                 val settled = try {
-                    val result = withContext(ioDispatcher) {
-                        installer.provision { state -> statusFlow.value = state }
+                    val native = withContext(ioDispatcher) { selfTestNativeRuntime() }
+                    if (!native.ok) {
+                        statusFlow.value = RuntimeStatus(
+                            state = AgentxRuntimeState.ERROR,
+                            stage = UbuntuInstallStage.RUNTIME,
+                            message = native.summary,
+                        )
+                        statusFlow.value
+                    } else {
+                        val result = withContext(ioDispatcher) {
+                            installer.provision { state -> statusFlow.value = state }
+                        }
+                        when (result) {
+                            is UbuntuInstallResult.Unavailable -> Log.w(TAG, result.reason)
+                            is UbuntuInstallResult.Failed -> Log.w(TAG, "[${result.stage.wireName}] ${result.message}")
+                            is UbuntuInstallResult.AlreadyInstalled, is UbuntuInstallResult.Installed -> Unit
+                        }
+                        val installed = result is UbuntuInstallResult.AlreadyInstalled ||
+                            result is UbuntuInstallResult.Installed
+                        if (installed) verifyRootfs()
+                        statusFlow.value
                     }
-                    when (result) {
-                        is UbuntuInstallResult.Unavailable -> Log.w(TAG, result.reason)
-                        is UbuntuInstallResult.Failed -> Log.w(TAG, "[${result.stage.wireName}] ${result.message}")
-                        is UbuntuInstallResult.AlreadyInstalled, is UbuntuInstallResult.Installed -> Unit
-                    }
-                    val installed = result is UbuntuInstallResult.AlreadyInstalled ||
-                        result is UbuntuInstallResult.Installed
-                    if (installed) verifyRootfs()
-                    statusFlow.value
                 } catch (failure: Throwable) {
                     val status = RuntimeStatus(
                         state = AgentxRuntimeState.ERROR,
@@ -180,10 +199,12 @@ class LocalUbuntuRuntime(
         val verification = withContext(ioDispatcher) { verifier.verify() }
         if (verification.ok) {
             markVerified()
+            installer.writeInstallMarker()
             statusFlow.value = RuntimeStatus.Ready
             Log.i(TAG, verification.summary)
         } else {
             clearVerified()
+            installer.clearInstallMarker()
             statusFlow.value = RuntimeStatus(
                 state = AgentxRuntimeState.ERROR,
                 stage = UbuntuInstallStage.RUNTIME,
@@ -210,18 +231,74 @@ class LocalUbuntuRuntime(
     private var inFlight: CompletableDeferred<RuntimeStatus>? = null
 
     private fun initialStatus(): RuntimeStatus = when {
+        !nativeProbe.ready -> RuntimeStatus(
+            state = AgentxRuntimeState.ERROR,
+            stage = UbuntuInstallStage.RUNTIME,
+            message = nativeProbe.summary,
+        )
         isReady() -> RuntimeStatus.Ready
-        installer.isInstalled() -> unverifiedStatus()
+        installer.isInstalled() || installer.hasExtractedRootfs() -> unverifiedStatus()
         else -> RuntimeStatus.NotInstalled
     }
 
-    /** An installed rootfs that has not been through [UbuntuRuntimeVerifier] yet. */
-    private fun unverifiedStatus(): RuntimeStatus = RuntimeStatus(
-        state = AgentxRuntimeState.ERROR,
-        stage = UbuntuInstallStage.RUNTIME,
-        message = "The Ubuntu rootfs is installed but has not passed its PRoot verification. " +
-            "Install the runtime again to verify it; nothing is downloaded the second time.",
-    )
+    /**
+     * Proves PRoot and its loader exist in [NativeRuntimeLayout.nativeLibraryDir] and can start.
+     *
+     * This is the gate in front of Ubuntu download/extraction. A missing APK native library is
+     * never treated as a missing rootfs.
+     */
+    private fun selfTestNativeRuntime(): ProotSelfTestResult {
+        installer.ensureRuntimeDirectories()
+        Log.i(TAG, "nativeLibraryDir=${layout.nativeLibraryDir}")
+        Log.i(TAG, "PROOT_LOADER=${layout.loader}")
+        val listing = File(layout.nativeLibraryDir).listFiles()?.joinToString { it.name } ?: "(unreadable)"
+        Log.i(TAG, "nativeLibraryDir contents: $listing")
+        val result = ProotSelfTest.run(
+            layout = layout,
+            exists = ::nativeExists,
+            canExecute = ::nativeExecutable,
+            starter = ::runHostProot,
+        )
+        if (result.ok) {
+            Log.i(TAG, result.summary)
+            result.versionOutput?.let { Log.i(TAG, "PRoot -V: ${it.take(300)}") }
+        } else {
+            Log.w(TAG, result.summary)
+        }
+        return result
+    }
+
+    private fun runHostProot(invocation: ProotInvocation): Pair<Int, String> {
+        val builder = ProcessBuilder(invocation.processCommand).redirectErrorStream(true)
+        for ((name, value) in invocation.environment) {
+            builder.environment()[name] = value
+        }
+        val process = builder.start()
+        val output = process.inputStream.bufferedReader().readText()
+        val exited = process.waitFor(15, TimeUnit.SECONDS)
+        if (!exited) {
+            process.destroyForcibly()
+            process.waitFor(2, TimeUnit.SECONDS)
+            return -1 to output
+        }
+        return process.exitValue() to output
+    }
+
+    private fun unverifiedStatus(): RuntimeStatus {
+        if (!nativeProbe.ready) {
+            return RuntimeStatus(
+                state = AgentxRuntimeState.ERROR,
+                stage = UbuntuInstallStage.RUNTIME,
+                message = nativeProbe.summary,
+            )
+        }
+        return RuntimeStatus(
+            state = AgentxRuntimeState.ERROR,
+            stage = UbuntuInstallStage.RUNTIME,
+            message = "The Ubuntu rootfs is installed but has not passed its PRoot verification. " +
+                "Install the runtime again to verify it; nothing is downloaded the second time.",
+        )
+    }
 
     /**
      * Prepares a project for the guest.

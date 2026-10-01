@@ -14,21 +14,21 @@ requires no Android root, no Magisk and no system modification.
 | License | GPL-2.0-or-later — full text in [`licenses/LICENSE-GPL-2.0.txt`](licenses/LICENSE-GPL-2.0.txt) |
 
 The revision is pinned in `tools/ubuntu-runtime/build-proot.sh` and recorded again in
-[`upstream-revision.txt`](upstream-revision.txt). The binaries are **built from that source** by
-`.github/workflows/build-native-runtime.yml` with the Android NDK; no prebuilt binary from an
-unknown origin is committed or downloaded.
+`upstream-revision.txt`. The binaries are **built from that source** by
+`.github/workflows/android-build.yml` with the Android NDK and packaged into the APK as
+`lib/arm64-v8a/*.so`. No prebuilt binary from an unknown origin is committed or downloaded.
 
 ## What is used
 
 | Artifact (in `nativeLibraryDir`) | Built from | Purpose |
 | --- | --- | --- |
 | `libproot.so` | `termux/proot` `src/proot` | The runtime that sets up the guest root and starts the guest program. |
-| `libproot_loader.so` | `termux/proot` `loader/loader` | The ELF interposer every guest binary is run through; referenced by `PROOT_LOADER`. |
+| `libproot_loader.so` | `termux/proot` `src/loader/loader` | The ELF interposer every guest binary is run through; referenced by `PROOT_LOADER`. |
+| `libandroid-shmem.so` | `termux/libandroid-shmem` | Shared-memory emulation PRoot needs on Android. |
 
-`libtalloc.so` (talloc, LGPL-3.0-or-later, <https://talloc.samba.org/>) and
-`libandroid-shmem.so` (<https://github.com/termux/libandroid-shmem>, MIT) are PRoot's
-dependencies and are produced by the same build script; they are listed here so their licenses
-travel with the runtime.
+`libtalloc.so` (talloc, LGPL-3.0-or-later, https://talloc.samba.org/) is optional: talloc is
+linked statically into `libproot.so` when possible. All three dependencies are produced by
+`tools/ubuntu-runtime/build-proot.sh`.
 
 ## GPL obligations
 

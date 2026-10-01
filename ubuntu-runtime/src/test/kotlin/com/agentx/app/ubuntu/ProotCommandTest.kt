@@ -38,6 +38,15 @@ class ProotCommandTest {
     }
 
     @Test
+    fun `version starts packaged PRoot from nativeLibraryDir with PROOT_LOADER`() {
+        val invocation = ProotCommand.version(layout)
+        assertEquals("${layout.nativeLibraryDir}/libproot.so", invocation.executable)
+        assertEquals(listOf("proot", "-V"), invocation.arguments)
+        assertEquals("${layout.nativeLibraryDir}/libproot_loader.so", invocation.environment["PROOT_LOADER"])
+        assertFalse(invocation.arguments.contains("-r"))
+    }
+
+    @Test
     fun `the loader, l2s and tmp directories are exported`() {
         val invocation = ProotCommand.build(
             layout = layout,

@@ -72,7 +72,7 @@ data class NativeRuntimeLayout(
      */
     val workspaces: String get() = "$runtimeDir/$WORKSPACES_DIR"
 
-    /** Install marker, written only after the extracted tree has been validated. */
+    /** Install marker, written only after PRoot guest probes (`/bin/sh`, `/bin/bash`) pass. */
     val marker: String get() = "$rootfs/$MARKER_PATH"
 
     /**
@@ -165,11 +165,20 @@ data class NativeRuntimeProbe(
         get() = if (ready) {
             "Native runtime present: ${present.joinToString()}"
         } else {
-            "Native runtime is incomplete in nativeLibraryDir. Missing: ${missing.joinToString()}. " +
-                "Present: ${present.ifEmpty { listOf("(none)") }.joinToString()}."
+            MISSING_APK_MESSAGE +
+                " nativeLibraryDir is missing ${missing.joinToString()}." +
+                " Present: ${present.ifEmpty { listOf("(none)") }.joinToString()}."
         }
 
     companion object {
+        /**
+         * Shown when the APK was built without the ARM64 PRoot libraries. This is a packaging
+         * failure, not a missing Ubuntu rootfs — do not download another rootfs to "fix" it.
+         */
+        const val MISSING_APK_MESSAGE: String =
+            "AgentX native runtime is missing from this APK. " +
+                "Rebuild/reinstall the APK with ARM64 PRoot native libraries."
+
         /** Probes [layout] using [exists] (a file predicate) for each required and optional library. */
         fun probe(
             layout: NativeRuntimeLayout,

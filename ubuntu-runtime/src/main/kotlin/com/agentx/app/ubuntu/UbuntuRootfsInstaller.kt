@@ -66,9 +66,10 @@ interface UbuntuTar {
  * Downloads, verifies, extracts and validates the Ubuntu ARM64 rootfs.
  *
  * The order is fixed and there is no way to skip a step:
- * download → SHA-256 → extract → validate required files → configure → activate → marker.
- * A checksum mismatch deletes the archive and aborts; the marker is only written after the
- * extracted tree has been proven to contain a shell, `apt` and `dpkg`.
+ * download → SHA-256 → extract → validate required files → configure → activate.
+ * Native PRoot in `nativeLibraryDir` is required before any download. A checksum mismatch
+ * deletes the archive and aborts. The install marker is written by [LocalUbuntuRuntime]
+ * only after PRoot has started `/bin/sh` and `/bin/bash` in the guest.
  */
 class UbuntuRootfsInstaller(
     private val layout: NativeRuntimeLayout,
@@ -83,10 +84,16 @@ class UbuntuRootfsInstaller(
 
     fun isInstalled(): Boolean {
         if (!files.entryExists(layout.marker)) return false
-        val rootfsOk = files.isDirectory(layout.rootfs)
-        if (!rootfsOk) return false
+        return isUsableRootfs(layout.rootfs)
+    }
+
+    /** True when the extracted tree has the required guest files, with or without the marker. */
+    fun hasExtractedRootfs(): Boolean = isUsableRootfs(layout.rootfs)
+
+    private fun isUsableRootfs(tree: String): Boolean {
+        if (!files.isDirectory(tree)) return false
         return UbuntuRootfsCatalog.REQUIRED_GUEST_FILES.all { relative ->
-            files.entryExists("${layout.rootfs}/$relative")
+            files.entryExists("$tree/$relative")
         }
     }
 
@@ -100,10 +107,11 @@ class UbuntuRootfsInstaller(
      * Removes whatever an interrupted or failed install left behind so a retry starts from
      * verified bytes.
      *
-     * A `rootfs` without the install marker is a partial tree that must never be treated as an
-     * installation; `staging` is scratch. The downloaded archive is deliberately **kept**:
-     * [fetch] re-checks it against the pinned SHA-256 and reuses it when it still matches, so a
-     * retry after a transient extraction failure costs no download. The link-to-symlink store is
+     * `staging` is scratch. A `rootfs` that is missing required guest files is a partial tree
+     * and is removed. A complete extracted tree without the install marker is waiting for PRoot
+     * guest probes, not a re-download. The downloaded archive is deliberately **kept**: [fetch]
+     * re-checks it against the pinned SHA-256 and reuses it when it still matches, so a retry
+     * after a transient extraction failure costs no download. The link-to-symlink store is
      * never cleared here — an installed rootfs refers into it.
      */
     fun repairIncompleteInstallation(): Boolean {
@@ -111,14 +119,15 @@ class UbuntuRootfsInstaller(
         if (files.entryExists(layout.staging)) {
             removed = files.deleteRecursively(layout.staging) || removed
         }
-        if (!isInstalled() && files.entryExists(layout.rootfs)) {
+        // A complete extracted tree without the install marker is waiting for PRoot guest
+        // probes, not a partial install. Only delete a tree that is actually unusable.
+        if (files.entryExists(layout.rootfs) && !isUsableRootfs(layout.rootfs)) {
             val cleared = files.deleteRecursively(layout.rootfs)
             removed = cleared || removed
             if (cleared) {
-                // Both markers describe a rootfs that no longer exists, so a retry must run the
-                // guest probes and the apt toolchain step again rather than trust them.
                 files.deleteRecursively(layout.verificationMarker)
                 files.deleteRecursively(layout.toolchainMarker)
+                files.deleteRecursively(layout.marker)
             }
         }
         return removed
@@ -127,10 +136,24 @@ class UbuntuRootfsInstaller(
     fun provision(onStatus: (RuntimeStatus) -> Unit = {}): UbuntuInstallResult {
         ensureRuntimeDirectories()
 
+        // Native PRoot must exist in nativeLibraryDir before any Ubuntu bytes are fetched.
+        // A missing APK library is not a missing rootfs.
+        try {
+            requireProotTooling()
+        } catch (failure: UbuntuRootfsException) {
+            return fail(
+                UbuntuInstallResult.Failed(failure.stage, failure.message ?: "native runtime missing"),
+                failure.stage,
+                onStatus,
+            )
+        }
+
         // No terminal `Ready` is published here: READY belongs to the runtime, and it is only
         // reached after the installed tree has been run through PRoot. See
         // `LocalUbuntuRuntime.verifyRootfs`.
-        if (isInstalled()) return UbuntuInstallResult.AlreadyInstalled
+        if (isInstalled() || isUsableRootfs(layout.rootfs)) {
+            return UbuntuInstallResult.AlreadyInstalled
+        }
 
         // A rootfs or staging tree from a previous attempt is not evidence of anything.
         repairIncompleteInstallation()
@@ -277,12 +300,13 @@ class UbuntuRootfsInstaller(
             )
         }
 
-        writeMarker()
-
-        if (!files.entryExists(layout.marker) || !isInstalled()) {
+        // The install marker is written only after the guest has been run through PRoot
+        // (`LocalUbuntuRuntime.verifyRootfs`). An extracted tree that cannot start /bin/bash
+        // must never look installed.
+        if (!isUsableRootfs(layout.rootfs)) {
             throw UbuntuRootfsException(
                 UbuntuInstallStage.RUNTIME,
-                "Rootfs was installed but ${layout.marker} or the required guest files are missing.",
+                "Rootfs was extracted but the required guest files are missing under ${layout.rootfs}.",
             )
         }
         return entries
@@ -341,14 +365,13 @@ class UbuntuRootfsInstaller(
      * extracted in a way that cannot work.
      */
     private fun requireProotTooling() {
-        val missing = listOf(NativeRuntimeLayout.PROOT_LIBRARY, NativeRuntimeLayout.LOADER_LIBRARY)
+        val missing = NativeRuntimeLayout.REQUIRED_LIBRARIES
             .filter { name -> !files.entryExists("${layout.nativeLibraryDir}/$name") }
         if (missing.isEmpty()) return
         throw UbuntuRootfsException(
             UbuntuInstallStage.RUNTIME,
-            "PRoot is not installed in ${layout.nativeLibraryDir} (missing ${missing.joinToString()}). " +
-                "The Ubuntu rootfs is unpacked through PRoot so its hard links are preserved; " +
-                "reinstall the APK with its native libraries and retry.",
+            NativeRuntimeProbe.MISSING_APK_MESSAGE +
+                " nativeLibraryDir=${layout.nativeLibraryDir} (missing ${missing.joinToString()}).",
         )
     }
 
@@ -391,7 +414,11 @@ class UbuntuRootfsInstaller(
         )
     }
 
-    private fun writeMarker() {
+    /**
+     * Written only after PRoot has started `/bin/sh` and `/bin/bash` inside the extracted tree.
+     * An extracted rootfs that cannot execute a shell must never look installed.
+     */
+    fun writeInstallMarker() {
         files.writeText(
             layout.marker,
             buildString {
@@ -401,6 +428,10 @@ class UbuntuRootfsInstaller(
                 append("runtime=${UbuntuEnvironment.RUNTIME_MARKER}\n")
             },
         )
+    }
+
+    fun clearInstallMarker() {
+        files.deleteRecursively(layout.marker)
     }
 
     private fun fail(

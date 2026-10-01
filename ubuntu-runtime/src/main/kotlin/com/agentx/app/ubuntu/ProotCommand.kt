@@ -74,6 +74,20 @@ object ProotCommand {
     val LOGIN_SHELL: List<String> = listOf("/bin/bash", "--login")
 
     /**
+     * Starts PRoot with `-V` so the packaged binary can be proven executable from
+     * [NativeRuntimeLayout.nativeLibraryDir] before any Ubuntu rootfs is downloaded.
+     */
+    fun version(layout: NativeRuntimeLayout): ProotInvocation = ProotInvocation(
+        executable = layout.proot,
+        arguments = listOf("proot", ProotSelfTest.VERSION_FLAG),
+        environment = prootEnvironment(
+            layout = layout,
+            include32BitLoader = false,
+            hostLibraryPath = null,
+        ),
+    )
+
+    /**
      * The invocation that unpacks the Ubuntu archive.
      *
      * The platform `tar` is *not* run directly. Android's SELinux policy forbids an untrusted
@@ -173,6 +187,8 @@ object ProotCommand {
         val environment = LinkedHashMap<String, String>()
         environment["PROOT_LOADER"] = layout.loader
         if (include32BitLoader) {
+            // termux/proot reads PROOT_LOADER_32; keep PROOT_LOADER32 as an alias.
+            environment["PROOT_LOADER_32"] = layout.loader32
             environment["PROOT_LOADER32"] = layout.loader32
         }
         environment["PROOT_TMP_DIR"] = layout.tmp

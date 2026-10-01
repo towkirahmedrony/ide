@@ -1,11 +1,8 @@
 name: Build AgentX Native Developer Runtime
 
 # Cross-compiles PRoot, its loader, talloc and android-shmem from pinned upstream sources with
-# the Android NDK, verifies the artifacts and publishes them under a fixed release tag. The APK
-# build downloads that tag into `ubuntu-runtime/src/main/jniLibs/<abi>/`.
-#
-# Manual on purpose: it takes a while, and it must never be able to fail the APK build. Run it,
-# read the logs, then re-run `Build Android Release APK`.
+# the Android NDK and verifies the artifacts. The APK workflow builds these same sources itself
+# and packages them into ubuntu-runtime/src/main/jniLibs/arm64-v8a/.
 
 on:
   workflow_dispatch:
@@ -41,6 +38,12 @@ jobs:
 
       - name: Verify artifacts
         run: sh tools/ubuntu-runtime/verify-native.sh arm64-v8a out/artifacts
+
+      - name: Record provenance
+        run: |
+          echo "PRoot $(cat out/artifacts/proot-source.rev 2>/dev/null || echo d4d2a19081c3c07f75250e4ce2980b9fa2f5720f)"
+          cat out/artifacts/BUILDINFO
+          cat out/artifacts/SHA256SUMS
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

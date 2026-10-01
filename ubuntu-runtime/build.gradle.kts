@@ -40,8 +40,9 @@ android {
             // packaged `jniLibs/<abi>/*.so` to `nativeLibraryDir` on install, which is what
             // makes `libproot.so` and `libproot_loader.so` directly executable.
             //
-            // The binaries are produced by `.github/workflows/build-native-runtime.yml` and
-            // dropped into `src/main/jniLibs/<abi>/` by the app build; none are committed.
+            // The binaries are produced by `.github/workflows/android-build.yml` (NDK PRoot
+            // build + vendor-native.sh) and dropped into `src/main/jniLibs/<abi>/`; none are
+            // committed.
             useLegacyPackaging = true
         }
     }

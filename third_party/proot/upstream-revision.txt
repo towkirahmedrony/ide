@@ -5,3 +5,8 @@ license: GPL-2.0-or-later
 original: proot-me/proot (STMicroelectronics)
 built by: tools/ubuntu-runtime/build-proot.sh
 published as: libproot.so, libproot_loader.so
+dependencies:
+  talloc 2.4.3 (static into libproot.so; libtalloc.so when produced)
+  libandroid-shmem 7f0bd7e25dbdd146265aff7c6a890029e374622d -> libandroid-shmem.so
+packaged in APK as: lib/arm64-v8a/*.so
+runtime path: context.applicationInfo.nativeLibraryDir

@@ -52,7 +52,7 @@ fun developerRuntimeStageGuidance(stage: UbuntuInstallStage?): String = when (st
     UbuntuInstallStage.ACTIVATION ->
         "Activation failed: the validated rootfs could not be moved into place."
     UbuntuInstallStage.RUNTIME ->
-        "Runtime failed: the rootfs installed but the install marker or required files are missing."
+        "Runtime failed: PRoot could not start, or the Ubuntu guest did not pass verification."
     null ->
         "Runtime install failed."
 }
