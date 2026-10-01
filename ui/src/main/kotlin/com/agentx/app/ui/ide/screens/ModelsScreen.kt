@@ -183,7 +183,7 @@ private fun ModelListRow(
         if (busy) {
             CircularProgressIndicator(color = ForgeMint, modifier = Modifier.size(12.dp))
         } else {
-            IdeDot(statusColor(status.state))
+            IdeDot(modelLifecycleColor(status.state))
         }
         Column(
             modifier = Modifier.weight(1f).padding(start = 12.dp),
@@ -210,7 +210,7 @@ private fun ModelListRow(
         if (active) {
             IdeStatusPill("Active", ForgeMint)
         } else if (notable) {
-            IdeStatusPill(status.state.displayName, statusColor(status.state))
+            IdeStatusPill(status.state.displayName, modelLifecycleColor(status.state))
         }
     }
 }

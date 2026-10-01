@@ -114,7 +114,7 @@ fun ModelDetailScreen(
                 .padding(horizontal = 16.dp, vertical = 8.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                IdeDot(statusColor(status.state))
+                IdeDot(modelLifecycleColor(status.state))
                 Column(modifier = Modifier.weight(1f).padding(start = 10.dp)) {
                     Text(
                         text = preset.displayName,
@@ -131,7 +131,7 @@ fun ModelDetailScreen(
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
-                IdeStatusPill(status.state.displayName, statusColor(status.state))
+                IdeStatusPill(status.state.displayName, modelLifecycleColor(status.state))
             }
             IdeSpacer(6)
             Text(
@@ -302,7 +302,7 @@ internal fun runtimeHint(failure: ModelRuntimeFailure): String = when (failure) 
     else -> "The user has to act before this model can come online."
 }
 
-internal fun statusColor(state: ModelLifecycleState): Color = when (state) {
+internal fun modelLifecycleColor(state: ModelLifecycleState): Color = when (state) {
     ModelLifecycleState.ONLINE -> ForgeMint
     ModelLifecycleState.DEGRADED -> ForgeAmber
     ModelLifecycleState.STARTING,
