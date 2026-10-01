@@ -74,12 +74,15 @@ class RateLimitProfileTest {
     }
 
     @Test
-    fun `clamping does not invent a limit the provider did not report`() {
+    fun `clamping only lowers configured values and never invents one`() {
+        // The provider ceiling has an rpm the app profile does not configure; the
+        // app profile keeps its own (null) rpm and its own token limit, because
+        // the provider ceiling is enforced by its own provider-scoped profile.
         val providerCeiling = RateLimitProfile(providerId = "groq", requestsPerMinute = 30)
         val configured = RateLimitProfile(providerId = "groq", tokensPerMinute = 5_000L)
 
         val clamped = configured.clamp(providerCeiling)
-        assertEquals(30, clamped.requestsPerMinute)
+        assertNull(clamped.requestsPerMinute)
         assertEquals(5_000L, clamped.tokensPerMinute)
     }
 
