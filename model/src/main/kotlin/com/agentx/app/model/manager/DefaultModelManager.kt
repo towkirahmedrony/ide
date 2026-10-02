@@ -44,6 +44,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Default [ModelManager].
@@ -111,6 +112,14 @@ class DefaultModelManager(
     private var foreground: Boolean = true
     private val persistedStatuses = LinkedHashMap<String, String>()
 
+    /**
+     * Credential per preset id, resolved off the calling thread whenever presets
+     * are (re)loaded, so [catalogConnections] can build a catalog-only
+     * configuration without a blocking secret read. An empty value means "no
+     * credential", so the map never holds null. Never logged.
+     */
+    private val catalogCredentials = ConcurrentHashMap<String, String>()
+
     init {
         runners.forEach { runner ->
             scope.launch {
@@ -126,6 +135,7 @@ class DefaultModelManager(
 
         val presets = io { repository.list() }
         val activeId = io { repository.activeId() }
+        cacheCatalogCredentials(presets)
         val active = presets.firstOrNull { it.id == activeId }
 
         // Restore what was last known, but never claim a live connection that has
@@ -291,6 +301,42 @@ class DefaultModelManager(
 
     override fun connections(): Map<String, ModelConfig> = registry.connections()
 
+    /**
+     * Live connections first, then every other saved provider that already has a
+     * configured endpoint, so the model catalog can read its live list even when
+     * that provider is not the connection currently in use.
+     *
+     * Only providers that can be addressed without runtime discovery are added: a
+     * Colab/tunnel preset whose endpoint is only known after the runtime prints it
+     * is left out, exactly as before. This is deliberately separate from
+     * [connections], which the role → model resolver routes on, so resolution
+     * semantics do not change.
+     */
+    override fun catalogConnections(): Map<String, ModelConfig> {
+        val result = LinkedHashMap<String, ModelConfig>(registry.connections())
+        mutableState.value.presets.forEach { preset ->
+            if (!preset.enabled) return@forEach
+            val providerId = preset.providerId
+            if (result.containsKey(providerId)) return@forEach
+            val url = preset.endpoint.explicitUrl?.takeIf { it.isNotBlank() } ?: return@forEach
+            result[providerId] = ModelConfig(
+                providerId = providerId,
+                baseUrl = url.trimEnd('/') + preset.normalizedApiBasePath,
+                model = preset.modelIdentifier,
+                // The credential is read from the store, never from a logged field.
+                apiKey = catalogCredentials[preset.id]?.takeIf { it.isNotBlank() },
+                stream = true,
+                metadata = mapOf(
+                    "modelPresetId" to preset.id,
+                    "modelPresetName" to preset.displayName,
+                    "providerType" to preset.providerType.name,
+                    "catalogOnly" to "true",
+                ),
+            )
+        }
+        return result
+    }
+
     override fun onRunnerSessionChanged(presetId: String, attached: Boolean) {
         // Purely informational: the Model Runner browser is a control surface for
         // the runtime, never part of the agent's request path.
@@ -407,7 +453,22 @@ class DefaultModelManager(
     private suspend fun reloadPresets() {
         val presets = io { repository.list() }
         val activeId = io { repository.activeId() }
+        cacheCatalogCredentials(presets)
         mutableState.update { it.copy(presets = presets, activePresetId = activeId) }
+    }
+
+    /**
+     * Resolves each preset's credential once per (re)load. The map is read by
+     * [catalogConnections] on the calling thread, so the secret store is never hit
+     * from there. A removed preset's entry is dropped with it.
+     */
+    private suspend fun cacheCatalogCredentials(presets: List<ModelPreset>) {
+        val ids = presets.map { it.id }.toHashSet()
+        catalogCredentials.keys.retainAll(ids)
+        presets.forEach { preset ->
+            val credential = runCatching { io { credentials.resolve(preset) } }.getOrNull()
+            catalogCredentials[preset.id] = credential.orEmpty()
+        }
     }
 
     private fun runnerFor(preset: ModelPreset): ModelRunner? = runners.firstOrNull { it.supports(preset) }

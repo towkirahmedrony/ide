@@ -196,20 +196,31 @@ class AgentModelsViewModel(
         }
         return grouped.map { (providerId, presets) ->
             val usable = presets.firstOrNull { state.status(it.id).isUsable }
-            val suggested = KnownModelProviders.spec(ModelSetupKind.fromId(providerId))
-                ?.suggestedModels
-                .orEmpty()
             val origin = usable ?: presets.first()
             val catalogSnapshot = catalog?.snapshot(providerId)
+            // The provider's own live catalog wins outright. A saved model that the
+            // live list no longer contains is not re-offered, so it is reported as
+            // unavailable instead of being silently accepted as if it still existed.
+            val liveModels = catalogSnapshot?.availableModels()?.map { it.id }.orEmpty()
             val available = LinkedHashSet<String>()
-            catalogSnapshot?.availableModels()?.forEach { available += it.id }
-            presets.forEach { available += it.modelIdentifier }
-            suggested.forEach { available += it }
-            val unavailable = catalogSnapshot
-                ?.models
-                ?.filterNot { it.available }
-                ?.map { it.id }
-                .orEmpty()
+            if (liveModels.isNotEmpty()) {
+                available += liveModels
+            } else {
+                // Nothing discovered: keep the saved models usable and, only when the
+                // provider has never answered, offer its built-in compatibility list.
+                presets.forEach { available += it.modelIdentifier }
+                if (catalogSnapshot == null) {
+                    KnownModelProviders.spec(ModelSetupKind.fromId(providerId))
+                        ?.suggestedModels
+                        .orEmpty()
+                        .forEach { available += it }
+                }
+            }
+            val unavailable = if (liveModels.isNotEmpty()) {
+                catalogSnapshot?.models?.filterNot { it.available }?.map { it.id }.orEmpty()
+            } else {
+                emptyList()
+            }
             ProviderModelOption(
                 providerId = providerId,
                 providerLabel = RoleModelEvaluation.providerLabel(providerId),

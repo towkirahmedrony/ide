@@ -7,6 +7,7 @@ import com.agentx.app.core.logging.ForgeLoggers
 import com.agentx.app.model.DefaultModelGateway
 import com.agentx.app.model.FakeHttpTransport
 import com.agentx.app.model.ModelConfig
+import com.agentx.app.model.connect.KnownModelProviders
 import com.agentx.app.model.connect.ModelSetupKind
 import com.agentx.app.model.connect.normalizeModelId
 import com.agentx.app.model.http.HttpResponseSpec
@@ -623,6 +624,88 @@ class ModelCatalogTest {
             "https://generativelanguage.googleapis.com/v1beta/models",
             factory.modelsUrlFor(ModelProviderIds.GEMINI, "https://generativelanguage.googleapis.com/v1beta/openai"),
         )
+    }
+
+    @Test
+    fun `a successful gemini discovery never injects the built-in compatibility list`() = runSuspend {
+        val transport = FakeHttpTransport(
+            response = HttpResponseSpec(
+                statusCode = 200,
+                body = geminiModelsJson(
+                    geminiModel("gemini-3.1-flash"),
+                    geminiModel("gemini-2.0-flash"),
+                    geminiModel("gemini-embedding-001", methods = listOf("embedContent")),
+                ),
+            ),
+        )
+
+        val snapshot = (geminiRegistry(transport).refresh(ModelProviderIds.GEMINI, force = true) as ForgeResult.Success).value
+
+        // The live list is the whole catalog: the built-in compatibility list fills no
+        // gaps once discovery answered, so a fallback id cannot look like a real model.
+        assertEquals(listOf("gemini-3.1-flash", "gemini-2.0-flash"), snapshot.availableModels().map { it.id })
+        assertFalse(snapshot.availableModels().any { it.id == "gemini-2.0-flash-lite" })
+        assertTrue(snapshot.availableModels().none { it.id == KnownModelProviders.gemini.suggestedModels.last() })
+    }
+
+    @Test
+    fun `transcription and audio-only families are filtered when no methods are reported`() = runSuspend {
+        val transport = FakeHttpTransport(
+            response = HttpResponseSpec(
+                statusCode = 200,
+                body = modelsJson(
+                    "gemini-3.1-flash",
+                    "gemini-2.5-flash-preview-tts",
+                    "gemini-2.5-flash-native-audio-dialog",
+                    "gemini-transcribe-001",
+                    "lyria-002",
+                ),
+            ),
+        )
+
+        val snapshot = (geminiRegistry(transport).refresh(ModelProviderIds.GEMINI, force = true) as ForgeResult.Success).value
+
+        assertEquals(listOf("gemini-3.1-flash"), snapshot.models.map { it.id })
+    }
+
+    @Test
+    fun `the catalog handoff is logged with counts and ids, never the key`() = runSuspend {
+        val records = mutableListOf<LogRecord>()
+        val logger = ForgeLoggers.create(level = LogLevel.INFO, sink = { records += it })
+        val transport = FakeHttpTransport(
+            response = HttpResponseSpec(
+                statusCode = 200,
+                body = geminiModelsJson(
+                    geminiModel("gemini-3.1-flash"),
+                    geminiModel("gemini-2.0-flash"),
+                    geminiModel("gemini-embedding-001", methods = listOf("embedContent")),
+                ),
+            ),
+        )
+        val registry = DefaultModelCatalogRegistry(
+            connections = {
+                mapOf(
+                    ModelProviderIds.GEMINI to ModelConfig(
+                        providerId = ModelProviderIds.GEMINI,
+                        baseUrl = geminiBaseUrl,
+                        model = "gemini-3.1-flash",
+                        apiKey = "secret-key",
+                    ),
+                )
+            },
+            factory = RemoteModelCatalogFactory(transport = transport, clock = { 0L }, catalogLogger = logger),
+        )
+
+        registry.refresh(ModelProviderIds.GEMINI, force = true)
+
+        val messages = records.map { it.message }
+        val handoff = messages.single { it.startsWith("[GEMINI][CATALOG] discovered=") }
+        assertEquals("[GEMINI][CATALOG] discovered=3 filtered=1 exposedToUi=2", handoff)
+        val ids = messages.single { it.startsWith("[GEMINI][CATALOG] uiModels=") }
+        assertTrue(ids.contains("gemini-3.1-flash"), ids)
+        assertTrue(ids.contains("gemini-2.0-flash"), ids)
+        assertFalse(ids.contains("embedding"), ids)
+        assertTrue(records.none { it.fields.values.toString().contains("secret-key") })
     }
 
     @Test

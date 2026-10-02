@@ -323,12 +323,19 @@ object ModelChoices {
     fun suggestions(providerId: String): List<String> =
         KnownModelProviders.spec(ModelSetupKind.fromId(providerId))?.suggestedModels.orEmpty()
 
-    /** Catalog first, then suggestions; deterministic and de-duplicated. */
+    /**
+     * What the model picker offers for a provider.
+     *
+     * The provider's own live catalog wins outright: when discovery has answered,
+     * the built-in compatibility list is never mixed into it, so a fallback id can
+     * never be mistaken for a model the provider actually offers. The compatibility
+     * list is offered only when there is no readable catalog at all (no key yet,
+     * offline, rate limited) so a provider with nothing discovered yet stays usable.
+     */
     fun offered(catalog: ModelCatalogRegistry?, providerId: String): List<ModelChoice> {
-        val choices = LinkedHashMap<String, ModelChoice>()
-        catalogChoices(catalog, providerId).forEach { choices[it.id] = it }
-        suggestions(providerId).forEach { id -> choices.putIfAbsent(id, ModelChoice(id, id)) }
-        return choices.values.toList()
+        val live = catalogChoices(catalog, providerId)
+        if (live.isNotEmpty()) return live
+        return suggestions(providerId).map { id -> ModelChoice(id, id) }
     }
 
     /** The label to show for the currently selected id, even when it is not listed. */

@@ -337,9 +337,21 @@ class ModelSetupFormTest {
             ModelChoices.catalogChoices(catalog, "groq").map { it.id },
         )
         assertTrue(offered.none { it.id == "retired-model" })
-        // Suggestions are appended, never duplicated.
+        // Only the live catalog is offered, in catalog order and never duplicated.
+        assertEquals(listOf("llama-3.1-8b-instant", "llama-3.3-70b-versatile"), offered.map { it.id })
         assertEquals(offered.distinct(), offered)
-        assertTrue(offered.map { it.id }.containsAll(KnownModelProviders.groq.suggestedModels))
+        // The provider's compatibility list is not appended to a live catalog.
+        assertTrue(offered.none { it.id == "mixtral-8x7b-32768" })
+    }
+
+    @Test
+    fun `the built-in fallback list is not offered once discovery succeeded`() {
+        val catalog = registry(models = listOf(CatalogModel(id = "gemini-3.1-flash")))
+
+        val offered = ModelChoices.offered(catalog, "gemini")
+
+        assertEquals(listOf("gemini-3.1-flash"), offered.map { it.id })
+        assertTrue(offered.none { it.id in KnownModelProviders.gemini.suggestedModels })
     }
 
     @Test

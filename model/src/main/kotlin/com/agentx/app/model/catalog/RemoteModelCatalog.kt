@@ -119,6 +119,22 @@ class RemoteModelCatalog(
         }
     }
 
+    /**
+     * Seeds a rebuilt catalog with the snapshot of the catalog it replaces.
+     *
+     * A catalog is rebuilt when the provider's connection changed (a corrected API
+     * key, a new endpoint). Carrying the previous list over means a refresh that
+     * then fails still leaves the last list the provider actually reported, instead
+     * of dropping the picker back to a built-in list. Never overwrites a snapshot
+     * this catalog already has.
+     */
+    internal fun adoptSnapshot(previous: ModelCatalogSnapshot?) {
+        if (previous == null) return
+        synchronized(lock) {
+            if (snapshot == null) snapshot = previous
+        }
+    }
+
     override suspend fun refresh(force: Boolean): ForgeResult<ModelCatalogSnapshot, ForgeError> {
         restore()
         val now = clock()
@@ -190,6 +206,15 @@ class RemoteModelCatalog(
                 "rejectionReasons" to parsed.rejected.take(REJECTION_SAMPLE_SIZE),
             ),
         )
+        // The final handoff to the Settings/model picker: what the provider
+        // reported, what the text runtime rejected, and what the picker will
+        // actually offer. The ids are model names only — never a credential.
+        val exposed = parsed.models.filter { it.available }
+        logger.info(
+            "[${providerLabel()}][CATALOG] discovered=${parsed.received} " +
+                "filtered=${parsed.rejected.size} exposedToUi=${exposed.size}",
+        )
+        logger.info("[${providerLabel()}][CATALOG] uiModels=${exposed.joinToString(",") { it.id }}")
         // An answer that parsed but yielded nothing usable is reported as such: it
         // must never look like "this provider has no models", and the caller must
         // not present its built-in fallback as if discovery had returned these.
@@ -356,6 +381,9 @@ class RemoteModelCatalog(
         return fetched + removed
     }
 
+    /** The uppercase provider identity used as a log tag. Never a credential. */
+    private fun providerLabel(): String = providerId.uppercase()
+
     private fun capabilitiesFor(id: String): ModelCapabilities {
         val lower = id.lowercase()
         // The AgentX text/model runtime needs streaming chat. Tool calling is not
@@ -392,10 +420,12 @@ class RemoteModelCatalog(
         private const val UNNAMED_MODEL: String = "(unnamed)"
 
         /**
-         * Gemini families that are not text-chat models: embeddings, image and
-         * video generation, speech, and question answering. Applied only when the
-         * provider reports no generation methods, and only to Gemini, so the
-         * Groq list is filtered exactly as before.
+         * Gemini families that are not text-agent models: embeddings, image and
+         * video generation, speech/audio synthesis, transcription, music, and
+         * question answering. Applied only when the provider reports no generation
+         * methods, and only to Gemini, so the Groq list is filtered exactly as
+         * before. A model the API reports as text-generating is never dropped on
+         * its name, so a newly released text family stays usable.
          */
         val GEMINI_NON_TEXT_MARKERS: List<String> = listOf(
             "embedding",
@@ -403,6 +433,13 @@ class RemoteModelCatalog(
             "image",
             "veo",
             "tts",
+            "transcribe",
+            "speech",
+            "audio",
+            "lyria",
+            "rerank",
+            "guard",
+            "moderation",
             "aqa",
         )
 
@@ -534,11 +571,33 @@ class DefaultModelCatalogRegistry(
     private val lock = Any()
     private val catalogs = LinkedHashMap<String, ModelCatalog>()
 
+    /** The connection each catalog was built from, so a changed one is rebuilt. */
+    private val origins = LinkedHashMap<String, ModelConfig>()
+
     override fun providers(): List<String> = synchronized(lock) { catalogs.keys.toList() }
 
+    /**
+     * The catalog for [providerId], created lazily from that provider's current
+     * connection.
+     *
+     * A connection that changed (a corrected key, a different endpoint) rebuilds the
+     * catalog, carrying the previous snapshot over, so a later refresh uses the new
+     * credential instead of the one captured when the catalog was first created. A
+     * provider that is no longer configured loses its catalog.
+     */
     override fun catalog(providerId: String): ModelCatalog? = synchronized(lock) {
-        val connection = connections()[providerId] ?: return null
-        catalogs.getOrPut(providerId) { factory.create(providerId, connection) ?: return null }
+        val connection = connections()[providerId] ?: run {
+            catalogs.remove(providerId)
+            origins.remove(providerId)
+            return null
+        }
+        val existing = catalogs[providerId]
+        if (existing != null && origins[providerId] == connection) return existing
+        val created = factory.create(providerId, connection) ?: return null
+        (created as? RemoteModelCatalog)?.adoptSnapshot(existing?.cached())
+        catalogs[providerId] = created
+        origins[providerId] = connection
+        created
     }
 
     override fun snapshot(providerId: String): ModelCatalogSnapshot? = catalog(providerId)?.cached()

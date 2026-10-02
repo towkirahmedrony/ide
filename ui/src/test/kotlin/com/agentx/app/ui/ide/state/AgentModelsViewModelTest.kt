@@ -9,8 +9,24 @@ import com.agentx.app.agent.model.AgentRoleModelRegistry
 import com.agentx.app.agent.model.DefaultAgentRoleModelRepository
 import com.agentx.app.agent.model.InMemoryAgentRoleModelStore
 import com.agentx.app.agent.model.RoleModelState
+import com.agentx.app.core.ForgeError
+import com.agentx.app.core.ForgeErrorCode
+import com.agentx.app.core.ForgeResult
 import com.agentx.app.model.ModelConfig
+import com.agentx.app.model.catalog.CatalogModel
+import com.agentx.app.model.catalog.CatalogSource
+import com.agentx.app.model.catalog.ModelCatalog
+import com.agentx.app.model.catalog.ModelCatalogRegistry
+import com.agentx.app.model.catalog.ModelCatalogSnapshot
+import com.agentx.app.model.connect.ModelSetupKind
+import com.agentx.app.model.manager.ModelManager
 import com.agentx.app.model.manager.ModelManagers
+import com.agentx.app.model.preset.EndpointConfig
+import com.agentx.app.model.preset.EndpointDiscoveryMode
+import com.agentx.app.model.preset.InMemoryModelPresetStore
+import com.agentx.app.model.preset.ModelApiProtocol
+import com.agentx.app.model.preset.ModelPreset
+import com.agentx.app.model.preset.ModelProviderType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.runBlocking
@@ -21,6 +37,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 /**
  * Settings → Agent Models writes the same [AgentRoleModelRegistry] the Agent
@@ -97,6 +114,109 @@ class AgentModelsViewModelTest {
         val coder = vm.rows.first { it.role == AgentRole.CODER }
         assertEquals("qwen2.5-coder-14b", coder.model)
         assertEquals(RoleModelState.NOT_CONFIGURED, coder.state)
+    }
+
+    // --- live catalog -------------------------------------------------------
+
+    /** A catalog registry whose snapshot the test can change between refreshes. */
+    private class FakeCatalogRegistry(var current: ModelCatalogSnapshot?) : ModelCatalogRegistry {
+        var refreshes: Int = 0
+
+        override fun providers(): List<String> = listOf(AgentModelProviders.GEMINI)
+        override fun catalog(providerId: String): ModelCatalog? = null
+        override fun snapshot(providerId: String): ModelCatalogSnapshot? = current
+        override fun availableModels(providerId: String): List<CatalogModel> = current?.availableModels().orEmpty()
+
+        override suspend fun refresh(providerId: String, force: Boolean): ForgeResult<ModelCatalogSnapshot, ForgeError> {
+            refreshes++
+            val snapshot = current
+                ?: return ForgeResult.Failure(
+                    ForgeError(ForgeErrorCode.MODEL_CATALOG_UNAVAILABLE, "no catalog"),
+                )
+            return ForgeResult.Success(snapshot)
+        }
+
+        override suspend fun refreshAll(force: Boolean): Map<String, ModelCatalogSnapshot> =
+            current?.let { mapOf(AgentModelProviders.GEMINI to it) }.orEmpty()
+
+        override suspend fun restore() = Unit
+    }
+
+    private fun geminiSnapshot(
+        vararg ids: String,
+        unavailable: List<String> = emptyList(),
+    ) = ModelCatalogSnapshot(
+        providerId = AgentModelProviders.GEMINI,
+        models = ids.map { CatalogModel(id = it) } + unavailable.map { CatalogModel(id = it, available = false) },
+        fetchedAtMillis = 1L,
+        source = CatalogSource.REMOTE,
+    )
+
+    private fun geminiPreset(modelId: String = "gemini-2.0-flash") = ModelPreset(
+        id = "gemini-preset",
+        displayName = "Gemini",
+        providerType = ModelProviderType.REMOTE_OPENAI_COMPATIBLE,
+        modelIdentifier = modelId,
+        apiProtocol = ModelApiProtocol.GEMINI_NATIVE,
+        apiBasePath = "/v1beta",
+        endpoint = EndpointConfig(EndpointDiscoveryMode.CONFIGURED_ENDPOINT, "https://generativelanguage.googleapis.com"),
+        setupKind = ModelSetupKind.GEMINI.id,
+    )
+
+    /** A manager with one saved Gemini preset; nothing is connected. */
+    private fun managerWithGemini(): ModelManager = ModelManagers.create(
+        presetStore = InMemoryModelPresetStore(listOf(geminiPreset())),
+        monitorEnabled = false,
+        ioDispatcher = Dispatchers.Unconfined,
+    )
+
+    private fun viewModelWithCatalog(catalog: ModelCatalogRegistry): AgentModelsViewModel = AgentModelsViewModel(
+        registry = AgentRoleModelRegistry(DefaultAgentRoleModelRepository(InMemoryAgentRoleModelStore())),
+        modelManager = managerWithGemini(),
+        catalog = catalog,
+    )
+
+    @Test
+    fun `the live catalog is offered and the built-in fallback list is not`() {
+        val vm = viewModelWithCatalog(FakeCatalogRegistry(geminiSnapshot("gemini-3.1-flash", "gemini-2.0-flash")))
+
+        vm.refresh()
+
+        val gemini = vm.options.single { it.providerId == AgentModelProviders.GEMINI }
+        assertEquals(listOf("gemini-3.1-flash", "gemini-2.0-flash"), gemini.models)
+        assertTrue(gemini.models.none { it == "gemini-2.0-flash-lite" })
+    }
+
+    @Test
+    fun `a saved model the live catalog dropped is reported unavailable`() {
+        val vm = viewModelWithCatalog(
+            FakeCatalogRegistry(geminiSnapshot("gemini-3.1-flash", unavailable = listOf("gemini-2.0-flash"))),
+        )
+
+        vm.refresh()
+
+        val gemini = vm.options.single { it.providerId == AgentModelProviders.GEMINI }
+        assertEquals(listOf("gemini-3.1-flash"), gemini.models)
+        assertEquals(listOf("gemini-2.0-flash"), gemini.unavailableModels)
+    }
+
+    @Test
+    fun `refreshing the catalog updates what the picker offers`() {
+        val catalog = FakeCatalogRegistry(geminiSnapshot("gemini-2.0-flash"))
+        val vm = viewModelWithCatalog(catalog)
+        vm.refresh()
+        assertEquals(
+            listOf("gemini-2.0-flash"),
+            vm.options.single { it.providerId == AgentModelProviders.GEMINI }.models,
+        )
+
+        catalog.current = geminiSnapshot("gemini-3.1-flash", "gemini-2.0-flash")
+        vm.refreshCatalog()
+
+        assertEquals(
+            listOf("gemini-3.1-flash", "gemini-2.0-flash"),
+            vm.options.single { it.providerId == AgentModelProviders.GEMINI }.models,
+        )
     }
 
     @Test

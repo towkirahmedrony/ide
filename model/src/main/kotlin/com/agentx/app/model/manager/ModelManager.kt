@@ -95,6 +95,20 @@ interface ModelManager {
      */
     fun connections(): Map<String, ModelConfig> = emptyMap()
 
+    /**
+     * Provider configurations the model catalog may list, keyed by provider
+     * identity.
+     *
+     * This is catalog plumbing, not routing: it starts from [connections] and adds
+     * a saved provider that is not online right now, using its configured endpoint
+     * and stored credential. That is what lets Settings read a provider's live
+     * model list even when that provider is not the active connection — the case
+     * that previously left the picker with nothing but a built-in fallback list.
+     *
+     * Defaults to [connections] so no existing implementation changes behaviour.
+     */
+    fun catalogConnections(): Map<String, ModelConfig> = connections()
+
     /** Called by the Model Runner browser; records session state only. */
     fun onRunnerSessionChanged(presetId: String, attached: Boolean)
 

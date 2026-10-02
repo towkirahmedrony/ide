@@ -9,9 +9,11 @@ import com.agentx.app.core.ForgeError
 import com.agentx.app.core.errorOrNull
 import com.agentx.app.core.valueOrNull
 import com.agentx.app.model.catalog.ModelCatalogRegistry
+import com.agentx.app.model.connect.KnownModelProviders
 import com.agentx.app.model.connect.ModelConnectOutcome
 import com.agentx.app.model.connect.ModelConnectPhase
 import com.agentx.app.model.connect.ModelSetupKind
+import com.agentx.app.model.connect.selectDiscoveredModel
 import com.agentx.app.model.manager.ModelManager
 import com.agentx.app.model.preset.ModelApiProtocol
 import com.agentx.app.model.preset.ModelPreset
@@ -274,20 +276,45 @@ class ModelEditorViewModel(
         }
         val fromCatalog = ModelChoices.catalogChoices(registry, providerId)
         val connected = registry?.catalog(providerId) != null
+        // A live catalog replaces the built-in compatibility list outright; the
+        // compatibility list only fills the gap when discovery cannot answer at all,
+        // so a fallback id is never presented as one the provider offers.
+        val offers = if (fromCatalog.isNotEmpty()) {
+            fromCatalog
+        } else {
+            ModelChoices.suggestions(providerId).map { ModelChoice(it, it) }
+        }
         state = state.copy(
             catalogLoading = false,
-            // The live catalog first; the provider's compatibility list only fills
-            // the gap when discovery could not answer.
-            models = if (fromCatalog.isNotEmpty()) {
-                fromCatalog
-            } else {
-                ModelChoices.suggestions(providerId).map { ModelChoice(it, it) }
-            },
+            models = offers,
             modelsFromCatalog = fromCatalog.isNotEmpty(),
             // Only a connected provider that failed to answer is worth a retry; an
             // unconnected one simply has no model list yet.
             catalogError = failure?.message?.takeIf { connected || fromCatalog.isNotEmpty() },
+            form = resolveStaleSavedModel(state.form, fromCatalog, providerId),
         )
+    }
+
+    /**
+     * Re-points a saved model the provider no longer lists at a valid one from the
+     * live catalog, using the same selection rules connect uses.
+     *
+     * Only an edit of an existing preset is touched, and only when discovery really
+     * answered: a failed refresh keeps the saved model untouched rather than
+     * guessing. When no valid replacement can be resolved the saved value is kept,
+     * so nothing is silently erased.
+     */
+    private fun resolveStaleSavedModel(
+        form: ModelSetupForm,
+        live: List<ModelChoice>,
+        providerId: String,
+    ): ModelSetupForm {
+        if (!form.isEditing || form.manualModel || form.modelId.isBlank() || live.isEmpty()) return form
+        if (live.any { it.id == form.modelId }) return form
+        val preferred = KnownModelProviders.spec(ModelSetupKind.fromId(providerId))?.preferredModel
+        val resolved = selectDiscoveredModel(live.map { it.id }, preferred = null, catalogPreferred = preferred)
+            ?: return form
+        return form.copy(modelId = resolved)
     }
 
     private fun fieldErrorsOf(failure: ForgeError): List<String>? =

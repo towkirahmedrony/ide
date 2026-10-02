@@ -178,10 +178,16 @@ object Foundation {
         val rateLimitManager = DefaultRateLimitManager()
         services.register(ServiceKeys.RATE_LIMIT_MANAGER, rateLimitManager)
         services.register(ServiceKeys.MODEL_USAGE, rateLimitManager.usage)
-        // The dynamic model catalog is built lazily from the live provider
-        // connections, so connecting Groq later simply gives it a fresh catalog.
+        // The dynamic model catalog is built lazily from the providers that can be
+        // listed, so connecting Groq later simply gives it a fresh catalog. Listing
+        // uses catalogConnections, not connections: a saved Gemini (or Groq) provider
+        // that is not the active connection still exposes its live model list to
+        // Settings, which is what keeps a built-in fallback list out of the picker.
+        // The agent resolver keeps reading connections, so routing is unchanged.
         val modelCatalog: ModelCatalogRegistry = DefaultModelCatalogRegistry(
-            connections = { services.get<ModelManager>(ServiceKeys.MODEL_MANAGER)?.connections().orEmpty() },
+            connections = {
+                services.get<ModelManager>(ServiceKeys.MODEL_MANAGER)?.catalogConnections().orEmpty()
+            },
         )
         services.register(ServiceKeys.MODEL_CATALOG, modelCatalog)
 
