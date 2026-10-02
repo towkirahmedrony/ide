@@ -75,12 +75,12 @@ object ModelFallbackErrors {
         ModelProviderErrorCode.NETWORK_ERROR,
         ModelProviderErrorCode.CONNECTION_FAILED,
         -> ModelFallbackReason.NETWORK_FAILURE
-        ModelProviderErrorCode.PROVIDER_ERROR ->
-            if (error.httpStatus == null || error.httpStatus >= 500) {
-                ModelFallbackReason.PROVIDER_UNAVAILABLE
-            } else {
-                null
-            }
+        ModelProviderErrorCode.PROVIDER_ERROR -> {
+            // Captured locally: httpStatus is an API property from another
+            // module, so it cannot be smart-cast across the null check.
+            val status = error.httpStatus
+            if (status == null || status >= 500) ModelFallbackReason.PROVIDER_UNAVAILABLE else null
+        }
         // INVALID_CONFIG, INVALID_REQUEST, AUTHENTICATION_FAILED, UNSUPPORTED,
         // INVALID_RESPONSE, PROVIDER_NOT_FOUND, DUPLICATE_PROVIDER, CANCELLED,
         // UNKNOWN: all permanent / not a temporary execution failure.
