@@ -16,24 +16,29 @@ import com.agentx.app.model.runSuspend
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class RateLimitedModelGatewayTest {
 
-    private class FlakyProvider(
+    private class CountingProvider(
         override val id: String,
-        private val rateLimitedTimes: Int,
+        private val rateLimitedTimes: Int = 0,
         private val retryAfterMillis: Long? = null,
         private val usage: ModelUsage? = null,
+        private val rateLimitMessage: String = "429",
+        private val providerErrorType: String? = null,
     ) : ModelProvider {
-        var calls = 0
+        var completeCalls = 0
+        var streamCalls = 0
 
         override fun capabilities(modelId: String): ModelCapabilities =
             ModelCapabilities(streaming = true)
 
         override suspend fun complete(request: ModelRequest): ModelResponse {
-            calls += 1
-            if (calls <= rateLimitedTimes) throw rateLimited(retryAfterMillis)
+            completeCalls += 1
+            if (completeCalls <= rateLimitedTimes) throw rateLimited()
             return ModelResponse(model = request.model, providerId = id, content = "ok", usage = usage)
         }
 
@@ -41,94 +46,100 @@ class RateLimitedModelGatewayTest {
             request: ModelRequest,
             onEvent: (ModelStreamEvent) -> Unit,
         ): ModelResponse {
-            calls += 1
-            if (calls <= rateLimitedTimes) throw rateLimited(retryAfterMillis)
+            streamCalls += 1
+            if (streamCalls <= rateLimitedTimes) throw rateLimited()
             onEvent(ModelStreamEvent.Started(request.model, id))
             onEvent(ModelStreamEvent.TextDelta("ok"))
             return ModelResponse(model = request.model, providerId = id, content = "ok", usage = usage)
         }
 
-        private fun rateLimited(retryAfter: Long?): ModelProviderError = ModelProviderError(
+        private fun rateLimited(): ModelProviderError = ModelProviderError(
             code = ModelProviderErrorCode.RATE_LIMITED,
-            message = "429",
+            message = rateLimitMessage,
             providerId = id,
             httpStatus = 429,
+            providerErrorType = providerErrorType,
             retryable = true,
-            retryAfterMillis = retryAfter,
+            retryAfterMillis = retryAfterMillis,
         )
     }
 
     private fun config(
         providerId: String = "groq",
         providerType: ModelProviderType = ModelProviderType.REMOTE_OPENAI_COMPATIBLE,
+        model: String = "llama-3.3-70b-versatile",
+        baseUrl: String = "https://api.groq.com/openai/v1",
     ) = ModelConfig(
         providerId = providerId,
-        baseUrl = "https://api.groq.com/openai/v1",
-        model = "llama-3.3-70b-versatile",
+        baseUrl = baseUrl,
+        model = model,
         metadata = mapOf("providerType" to providerType.name),
     )
 
-    private fun gateway(
-        provider: ModelProvider,
-        manager: RateLimitManager,
-        clock: RateLimitClock = FakeRateLimitClock(),
-        maxAttempts: Int = 4,
-    ): RateLimitedModelGateway {
+    private fun gateway(provider: ModelProvider, manager: RateLimitManager): RateLimitedModelGateway {
         val base = DefaultModelGateway()
         base.register(provider)
-        return RateLimitedModelGateway(
-            delegate = base,
-            rateLimits = manager,
-            backoff = RateLimitBackoff(maxAttempts = maxAttempts, baseDelayMillis = 500L, random = { 0.0 }),
-            clock = clock,
-        )
+        return RateLimitedModelGateway(delegate = base, rateLimits = manager)
     }
 
-    private fun manager(clock: RateLimitClock = FakeRateLimitClock()) = DefaultRateLimitManager(
-        clock = clock,
-        tracker = DefaultUsageTracker(),
-        unknownRemoteLimits = null,
-    )
+    private fun manager(clock: RateLimitClock = FakeRateLimitClock()) =
+        DefaultRateLimitManager(clock = clock, tracker = DefaultUsageTracker())
 
     private fun request(config: ModelConfig = config()) =
         ModelRequest(config = config, messages = listOf(ModelMessage.user("hello")))
 
     @Test
-    fun `a 429 is retried centrally and then succeeds`() = runSuspend {
-        val clock = FakeRateLimitClock()
-        val provider = FlakyProvider("groq", rateLimitedTimes = 1)
-        val gateway = gateway(provider, manager(clock), clock)
-
-        val response = gateway.complete(request())
-
-        assertEquals("ok", response.content)
-        assertEquals(2, provider.calls)
-        assertEquals(listOf(500L), clock.sleeps)
-    }
-
-    @Test
-    fun `retry-after is respected`() = runSuspend {
-        val clock = FakeRateLimitClock()
-        val provider = FlakyProvider("groq", rateLimitedTimes = 1, retryAfterMillis = 3_000L)
-        val gateway = gateway(provider, manager(clock), clock)
-
-        gateway.complete(request())
-
-        assertEquals(listOf(3_000L), clock.sleeps)
-    }
-
-    @Test
-    fun `a persistent 429 ends with a clear rate-limit error and never loops forever`() = runSuspend {
-        val clock = FakeRateLimitClock()
-        val provider = FlakyProvider("groq", rateLimitedTimes = 100)
-        val gateway = gateway(provider, manager(clock), clock, maxAttempts = 3)
+    fun `a 429 is not retried and returns a structured rate-limit error`() = runSuspend {
+        val provider = CountingProvider("groq", rateLimitedTimes = 100, retryAfterMillis = 3_000L)
+        val limits = manager()
+        val gateway = gateway(provider, limits)
 
         val error = assertFailsWith<ModelProviderError> { gateway.complete(request()) }
 
         assertEquals(ModelProviderErrorCode.RATE_LIMITED, error.code)
-        assertTrue(error.message!!.contains("persisted after"), error.message)
-        assertEquals(3, provider.calls, "no more attempts than the budget allows")
-        assertEquals(2, clock.sleeps.size)
+        assertEquals(false, error.retryable)
+        assertEquals(3_000L, error.retryAfterMillis)
+        assertEquals("llama-3.3-70b-versatile", error.details["modelId"])
+        assertEquals(1, provider.completeCalls, "a 429 must not start a retry loop")
+
+        val blocked = assertIs<RateLimitDecision.Blocked>(
+            limits.canRequest("groq", "llama-3.3-70b-versatile", 1, 1),
+        )
+        assertEquals(3_000L, blocked.retryAfterMs)
+    }
+
+    @Test
+    fun `missing retry-after still fails closed without retrying`() = runSuspend {
+        val provider = CountingProvider("groq", rateLimitedTimes = 100, retryAfterMillis = null)
+        val gateway = gateway(provider, manager())
+
+        val error = assertFailsWith<ModelProviderError> { gateway.complete(request()) }
+
+        assertEquals(ModelProviderErrorCode.RATE_LIMITED, error.code)
+        assertEquals(false, error.retryable)
+        assertNull(error.retryAfterMillis)
+        assertEquals(1, provider.completeCalls)
+    }
+
+    @Test
+    fun `a token-based 429 is recorded with token scope`() = runSuspend {
+        val provider = CountingProvider(
+            id = "groq",
+            rateLimitedTimes = 1,
+            retryAfterMillis = 1_500L,
+            rateLimitMessage = "tokens per minute exceeded",
+        )
+        val limits = manager()
+        val gateway = gateway(provider, limits)
+
+        val error = assertFailsWith<ModelProviderError> { gateway.complete(request()) }
+
+        assertEquals("TOKENS", error.details["scope"])
+        val blocked = assertIs<RateLimitDecision.Blocked>(
+            limits.canRequest("groq", "llama-3.3-70b-versatile", 1, 1),
+        )
+        assertEquals(RateLimitKind.TOKENS, blocked.kind)
+        assertEquals(1_500L, blocked.retryAfterMs)
     }
 
     @Test
@@ -157,7 +168,7 @@ class RateLimitedModelGatewayTest {
 
     @Test
     fun `a local provider is not rate limited even with a zero remote limit`() = runSuspend {
-        val provider = FlakyProvider("openai-compatible", rateLimitedTimes = 0)
+        val provider = CountingProvider("openai-compatible", rateLimitedTimes = 0)
         val limits = manager()
         limits.updateProfile(
             RateLimitProfile(
@@ -168,17 +179,19 @@ class RateLimitedModelGatewayTest {
         )
         val gateway = gateway(provider, limits)
 
-        val response = gateway.complete(request(config("openai-compatible", ModelProviderType.LOCAL_PHONE)))
+        val response = gateway.complete(
+            request(config("openai-compatible", ModelProviderType.LOCAL_PHONE, baseUrl = "http://127.0.0.1:8080/v1")),
+        )
 
         assertEquals("ok", response.content)
-        assertEquals(1, provider.calls)
+        assertEquals(1, provider.completeCalls)
     }
 
     @Test
     fun `usage from the provider is recorded by the manager`() = runSuspend {
         val tracker = DefaultUsageTracker()
-        val limits = DefaultRateLimitManager(tracker = tracker, unknownRemoteLimits = null)
-        val provider = FlakyProvider("groq", rateLimitedTimes = 0, usage = ModelUsage(totalTokens = 42))
+        val limits = DefaultRateLimitManager(tracker = tracker)
+        val provider = CountingProvider("groq", usage = ModelUsage(totalTokens = 42))
         val gateway = gateway(provider, limits)
 
         gateway.complete(request())
@@ -189,16 +202,60 @@ class RateLimitedModelGatewayTest {
     }
 
     @Test
-    fun `streaming retries only before any event is forwarded`() = runSuspend {
-        val clock = FakeRateLimitClock()
-        val provider = FlakyProvider("groq", rateLimitedTimes = 1)
-        val gateway = gateway(provider, manager(clock), clock)
-        val events = mutableListOf<ModelStreamEvent>()
+    fun `streaming and non-streaming use the same manager`() = runSuspend {
+        val tracker = DefaultUsageTracker()
+        val limits = DefaultRateLimitManager(tracker = tracker)
+        limits.updateProfile(
+            RateLimitProfile(
+                providerId = "groq",
+                requestsPerMinute = 2,
+                source = RateLimitSource.APP_CONFIGURED,
+            ),
+        )
+        val provider = CountingProvider("groq")
+        val gateway = gateway(provider, limits)
 
-        val response = gateway.stream(request()) { events += it }
+        gateway.complete(request())
+        gateway.stream(request()) { }
 
-        assertEquals("ok", response.content)
-        // Started + TextDelta from the successful attempt only.
-        assertEquals(2, events.size)
+        assertEquals(1, provider.completeCalls)
+        assertEquals(1, provider.streamCalls)
+        assertEquals(2L, tracker.totals("groq", "llama-3.3-70b-versatile").single().requestCount)
+
+        val error = assertFailsWith<ModelProviderError> { gateway.complete(request()) }
+        assertEquals(ModelProviderErrorCode.RATE_LIMITED, error.code)
+        assertEquals(1, provider.completeCalls, "blocked admission must not call the provider")
+    }
+
+    @Test
+    fun `gemini groq and local openai-compatible still use the gateway path`() = runSuspend {
+        val gemini = CountingProvider("gemini")
+        val groq = CountingProvider("groq")
+        val local = CountingProvider("openai-compatible")
+        val limits = manager()
+        val base = DefaultModelGateway()
+        base.register(gemini)
+        base.register(groq)
+        base.register(local)
+        val gateway = RateLimitedModelGateway(base, limits)
+
+        gateway.complete(
+            request(
+                config(
+                    "gemini",
+                    ModelProviderType.CUSTOM,
+                    "gemini-2.5-flash",
+                    "https://generativelanguage.googleapis.com/v1beta",
+                ),
+            ),
+        )
+        gateway.complete(request(config("groq")))
+        gateway.complete(
+            request(config("openai-compatible", ModelProviderType.LOCAL_PHONE, "qwen", "http://127.0.0.1:8080/v1")),
+        )
+
+        assertEquals(1, gemini.completeCalls)
+        assertEquals(1, groq.completeCalls)
+        assertEquals(1, local.completeCalls)
     }
 }

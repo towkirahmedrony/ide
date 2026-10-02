@@ -212,6 +212,43 @@ class GeminiModelProviderTest {
     }
 
     @Test
+    fun `http 429 parses Retry-After`() = runBlocking {
+        val transport = FakeHttpTransport(
+            response = HttpResponseSpec(
+                statusCode = 429,
+                body = """{"error":{"status":"RESOURCE_EXHAUSTED","message":"quota exceeded"}}""",
+                headers = mapOf("Retry-After" to listOf("1.5")),
+            ),
+        )
+
+        val error = runCatching {
+            GeminiModelProvider(transport = transport).complete(
+                ModelRequest(config = config(), messages = listOf(ModelMessage.user("ping"))),
+            )
+        }.exceptionOrNull() as ModelProviderError
+
+        assertEquals(ModelProviderErrorCode.RATE_LIMITED, error.code)
+        assertEquals(1_500L, error.retryAfterMillis)
+        assertEquals("RESOURCE_EXHAUSTED", error.providerErrorType)
+    }
+
+    @Test
+    fun `http 429 without Retry-After leaves retryAfterMillis null`() = runBlocking {
+        val transport = FakeHttpTransport(
+            response = HttpResponseSpec(429, """{"error":{"status":"RESOURCE_EXHAUSTED","message":"quota exceeded"}}"""),
+        )
+
+        val error = runCatching {
+            GeminiModelProvider(transport = transport).complete(
+                ModelRequest(config = config(), messages = listOf(ModelMessage.user("ping"))),
+            )
+        }.exceptionOrNull() as ModelProviderError
+
+        assertEquals(ModelProviderErrorCode.RATE_LIMITED, error.code)
+        assertEquals(null, error.retryAfterMillis)
+    }
+
+    @Test
     fun `a 404 is a failure, not an accepted connection`() = runBlocking {
         val transport = FakeHttpTransport(
             response = HttpResponseSpec(404, """{"error":{"code":404,"status":"NOT_FOUND","message":"not found"}}"""),

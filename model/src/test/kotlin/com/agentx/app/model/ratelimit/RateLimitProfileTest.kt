@@ -39,16 +39,17 @@ class RateLimitProfileTest {
         )
 
         val limits = profile.effectiveLimits()
-        assertEquals(90, limits.requestsPerMinute)
-        assertEquals(900L, limits.tokensPerMinute)
-        assertEquals(900, limits.requestsPerDay)
+        assertEquals(Quota.Known(90L), limits.requestsPerMinute)
+        assertEquals(Quota.Known(900L), limits.tokensPerMinute)
+        assertEquals(Quota.Known(900L), limits.requestsPerDay)
+        assertTrue(limits.tokensPerDay.isUnknown)
     }
 
     @Test
     fun `a zero limit stays zero so it still denies admission`() {
         val profile = RateLimitProfile(providerId = "groq", requestsPerMinute = 0)
 
-        assertEquals(0, profile.effectiveLimits().requestsPerMinute)
+        assertEquals(Quota.Known(0L), profile.effectiveLimits().requestsPerMinute)
     }
 
     @Test

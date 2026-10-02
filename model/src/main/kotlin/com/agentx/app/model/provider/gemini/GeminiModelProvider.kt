@@ -28,6 +28,7 @@ import com.agentx.app.model.http.HttpRequestSpec
 import com.agentx.app.model.http.HttpResponseSpec
 import com.agentx.app.model.http.HttpTransport
 import com.agentx.app.model.http.UrlConnectionHttpTransport
+import com.agentx.app.model.ratelimit.RetryAfter
 import com.agentx.app.model.json.Json
 import com.agentx.app.model.json.JsonCodec
 import com.agentx.app.model.json.JsonObject
@@ -341,6 +342,7 @@ class GeminiModelProvider(
             httpStatus = status,
             providerErrorType = info.status,
             retryable = status == 429 || status in 500..599,
+            retryAfterMillis = if (status == 429) RetryAfter.parseMillis(response.headers) else null,
         )
     }
 

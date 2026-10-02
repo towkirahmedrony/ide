@@ -22,19 +22,19 @@ import kotlin.coroutines.cancellation.CancellationException
  *
  * It delegates every registration/resolution call unchanged and wraps only
  * [complete] and [stream]. Each attempt acquires admission control first; the
- * permit is reconciled with the provider's real usage on success and released on
- * failure. A provider 429 is retried centrally, respecting `Retry-After`, under
- * the same admission control — providers never retry on their own.
+ * reservation is reconciled with the provider's real usage on success and
+ * released on failure.
  *
- * Local runtimes ([ModelProviderType.LOCAL_PHONE]) bypass rate limiting entirely
- * so a local Qwen model keeps working with no remote quota involved.
+ * A provider 429 is recorded centrally and returned as a structured rate-limit
+ * error. This phase does not retry and does not switch models.
+ *
+ * Local runtimes ([ModelProviderType.LOCAL_PHONE] / [isLocalRuntime]) bypass
+ * rate limiting so a local model keeps working with no remote quota involved.
  */
 class RateLimitedModelGateway(
     private val delegate: ModelGateway,
     private val rateLimits: RateLimitManager,
     private val tokenEstimator: TokenEstimator = HeuristicTokenEstimator(),
-    private val backoff: RateLimitBackoff = RateLimitBackoff(),
-    private val clock: RateLimitClock = SystemRateLimitClock(),
 ) : ModelGateway {
 
     override fun register(provider: ModelProvider) = delegate.register(provider)
@@ -51,51 +51,44 @@ class RateLimitedModelGateway(
 
     override fun capabilities(request: ModelRequest): ModelCapabilities = delegate.capabilities(request)
 
-    override suspend fun complete(request: ModelRequest): ModelResponse =
-        execute(request, allowRetry = { true }) { delegate.complete(request) }
+    override suspend fun complete(request: ModelRequest): ModelResponse = execute(request) { delegate.complete(request) }
 
     override suspend fun stream(
         request: ModelRequest,
         onEvent: (ModelStreamEvent) -> Unit,
-    ): ModelResponse {
-        // Once any event has been forwarded, a retry would duplicate output.
-        var emitted = false
-        val forwarding: (ModelStreamEvent) -> Unit = { event ->
-            emitted = true
-            onEvent(event)
-        }
-        return execute(request, allowRetry = { !emitted }) { delegate.stream(request, forwarding) }
-    }
+    ): ModelResponse = execute(request) { delegate.stream(request, onEvent) }
 
     private suspend fun execute(
         request: ModelRequest,
-        allowRetry: () -> Boolean,
         block: suspend () -> ModelResponse,
     ): ModelResponse {
         val admission = admissionFor(request)
-        var attempts = 0
-        while (true) {
-            val permit = rateLimits.acquire(admission)
-            try {
-                val response = block()
-                rateLimits.complete(permit, response.usage)
-                return response
-            } catch (cancelled: CancellationException) {
-                rateLimits.abandon(permit)
-                throw cancelled
-            } catch (error: ModelProviderError) {
-                rateLimits.abandon(permit)
-                if (error.code != ModelProviderErrorCode.RATE_LIMITED) throw error
-                rateLimits.noteRateLimited(admission)
-                attempts += 1
-                if (!backoff.canRetry(attempts) || !allowRetry()) {
-                    throw rateLimitExhausted(error, admission, attempts)
-                }
-                clock.sleep(backoff.delayMillis(attempts, error.retryAfterMillis))
-            } catch (error: Throwable) {
-                rateLimits.abandon(permit)
-                throw error
-            }
+        when (val decision = rateLimits.canRequest(admission)) {
+            is RateLimitDecision.Blocked -> throw decision.toError()
+            RateLimitDecision.Allowed -> Unit
+        }
+        val reservation = rateLimits.reserve(admission)
+        try {
+            val response = block()
+            rateLimits.complete(reservation, response.usage)
+            return response
+        } catch (cancelled: CancellationException) {
+            rateLimits.abandon(reservation)
+            throw cancelled
+        } catch (error: ModelProviderError) {
+            rateLimits.abandon(reservation)
+            if (error.code != ModelProviderErrorCode.RATE_LIMITED) throw error
+            val kind = rateLimitKindOf(error.message, error.providerErrorType)
+            rateLimits.recordRateLimited(
+                providerId = admission.providerId,
+                modelId = admission.modelId,
+                retryAfterMs = error.retryAfterMillis,
+                kind = kind,
+            )
+            throw structuredRateLimit(error, admission, kind)
+        } catch (error: Throwable) {
+            rateLimits.abandon(reservation)
+            throw error
         }
     }
 
@@ -103,40 +96,39 @@ class RateLimitedModelGateway(
         providerId = request.config.providerId,
         modelId = request.model,
         accountId = request.config.metadata[ACCOUNT_METADATA_KEY]?.takeIf { it.isNotBlank() },
-        estimatedInputTokens = tokenEstimator.estimateInputTokens(request).toLong(),
-        estimatedOutputTokens = tokenEstimator.estimateOutputTokens(request).toLong(),
+        estimatedInputTokens = tokenEstimator.estimateInputTokens(request),
+        estimatedOutputTokens = tokenEstimator.estimateOutputTokens(request),
         rateLimited = isRemote(request.config),
     )
 
-    /** A local, on-device runtime shares no remote quota and is exempt. */
     private fun isRemote(config: ModelConfig): Boolean {
         if (config.isLocalRuntime()) return false
         val providerType = config.metadata[PROVIDER_TYPE_METADATA_KEY] ?: return true
         return !providerType.equals(ModelProviderType.LOCAL_PHONE.name, ignoreCase = true)
     }
 
-    private fun rateLimitExhausted(
+    private fun structuredRateLimit(
         cause: ModelProviderError,
         request: RateLimitRequest,
-        attempts: Int,
+        kind: RateLimitKind,
     ): ModelProviderError = ModelProviderError(
         code = ModelProviderErrorCode.RATE_LIMITED,
-        message = "Rate limit for ${request.providerId}/${request.modelId} persisted after " +
-            "$attempts attempt${if (attempts == 1) "" else "s"}",
+        message = cause.message ?: "Rate limit for ${request.providerId}/${request.modelId}",
         providerId = request.providerId,
-        httpStatus = cause.httpStatus,
+        httpStatus = cause.httpStatus ?: 429,
         providerErrorType = cause.providerErrorType,
         retryable = false,
         retryAfterMillis = cause.retryAfterMillis,
-        details = mapOf("attempts" to attempts),
+        details = cause.details + mapOf(
+            "modelId" to request.modelId,
+            "scope" to kind.name,
+            "retryAfterMs" to cause.retryAfterMillis,
+        ),
         cause = cause,
     )
 
     companion object {
-        /** Set by the connection registry; only local presets are exempt. */
         const val PROVIDER_TYPE_METADATA_KEY: String = "providerType"
-
-        /** Optional account discriminator for multi-account rate-limit scopes. */
         const val ACCOUNT_METADATA_KEY: String = "accountId"
     }
 }

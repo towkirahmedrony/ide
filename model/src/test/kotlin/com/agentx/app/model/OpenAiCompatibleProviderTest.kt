@@ -257,6 +257,26 @@ class OpenAiCompatibleProviderTest {
 
         assertEquals(ModelProviderErrorCode.RATE_LIMITED, error.code)
         assertTrue(error.retryable)
+        assertNull(error.retryAfterMillis)
+    }
+
+    @Test
+    fun `http 429 parses Retry-After seconds`() {
+        val transport = FakeHttpTransport(
+            response = HttpResponseSpec(
+                statusCode = 429,
+                body = """{"error":{"message":"slow down"}}""",
+                headers = mapOf("Retry-After" to listOf("2")),
+            ),
+        )
+        val provider = provider(transport)
+
+        val error = assertFailsWith<ModelProviderError> {
+            runSuspend { provider.complete(request(openAiConfig(), ModelMessage.user("hi"))) }
+        }
+
+        assertEquals(ModelProviderErrorCode.RATE_LIMITED, error.code)
+        assertEquals(2_000L, error.retryAfterMillis)
     }
 
     @Test

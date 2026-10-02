@@ -50,10 +50,8 @@ data class RateLimitKey(
  * A configured admission limit for a provider or one of its models.
  *
  * Every numeric limit is optional on purpose: not every provider exposes all of
- * them, and a `null` limit means "unknown", never "unlimited". The manager
- * decides how to treat unknown limits (see
- * [DefaultRateLimitManager.unknownRemoteLimits]) instead of silently allowing
- * an unlimited number of requests.
+ * them, and a `null` limit means "unknown", never a guessed number. Unknown
+ * dimensions are not enforced until a source supplies a [Quota.Known] value.
  *
  * The app may always configure a value *lower* than the provider's. It may never
  * configure one higher when authoritative metadata exists — see [clamp].
@@ -69,6 +67,8 @@ data class RateLimitProfile(
     val tokensPerMinute: Long? = null,
     /** Requests allowed per rolling day window. */
     val requestsPerDay: Int? = null,
+    /** Tokens (input + output) allowed per rolling day window. */
+    val tokensPerDay: Long? = null,
     /** Maximum requests in flight at once. */
     val maxConcurrentRequests: Int? = null,
     /** When false the scope is explicitly unlimited and no default is applied. */
@@ -90,6 +90,7 @@ data class RateLimitProfile(
         requirePositiveOrNull("requestsPerMinute", requestsPerMinute)
         requirePositiveOrNull("tokensPerMinute", tokensPerMinute)
         requirePositiveOrNull("requestsPerDay", requestsPerDay)
+        requirePositiveOrNull("tokensPerDay", tokensPerDay)
         requirePositiveOrNull("maxConcurrentRequests", maxConcurrentRequests)
     }
 
@@ -108,14 +109,16 @@ data class RateLimitProfile(
         get() = requestsPerMinute != null ||
             tokensPerMinute != null ||
             requestsPerDay != null ||
+            tokensPerDay != null ||
             maxConcurrentRequests != null
 
-    /** The limits after the configured safety margin is applied. */
+    /** The limits after the configured safety margin is applied. Unknown stays unknown. */
     fun effectiveLimits(): RateLimitLimits = RateLimitLimits(
-        requestsPerMinute = requestsPerMinute?.scaleInt(),
-        tokensPerMinute = tokensPerMinute?.scaleLong(),
-        requestsPerDay = requestsPerDay?.scaleInt(),
-        maxConcurrentRequests = maxConcurrentRequests,
+        requestsPerMinute = Quota.of(requestsPerMinute?.scaleInt()?.toLong()),
+        tokensPerMinute = Quota.of(tokensPerMinute?.scaleLong()),
+        requestsPerDay = Quota.of(requestsPerDay?.scaleInt()?.toLong()),
+        tokensPerDay = Quota.of(tokensPerDay?.scaleLong()),
+        maxConcurrentRequests = Quota.of(maxConcurrentRequests?.toLong()),
     )
 
     /**
@@ -142,6 +145,7 @@ data class RateLimitProfile(
             requestsPerMinute = minInt(requestsPerMinute, ceiling.requestsPerMinute),
             tokensPerMinute = minLong(tokensPerMinute, ceiling.tokensPerMinute),
             requestsPerDay = minInt(requestsPerDay, ceiling.requestsPerDay),
+            tokensPerDay = minLong(tokensPerDay, ceiling.tokensPerDay),
             maxConcurrentRequests = minInt(maxConcurrentRequests, ceiling.maxConcurrentRequests),
         )
     }
@@ -158,18 +162,25 @@ data class RateLimitProfile(
     }
 }
 
-/** Numeric limits already reduced by a profile's safety margin. */
+/**
+ * Numeric limits already reduced by a profile's safety margin.
+ *
+ * Each dimension is [Quota.Known] or [Quota.Unknown]. Unknown is never treated
+ * as zero or as unlimited-by-guess; the manager simply does not enforce it.
+ */
 data class RateLimitLimits(
-    val requestsPerMinute: Int? = null,
-    val tokensPerMinute: Long? = null,
-    val requestsPerDay: Int? = null,
-    val maxConcurrentRequests: Int? = null,
+    val requestsPerMinute: Quota = Quota.Unknown,
+    val tokensPerMinute: Quota = Quota.Unknown,
+    val requestsPerDay: Quota = Quota.Unknown,
+    val tokensPerDay: Quota = Quota.Unknown,
+    val maxConcurrentRequests: Quota = Quota.Unknown,
 ) {
     val isEmpty: Boolean
-        get() = requestsPerMinute == null &&
-            tokensPerMinute == null &&
-            requestsPerDay == null &&
-            maxConcurrentRequests == null
+        get() = requestsPerMinute.isUnknown &&
+            tokensPerMinute.isUnknown &&
+            requestsPerDay.isUnknown &&
+            tokensPerDay.isUnknown &&
+            maxConcurrentRequests.isUnknown
 
     companion object {
         val NONE: RateLimitLimits = RateLimitLimits()

@@ -33,8 +33,8 @@ internal class CancellingRateLimitClock(
 internal fun request(
     providerId: String = "groq",
     modelId: String = "llama-3.3-70b-versatile",
-    inputTokens: Long = 10L,
-    outputTokens: Long = 10L,
+    inputTokens: Int = 10,
+    outputTokens: Int = 10,
     rateLimited: Boolean = true,
 ): RateLimitRequest = RateLimitRequest(
     providerId = providerId,

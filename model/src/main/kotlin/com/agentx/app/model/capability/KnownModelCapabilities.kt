@@ -15,9 +15,6 @@ import com.agentx.app.model.preset.ModelProviderIds
  */
 object KnownModelCapabilities {
 
-    val ALL: List<ModelCapabilityProfile> =
-        GEMINI + GROQ + LOCAL + ADDITIONAL_PROVIDERS
-
     val GEMINI: List<ModelCapabilityProfile> = listOf(
         gemini("gemini-2.5-flash", "Gemini 2.5 Flash"),
         gemini("gemini-2.5-flash-lite", "Gemini 2.5 Flash Lite"),
@@ -73,6 +70,9 @@ object KnownModelCapabilities {
         placeholder(ModelProviderIds.CLOUDFLARE, "cloudflare"),
         placeholder(ModelProviderIds.NVIDIA_NIM, "nvidia-nim"),
     )
+
+    val ALL: List<ModelCapabilityProfile> =
+        GEMINI + GROQ + LOCAL + ADDITIONAL_PROVIDERS
 
     private fun gemini(modelId: String, displayName: String): ModelCapabilityProfile = ModelCapabilityProfile(
         providerId = ModelProviderIds.GEMINI,

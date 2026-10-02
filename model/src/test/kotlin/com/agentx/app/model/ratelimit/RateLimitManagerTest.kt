@@ -11,19 +11,15 @@ import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class RateLimitManagerTest {
 
-    private fun manager(
-        clock: RateLimitClock = FakeRateLimitClock(),
-        tracker: UsageTracker = DefaultUsageTracker(),
-        maxWaitMillis: Long = 60_000L,
-    ) = DefaultRateLimitManager(
+    private fun manager(clock: RateLimitClock = FakeRateLimitClock()) = DefaultRateLimitManager(
         clock = clock,
-        tracker = tracker,
-        unknownRemoteLimits = null,
-        maxWaitMillis = maxWaitMillis,
+        tracker = DefaultUsageTracker(),
     )
 
     private fun profile(
@@ -32,6 +28,7 @@ class RateLimitManagerTest {
         rpm: Int? = null,
         tpm: Long? = null,
         rpd: Int? = null,
+        tpd: Long? = null,
         concurrent: Int? = null,
     ) = RateLimitProfile(
         providerId = providerId,
@@ -39,213 +36,187 @@ class RateLimitManagerTest {
         requestsPerMinute = rpm,
         tokensPerMinute = tpm,
         requestsPerDay = rpd,
+        tokensPerDay = tpd,
         maxConcurrentRequests = concurrent,
         source = RateLimitSource.APP_CONFIGURED,
     )
 
-    // --- rate limits -------------------------------------------------------
-
     @Test
-    fun `requests per minute admits up to the limit then waits for the next window`() = runSuspend {
-        val clock = FakeRateLimitClock()
-        val manager = manager(clock)
+    fun `known request-per-minute limit admits then blocks`() = runSuspend {
+        val manager = manager()
         manager.updateProfile(profile(rpm = 2))
 
-        manager.complete(manager.acquire(request()), null)
-        manager.complete(manager.acquire(request()), null)
-        assertEquals(emptyList(), clock.sleeps)
+        manager.complete(manager.reserve(request()), null)
+        manager.complete(manager.reserve(request()), null)
 
-        // The third request must wait for the next minute window rather than
-        // being admitted immediately.
-        manager.complete(manager.acquire(request()), null)
-        assertEquals(listOf(60_000L), clock.sleeps)
+        val decision = manager.canRequest(request())
+        val blocked = assertIs<RateLimitDecision.Blocked>(decision)
+        assertEquals(RateLimitKind.REQUEST, blocked.kind)
+        assertEquals(60_000L, blocked.retryAfterMs)
+
+        val error = assertFailsWith<ModelProviderError> { manager.reserve(request()) }
+        assertEquals(ModelProviderErrorCode.RATE_LIMITED, error.code)
+        assertEquals(false, error.retryable)
     }
 
     @Test
-    fun `a zero limit denies admission with a clear rate-limit error`() = runSuspend {
+    fun `a zero request-per-minute limit denies admission`() = runSuspend {
         val manager = manager()
         manager.updateProfile(profile(rpm = 0))
 
-        val error = assertFailsWith<ModelProviderError> { manager.acquire(request()) }
+        val error = assertFailsWith<ModelProviderError> { manager.reserve(request()) }
         assertEquals(ModelProviderErrorCode.RATE_LIMITED, error.code)
         assertTrue(error.message!!.contains("no requests per minute"))
     }
 
     @Test
-    fun `tokens per minute reserves and waits when exhausted`() = runSuspend {
-        val clock = FakeRateLimitClock()
-        val manager = manager(clock)
+    fun `known token-per-minute limit reserves and blocks when exhausted`() = runSuspend {
+        val manager = manager()
         manager.updateProfile(profile(tpm = 100L))
 
-        // Keep the first reservation open: 60 tokens are held in this window.
-        val first = manager.acquire(request(inputTokens = 30, outputTokens = 30))
+        val first = manager.reserve(request(inputTokens = 30, outputTokens = 30))
         assertTrue(first.entries.isNotEmpty())
-        assertEquals(emptyList(), clock.sleeps)
 
-        // 60 already reserved; another 60 would exceed 100, so it waits.
-        val second = manager.acquire(request(inputTokens = 30, outputTokens = 30))
-        assertTrue(second.entries.isNotEmpty())
-        assertEquals(listOf(60_000L), clock.sleeps)
+        val decision = manager.canRequest(request(inputTokens = 30, outputTokens = 30))
+        val blocked = assertIs<RateLimitDecision.Blocked>(decision)
+        assertEquals(RateLimitKind.TOKENS, blocked.kind)
+        assertEquals(60_000L, blocked.retryAfterMs)
     }
 
     @Test
-    fun `a single request larger than the whole token budget is rejected, not looped`() = runSuspend {
+    fun `a single request larger than the token budget is rejected`() = runSuspend {
         val manager = manager()
         manager.updateProfile(profile(tpm = 50L))
 
         val error = assertFailsWith<ModelProviderError> {
-            manager.acquire(request(inputTokens = 100, outputTokens = 100))
+            manager.reserve(request(inputTokens = 100, outputTokens = 100))
         }
         assertEquals(ModelProviderErrorCode.RATE_LIMITED, error.code)
         assertTrue(error.message!!.contains("single request"))
+        assertEquals("TOKENS", error.details["scope"])
     }
 
     @Test
-    fun `requests per day waits until the day rolls over`() = runSuspend {
+    fun `requests per day blocks until the day window ends`() = runSuspend {
         val clock = FakeRateLimitClock(now = 1_000L)
-        val manager = manager(clock, maxWaitMillis = DefaultRateLimitManager.DAY_MILLIS)
+        val manager = manager(clock)
         manager.updateProfile(profile(rpd = 1))
 
-        manager.complete(manager.acquire(request()), null)
-        manager.complete(manager.acquire(request()), null)
+        manager.complete(manager.reserve(request()), null)
 
-        assertEquals(1, clock.sleeps.size)
-        assertEquals(DefaultRateLimitManager.DAY_MILLIS - 1_000L, clock.sleeps.single())
+        val blocked = assertIs<RateLimitDecision.Blocked>(manager.canRequest(request()))
+        assertEquals(RateLimitKind.REQUEST, blocked.kind)
+        assertEquals(DefaultRateLimitManager.DAY_MILLIS - 1_000L, blocked.retryAfterMs)
     }
 
-    // --- provider and model scopes -----------------------------------------
+    @Test
+    fun `known tokens per day limit blocks`() = runSuspend {
+        val clock = FakeRateLimitClock(now = 1_000L)
+        val manager = manager(clock)
+        manager.updateProfile(profile(tpd = 50L))
+
+        manager.complete(manager.reserve(request(inputTokens = 40, outputTokens = 10)), null)
+
+        val blocked = assertIs<RateLimitDecision.Blocked>(
+            manager.canRequest(request(inputTokens = 1, outputTokens = 0)),
+        )
+        assertEquals(RateLimitKind.TOKENS, blocked.kind)
+        assertEquals(DefaultRateLimitManager.DAY_MILLIS - 1_000L, blocked.retryAfterMs)
+    }
+
+    @Test
+    fun `unknown limits are not replaced with guessed numbers`() = runSuspend {
+        val manager = manager()
+
+        assertIs<RateLimitDecision.Allowed>(manager.canRequest(request()))
+        val reservation = manager.reserve(request())
+        assertTrue(reservation.bypassed)
+        assertTrue(reservation.entries.isEmpty())
+    }
+
+    @Test
+    fun `provider and model buckets are isolated`() = runSuspend {
+        val manager = manager()
+        manager.updateProfile(profile(modelId = "llama-3.3-70b-versatile", rpm = 1))
+
+        manager.complete(manager.reserve(request(modelId = "llama-3.3-70b-versatile")), null)
+
+        assertIs<RateLimitDecision.Blocked>(
+            manager.canRequest(request(modelId = "llama-3.3-70b-versatile")),
+        )
+        assertIs<RateLimitDecision.Allowed>(
+            manager.canRequest(request(modelId = "llama-3.1-8b-instant")),
+        )
+        manager.complete(manager.reserve(request(modelId = "llama-3.1-8b-instant")), null)
+    }
 
     @Test
     fun `both provider and model limits are enforced`() = runSuspend {
-        val clock = FakeRateLimitClock()
-        val manager = manager(clock)
+        val manager = manager()
         manager.updateProfile(profile(rpm = 10))
         manager.updateProfile(profile(modelId = "llama-3.3-70b-versatile", rpm = 1))
 
-        manager.complete(manager.acquire(request()), null)
-        assertEquals(emptyList(), clock.sleeps)
+        manager.complete(manager.reserve(request()), null)
 
-        // Provider has room (10 rpm) but the model bucket is exhausted (1 rpm).
-        manager.complete(manager.acquire(request()), null)
-        assertEquals(listOf(60_000L), clock.sleeps)
+        val blocked = assertIs<RateLimitDecision.Blocked>(manager.canRequest(request()))
+        assertEquals(RateLimitKind.REQUEST, blocked.kind)
     }
 
     @Test
-    fun `a model-scoped profile does not throttle a different model`() = runSuspend {
-        val clock = FakeRateLimitClock()
-        val manager = manager(clock)
-        manager.updateProfile(profile(modelId = "llama-3.3-70b-versatile", rpm = 1))
-
-        manager.complete(manager.acquire(request(modelId = "llama-3.3-70b-versatile")), null)
-        manager.complete(manager.acquire(request(modelId = "llama-3.1-8b-instant")), null)
-
-        assertEquals(emptyList(), clock.sleeps)
-    }
-
-    @Test
-    fun `an unknown remote provider falls back to the safe default rather than unlimited`() = runSuspend {
-        val clock = FakeRateLimitClock()
-        val manager = DefaultRateLimitManager(
-            clock = clock,
-            tracker = DefaultUsageTracker(),
-            unknownRemoteLimits = RateLimitLimits(requestsPerMinute = 1),
-        )
-
-        manager.complete(manager.acquire(request()), null)
-        assertEquals(emptyList(), clock.sleeps)
-        manager.complete(manager.acquire(request()), null)
-        assertEquals(listOf(60_000L), clock.sleeps)
-    }
-
-    @Test
-    fun `a local request without a profile bypasses admission entirely`() = runSuspend {
-        val clock = FakeRateLimitClock()
-        val manager = manager(clock)
+    fun `a local request without a profile bypasses admission`() = runSuspend {
+        val manager = manager()
         manager.updateProfile(profile(rpm = 0))
 
-        val permit = manager.acquire(request(rateLimited = false))
-        assertTrue(permit.entries.isEmpty())
-        assertTrue(clock.sleeps.isEmpty())
+        val reservation = manager.reserve(request(rateLimited = false))
+        assertTrue(reservation.bypassed)
+        assertTrue(reservation.entries.isEmpty())
+        assertIs<RateLimitDecision.Allowed>(manager.canRequest(request(rateLimited = false)))
     }
 
-    // --- concurrency -------------------------------------------------------
+    @Test
+    fun `successful reconciliation uses actual tokens instead of the estimate`() = runSuspend {
+        val manager = manager()
+        manager.updateProfile(profile(tpm = 1_000L))
+
+        val permit = manager.reserve(request(inputTokens = 400, outputTokens = 100))
+        manager.reconcile(permit, actualInputTokens = 60, actualOutputTokens = 40, success = true)
+
+        val second = manager.reserve(request(inputTokens = 700, outputTokens = 100))
+        assertTrue(second.entries.isNotEmpty())
+        assertIs<RateLimitDecision.Allowed>(manager.canRequest(request(inputTokens = 100, outputTokens = 0)))
+    }
 
     @Test
-    fun `concurrency waits for an in-flight request to finish`() = runSuspend {
-        val clock = FakeRateLimitClock()
-        val manager = DefaultRateLimitManager(
-            clock = clock,
-            tracker = DefaultUsageTracker(),
-            unknownRemoteLimits = null,
-            maxWaitMillis = 100L,
-            concurrencyPollMillis = 50L,
+    fun `failed request reconciliation refunds the reservation`() = runSuspend {
+        val manager = manager()
+        manager.updateProfile(profile(tpm = 1_000L, rpm = 1))
+
+        val permit = manager.reserve(request(inputTokens = 900, outputTokens = 100))
+        manager.reconcile(permit, actualInputTokens = null, actualOutputTokens = null, success = false)
+
+        val second = manager.reserve(request(inputTokens = 900, outputTokens = 100))
+        assertTrue(second.entries.isNotEmpty())
+    }
+
+    @Test
+    fun `unavailable actual usage keeps the estimated reservation`() = runSuspend {
+        val manager = manager()
+        manager.updateProfile(profile(tpm = 1_000L))
+
+        val permit = manager.reserve(request(inputTokens = 400, outputTokens = 100))
+        manager.reconcile(permit, actualInputTokens = null, actualOutputTokens = null, success = true)
+
+        val blocked = assertIs<RateLimitDecision.Blocked>(
+            manager.canRequest(request(inputTokens = 400, outputTokens = 200)),
         )
-        manager.updateProfile(profile(concurrent = 1))
-
-        val first = manager.acquire(request())
-        val error = assertFailsWith<ModelProviderError> { manager.acquire(request()) }
-        assertEquals(ModelProviderErrorCode.RATE_LIMITED, error.code)
-        assertTrue(clock.sleeps.isNotEmpty())
-
-        // Releasing the first request frees the slot.
-        manager.complete(first, null)
-        val second = manager.acquire(request())
-        assertTrue(second.entries.isNotEmpty())
-    }
-
-    // --- cancellation ------------------------------------------------------
-
-    @Test
-    fun `cancellation while waiting stops the request without reserving`() = runSuspend {
-        val clock = CancellingRateLimitClock(cancelAfter = 1)
-        val manager = manager(clock)
-        manager.updateProfile(profile(rpm = 1))
-
-        manager.complete(manager.acquire(request()), null)
-
-        assertFailsWith<kotlin.coroutines.cancellation.CancellationException> {
-            manager.acquire(request())
-        }
-        assertEquals(1, clock.sleeps)
-    }
-
-    // --- reconciliation ----------------------------------------------------
-
-    @Test
-    fun `actual usage reconciles the reservation instead of the estimate`() = runSuspend {
-        val clock = FakeRateLimitClock()
-        val manager = manager(clock)
-        manager.updateProfile(profile(tpm = 1_000L))
-
-        val permit = manager.acquire(request(inputTokens = 400, outputTokens = 100))
-        // Provider reports far fewer tokens than reserved.
-        manager.complete(permit, ModelUsage(promptTokens = 60, completionTokens = 40, totalTokens = 100))
-
-        // Only 100 tokens are now counted, so a fresh 800-token request fits.
-        val second = manager.acquire(request(inputTokens = 700, outputTokens = 100))
-        assertTrue(second.entries.isNotEmpty())
-        assertEquals(emptyList(), clock.sleeps)
+        assertEquals(RateLimitKind.TOKENS, blocked.kind)
     }
 
     @Test
-    fun `abandoning a request refunds the token reservation`() = runSuspend {
-        val clock = FakeRateLimitClock()
-        val manager = manager(clock)
-        manager.updateProfile(profile(tpm = 1_000L))
-
-        val permit = manager.acquire(request(inputTokens = 900, outputTokens = 100))
-        manager.abandon(permit)
-
-        val second = manager.acquire(request(inputTokens = 900, outputTokens = 100))
-        assertTrue(second.entries.isNotEmpty())
-        assertEquals(emptyList(), clock.sleeps)
-    }
-
-    @Test
-    fun `closing a permit twice never double counts usage`() = runSuspend {
+    fun `closing a reservation twice never double counts usage`() = runSuspend {
         val tracker = DefaultUsageTracker()
-        val manager = manager(tracker = tracker)
-        val permit = manager.acquire(request())
+        val manager = DefaultRateLimitManager(tracker = tracker)
+        val permit = manager.reserve(request())
 
         manager.complete(permit, ModelUsage(totalTokens = 7))
         manager.complete(permit, ModelUsage(totalTokens = 7))
@@ -257,44 +228,53 @@ class RateLimitManagerTest {
     }
 
     @Test
-    fun `usage records distinguish estimated from actual tokens`() = runSuspend {
-        val tracker = DefaultUsageTracker()
-        val manager = manager(tracker = tracker)
+    fun `http 429 records temporary unavailability`() = runSuspend {
+        val clock = FakeRateLimitClock(now = 5_000L)
+        val manager = manager(clock)
+        manager.recordRateLimited("groq", "llama-3.3-70b-versatile", retryAfterMs = 2_000L)
 
-        manager.complete(manager.acquire(request()), null)
-        manager.complete(manager.acquire(request()), ModelUsage(totalTokens = 12))
-
-        val totals = tracker.totals("groq", "llama-3.3-70b-versatile").single()
-        assertEquals(2L, totals.requestCount)
-        assertEquals(12L, totals.totalTokens)
+        val blocked = assertIs<RateLimitDecision.Blocked>(manager.canRequest(request()))
+        assertEquals(2_000L, blocked.retryAfterMs)
+        assertTrue(blocked.reason.contains("provider reported a rate limit"))
     }
 
     @Test
-    fun `rate limit events are counted separately`() = runSuspend {
-        val tracker = DefaultUsageTracker()
-        val manager = manager(tracker = tracker)
+    fun `token-based rate-limit response blocks until the known window ends`() = runSuspend {
+        val clock = FakeRateLimitClock(now = 10_000L)
+        val manager = manager(clock)
+        manager.updateProfile(profile(tpm = 1_000L))
+        manager.recordRateLimited(
+            providerId = "groq",
+            modelId = "llama-3.3-70b-versatile",
+            retryAfterMs = null,
+            kind = RateLimitKind.TOKENS,
+        )
 
-        manager.noteRateLimited(request())
-        manager.noteRateLimited(request())
-
-        assertEquals(2L, tracker.totals("groq", "llama-3.3-70b-versatile").single().rateLimitEvents)
+        val blocked = assertIs<RateLimitDecision.Blocked>(manager.canRequest(request()))
+        assertEquals(RateLimitKind.TOKENS, blocked.kind)
+        assertEquals(50_000L, blocked.retryAfterMs)
     }
 
-    // --- threading ---------------------------------------------------------
+    @Test
+    fun `missing retry-after does not invent a wait when limits are unknown`() = runSuspend {
+        val manager = manager()
+        manager.recordRateLimited("groq", "llama-3.3-70b-versatile", retryAfterMs = null)
+
+        assertIs<RateLimitDecision.Allowed>(manager.canRequest(request()))
+        assertNull(manager.canRequest(request()).let { (it as? RateLimitDecision.Blocked)?.retryAfterMs })
+    }
 
     @Test
     fun `two simultaneous requests cannot both pass a one-request quota`() = runBlocking {
         val manager = DefaultRateLimitManager(
             clock = FakeRateLimitClock(),
             tracker = DefaultUsageTracker(),
-            unknownRemoteLimits = null,
-            maxWaitMillis = 0L,
         )
         manager.updateProfile(profile(rpm = 1))
 
         val outcomes = listOf(
-            async(Dispatchers.Default) { runCatching { manager.acquire(request()) }.isSuccess },
-            async(Dispatchers.Default) { runCatching { manager.acquire(request()) }.isSuccess },
+            async(Dispatchers.Default) { runCatching { manager.reserve(request()) }.isSuccess },
+            async(Dispatchers.Default) { runCatching { manager.reserve(request()) }.isSuccess },
         ).awaitAll()
 
         assertEquals(1, outcomes.count { it }, "exactly one request may be admitted")
