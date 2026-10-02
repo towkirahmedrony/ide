@@ -23,7 +23,6 @@ import com.agentx.app.model.runtime.ModelEndpoint
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
-import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -419,10 +418,11 @@ class ModelCatalogTest {
 
         val result = geminiRegistry(transport).refresh(ModelProviderIds.GEMINI, force = true)
 
-        val failure = assertIs<ForgeResult.Failure>(result)
-        assertTrue(failure.error.message.contains("none of them can run text generation"), failure.error.message)
+        assertTrue(result is ForgeResult.Failure)
+        val message = (result as ForgeResult.Failure).error.message
+        assertTrue(message.contains("none of them can run text generation"), message)
         // The reason a model was dropped is reported, never the credential.
-        assertTrue(!failure.error.message.contains("secret-key"))
+        assertTrue(!message.contains("secret-key"))
     }
 
     @Test
@@ -433,7 +433,7 @@ class ModelCatalogTest {
 
         val result = geminiRegistry(transport).refresh(ModelProviderIds.GEMINI, force = true)
 
-        assertIs<ForgeResult.Failure>(result)
+        assertTrue(result is ForgeResult.Failure)
     }
 
     @Test
