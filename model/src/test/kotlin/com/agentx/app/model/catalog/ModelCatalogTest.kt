@@ -1,10 +1,14 @@
 package com.agentx.app.model.catalog
 
 import com.agentx.app.core.ForgeResult
+import com.agentx.app.core.logging.LogRecord
+import com.agentx.app.core.logging.LogLevel
+import com.agentx.app.core.logging.ForgeLoggers
 import com.agentx.app.model.DefaultModelGateway
 import com.agentx.app.model.FakeHttpTransport
 import com.agentx.app.model.ModelConfig
 import com.agentx.app.model.connect.ModelSetupKind
+import com.agentx.app.model.connect.normalizeModelId
 import com.agentx.app.model.http.HttpResponseSpec
 import com.agentx.app.model.manager.GatewayModelConnectionRegistry
 import com.agentx.app.model.preset.EndpointConfig
@@ -19,6 +23,7 @@ import com.agentx.app.model.runtime.ModelEndpoint
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -285,8 +290,11 @@ class ModelCatalogTest {
         val snapshot = (geminiRegistry(transport).refresh(ModelProviderIds.GEMINI, force = true) as ForgeResult.Success).value
 
         assertEquals(listOf("gemini-2.0-flash", "gemini-9-ultra-preview"), snapshot.models.map { it.id })
-        assertEquals("https://generativelanguage.googleapis.com/v1beta/openai/models", transport.lastRequest?.url)
-        assertEquals("Bearer secret-key", transport.lastRequest?.headers?.get("Authorization"))
+        // Gemini's list is the Gemini API's, with its documented key header; the
+        // OpenAI-compatible chat root is never asked for /models.
+        assertEquals("https://generativelanguage.googleapis.com/v1beta/models", transport.lastRequest?.url)
+        assertEquals("secret-key", transport.lastRequest?.headers?.get("x-goog-api-key"))
+        assertFalse(transport.lastRequest?.headers?.containsKey("Authorization") == true)
         val flash = assertNotNull(snapshot.find("gemini-2.0-flash"))
         assertEquals("Gemini 2.0 Flash", flash.displayName)
         assertEquals(1_048_576, flash.contextWindowTokens)
@@ -297,7 +305,139 @@ class ModelCatalogTest {
     }
 
     @Test
-    fun `gemini models that cannot do text chat are filtered out`() = runSuspend {
+    fun `a models prefixed gemini name is normalized to the id chat sends`() = runSuspend {
+        val transport = FakeHttpTransport(
+            response = HttpResponseSpec(
+                statusCode = 200,
+                body = geminiModelsJson(
+                    geminiModel("gemini-3.1-flash", displayName = "Gemini 3.1 Flash"),
+                    geminiModel("gemini-2.0-flash"),
+                ),
+            ),
+        )
+
+        val snapshot = (geminiRegistry(transport).refresh(ModelProviderIds.GEMINI, force = true) as ForgeResult.Success).value
+
+        assertEquals(listOf("gemini-2.0-flash", "gemini-3.1-flash"), snapshot.models.map { it.id })
+        val flash = assertNotNull(snapshot.find("gemini-3.1-flash"))
+        assertEquals("Gemini 3.1 Flash", flash.displayName)
+        // Both forms resolve to the same saved model.
+        assertEquals("gemini-3.1-flash", normalizeModelId("models/gemini-3.1-flash"))
+        assertEquals(flash, snapshot.find("models/gemini-3.1-flash"))
+    }
+
+    @Test
+    fun `generation metadata wins over the model name`() = runSuspend {
+        val transport = FakeHttpTransport(
+            response = HttpResponseSpec(
+                statusCode = 200,
+                body = geminiModelsJson(
+                    // A name the old heuristics would have filtered, but the API
+                    // reports text generation, so it is a valid choice.
+                    geminiModel("gemini-2.5-flash-image"),
+                    geminiModel("gemini-embedding-001", methods = listOf("embedContent")),
+                ),
+            ),
+        )
+
+        val snapshot = (geminiRegistry(transport).refresh(ModelProviderIds.GEMINI, force = true) as ForgeResult.Success).value
+
+        assertEquals(listOf("gemini-2.5-flash-image"), snapshot.models.map { it.id })
+    }
+
+    @Test
+    fun `discovery reports what it received and rejected, never the key`() = runSuspend {
+        val records = mutableListOf<LogRecord>()
+        val logger = ForgeLoggers.create(level = LogLevel.INFO, sink = { records += it })
+        val transport = FakeHttpTransport(
+            response = HttpResponseSpec(
+                statusCode = 200,
+                body = geminiModelsJson(
+                    geminiModel("gemini-3.1-flash"),
+                    geminiModel("gemini-embedding-001", methods = listOf("embedContent")),
+                ),
+            ),
+        )
+        val registry = DefaultModelCatalogRegistry(
+            connections = {
+                mapOf(
+                    ModelProviderIds.GEMINI to ModelConfig(
+                        providerId = ModelProviderIds.GEMINI,
+                        baseUrl = geminiBaseUrl,
+                        model = "gemini-3.1-flash",
+                        apiKey = "secret-key",
+                    ),
+                )
+            },
+            factory = RemoteModelCatalogFactory(
+                transport = transport,
+                clock = { 0L },
+                catalogLogger = logger,
+            ),
+        )
+
+        registry.refresh(ModelProviderIds.GEMINI, force = true)
+
+        val entry = records.single { it.message == "Model list received" }
+        assertEquals(ModelProviderIds.GEMINI, entry.fields["providerId"])
+        // The path is reported, but no credential and no full authenticated URL.
+        assertEquals("generativelanguage.googleapis.com/v1beta/models", entry.fields["path"])
+        assertEquals(2, entry.fields["received"])
+        assertEquals(1, entry.fields["accepted"])
+        assertEquals(1, entry.fields["rejected"])
+        assertTrue(
+            (entry.fields["rejectionReasons"] as List<*>).toString().contains("does not report generateContent"),
+            entry.fields["rejectionReasons"].toString(),
+        )
+        assertEquals(200, entry.fields["httpStatus"])
+        assertTrue(records.none { it.fields.values.toString().contains("secret-key") })
+    }
+
+    @Test
+    fun `a malformed model list is a failure and keeps the previous list`() = runSuspend {
+        val transport = FakeHttpTransport(
+            response = HttpResponseSpec(statusCode = 200, body = geminiModelsJson(geminiModel("gemini-3.1-flash"))),
+        )
+        val registry = geminiRegistry(transport)
+        registry.refresh(ModelProviderIds.GEMINI, force = true)
+
+        transport.response = HttpResponseSpec(statusCode = 200, body = "<html>not a model list</html>")
+        val result = registry.refresh(ModelProviderIds.GEMINI, force = true)
+
+        assertTrue(result is ForgeResult.Failure)
+        assertEquals(listOf("gemini-3.1-flash"), registry.availableModels(ModelProviderIds.GEMINI).map { it.id })
+    }
+
+    @Test
+    fun `a response with no usable models is a failure, not an empty catalog`() = runSuspend {
+        val transport = FakeHttpTransport(
+            response = HttpResponseSpec(
+                statusCode = 200,
+                body = geminiModelsJson(geminiModel("gemini-embedding-001", methods = listOf("embedContent"))),
+            ),
+        )
+
+        val result = geminiRegistry(transport).refresh(ModelProviderIds.GEMINI, force = true)
+
+        val failure = assertIs<ForgeResult.Failure>(result)
+        assertTrue(failure.error.message.contains("none of them can run text generation"), failure.error.message)
+        // The reason a model was dropped is reported, never the credential.
+        assertTrue(!failure.error.message.contains("secret-key"))
+    }
+
+    @Test
+    fun `an empty model list response is a failure`() = runSuspend {
+        val transport = FakeHttpTransport(
+            response = HttpResponseSpec(statusCode = 200, body = geminiModelsJson()),
+        )
+
+        val result = geminiRegistry(transport).refresh(ModelProviderIds.GEMINI, force = true)
+
+        assertIs<ForgeResult.Failure>(result)
+    }
+
+    @Test
+    fun `models the metadata excludes are filtered out`() = runSuspend {
         val transport = FakeHttpTransport(
             response = HttpResponseSpec(
                 statusCode = 200,
@@ -306,7 +446,6 @@ class ModelCatalogTest {
                     geminiModel("gemini-embedding-001", methods = listOf("embedContent")),
                     geminiModel("imagen-3.0-generate-002", methods = listOf("predict")),
                     geminiModel("veo-3.0-generate-preview", methods = listOf("predictLongRunning")),
-                    geminiModel("gemini-2.0-flash-tts", methods = listOf("generateContent")),
                 ),
             ),
         )
@@ -314,6 +453,28 @@ class ModelCatalogTest {
         val snapshot = (geminiRegistry(transport).refresh(ModelProviderIds.GEMINI, force = true) as ForgeResult.Success).value
 
         assertEquals(listOf("gemini-2.0-flash"), snapshot.models.map { it.id })
+    }
+
+    @Test
+    fun `a model is not dropped on its name when the metadata says it generates text`() = runSuspend {
+        val transport = FakeHttpTransport(
+            response = HttpResponseSpec(
+                statusCode = 200,
+                body = geminiModelsJson(
+                    // The family heuristics alone would have removed these, but the
+                    // API reports text generation for both.
+                    geminiModel("gemini-2.5-flash-preview-tts"),
+                    geminiModel("gemini-2.5-flash-image"),
+                ),
+            ),
+        )
+
+        val snapshot = (geminiRegistry(transport).refresh(ModelProviderIds.GEMINI, force = true) as ForgeResult.Success).value
+
+        assertEquals(
+            listOf("gemini-2.5-flash-image", "gemini-2.5-flash-preview-tts"),
+            snapshot.models.map { it.id },
+        )
     }
 
     @Test
@@ -447,8 +608,9 @@ class ModelCatalogTest {
             "https://api.groq.com/openai/v1/models",
             factory.modelsUrlFor(ModelProviderIds.GROQ, "https://api.groq.com/openai/v1"),
         )
+        // Gemini keeps its own list; /models is never appended to the chat surface.
         assertEquals(
-            "$geminiBaseUrl/models",
+            "https://generativelanguage.googleapis.com/v1beta/models",
             factory.modelsUrlFor(ModelProviderIds.GEMINI, geminiBaseUrl),
         )
     }

@@ -3,6 +3,7 @@ package com.agentx.app.model.catalog
 import com.agentx.app.core.ForgeError
 import com.agentx.app.core.ForgeResult
 import com.agentx.app.model.ModelCapabilities
+import com.agentx.app.model.connect.normalizeModelId
 import com.agentx.app.model.json.Json
 import com.agentx.app.model.json.JsonCodec
 import com.agentx.app.model.json.JsonObject
@@ -59,7 +60,17 @@ data class ModelCatalogSnapshot(
 ) {
     fun availableModels(): List<CatalogModel> = models.filter { it.available }
 
-    fun find(modelId: String): CatalogModel? = models.firstOrNull { it.id == modelId }
+    /**
+     * Looks a model up by id.
+     *
+     * The id is normalized first, so a caller holding `models/<id>` (the form a
+     * provider's own list may use) finds the same entry as a caller holding the
+     * bare `<id>` that a preset stores.
+     */
+    fun find(modelId: String): CatalogModel? {
+        val wanted = normalizeModelId(modelId)
+        return models.firstOrNull { it.id == wanted }
+    }
 
     fun isAvailable(modelId: String): Boolean = find(modelId)?.available == true
 }

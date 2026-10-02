@@ -9,6 +9,7 @@ import java.net.ConnectException
 import java.net.SocketTimeoutException
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -209,19 +210,64 @@ class ModelApiDiscoveryTest {
     }
 
     @Test
-    fun `gemini uses the known openai-compatible root`() = runBlocking {
+    fun `gemini lists models at its own model list, not on the openai-compatible path`() = runBlocking {
         val transport = FakeHttpTransport(
             executeHandler = { request ->
-                assertTrue(request.url.startsWith("https://generativelanguage.googleapis.com/v1beta/openai"))
-                HttpResponseSpec(200, modelsJson("gemini-2.0-flash", "gemini-1.5-pro"))
+                // The compatible surface the chat uses has no /models route, so the
+                // list is read from the Gemini API and authenticated with its header.
+                assertEquals("https://generativelanguage.googleapis.com/v1beta/models", request.url)
+                assertEquals("AIza-test", request.headers["x-goog-api-key"])
+                assertFalse(request.headers.containsKey("Authorization"))
+                HttpResponseSpec(
+                    200,
+                    geminiModelsJson(geminiModel("gemini-3.1-flash"), geminiModel("gemini-2.0-flash")),
+                )
             },
         )
         val result = ModelApiDiscovery(transport).discoverKnown(
             spec = KnownModelProviders.gemini,
             credential = "AIza-test",
+            preferredModelId = "gemini-3.1-flash",
         )
+
         val found = assertIs<DiscoveryResult.Found>(result)
-        assertEquals("gemini-2.0-flash", found.api.selectedModelId)
+        // The chat endpoint a preset keeps is the OpenAI-compatible root, and the
+        // list endpoint is never mistaken for it.
+        assertEquals("https://generativelanguage.googleapis.com/v1beta/openai", found.api.rootUrl)
+        assertEquals("", found.api.apiBasePath)
+        // `models/<id>` and `<id>` resolve to the same model.
+        assertEquals(listOf("gemini-3.1-flash", "gemini-2.0-flash"), found.api.modelIds)
+        assertEquals("gemini-3.1-flash", found.api.selectedModelId)
+    }
+
+    @Test
+    fun `a model list that parses to nothing is reported, not replaced by the fallback`() = runBlocking {
+        val transport = FakeHttpTransport(executeHandler = { HttpResponseSpec(200, "{\"models\":[]}") })
+
+        val result = ModelApiDiscovery(transport).discoverKnown(
+            spec = KnownModelProviders.gemini,
+            credential = "AIza-test",
+        )
+
+        val failed = assertIs<DiscoveryResult.Failed>(result)
+        assertEquals(DiscoveryFailureKind.MALFORMED, failed.kind)
+        assertTrue(failed.message.contains("/v1beta/models"), failed.message)
+        // The built-in compatibility list must not be presented as discovery output.
+        assertFalse(failed.message.contains(KnownModelProviders.gemini.suggestedModels.first()))
+    }
+
+    @Test
+    fun `a missing model list names the path it asked for`() = runBlocking {
+        val transport = FakeHttpTransport(executeHandler = { HttpResponseSpec(404, "") })
+
+        val result = ModelApiDiscovery(transport).discoverKnown(
+            spec = KnownModelProviders.gemini,
+            credential = "AIza-test",
+        )
+
+        val failed = assertIs<DiscoveryResult.Failed>(result)
+        assertEquals(DiscoveryFailureKind.NOT_FOUND, failed.kind)
+        assertTrue(failed.message.contains("/v1beta/models"), failed.message)
     }
 
     @Test
@@ -249,3 +295,12 @@ class ModelApiDiscoveryTest {
         assertTrue(failed.message.contains("API key"))
     }
 }
+
+/** Gemini's model list root. */
+private fun geminiModelsJson(vararg models: String): String =
+    "{\"models\":[" + models.joinToString(",") + "]}"
+
+/** One Gemini model entry, named the way the API names it. */
+private fun geminiModel(id: String, methods: List<String> = listOf("generateContent")): String =
+    "{\"name\":\"models/$id\",\"displayName\":\"$id\",\"supportedGenerationMethods\":[" +
+        methods.joinToString(",") { "\"$it\"" } + "]}"

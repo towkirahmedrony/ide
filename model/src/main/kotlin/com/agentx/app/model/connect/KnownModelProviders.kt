@@ -45,16 +45,75 @@ enum class ModelSetupKind(
     }
 }
 
+/**
+ * How a provider's model list is authenticated.
+ *
+ * A hosted compatible API usually accepts the chat credential as a bearer token,
+ * but a provider's own API may document a dedicated key header instead. Keeping
+ * the key in a header — never in a query string — also keeps it out of any URL
+ * the app reports or logs.
+ */
+enum class ModelListAuth(val headerName: String, val scheme: String) {
+    BEARER(headerName = "Authorization", scheme = "Bearer "),
+    API_KEY_HEADER(headerName = "x-goog-api-key", scheme = ""),
+}
+
 data class KnownProviderSpec(
     val kind: ModelSetupKind,
     val rootUrl: String,
     val apiBasePath: String,
     val protocol: ModelApiProtocol = ModelApiProtocol.OPENAI_COMPATIBLE,
     val providerType: ModelProviderType = ModelProviderType.REMOTE_OPENAI_COMPATIBLE,
+    /**
+     * Host-relative path of the provider's own model list, when that is not
+     * `<rootUrl><apiBasePath>/models`.
+     *
+     * Gemini is the case this exists for: its model list is served by the Gemini
+     * API (`/v1beta/models`), not by the OpenAI-compatible surface the chat calls
+     * use, so asking the compatible surface for `/models` answers 404. The path is
+     * relative to the provider's own host, so a preset pointed at a proxy still
+     * lists models through that proxy.
+     */
+    val modelListPath: String? = null,
+    /** How the model list is authenticated; chat authentication is unchanged. */
+    val modelListAuth: ModelListAuth = ModelListAuth.BEARER,
     /** Models offered when /models cannot be listed. Never an API secret. */
     val suggestedModels: List<String> = emptyList(),
     val preferredModel: String? = null,
-)
+) {
+
+    /** The model list URL for this provider, on [baseUrl]'s host. */
+    fun modelListUrlFor(baseUrl: String = rootUrl): String =
+        modelListPath?.let { originOf(baseUrl) + it }
+            ?: (rootUrl.trimEnd('/') + apiBasePath + MODEL_LIST_PATH)
+
+    companion object {
+        const val MODEL_LIST_PATH: String = "/models"
+    }
+}
+
+/**
+ * The host and path of [url], for diagnostics.
+ *
+ * Never includes the query string or any credential: it exists so a wrong
+ * request path can be reported without leaking a key.
+ */
+internal fun diagnosticPath(url: String): String = runCatching {
+    val uri = java.net.URI(url.trim())
+    val path = uri.path?.takeIf { it.isNotBlank() } ?: "/"
+    "${uri.host ?: ""}$path"
+}.getOrElse { url.substringAfter("://", url) }
+
+/** The scheme, host and port of [url], without any path, query or fragment. */
+internal fun originOf(url: String): String {
+    val trimmed = url.trim()
+    return runCatching {
+        val uri = java.net.URI(trimmed)
+        val scheme = uri.scheme ?: return@runCatching trimmed.trimEnd('/')
+        val host = uri.host ?: return@runCatching trimmed.trimEnd('/')
+        if (uri.port > 0) "$scheme://$host:${uri.port}" else "$scheme://$host"
+    }.getOrDefault(trimmed.trimEnd('/'))
+}
 
 object KnownModelProviders {
 
@@ -62,6 +121,12 @@ object KnownModelProviders {
         kind = ModelSetupKind.GEMINI,
         rootUrl = "https://generativelanguage.googleapis.com/v1beta/openai",
         apiBasePath = "",
+        // Chat goes through the OpenAI-compatible surface, but the model list is
+        // Gemini's own (`/v1beta/models`, key in the documented header). The
+        // compatible surface has no /models route, which is why discovery must not
+        // ask it for one.
+        modelListPath = "/v1beta/models",
+        modelListAuth = ModelListAuth.API_KEY_HEADER,
         /**
          * Compatibility list only. It is used when the account's own model list
          * cannot be read (no key yet, offline, rate limited) so the app stays
@@ -109,13 +174,15 @@ fun selectDiscoveredModel(
     preferred: String? = null,
     catalogPreferred: String? = null,
 ): String? {
-    val unique = ids.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+    // Both sides are normalized, so a list that says `models/gemini-3.1-flash`
+    // still matches a saved preset that says `gemini-3.1-flash`.
+    val unique = ids.map(::normalizeModelId).filter { it.isNotEmpty() }.distinct()
     if (unique.isEmpty()) return null
     preferred?.takeIf { it.isNotBlank() }?.let { want ->
-        unique.firstOrNull { it == want }?.let { return it }
+        unique.firstOrNull { it == normalizeModelId(want) }?.let { return it }
     }
     catalogPreferred?.takeIf { it.isNotBlank() }?.let { want ->
-        unique.firstOrNull { it == want }?.let { return it }
+        unique.firstOrNull { it == normalizeModelId(want) }?.let { return it }
     }
     if (unique.size == 1) return unique.single()
 
@@ -129,10 +196,20 @@ fun selectDiscoveredModel(
     if (clearlyInstruct.size == 1) return clearlyInstruct.single()
 
     catalogPreferred?.let { want ->
-        usable.firstOrNull { it.startsWith(want) }?.let { return it }
+        usable.firstOrNull { it.startsWith(normalizeModelId(want)) }?.let { return it }
     }
     return null
 }
+
+/**
+ * The single form of a model id.
+ *
+ * A provider may report a model as `models/<id>` (Gemini's model list does) while
+ * a preset, a catalog entry and the UI all use the bare `<id>` that is sent to
+ * chat. Normalizing both sides keeps the two forms resolving to one model.
+ */
+fun normalizeModelId(raw: String): String =
+    raw.trim().removePrefix("models/").trim().trimStart('/').trim()
 
 internal fun isUtilityModel(id: String): Boolean {
     val lower = id.lowercase()

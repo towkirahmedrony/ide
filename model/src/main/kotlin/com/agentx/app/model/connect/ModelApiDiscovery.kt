@@ -27,6 +27,18 @@ enum class DiscoveryFailureKind {
     UNKNOWN,
 }
 
+/**
+ * Where a probe should read the model list, when that is not the endpoint the
+ * provider chats on.
+ *
+ * [url] never carries a credential: a provider that needs a key header gets one,
+ * which also keeps the key out of every logged or displayed URL.
+ */
+data class ModelListRequest(
+    val url: String,
+    val auth: ModelListAuth = ModelListAuth.BEARER,
+)
+
 data class DiscoveredApi(
     val protocol: ModelApiProtocol,
     val rootUrl: String,
@@ -117,6 +129,15 @@ class ModelApiDiscovery(
             credential = credential,
             preferredModelId = preferredModelId,
             catalogPreferred = spec.preferredModel,
+            // A provider that lists models outside its chat surface (Gemini) is
+            // asked at its own model-list path with its documented credential
+            // header; the chat endpoint the preset keeps is unaffected.
+            modelList = spec.modelListPath?.let { path ->
+                ModelListRequest(
+                    url = spec.modelListUrlFor(candidate.rootUrl),
+                    auth = spec.modelListAuth,
+                )
+            },
         )
         if (result is DiscoveryResult.Failed && result.kind == DiscoveryFailureKind.NOT_FOUND) {
             val fallbackIds = spec.suggestedModels
@@ -233,11 +254,13 @@ class ModelApiDiscovery(
         credential: String?,
         preferredModelId: String?,
         catalogPreferred: String?,
+        modelList: ModelListRequest? = null,
     ): DiscoveryResult {
-        val url = healthUrl(candidate, protocol)
+        val url = modelList?.url ?: healthUrl(candidate, protocol)
         val headers = LinkedHashMap<String, String>()
         headers["Accept"] = "application/json"
-        credential?.takeIf { it.isNotBlank() }?.let { headers["Authorization"] = "Bearer $it" }
+        val auth = modelList?.auth ?: ModelListAuth.BEARER
+        credential?.takeIf { it.isNotBlank() }?.let { headers[auth.headerName] = "${auth.scheme}$it" }
 
         val response = try {
             transport.execute(
@@ -259,7 +282,7 @@ class ModelApiDiscovery(
         }
 
         return when (response.statusCode) {
-            in 200..299 -> parseSuccess(candidate, protocol, response.body, preferredModelId, catalogPreferred)
+            in 200..299 -> parseSuccess(candidate, protocol, response.body, preferredModelId, catalogPreferred, url)
             401, 403 -> DiscoveryResult.Failed(
                 kind = DiscoveryFailureKind.AUTHENTICATION_REQUIRED,
                 message = "The server is reachable, but authentication is required.",
@@ -268,7 +291,9 @@ class ModelApiDiscovery(
             )
             404 -> DiscoveryResult.Failed(
                 kind = DiscoveryFailureKind.NOT_FOUND,
-                message = "No model list was found at this path.",
+                // The path (never the credential, never a query string) is part of
+                // the message: it is what makes a wrong model-list location obvious.
+                message = "No model list was found at ${diagnosticPath(url)}.",
                 httpStatus = 404,
                 reachable = true,
             )
@@ -312,6 +337,7 @@ class ModelApiDiscovery(
         credential: String?,
         preferredModelId: String?,
         catalogPreferred: String?,
+        modelList: ModelListRequest? = null,
     ): DiscoveryResult {
         var attempt = 0
         while (true) {
@@ -321,6 +347,7 @@ class ModelApiDiscovery(
                 credential = credential,
                 preferredModelId = preferredModelId,
                 catalogPreferred = catalogPreferred,
+                modelList = modelList,
             )
             if (result !is DiscoveryResult.Failed || result.kind != DiscoveryFailureKind.TIMEOUT) return result
             if (attempt >= timeoutRetries) return result
@@ -334,6 +361,7 @@ class ModelApiDiscovery(
         body: String,
         preferredModelId: String?,
         catalogPreferred: String?,
+        requestedUrl: String,
     ): DiscoveryResult {
         val root = runCatching { JsonCodec.parse(body).objectOrNull() }.getOrNull()
             ?: return DiscoveryResult.Failed(
@@ -347,6 +375,16 @@ class ModelApiDiscovery(
                 message = "Server is reachable, but AgentX could not detect a supported API.",
                 reachable = true,
             )
+        if (models.isEmpty()) {
+            // Answered, but with nothing usable. Reported as a parsing outcome so it
+            // is never mistaken for "no compatible provider", and so a caller cannot
+            // present its built-in fallback as if discovery had found these models.
+            return DiscoveryResult.Failed(
+                kind = DiscoveryFailureKind.MALFORMED,
+                message = "The model list at ${diagnosticPath(requestedUrl)} contained no models.",
+                reachable = true,
+            )
+        }
         val selected = selectDiscoveredModel(models, preferredModelId, catalogPreferred)
         val api = DiscoveredApi(
             protocol = protocol,
@@ -372,16 +410,26 @@ class ModelApiDiscovery(
         }
     }
 
+    /**
+     * Model ids from a model-list response.
+     *
+     * The OpenAI-compatible `data` array is tried first, then a provider's own
+     * `models` array (Gemini's shape, where each entry names the model as
+     * `models/<id>`). Ids are normalized so the two forms resolve to one model.
+     */
     private fun extractModels(protocol: ModelApiProtocol, root: com.agentx.app.model.json.JsonObject): List<String>? {
         val items = when (protocol) {
-            ModelApiProtocol.OPENAI_COMPATIBLE -> root.arrayOrNull("data")
+            ModelApiProtocol.OPENAI_COMPATIBLE -> root.arrayOrNull("data") ?: root.arrayOrNull("models")
             ModelApiProtocol.OLLAMA -> root.arrayOrNull("models")
         } ?: return null
         return items.mapNotNull { item ->
             val obj = item.objectOrNull() ?: return@mapNotNull null
-            obj.stringOrNull("id") ?: obj.stringOrNull("name") ?: obj.stringOrNull("model")
+            (obj.stringOrNull("id") ?: obj.stringOrNull("name") ?: obj.stringOrNull("model"))
+                ?.let(::normalizeModelId)
+                ?.takeIf { it.isNotBlank() }
         }
     }
+
 
     private fun transportKind(error: Throwable): DiscoveryFailureKind = when (error) {
         is SocketTimeoutException -> DiscoveryFailureKind.TIMEOUT

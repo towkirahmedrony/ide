@@ -5,6 +5,9 @@ import com.agentx.app.core.ForgeErrorCode
 import com.agentx.app.core.ForgeResult
 import com.agentx.app.core.failure
 import com.agentx.app.core.success
+import com.agentx.app.core.logging.ForgeLogger
+import com.agentx.app.core.logging.ForgeLoggers
+import com.agentx.app.core.logging.LogLevel
 import com.agentx.app.model.ModelCapabilities
 import com.agentx.app.model.ModelConfig
 import com.agentx.app.model.http.HttpRequestSpec
@@ -17,6 +20,13 @@ import com.agentx.app.model.json.booleanOrNull
 import com.agentx.app.model.json.numberOrNull
 import com.agentx.app.model.json.objectOrNull
 import com.agentx.app.model.json.stringOrNull
+import com.agentx.app.model.connect.KnownModelProviders
+import com.agentx.app.model.connect.KnownProviderSpec
+import com.agentx.app.model.connect.ModelListAuth
+import com.agentx.app.model.connect.ModelSetupKind
+import com.agentx.app.model.connect.diagnosticPath
+import com.agentx.app.model.connect.normalizeModelId
+import com.agentx.app.model.connect.originOf
 import com.agentx.app.model.preset.ModelProviderIds
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -35,22 +45,24 @@ object GroqModelCatalog {
 }
 
 /**
- * Gemini's model list, from the OpenAI-compatible surface the Gemini provider
- * already talks to.
+ * Gemini's model list.
  *
- * The provider's base URL is `https://generativelanguage.googleapis.com/v1beta/openai`
- * (root plus the preset's empty API base path), so the model list is
- * `<baseUrl>/models` — the same endpoint the provider's health check and the
- * connect-time discovery already call. No second HTTP client and no scraping:
- * discovery is the API the account is already authenticated against.
+ * The chat endpoint is the OpenAI-compatible surface
+ * (`https://generativelanguage.googleapis.com/v1beta/openai`), but that surface
+ * has no `/models` route: asking it for one answers 404, which is why the
+ * provider appeared to have no models to discover. The list is served by the
+ * Gemini API itself, at `/v1beta/models`, authenticated with the documented key
+ * header. The URL is built from the connection's own host and the path declared
+ * by the provider catalogue, so a preset pointed at a proxy lists through that
+ * proxy and no host is hardcoded here.
  */
 object GeminiModelCatalog {
     const val PROVIDER_ID: String = ModelProviderIds.GEMINI
 
-    /** Model list of the Gemini OpenAI-compatible surface. */
-    const val MODELS_PATH_FROM_HOST: String = "/v1beta/openai/models"
+    /** Gemini's own model list, relative to the provider's host. */
+    const val MODELS_PATH_FROM_HOST: String = "/v1beta/models"
 
-    fun modelsUrl(baseUrl: String): String = baseUrl.trimEnd('/') + "/models"
+    fun modelsUrl(baseUrl: String): String = originOf(baseUrl) + MODELS_PATH_FROM_HOST
 }
 
 /**
@@ -66,14 +78,25 @@ class RemoteModelCatalog(
     override val providerId: String,
     /** Produces the model-list URL, or null when the provider is not connected. */
     private val modelsUrl: () -> String?,
-    /** Produces the bearer credential, or null for an unauthenticated endpoint. */
+    /** Produces the credential, or null for an unauthenticated endpoint. */
     private val credential: () -> String? = { null },
+    /**
+     * Where the credential goes. A hosted compatible API takes a bearer token;
+     * a provider's own API may document a dedicated key header (Gemini). The key
+     * never travels in the URL, so it cannot leak through a logged address.
+     */
+    private val authHeaderName: String = "Authorization",
+    private val authScheme: String = "Bearer ",
     private val transport: HttpTransport = UrlConnectionHttpTransport(),
     private val store: ModelCatalogStore = InMemoryModelCatalogStore(),
     private val ttlMillis: Long = DEFAULT_TTL_MILLIS,
     private val clock: () -> Long = System::currentTimeMillis,
     private val connectTimeoutMillis: Int = DEFAULT_TIMEOUT_MILLIS,
     private val readTimeoutMillis: Int = DEFAULT_TIMEOUT_MILLIS,
+    private val logger: ForgeLogger = ForgeLoggers.create(
+        level = LogLevel.INFO,
+        baseFields = mapOf("component" to "model-catalog"),
+    ),
 ) : ModelCatalog {
 
     private val lock = Any()
@@ -109,7 +132,7 @@ class RemoteModelCatalog(
 
         val headers = LinkedHashMap<String, String>()
         headers["Accept"] = "application/json"
-        credential()?.takeIf { it.isNotBlank() }?.let { headers["Authorization"] = "Bearer $it" }
+        credential()?.takeIf { it.isNotBlank() }?.let { headers[authHeaderName] = "$authScheme$it" }
 
         val response = try {
             transport.execute(
@@ -128,17 +151,62 @@ class RemoteModelCatalog(
         }
 
         if (!response.isSuccess) {
+            logger.warn(
+                "Model list request failed",
+                mapOf(
+                    "providerId" to providerId,
+                    "path" to diagnosticPath(url),
+                    "httpStatus" to response.statusCode,
+                    "count" to response.body.length,
+                ),
+            )
             return failure(
                 unavailable("The model list endpoint returned HTTP ${response.statusCode}.", response.statusCode),
             )
         }
 
-        val fetched = parseModels(response.body)
-        if (fetched == null) {
+        val parsed = parseModels(response.body)
+        if (parsed == null) {
+            logger.warn(
+                "Model list response could not be parsed",
+                mapOf(
+                    "providerId" to providerId,
+                    "path" to diagnosticPath(url),
+                    "httpStatus" to response.statusCode,
+                    "reason" to "the body is not a model list",
+                ),
+            )
             return failure(unavailable("The model list response could not be parsed."))
         }
+        logger.info(
+            "Model list received",
+            mapOf(
+                "providerId" to providerId,
+                "path" to diagnosticPath(url),
+                "httpStatus" to response.statusCode,
+                "received" to parsed.received,
+                "accepted" to parsed.models.size,
+                "rejected" to parsed.rejected.size,
+                "rejectionReasons" to parsed.rejected.take(REJECTION_SAMPLE_SIZE),
+            ),
+        )
+        // An answer that parsed but yielded nothing usable is reported as such: it
+        // must never look like "this provider has no models", and the caller must
+        // not present its built-in fallback as if discovery had returned these.
+        if (parsed.received == 0) {
+            return failure(unavailable("The model list response contained no models."))
+        }
+        if (parsed.models.isEmpty()) {
+            val reasons = parsed.rejected.take(REJECTION_SAMPLE_SIZE).joinToString("; ")
+            return failure(
+                unavailable(
+                    "The provider listed ${parsed.received} models, but none of them can run text " +
+                        "generation. Rejected: $reasons",
+                ),
+            )
+        }
 
-        val merged = merge(existing, fetched)
+        val merged = merge(existing, parsed.models)
         val fresh = ModelCatalogSnapshot(
             providerId = providerId,
             models = merged,
@@ -152,29 +220,57 @@ class RemoteModelCatalog(
 
     // --- parsing -----------------------------------------------------------
 
+    /** What a model list contained: what survived, and why the rest did not. */
+    private data class ParsedCatalog(
+        val models: List<CatalogModel>,
+        val received: Int,
+        val rejected: List<String>,
+    )
+
+    private data class ParsedModel(
+        val model: CatalogModel?,
+        val id: String,
+        val rejection: String? = null,
+    )
+
     /**
      * Parses a provider's model list, keeping only models this runtime can drive.
      *
-     * Two shapes are accepted, because the same endpoint can answer with either:
-     * the OpenAI-compatible `data` array, and the provider's own `models` array
-     * (Gemini's surface reports a display name and the token limits there). A
-     * missing field stays null — nothing is inferred from a model's name beyond
-     * the documented text-model filter.
+     * Two shapes are accepted, because providers answer with either: the
+     * OpenAI-compatible `data` array, and the provider's own `models` array
+     * (Gemini's model list reports `models/<id>`, a display name and the token
+     * limits). A missing field stays null — nothing about a model is invented.
      */
-    private fun parseModels(body: String): List<CatalogModel>? {
+    private fun parseModels(body: String): ParsedCatalog? {
         val root = runCatching { JsonCodec.parse(body).objectOrNull() }.getOrNull() ?: return null
         val entries = root.arrayOrNull("data") ?: root.arrayOrNull("models") ?: return null
-        return entries.mapNotNull { item -> item.objectOrNull()?.let(::parseModel) }
+        val parsed = entries.mapNotNull { item -> item.objectOrNull()?.let(::parseModel) }
+        return ParsedCatalog(
+            models = parsed.mapNotNull { it.model },
+            received = parsed.size,
+            rejected = parsed.mapNotNull { entry -> entry.rejection?.let { "${entry.id}: $it" } },
+        )
     }
 
-    private fun parseModel(model: JsonObject): CatalogModel? {
-        val rawId = model.stringOrNull("id") ?: model.stringOrNull("name") ?: return null
+    private fun parseModel(model: JsonObject): ParsedModel {
+        val rawId = model.stringOrNull("id") ?: model.stringOrNull("name")
         // Gemini reports `models/<id>`; the id sent to chat is the bare one.
-        val id = rawId.trim().removePrefix("models/").takeIf { it.isNotBlank() } ?: return null
+        val id = rawId?.let(::normalizeModelId).orEmpty()
+        if (id.isEmpty()) return ParsedModel(null, UNNAMED_MODEL, "the entry has no id or name")
         val methods = stringList(model, "supportedGenerationMethods", "supported_generation_methods")
-        if (!isRunnableTextModel(id, methods)) return null
+        if (!isRunnableTextModel(id, methods)) {
+            return ParsedModel(
+                model = null,
+                id = id,
+                rejection = if (methods.isEmpty()) {
+                    "not a text-generation model"
+                } else {
+                    "does not report $GENERATE_CONTENT_METHOD (${methods.joinToString("/")})"
+                },
+            )
+        }
         val deprecated = deprecationOf(model)
-        return CatalogModel(
+        val catalogModel = CatalogModel(
             id = id,
             displayName = (model.stringOrNull("displayName") ?: model.stringOrNull("display_name"))
                 ?.takeIf { it.isNotBlank() },
@@ -199,6 +295,7 @@ class RemoteModelCatalog(
             providerOwnedBy = model.stringOrNull("owned_by")?.takeIf { it.isNotBlank() },
             createdAtMillis = model.numberOrNull("created")?.toLong(),
         )
+        return ParsedModel(model = catalogModel, id = id)
     }
 
     /**
@@ -209,10 +306,13 @@ class RemoteModelCatalog(
      * non-text families, which is the documented behaviour for every provider.
      */
     private fun isRunnableTextModel(id: String, methods: List<String>): Boolean {
-        if (!isUsableTextModel(id)) return false
+        // The provider's own generation methods are proof, so they decide alone: a
+        // model that reports text generation is never dropped on its name, which
+        // keeps a newly released family (whose name nothing recognises yet) usable.
         if (methods.isNotEmpty()) {
             return methods.any { it.equals(GENERATE_CONTENT_METHOD, ignoreCase = true) }
         }
+        if (!isUsableTextModel(id)) return false
         if (providerId == ModelProviderIds.GEMINI) {
             val lower = id.lowercase()
             return GEMINI_NON_TEXT_MARKERS.none { lower.contains(it) }
@@ -286,6 +386,11 @@ class RemoteModelCatalog(
         /** The generation method that means "this model does text chat". */
         const val GENERATE_CONTENT_METHOD: String = "generateContent"
 
+        /** How many rejection reasons are reported, so a log stays readable. */
+        const val REJECTION_SAMPLE_SIZE: Int = 3
+
+        private const val UNNAMED_MODEL: String = "(unnamed)"
+
         /**
          * Gemini families that are not text-chat models: embeddings, image and
          * video generation, speech, and question answering. Applied only when the
@@ -355,9 +460,9 @@ fun interface ModelCatalogFactory {
 
 /**
  * Default factory: a connected provider gets a remote catalog pointed at its own
- * `<baseUrl>/models` endpoint, which is the OpenAI-compatible model list. Groq's
- * endpoint is `<host>/openai/v1/models` (see [GroqModelCatalog]) and Gemini's is
- * `<host>/v1beta/openai/models` (see [GeminiModelCatalog]).
+ * model list. Groq's is `<host>/openai/v1/models` (see [GroqModelCatalog]);
+ * Gemini's is Gemini's own `/v1beta/models` (see [GeminiModelCatalog]), because
+ * the OpenAI-compatible surface it chats on does not serve `/models`.
  *
  * Each provider keeps its own catalog, credential and cache: adding Gemini does
  * not change what Groq or a local endpoint resolves to.
@@ -367,18 +472,30 @@ class RemoteModelCatalogFactory(
     private val store: ModelCatalogStore = InMemoryModelCatalogStore(),
     private val ttlMillis: Long = RemoteModelCatalog.DEFAULT_TTL_MILLIS,
     private val clock: () -> Long = System::currentTimeMillis,
+    /** Diagnostics for what a model list returned; never carries a credential. */
+    private val catalogLogger: ForgeLogger = ForgeLoggers.create(
+        level = LogLevel.INFO,
+        baseFields = mapOf("component" to "model-catalog"),
+    ),
 ) : ModelCatalogFactory {
 
     override fun create(providerId: String, connection: ModelConfig): ModelCatalog? {
         if (!supports(providerId)) return null
+        val auth = KnownModelProviders.spec(ModelSetupKind.fromId(providerId))?.modelListAuth
+            ?: ModelListAuth.BEARER
         return RemoteModelCatalog(
             providerId = providerId,
             modelsUrl = { modelsUrlFor(providerId, connection.baseUrl) },
             credential = { connection.apiKey },
+            // Gemini's list is served by the Gemini API and takes the key in its own
+            // header; the credential used for chat is unchanged.
+            authHeaderName = auth.headerName,
+            authScheme = auth.scheme,
             transport = transport,
             store = store,
             ttlMillis = ttlMillis,
             clock = clock,
+            logger = catalogLogger,
         )
     }
 
@@ -391,11 +508,21 @@ class RemoteModelCatalogFactory(
     fun supports(providerId: String): Boolean =
         providerId == ModelProviderIds.GROQ || providerId == ModelProviderIds.GEMINI
 
-    /** The model-list endpoint of a supported provider's base URL. */
-    fun modelsUrlFor(providerId: String, baseUrl: String): String = when (providerId) {
-        ModelProviderIds.GROQ -> GroqModelCatalog.modelsUrl(baseUrl)
-        ModelProviderIds.GEMINI -> GeminiModelCatalog.modelsUrl(baseUrl)
-        else -> baseUrl.trimEnd('/') + "/models"
+    /**
+     * The model-list endpoint for a provider.
+     *
+     * A provider that declares its own model-list path (Gemini) is asked there, on
+     * the host of the connection itself, so `/models` is never appended to a
+     * surface that does not serve it. Everything else keeps `<baseUrl>/models`.
+     */
+    fun modelsUrlFor(providerId: String, baseUrl: String): String {
+        val spec = KnownModelProviders.spec(ModelSetupKind.fromId(providerId))
+        if (spec?.modelListPath != null) return spec.modelListUrlFor(baseUrl)
+        return when (providerId) {
+            ModelProviderIds.GROQ -> GroqModelCatalog.modelsUrl(baseUrl)
+            ModelProviderIds.GEMINI -> GeminiModelCatalog.modelsUrl(baseUrl)
+            else -> baseUrl.trimEnd('/') + KnownProviderSpec.MODEL_LIST_PATH
+        }
     }
 }
 
