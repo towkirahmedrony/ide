@@ -16,6 +16,9 @@ enum class AgentErrorCode {
     INVALID_DELEGATION,
     NOT_CONFIGURED,
     MODEL_CAPABILITY_UNSUPPORTED,
+
+    /** The resolved model cannot run the role right now (capability/disabled/rate limit). */
+    MODEL_NOT_ELIGIBLE,
     UNKNOWN,
 }
 

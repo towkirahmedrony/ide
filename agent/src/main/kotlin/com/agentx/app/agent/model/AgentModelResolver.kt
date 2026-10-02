@@ -12,6 +12,7 @@ import com.agentx.app.model.capability.ModelCapabilityProfile
 import com.agentx.app.model.capability.ModelCapabilityRegistry
 import com.agentx.app.model.capability.toCapabilityProfile
 import com.agentx.app.model.preset.ModelProviderIds
+import com.agentx.app.model.ratelimit.RateLimitManager
 
 /**
  * Logical provider identifiers the role → model mapping refers to.
@@ -155,7 +156,21 @@ class AgentModelResolver(
      * [resolve] itself stays a pure config selection and does not consult this.
      */
     private val capabilityRegistry: ModelCapabilityRegistry = InMemoryModelCapabilityRegistry.DEFAULT,
+    /**
+     * Admission control consulted by [resolveForRole], never by the pure
+     * [resolve]. A null manager means rate limiting is not configured for this
+     * host, so capabilities alone decide eligibility, exactly as before this
+     * phase. Quota is only evaluated here, never reserved.
+     */
+    private val rateLimitManager: RateLimitManager? = null,
 ) {
+
+    /**
+     * The single shared capability + rate-limit check. Every role resolves
+     * through it, so no individual agent reimplements eligibility.
+     */
+    private val eligibilityChecker: ModelEligibilityChecker =
+        ModelEligibilityChecker(capabilityRegistry, rateLimitManager)
 
     /** The mapping in effect for this resolution: the live source when present. */
     private fun currentPreferences(): AgentModelPreferences = livePreferences?.invoke() ?: preferences
@@ -173,8 +188,16 @@ class AgentModelResolver(
      *   [AgentDefinition.modelPreference]); when blank, the role's configured
      *   model is used.
      */
-    fun resolve(role: AgentRole, preferredModel: String?, default: ModelConfig): ModelConfig {
-        val preference = currentPreferences()[role] ?: return default
+    fun resolve(role: AgentRole, preferredModel: String?, default: ModelConfig): ModelConfig =
+        select(role, preferredModel, default).config
+
+    /**
+     * Internal selection shared by [resolve] and [resolveForRole]. It records
+     * whether the role's own mapping produced the config, so an explicit role
+     * assignment can be reported as such.
+     */
+    private fun select(role: AgentRole, preferredModel: String?, default: ModelConfig): Selection {
+        val preference = currentPreferences()[role] ?: return Selection(default, fromRoleMapping = false)
         val providerId = preference.providerId
         // The role's own mapping (the user's Settings choice, or the built-in
         // default) wins over the agent definition's static model; the definition
@@ -183,10 +206,12 @@ class AgentModelResolver(
         val model = preference.model?.takeIf { it.isNotBlank() }
             ?: preferredModel?.takeIf { it.isNotBlank() }
 
-        if (providerId == default.providerId) return withModel(default, model)
-        val connection = connections()[providerId] ?: return default
-        return withModel(connection, model)
+        if (providerId == default.providerId) return Selection(withModel(default, model), fromRoleMapping = true)
+        val connection = connections()[providerId] ?: return Selection(default, fromRoleMapping = false)
+        return Selection(withModel(connection, model), fromRoleMapping = true)
     }
+
+    private data class Selection(val config: ModelConfig, val fromRoleMapping: Boolean)
 
     /** The configured preference for [role], when any. */
     fun preference(role: AgentRole): RoleModelPreference? = currentPreferences()[role]
@@ -206,6 +231,45 @@ class AgentModelResolver(
         validate(definition.role, config).getOrThrow()
         return config
     }
+
+    /**
+     * Resolves [role]'s configuration and evaluates whether it may run right now.
+     *
+     * Unlike [resolve], this consults the authoritative capability registry and,
+     * when one is configured, the [RateLimitManager]. It never reserves quota
+     * (admission only) and never substitutes another model: the returned
+     * [ModelResolutionResult] carries the selected config, the eligibility state
+     * and a structured reason when it cannot run (see [ModelEligibilityState]).
+     */
+    suspend fun resolveForRole(
+        role: AgentRole,
+        default: ModelConfig,
+        requirements: ModelRequestRequirements = ModelRequestRequirements.DEFAULT,
+    ): ModelResolutionResult =
+        resolveForRole(role = role, preferredModel = null, default = default, requirements = requirements)
+
+    suspend fun resolveForRole(
+        role: AgentRole,
+        preferredModel: String?,
+        default: ModelConfig,
+        requirements: ModelRequestRequirements = ModelRequestRequirements.DEFAULT,
+    ): ModelResolutionResult {
+        val selection = select(role, preferredModel, default)
+        val eligibility = eligibilityChecker.check(role, selection.config, requirements)
+        return ModelResolutionResult(
+            role = role,
+            config = selection.config,
+            eligibility = eligibility,
+            explicit = selection.fromRoleMapping,
+        )
+    }
+
+    suspend fun resolveForRole(
+        definition: AgentDefinition,
+        default: ModelConfig,
+        requirements: ModelRequestRequirements = ModelRequestRequirements.DEFAULT,
+    ): ModelResolutionResult =
+        resolveForRole(definition.role, definition.modelPreference, default, requirements)
 
     /**
      * Whether [config] can satisfy [role]. A missing capability is a structured

@@ -4,6 +4,7 @@ import com.agentx.app.model.capability.InMemoryModelCapabilityRegistry
 import com.agentx.app.model.capability.ModelCapability
 import com.agentx.app.model.capability.ModelCapabilityErrors
 import com.agentx.app.model.capability.ModelCapabilityRegistry
+import com.agentx.app.model.capability.toCapabilityProfile
 
 /**
  * Single entry point for model traffic. It resolves the provider named by
@@ -115,6 +116,7 @@ class DefaultModelGateway(
                 details = mapOf("errors" to errors),
             )
         }
+        rejectDisabled(request)
         if (request.tools.isNotEmpty() && !capabilities(request).toolCalling) {
             val profile = capabilityRegistry.profile(request.config.providerId, request.config.model)
             throw ModelCapabilityErrors.unsupported(
@@ -124,6 +126,32 @@ class DefaultModelGateway(
                 known = profile.known,
             )
         }
+    }
+
+    /**
+     * Refuses a request for a model whose authoritative definition is disabled.
+     * An unknown/discovered model has no definition to disable, so it stays
+     * usable for chat. This mirrors the agent resolver's eligibility DISABLED
+     * state at the execution boundary, so an ineligible model cannot be run even
+     * if it reaches the gateway directly.
+     */
+    private fun rejectDisabled(request: ModelRequest) {
+        val profile = request.config.capabilities
+            ?.toCapabilityProfile(request.config.providerId, request.config.model)
+            ?: capabilityRegistry.get(request.config.providerId, request.config.model)
+            ?: return
+        if (profile.enabled) return
+        throw ModelProviderError(
+            code = ModelProviderErrorCode.UNSUPPORTED,
+            message = "${ModelCapabilityErrors.MODEL_DISABLED} provider=${request.config.providerId} " +
+                "model=${request.config.model}",
+            providerId = request.config.providerId,
+            providerErrorType = ModelCapabilityErrors.MODEL_DISABLED,
+            details = mapOf(
+                "model" to request.config.model,
+                "known" to profile.known.toString(),
+            ),
+        )
     }
 
     private fun providerNotFound(request: ModelRequest): ModelProviderError = ModelProviderError(

@@ -108,6 +108,9 @@ object ModelCapabilityErrors {
 
     const val CODE: String = "MODEL_CAPABILITY_UNSUPPORTED"
 
+    /** A known model definition exists but is disabled and must not be executed. */
+    const val MODEL_DISABLED: String = "MODEL_DISABLED"
+
     const val DETAIL_CAPABILITY: String = "capability"
     const val DETAIL_MODEL: String = "model"
     const val DETAIL_KNOWN: String = "known"

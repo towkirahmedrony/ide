@@ -148,7 +148,7 @@ class DefaultAgentOrchestrator(
         // MAIN resolves its own model from the active configuration and the role
         // mapping; the loop and the session metadata then agree on one config.
         val mainConfig = try {
-            modelResolver.resolveChecked(mainAgent.definition, modelConfig)
+            modelResolver.resolveForRole(mainAgent.definition, modelConfig).eligibleConfigOrThrow()
         } catch (unsupported: AgentModelResolutionException) {
             val error = unsupported.error.copy(sessionId = sessionId)
             sink.emit(AgentEvent.Failed(sessionId, error, clock()))
@@ -311,7 +311,7 @@ class DefaultAgentOrchestrator(
 
         val modelConfig = paused.modelConfig
         val mainConfig = try {
-            modelResolver.resolveChecked(mainAgent.definition, modelConfig)
+            modelResolver.resolveForRole(mainAgent.definition, modelConfig).eligibleConfigOrThrow()
         } catch (unsupported: AgentModelResolutionException) {
             val error = unsupported.error.copy(sessionId = sessionId)
             sink.emit(AgentEvent.Failed(sessionId, error, clock()))
@@ -455,7 +455,8 @@ class DefaultAgentOrchestrator(
         // role mapping before it is invoked; the session records the same one.
         val agent = specialized.get(request.role)
         val childConfig = try {
-            agent?.let { modelResolver.resolveChecked(it.definition, modelConfig) } ?: modelConfig
+            agent?.let { modelResolver.resolveForRole(it.definition, modelConfig).eligibleConfigOrThrow() }
+                ?: modelConfig
         } catch (unsupported: AgentModelResolutionException) {
             val error = unsupported.error.copy(sessionId = request.sessionId)
             sink.emit(AgentEvent.Failed(request.sessionId, error, clock()))

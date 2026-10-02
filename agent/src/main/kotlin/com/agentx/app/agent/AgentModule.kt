@@ -29,6 +29,7 @@ import com.agentx.app.model.ModelGateway
 import com.agentx.app.model.capability.InMemoryModelCapabilityRegistry
 import com.agentx.app.model.capability.ModelCapabilityRegistry
 import com.agentx.app.model.manager.ModelManager
+import com.agentx.app.model.ratelimit.RateLimitManager
 import com.agentx.app.skills.SkillManager
 import com.agentx.app.tools.DefaultToolRegistry
 import com.agentx.app.tools.DefaultToolRouter
@@ -94,6 +95,11 @@ class AgentModule(
                 capabilityRegistry = context.services.get<ModelCapabilityRegistry>(
                     ServiceKeys.MODEL_CAPABILITY_REGISTRY,
                 ) ?: InMemoryModelCapabilityRegistry.DEFAULT,
+                // The same admission control the gateway reserves against: the
+                // resolver only asks whether a request is allowed, it never
+                // reserves quota. A model blocked by its rate limit is reported
+                // as ineligible instead of being silently replaced.
+                rateLimitManager = context.services.get<RateLimitManager>(ServiceKeys.RATE_LIMIT_MANAGER),
             ),
         )
         context.services.register(ServiceKeys.AGENT_ORCHESTRATOR, assembled.orchestrator)

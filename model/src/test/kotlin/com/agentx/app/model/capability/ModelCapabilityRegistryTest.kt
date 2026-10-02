@@ -238,6 +238,48 @@ class ModelCapabilityRegistryTest {
         assertTrue(capabilities.local)
     }
 
+    @Test
+    fun `gateway rejects a disabled known model`() {
+        val disabled = InMemoryModelCapabilityRegistry()
+        disabled.register(
+            ModelCapabilityProfile(
+                providerId = ModelProviderIds.GROQ,
+                modelId = "disabled-model",
+                displayName = "Disabled model",
+                toolCalling = CapabilitySupport.SUPPORTED,
+                streaming = CapabilitySupport.SUPPORTED,
+                enabled = false,
+            ),
+        )
+        val gateway = DefaultModelGateway(disabled)
+        var executed = false
+        gateway.register(object : ModelProvider {
+            override val id: String = ModelProviderIds.GROQ
+            override fun capabilities(modelId: String): ModelCapabilities =
+                ModelCapabilities(streaming = true, toolCalling = true)
+
+            override suspend fun complete(request: ModelRequest): ModelResponse {
+                executed = true
+                return ModelResponse(model = request.model, providerId = id, content = "should-not-run")
+            }
+
+            override suspend fun stream(request: ModelRequest, onEvent: (ModelStreamEvent) -> Unit): ModelResponse =
+                complete(request)
+        })
+        val request = ModelRequest(
+            config = config(ModelProviderIds.GROQ, "disabled-model"),
+            messages = listOf(ModelMessage.user("hi")),
+        )
+
+        val error = assertFailsWith<ModelProviderError> {
+            runSuspend { gateway.complete(request) }
+        }
+
+        assertEquals(ModelProviderErrorCode.UNSUPPORTED, error.code)
+        assertEquals(ModelCapabilityErrors.MODEL_DISABLED, error.providerErrorType)
+        assertFalse(executed, "a disabled model must not reach the provider")
+    }
+
     private fun <T> runSuspend(block: suspend () -> T): T {
         var outcome: Result<T>? = null
         block.startCoroutine(object : Continuation<T> {
