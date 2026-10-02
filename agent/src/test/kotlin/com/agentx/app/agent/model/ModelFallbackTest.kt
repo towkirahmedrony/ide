@@ -343,7 +343,7 @@ class ModelFallbackTest {
         val sink = CollectingEventSink()
         val calls = Calls { "unexpected" }
         val fallback = ModelFallback(
-            policy = { policy(RoleModelPreference("groq")) },
+            policy = { policy(RoleModelPreference("groq"), role = AgentRole.CODER) },
             resolver = resolver(mapOf("groq" to noTools)),
         )
         val thrown = assertFailsWith<ModelProviderError> {
@@ -537,7 +537,7 @@ class ModelFallbackTest {
         val sink = CollectingEventSink()
         val calls = Calls { "unexpected" }
         val fallback = ModelFallback(
-            policy = { policy(RoleModelPreference("local")) },
+            policy = { policy(RoleModelPreference("local"), role = AgentRole.CODER) },
             resolver = resolver(mapOf("local" to local), rateLimits = limits),
         )
         val result = fallback.execute(
