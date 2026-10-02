@@ -1,0 +1,2848 @@
+package com.agentx.app.model.provider.gemini
+
+import com.agentx.app.core.logging.ForgeLogger
+import com.agentx.app.core.timeout.AgentTimeouts
+import com.agentx.app.model.ContentToolCallParser
+import com.agentx.app.model.ModelCapabilities
+import com.agentx.app.model.ModelConfig
+import com.agentx.app.model.ModelFinishReason
+import com.agentx.app.model.ModelMessage
+import com.agentx.app.model.ModelProvider
+import com.agentx.app.model.ModelProviderError
+import com.agentx.app.model.ModelProviderErrorCode
+import com.agentx.app.model.ModelRequest
+import com.agentx.app.model.ModelResponse
+import com.agentx.app.model.ModelRole
+import com.agentx.app.model.ModelStreamEvent
+import com.agentx.app.model.ModelToolCall
+import com.agentx.app.model.ModelToolChoice
+import com.agentx.app.model.ModelToolParameterType
+import com.agentx.app.model.ModelToolSpec
+import com.agentx.app.model.ModelUsage
+import com.agentx.app.model.connect.diagnosticPath
+import com.agentx.app.model.diagnostics.ApiOperation
+import com.agentx.app.model.diagnostics.ApiTrace
+import com.agentx.app.model.diagnostics.configuredFlag
+import com.agentx.app.model.diagnostics.sanitizeForLog
+import com.agentx.app.model.http.HttpRequestSpec
+import com.agentx.app.model.http.HttpResponseSpec
+import com.agentx.app.model.http.HttpTransport
+import com.agentx.app.model.http.UrlConnectionHttpTransport
+import com.agentx.app.model.json.Json
+import com.agentx.app.model.json.JsonCodec
+import com.agentx.app.model.json.JsonObject
+import com.agentx.app.model.json.JsonValue
+import com.agentx.app.model.json.arrayOrNull
+import com.agentx.app.model.json.numberOrNull
+import com.agentx.app.model.json.objectOrNull
+import com.agentx.app.model.json.stringOrNull
+import java.io.IOException
+import java.net.ConnectException
+import java.net.NoRouteToHostException
+import java.net.PortUnreachableException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
+import javax.net.ssl.SSLException
+import kotlin.coroutines.cancellation.CancellationException
+
+/**
+ * Gemini's own API, spoken natively.
+ *
+ * Gemini is not an OpenAI-compatible provider: the model travels in the path
+ * (`POST /v1beta/models/<model>:generateContent`), the key travels in the
+ * `x-goog-api-key` header, the prompt is a `contents` array, the system
+ * instruction is a separate field, tools are `functionDeclarations`, and the
+ * answer arrives as `candidates[].content.parts[]`. Sending an OpenAI
+ * `/chat/completions` request to the compatible surface instead answers 404, so
+ * this provider exists rather than pointing the OpenAI-compatible one at Gemini.
+ *
+ * The provider receives only [ModelConfig], so an OpenAI-compatible endpoint or
+ * Groq is untouched: those keep their own provider and their own paths.
+ */
+class GeminiModelProvider(
+    override val id: String = DEFAULT_ID,
+    private val transport: HttpTransport = UrlConnectionHttpTransport(),
+    private val defaultCapabilities: ModelCapabilities = DEFAULT_CAPABILITIES,
+    /** Structured Developer Log sink; null disables tracing. */
+    private val logger: ForgeLogger? = null,
+) : ModelProvider {
+
+    override fun capabilities(modelId: String): ModelCapabilities = defaultCapabilities
+
+    override suspend fun complete(request: ModelRequest): ModelResponse {
+        val trace = ApiTrace.create(logger, id, ApiOperation.COMPLETION)
+        val url = endpoint(request)
+        val body = buildRequestBody(request)
+        traceRequest(trace, request, url, body, stream = false)
+        val started = System.nanoTime()
+        val response = try {
+            send(request, url, body)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            trace.failure(
+                "ERROR",
+                "stage" to "transport",
+                "provider" to id,
+                "model" to request.model,
+                "path" to diagnosticPath(url),
+                "message" to sanitizeForLog(error.message ?: error.javaClass.simpleName),
+            )
+            throw error
+        }
+        traceResponse(trace, request, url, response, started)
+        if (!response.isSuccess) {
+            val failure = httpError(response)
+            trace.failure(
+                "ERROR",
+                "stage" to "http",
+                "provider" to id,
+                "model" to request.model,
+                "status" to response.statusCode,
+                "code" to failure.code.name,
+                "retryable" to failure.retryable,
+                "message" to sanitizeForLog(failure.message ?: ""),
+            )
+            throw failure
+        }
+        if (response.body.isBlank()) throw invalidResponse("Gemini returned an empty response")
+        val parsed = try {
+            parseCompletion(parseJson(response.body), request)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: ModelProviderError) {
+            trace.failure(
+                "ERROR",
+                "stage" to "parse",
+                "provider" to id,
+                "model" to request.model,
+                "status" to response.statusCode,
+                "code" to error.code.name,
+                "message" to sanitizeForLog(error.message ?: ""),
+            )
+            throw error
+        }
+        trace.stage(
+            "COMPLETE",
+            "provider" to id,
+            "model" to parsed.model,
+            "stream" to false,
+            "finishReason" to (parsed.finishReason?.name ?: "-"),
+            "contentChars" to parsed.content.length,
+            "toolCalls" to parsed.toolCalls.size,
+            "elapsedMs" to elapsedMillis(started),
+        )
+        return parsed
+    }
+
+    /**
+     * Streaming is not announced by [capabilities], so the gateway uses
+     * [complete]; this keeps the contract by reporting the whole answer once.
+     */
+    override suspend fun stream(
+        request: ModelRequest,
+        onEvent: (ModelStreamEvent) -> Unit,
+    ): ModelResponse {
+        val trace = ApiTrace.create(logger, id, ApiOperation.STREAM)
+        trace.stage(
+            "START",
+            "provider" to id,
+            "model" to request.model,
+            "stream" to true,
+            "streamingSupported" to configuredFlag(defaultCapabilities.streaming),
+        )
+        onEvent(ModelStreamEvent.Started(request.model, id))
+        val response = complete(request)
+        if (response.content.isNotEmpty()) onEvent(ModelStreamEvent.TextDelta(response.content))
+        response.usage?.let { onEvent(ModelStreamEvent.UsageReported(it)) }
+        onEvent(ModelStreamEvent.Completed(response.finishReason, response.usage))
+        trace.stage(
+            "COMPLETE",
+            "provider" to id,
+            "model" to response.model,
+            "contentChars" to response.content.length,
+            "note" to "streaming-not-announced-single-response",
+        )
+        return response
+    }
+
+    // --- transport ---------------------------------------------------------
+
+    private suspend fun send(request: ModelRequest, url: String, body: String): HttpResponseSpec =
+        try {
+            transport.execute(httpRequest(request, url, body))
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (error: Throwable) {
+            throw transportError(error)
+        }
+
+    private fun httpRequest(request: ModelRequest, url: String, body: String): HttpRequestSpec {
+        val headers = LinkedHashMap<String, String>()
+        headers["Content-Type"] = "application/json"
+        headers["Accept"] = "application/json"
+        // The documented API-key header. The key never enters the URL, so it cannot
+        // leak through a logged or displayed address.
+        request.config.apiKey?.takeIf { it.isNotBlank() }?.let { key -> headers[API_KEY_HEADER] = key }
+        request.config.headers.forEach { (name, value) -> headers[name] = value }
+        val timeout = request.config.timeoutMillis?.takeIf { it > 0 }?.toInt()
+        return HttpRequestSpec(
+            method = "POST",
+            url = url,
+            headers = headers,
+            body = body,
+            connectTimeoutMillis = timeout ?: CONNECT_TIMEOUT_MILLIS,
+            readTimeoutMillis = timeout ?: READ_TIMEOUT_MILLIS,
+        )
+    }
+
+    /** `POST <baseUrl>/models/<model>:generateContent` — the model is in the path. */
+    private fun endpoint(request: ModelRequest): String {
+        val model = request.model.trim().removePrefix("models/")
+        return request.config.baseUrl.trimEnd('/') + CHAT_PATH_PREFIX + model + GENERATE_SUFFIX
+    }
+
+    // --- diagnostics -------------------------------------------------------
+
+    /**
+     * Request trace in the shared `[PROVIDER][OPERATION][id] STAGE key=value`
+     * shape: the path shows the model, and the key is reported as a presence flag
+     * rather than a value.
+     */
+    private fun traceRequest(
+        trace: ApiTrace,
+        request: ModelRequest,
+        url: String,
+        body: String,
+        stream: Boolean,
+    ) {
+        val generation = request.effectiveGeneration
+        trace.stage(
+            "REQUEST",
+            "method" to "POST",
+            "path" to diagnosticPath(url),
+            "endpoint" to diagnosticPath(request.config.baseUrl),
+            "purpose" to "normal-completion",
+            "provider" to id,
+            "protocol" to PROTOCOL,
+            "model" to request.model,
+            "stream" to stream,
+            "bodyBytes" to body.length,
+            "messageCount" to request.messages.size,
+            "toolCount" to request.tools.size,
+            "toolCalling" to configuredFlag(request.tools.isNotEmpty()),
+            "hasApiKey" to configuredFlag(!request.config.apiKey.isNullOrBlank()),
+            "temperature" to (generation.temperature ?: "-"),
+            "maxTokens" to (generation.maxOutputTokens ?: "-"),
+        )
+    }
+
+    private fun traceResponse(
+        trace: ApiTrace,
+        request: ModelRequest,
+        url: String,
+        response: HttpResponseSpec,
+        startedNanos: Long,
+    ) {
+        trace.stage(
+            "RESPONSE",
+            "status" to response.statusCode,
+            "elapsedMs" to elapsedMillis(startedNanos),
+            "bodyBytes" to response.body.length,
+            "contentType" to (
+                response.headers.entries.firstOrNull { it.key.equals("Content-Type", ignoreCase = true) }
+                    ?.value?.firstOrNull()?.substringBefore(';')?.trim() ?: "-"
+                ),
+            "success" to response.isSuccess,
+            "provider" to id,
+            "protocol" to PROTOCOL,
+            "model" to request.model,
+            "path" to diagnosticPath(url),
+        )
+    }
+
+    private fun elapsedMillis(startedNanos: Long): Long = (System.nanoTime() - startedNanos) / 1_000_000
+
+    // --- error normalization ----------------------------------------------
+
+    private fun transportError(error: Throwable): ModelProviderError {
+        val root = unwrap(error)
+        return when {
+            root is ModelProviderError -> root
+            root is SocketTimeoutException || root is java.io.InterruptedIOException -> ModelProviderError(
+                code = ModelProviderErrorCode.TIMEOUT,
+                message = "The Gemini request timed out.",
+                providerId = id,
+                retryable = true,
+                cause = error,
+            )
+            root is UnknownHostException -> ModelProviderError(
+                code = ModelProviderErrorCode.CONNECTION_FAILED,
+                message = "Could not resolve the Gemini API host.",
+                providerId = id,
+                retryable = true,
+                cause = error,
+            )
+            root is ConnectException || root is NoRouteToHostException || root is PortUnreachableException ->
+                ModelProviderError(
+                    code = ModelProviderErrorCode.CONNECTION_FAILED,
+                    message = "Could not reach the Gemini API.",
+                    providerId = id,
+                    retryable = true,
+                    cause = error,
+                )
+            root is SSLException -> ModelProviderError(
+                code = ModelProviderErrorCode.CONNECTION_FAILED,
+                message = "Secure connection to the Gemini API failed",
+                providerId = id,
+                retryable = true,
+                cause = error,
+            )
+            root is IOException -> ModelProviderError(
+                code = ModelProviderErrorCode.NETWORK_ERROR,
+                message = "The Gemini request failed: ${root.message ?: "network error"}",
+                providerId = id,
+                retryable = true,
+                cause = error,
+            )
+            else -> ModelProviderError(
+                code = ModelProviderErrorCode.UNKNOWN,
+                message = "The Gemini request failed unexpectedly",
+                providerId = id,
+                retryable = false,
+                cause = error,
+            )
+        }
+    }
+
+    private fun unwrap(error: Throwable): Throwable {
+        var current: Throwable = error
+        while (current.cause != null && current.cause !== current && current.javaClass == RuntimeException::class.java) {
+            current = current.cause ?: break
+        }
+        return current
+    }
+
+    private fun httpError(response: HttpResponseSpec): ModelProviderError {
+        val status = response.statusCode
+        val info = extractErrorInfo(response.body)
+        val code = when (status) {
+            400 -> ModelProviderErrorCode.INVALID_REQUEST
+            401, 403 -> ModelProviderErrorCode.AUTHENTICATION_FAILED
+            404 -> ModelProviderErrorCode.UNSUPPORTED
+            429 -> ModelProviderErrorCode.RATE_LIMITED
+            in 500..599 -> ModelProviderErrorCode.PROVIDER_ERROR
+            else -> ModelProviderErrorCode.PROVIDER_ERROR
+        }
+        return ModelProviderError(
+            code = code,
+            message = info.message ?: "Gemini returned HTTP $status",
+            providerId = id,
+            httpStatus = status,
+            providerErrorType = info.status,
+            retryable = status == 429 || status in 500..599,
+        )
+    }
+
+    private class ProviderErrorInfo(val message: String?, val status: String?)
+
+    private fun extractErrorInfo(body: String): ProviderErrorInfo {
+        val root = runCatching { JsonCodec.parse(body).objectOrNull() }.getOrNull()
+            ?: return ProviderErrorInfo(null, null)
+        val error = root.objectOrNull("error")
+        if (error != null) {
+            return ProviderErrorInfo(
+                message = error.stringOrNull("message"),
+                status = error.stringOrNull("status") ?: error.stringOrNull("code"),
+            )
+        }
+        return ProviderErrorInfo(root.stringOrNull("message"), root.stringOrNull("status"))
+    }
+
+    private fun invalidResponse(message: String): ModelProviderError =
+        ModelProviderError(ModelProviderErrorCode.INVALID_RESPONSE, message, id)
+
+    private fun parseJson(body: String): JsonObject {
+        val trimmed = body.trim()
+        if (trimmed.isEmpty()) throw invalidResponse("Gemini returned an empty response")
+        val parsed = runCatching { JsonCodec.parse(trimmed) }.getOrElse { error ->
+            throw invalidResponse("Gemini returned invalid JSON: ${error.message ?: "parse error"}")
+        }
+        return parsed.objectOrNull()
+            ?: throw invalidResponse("Gemini returned a non-object JSON response")
+    }
+
+    // --- request building --------------------------------------------------
+
+    private fun buildRequestBody(request: ModelRequest): String {
+        val fields = LinkedHashMap<String, JsonValue>()
+        fields["contents"] = Json.array(request.messages.mapNotNull { serializeMessage(it, request) })
+
+        // A system instruction is its own field in the native API, not a message.
+        request.messages
+            .firstOrNull { it.role == ModelRole.SYSTEM }
+            ?.content
+            ?.takeIf { it.isNotBlank() }
+            ?.let { fields["systemInstruction"] = Json.obj("parts" to Json.array(listOf(Json.obj("text" to Json.of(it))))) }
+
+        if (request.tools.isNotEmpty()) {
+            fields["tools"] = Json.array(
+                listOf(Json.obj("functionDeclarations" to Json.array(request.tools.map { serializeTool(it) }))),
+            )
+        }
+        request.toolChoice?.let { fields["toolConfig"] = serializeToolChoice(it) }
+
+        val generation = request.effectiveGeneration
+        val config = LinkedHashMap<String, JsonValue>()
+        generation.temperature?.let { config["temperature"] = Json.of(it) }
+        generation.maxOutputTokens?.let { config["maxOutputTokens"] = Json.of(it) }
+        generation.topP?.let { config["topP"] = Json.of(it) }
+        if (generation.stop.isNotEmpty()) config["stopSequences"] = Json.array(generation.stop.map { Json.of(it) })
+        if (config.isNotEmpty()) fields["generationConfig"] = JsonValue.Obj(config)
+
+        return JsonCodec.encodeObject(fields)
+    }
+
+    /**
+     * One message as a native `contents` entry.
+     *
+     * Gemini calls the assistant turn `model`, and a tool result is a
+     * `functionResponse` part inside a user turn. A message that carries neither
+     * text nor a function part is skipped rather than sent empty.
+     *
+     * A system prompt is not a turn at all: it travels in `systemInstruction`, so
+     * emitting it here as well would send it twice.
+     */
+    private fun serializeMessage(message: ModelMessage, request: ModelRequest): JsonValue? {
+        if (message.role == ModelRole.SYSTEM) return null
+        val parts = mutableListOf<JsonValue>()
+        if (message.content.isNotBlank() && message.toolCallId == null) {
+            parts += Json.obj("text" to Json.of(message.content))
+        }
+        if (message.content.isNotBlank() && message.toolCallId != null) {
+            parts += Json.obj(
+                "functionResponse" to Json.obj(
+                    "name" to Json.of(toolNameFor(message, request)),
+                    "response" to Json.obj("result" to Json.of(message.content)),
+                ),
+            )
+        }
+        message.toolCalls.forEach { call ->
+            parts += Json.obj(
+                "functionCall" to Json.obj(
+                    "name" to Json.of(call.name),
+                    "args" to JsonValue.Obj(call.arguments),
+                ),
+            )
+        }
+        if (parts.isEmpty()) return null
+        val role = if (message.role == ModelRole.ASSISTANT) ASSISTANT_ROLE else USER_ROLE
+        return Json.obj(
+            "role" to Json.of(role),
+            "parts" to Json.array(parts),
+        )
+    }
+
+    /**
+     * The function name a tool result belongs to.
+     *
+     * Gemini matches a `functionResponse` by name, not by call id, so the name is
+     * taken from the result message or looked up through the call it answers.
+     */
+    private fun toolNameFor(message: ModelMessage, request: ModelRequest): String {
+        message.name?.takeIf { it.isNotBlank() }?.let { return it }
+        val callId = message.toolCallId ?: return FUNCTION_UNKNOWN
+        return request.messages
+            .flatMap { it.toolCalls }
+            .firstOrNull { it.id == callId }
+            ?.name
+            ?: FUNCTION_UNKNOWN
+    }
+
+    private fun serializeTool(spec: ModelToolSpec): JsonValue {
+        val properties = LinkedHashMap<String, JsonValue>()
+        spec.parameters.forEach { parameter ->
+            properties[parameter.name] = Json.obj(
+                "type" to Json.of(parameter.type.schemaName()),
+                "description" to Json.of(parameter.description),
+            )
+        }
+        val required = spec.parameters.filter { it.required }.map { Json.of(it.name) }
+        return Json.obj(
+            "name" to Json.of(spec.name),
+            "description" to Json.of(spec.description),
+            "parameters" to Json.obj(
+                "type" to Json.of("OBJECT"),
+                "properties" to JsonValue.Obj(properties),
+                "required" to Json.array(required),
+            ),
+        )
+    }
+
+    private fun serializeToolChoice(choice: ModelToolChoice): JsonValue = when (choice) {
+        ModelToolChoice.Auto -> Json.obj(
+            "functionCallingConfig" to Json.obj("mode" to Json.of("AUTO")),
+        )
+        ModelToolChoice.None -> Json.obj(
+            "functionCallingConfig" to Json.obj("mode" to Json.of("NONE")),
+        )
+        ModelToolChoice.Required -> Json.obj(
+            "functionCallingConfig" to Json.obj("mode" to Json.of("ANY")),
+        )
+        is ModelToolChoice.Specific -> Json.obj(
+            "functionCallingConfig" to Json.obj(
+                "mode" to Json.of("ANY"),
+                "allowedFunctionNames" to Json.array(listOf(Json.of(choice.name))),
+            ),
+        )
+    }
+
+    // --- response parsing --------------------------------------------------
+
+    private fun parseCompletion(json: JsonObject, request: ModelRequest): ModelResponse {
+        if (json.objectOrNull("error") != null) {
+            val info = extractErrorInfo(JsonCodec.encode(JsonValue.Obj(json)))
+            throw ModelProviderError(
+                code = ModelProviderErrorCode.PROVIDER_ERROR,
+                message = info.message ?: "Gemini reported an error",
+                providerId = id,
+                providerErrorType = info.status,
+            )
+        }
+        val candidate = json.arrayOrNull("candidates")?.firstOrNull()?.objectOrNull()
+        val parts = candidate?.objectOrNull("content")?.arrayOrNull("parts").orEmpty()
+        val text = parts.mapNotNull { part -> part.objectOrNull()?.stringOrNull("text") }.joinToString("")
+        val toolCalls = parts.mapNotNull { part -> part.objectOrNull()?.objectOrNull("functionCall")?.let(::parseFunctionCall) }
+        val blocked = json.objectOrNull("promptFeedback")?.stringOrNull("blockReason")
+        if (candidate == null && blocked != null) {
+            throw invalidResponse("Gemini blocked the prompt ($blocked)")
+        }
+        val finishReason = when {
+            toolCalls.isNotEmpty() -> ModelFinishReason.TOOL_CALLS
+            candidate?.stringOrNull("finishReason")?.equals("MAX_TOKENS", ignoreCase = true) == true ->
+                ModelFinishReason.LENGTH
+            candidate?.stringOrNull("finishReason")?.equals("SAFETY", ignoreCase = true) == true ->
+                ModelFinishReason.CONTENT_FILTER
+            else -> ModelFinishReason.STOP
+        }
+        return ContentToolCallParser.normalize(
+            ModelResponse(
+                model = json.stringOrNull("modelVersion")?.removePrefix("models/") ?: request.model,
+                providerId = id,
+                content = text,
+                toolCalls = toolCalls,
+                finishReason = finishReason,
+                usage = json.objectOrNull("usageMetadata")?.let { parseUsage(it) },
+            ),
+        )
+    }
+
+    /**
+     * A `functionCall` part.
+     *
+     * Gemini does not return a call id, so one is derived from the function name
+     * and its arguments: the runtime needs a stable id to attach the tool result
+     * to, and a derived id stays stable for the same call.
+     */
+    private fun parseFunctionCall(part: JsonObject): ModelToolCall? {
+        val name = part.stringOrNull("name")?.takeIf { it.isNotBlank() } ?: return null
+        val arguments: JsonObject = part.objectOrNull("args") ?: emptyMap()
+        return ModelToolCall(
+            id = "gemini-$name",
+            name = name,
+            arguments = arguments,
+        )
+    }
+
+    private fun parseUsage(usage: JsonObject): ModelUsage = ModelUsage(
+        promptTokens = usage.numberOrNull("promptTokenCount")?.toInt(),
+        completionTokens = usage.numberOrNull("candidatesTokenCount")?.toInt(),
+        totalTokens = usage.numberOrNull("totalTokenCount")?.toInt(),
+    )
+
+    companion object {
+        const val DEFAULT_ID: String = "gemini"
+
+        /** Gemini's model list and chat paths both sit under this API version. */
+        const val API_VERSION_PATH: String = "/v1beta"
+
+        /** The documented header for a Gemini API key. */
+        const val API_KEY_HEADER: String = "x-goog-api-key"
+
+        const val CHAT_PATH_PREFIX: String = "/models/"
+        const val GENERATE_SUFFIX: String = ":generateContent"
+        const val PROTOCOL: String = "GEMINI_NATIVE"
+        const val USER_ROLE: String = "user"
+        const val ASSISTANT_ROLE: String = "model"
+        const val FUNCTION_UNKNOWN: String = "tool"
+        const val CONNECT_TIMEOUT_MILLIS: Int = 15_000
+
+        val READ_TIMEOUT_MILLIS: Int = AgentTimeouts.MODEL_REQUEST_MILLIS.toInt()
+
+        val DEFAULT_CAPABILITIES: ModelCapabilities = ModelCapabilities(
+            streaming = false,
+            toolCalling = true,
+            vision = false,
+            structuredOutput = true,
+            systemMessages = true,
+        )
+    }
+}
+
+/** Gemini expects schema types in its own casing. */
+private fun ModelToolParameterType.schemaName(): String = when (this) {
+    ModelToolParameterType.STRING -> "STRING"
+    ModelToolParameterType.NUMBER -> "NUMBER"
+    ModelToolParameterType.BOOLEAN -> "BOOLEAN"
+    ModelToolParameterType.OBJECT -> "OBJECT"
+    ModelToolParameterType.ARRAY -> "ARRAY"
+    ModelToolParameterType.ANY -> "STRING"
+}
+package com.agentx.app.model.connect
+
+import com.agentx.app.core.logging.ForgeLogger
+import com.agentx.app.model.diagnostics.ApiOperation
+import com.agentx.app.model.diagnostics.ApiTrace
+import com.agentx.app.model.diagnostics.configuredFlag
+import com.agentx.app.model.diagnostics.firstHeaderValue
+import com.agentx.app.model.diagnostics.rateLimitHeaderNames
+import com.agentx.app.model.diagnostics.safeResponsePreview
+import com.agentx.app.model.diagnostics.sanitizeForLog
+import com.agentx.app.model.http.HttpRequestSpec
+import com.agentx.app.model.http.HttpTransport
+import com.agentx.app.model.http.UrlConnectionHttpTransport
+import com.agentx.app.model.json.JsonCodec
+import com.agentx.app.model.json.JsonObject
+import com.agentx.app.model.json.arrayOrNull
+import com.agentx.app.model.json.objectOrNull
+import com.agentx.app.model.json.stringOrNull
+import com.agentx.app.model.preset.ModelApiProtocol
+import com.agentx.app.model.preset.ModelProviderIds
+import java.io.IOException
+import java.net.ConnectException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
+import kotlin.coroutines.cancellation.CancellationException
+
+enum class DiscoveryFailureKind {
+    UNREACHABLE,
+    TIMEOUT,
+    AUTHENTICATION_REQUIRED,
+    NOT_FOUND,
+    RATE_LIMITED,
+    SERVER_ERROR,
+    MALFORMED,
+    UNSUPPORTED,
+    CANCELLED,
+    UNKNOWN,
+}
+
+/**
+ * Where a probe should read the model list, when that is not the endpoint the
+ * provider chats on.
+ *
+ * [url] never carries a credential: a provider that needs a key header gets one,
+ * which also keeps the key out of every logged or displayed URL.
+ */
+data class ModelListRequest(
+    val url: String,
+    val auth: ModelListAuth = ModelListAuth.BEARER,
+)
+
+data class DiscoveredApi(
+    val protocol: ModelApiProtocol,
+    val rootUrl: String,
+    val apiBasePath: String,
+    val modelIds: List<String>,
+    val selectedModelId: String?,
+    val candidate: EndpointResolver.Candidate,
+    /** True when ids came from a known-provider catalog, not GET /models. */
+    val catalogFallback: Boolean = false,
+)
+
+sealed interface DiscoveryResult {
+    data class Found(val api: DiscoveredApi) : DiscoveryResult
+
+    data class NeedsModelChoice(
+        val api: DiscoveredApi,
+        val modelIds: List<String>,
+    ) : DiscoveryResult
+
+    data class Failed(
+        val kind: DiscoveryFailureKind,
+        val message: String,
+        val httpStatus: Int? = null,
+        val reachable: Boolean = false,
+    ) : DiscoveryResult
+}
+
+/**
+ * Finds an OpenAI-compatible (or Ollama) API behind a user-supplied URL.
+ *
+ * Network traffic stays on [HttpTransport]. Callers never invent a second HTTP
+ * client; this is the discovery half of connect, while chat verification goes
+ * through the Model Gateway.
+ *
+ * Every stage writes a compact, credential-free line to [logger] so a failed
+ * Gemini/Groq connect can be pin-pointed in the Developer Log: request path →
+ * authentication → HTTP status → JSON parsing → model normalization → filtering
+ * → final catalog. Logging is opt-in ([logger] defaults to null) and never
+ * changes the result of a probe.
+ */
+class ModelApiDiscovery(
+    private val transport: HttpTransport = UrlConnectionHttpTransport(),
+    private val connectTimeoutMillis: Int = DEFAULT_CONNECT_TIMEOUT_MILLIS,
+    private val readTimeoutMillis: Int = DEFAULT_READ_TIMEOUT_MILLIS,
+    /**
+     * Extra attempts allowed for a probe that timed out.
+     *
+     * A Colab/ngrok/Cloudflare endpoint can accept the connection and still hold
+     * the very first request while the tunnel finishes coming up: the request
+     * reaches the server *after* the client has already given up, so the server
+     * logs a 200 for a request the app reported as a timeout. One warm-up retry
+     * turns that first-contact stall into a successful connect.
+     */
+    private val timeoutRetries: Int = DEFAULT_TIMEOUT_RETRIES,
+    /** Overall cap for the candidate fan-out, so retries cannot grow unbounded. */
+    private val overallTimeoutMillis: Long = DEFAULT_OVERALL_TIMEOUT_MILLIS,
+    private val clock: () -> Long = System::currentTimeMillis,
+    /** Structured Developer Log sink for discovery diagnostics; null disables it. */
+    private val logger: ForgeLogger? = null,
+) {
+
+    suspend fun discover(
+        rawEndpoint: String,
+        credential: String? = null,
+        preferredModelId: String? = null,
+        catalogPreferred: String? = null,
+    ): DiscoveryResult {
+        val trace = ApiTrace.create(logger, GENERIC_PROVIDER_LABEL, ApiOperation.DISCOVERY)
+        val resolved = when (val outcome = EndpointResolver.resolve(rawEndpoint)) {
+            is EndpointResolver.Outcome.Invalid -> {
+                trace.failure(
+                    "ERROR",
+                    "stage" to "resolve-endpoint",
+                    "kind" to DiscoveryFailureKind.UNREACHABLE.name,
+                    "message" to sanitizeForLog(outcome.reason),
+                )
+                return DiscoveryResult.Failed(
+                    kind = DiscoveryFailureKind.UNREACHABLE,
+                    message = outcome.reason,
+                )
+            }
+
+            is EndpointResolver.Outcome.Ok -> outcome.resolved
+        }
+        trace.stage(
+            "START",
+            "operation" to "model-discovery",
+            "source" to "user-endpoint",
+            "endpoint" to diagnosticPath(rawEndpoint),
+            "candidates" to resolved.candidates.size,
+            "hasApiKey" to configuredFlag(!credential.isNullOrBlank()),
+            "preferredModel" to (preferredModelId ?: "-"),
+        )
+        val result = discoverCandidates(
+            candidates = resolved.candidates,
+            credential = credential,
+            preferredModelId = preferredModelId,
+            catalogPreferred = catalogPreferred,
+            trace = trace,
+        )
+        traceOutcome(trace, result)
+        return result
+    }
+
+    suspend fun discoverKnown(
+        spec: KnownProviderSpec,
+        credential: String?,
+        preferredModelId: String? = null,
+    ): DiscoveryResult {
+        val providerId = ModelProviderIds.forPreset(spec.kind.id, spec.protocol)
+        val trace = ApiTrace.create(logger, providerId, ApiOperation.DISCOVERY)
+        val candidate = EndpointResolver.Candidate(
+            rootUrl = spec.rootUrl.trimEnd('/'),
+            apiBasePath = spec.apiBasePath,
+            reason = spec.kind.displayName,
+        )
+        trace.stage(
+            "START",
+            "operation" to "model-discovery",
+            "provider" to providerId,
+            "endpointType" to spec.protocol.name.lowercase(),
+            "rootUrl" to diagnosticPath(candidate.rootUrl),
+            "basePath" to candidate.apiBasePath.ifBlank { "-" },
+            "modelListPath" to modelListDiagnosticPath(spec, candidate.rootUrl),
+            "authScheme" to authSchemeLabel(spec.modelListAuth),
+            "hasApiKey" to configuredFlag(!credential.isNullOrBlank()),
+            "preferredModel" to (preferredModelId ?: "-"),
+            "catalogPreferred" to (spec.preferredModel ?: "-"),
+        )
+        val result = probeWithWarmUp(
+            candidate = candidate,
+            protocol = spec.protocol,
+            credential = credential,
+            preferredModelId = preferredModelId,
+            catalogPreferred = spec.preferredModel,
+            // A provider that lists models outside its chat surface (Gemini) is
+            // asked at its own model-list path with its documented credential
+            // header; the chat endpoint the preset keeps is unaffected.
+            modelList = spec.modelListPath?.let { path ->
+                ModelListRequest(
+                    url = spec.modelListUrlFor(candidate.rootUrl),
+                    auth = spec.modelListAuth,
+                )
+            },
+            trace = trace,
+        )
+        if (result is DiscoveryResult.Failed && result.kind == DiscoveryFailureKind.NOT_FOUND) {
+            val fallbackIds = spec.suggestedModels
+            if (fallbackIds.isNotEmpty() && credential?.isNotBlank() == true) {
+                val selected = selectDiscoveredModel(fallbackIds, preferredModelId, spec.preferredModel)
+                    ?: fallbackIds.first()
+                trace.warn(
+                    "FALLBACK",
+                    "reason" to "model-list-not-found",
+                    "status" to (result.httpStatus ?: "-"),
+                    "models" to fallbackIds.size,
+                    "selected" to selected,
+                )
+                val fallback = DiscoveryResult.Found(
+                    DiscoveredApi(
+                        protocol = spec.protocol,
+                        rootUrl = candidate.rootUrl,
+                        apiBasePath = candidate.apiBasePath,
+                        modelIds = fallbackIds,
+                        selectedModelId = selected,
+                        candidate = candidate,
+                        catalogFallback = true,
+                    ),
+                )
+                traceOutcome(trace, fallback)
+                return fallback
+            }
+            trace.warn(
+                "FALLBACK",
+                "used" to false,
+                "reason" to if (fallbackIds.isEmpty()) "no-compatible-catalog" else "no-credential",
+                "status" to (result.httpStatus ?: "-"),
+            )
+        }
+        if (result is DiscoveryResult.Failed &&
+            result.kind == DiscoveryFailureKind.AUTHENTICATION_REQUIRED &&
+            spec.kind.requiresApiKey &&
+            credential.isNullOrBlank()
+        ) {
+            val missing = DiscoveryResult.Failed(
+                kind = DiscoveryFailureKind.AUTHENTICATION_REQUIRED,
+                message = "An API key is required for ${spec.kind.displayName}.",
+                httpStatus = result.httpStatus,
+                reachable = true,
+            )
+            traceOutcome(trace, missing)
+            return missing
+        }
+        traceOutcome(trace, result)
+        return result
+    }
+
+    internal suspend fun discoverCandidates(
+        candidates: List<EndpointResolver.Candidate>,
+        credential: String?,
+        preferredModelId: String?,
+        catalogPreferred: String?,
+        protocols: List<ModelApiProtocol> = listOf(
+            ModelApiProtocol.OPENAI_COMPATIBLE,
+            ModelApiProtocol.OLLAMA,
+        ),
+        trace: ApiTrace? = null,
+    ): DiscoveryResult {
+        val active = trace ?: ApiTrace.create(null, GENERIC_PROVIDER_LABEL, ApiOperation.DISCOVERY)
+        if (candidates.isEmpty()) {
+            return DiscoveryResult.Failed(
+                kind = DiscoveryFailureKind.UNREACHABLE,
+                message = "No endpoint candidates could be built from that URL.",
+            )
+        }
+
+        var last: DiscoveryResult.Failed? = null
+        var sawReachableUnsupported = false
+        var sawAuth = false
+        val deadline = clock() + overallTimeoutMillis
+        var attempts = 0
+
+        candidates@ for (candidate in candidates) {
+            for (protocol in protocols) {
+                // Always make at least one attempt; the deadline only stops the
+                // fan-out once a real answer exists to report.
+                if (last != null && clock() >= deadline) {
+                    active.warn(
+                        "DEADLINE",
+                        "reason" to "overall-timeout",
+                        "attempts" to attempts,
+                        "overallTimeoutMs" to overallTimeoutMillis,
+                    )
+                    break@candidates
+                }
+                attempts++
+                when (
+                    val result = probeWithWarmUp(
+                        candidate = candidate,
+                        protocol = protocol,
+                        credential = credential,
+                        preferredModelId = preferredModelId,
+                        catalogPreferred = catalogPreferred,
+                        trace = active,
+                    )
+                ) {
+                    is DiscoveryResult.Found,
+                    is DiscoveryResult.NeedsModelChoice,
+                    -> return result
+
+                    is DiscoveryResult.Failed -> {
+                        last = result
+                        when (result.kind) {
+                            DiscoveryFailureKind.AUTHENTICATION_REQUIRED -> sawAuth = true
+                            DiscoveryFailureKind.UNSUPPORTED,
+                            DiscoveryFailureKind.MALFORMED,
+                            -> if (result.reachable) sawReachableUnsupported = true
+                            DiscoveryFailureKind.CANCELLED -> return result
+                            else -> Unit
+                        }
+                    }
+                }
+            }
+        }
+
+        if (sawAuth) {
+            return DiscoveryResult.Failed(
+                kind = DiscoveryFailureKind.AUTHENTICATION_REQUIRED,
+                message = "The server is reachable, but authentication is required.",
+                httpStatus = last?.httpStatus,
+                reachable = true,
+            )
+        }
+        if (sawReachableUnsupported) {
+            return DiscoveryResult.Failed(
+                kind = DiscoveryFailureKind.UNSUPPORTED,
+                message = "Server is reachable, but AgentX could not detect a supported API.",
+                reachable = true,
+            )
+        }
+        return last ?: DiscoveryResult.Failed(
+            kind = DiscoveryFailureKind.UNREACHABLE,
+            message = "The model endpoint could not be reached.",
+        )
+    }
+
+    private suspend fun probeCandidate(
+        candidate: EndpointResolver.Candidate,
+        protocol: ModelApiProtocol,
+        credential: String?,
+        preferredModelId: String?,
+        catalogPreferred: String?,
+        modelList: ModelListRequest? = null,
+        trace: ApiTrace,
+    ): DiscoveryResult {
+        val url = modelList?.url ?: healthUrl(candidate, protocol)
+        val headers = LinkedHashMap<String, String>()
+        headers["Accept"] = "application/json"
+        val auth = modelList?.auth ?: ModelListAuth.BEARER
+        credential?.takeIf { it.isNotBlank() }?.let { headers[auth.headerName] = "${auth.scheme}$it" }
+
+        // Wall-clock timing uses nanoTime, never the injected [clock]: the clock is
+        // the deadline's input, and counting extra reads would change how many
+        // candidates the fan-out gets through.
+        val startedNanos = System.nanoTime()
+        trace.stage(
+            "REQUEST",
+            "method" to "GET",
+            "path" to diagnosticPath(url),
+            "purpose" to "model-discovery",
+            "protocol" to protocol.name,
+            "accept" to "application/json",
+            "hasApiKey" to configuredFlag(!credential.isNullOrBlank()),
+            "authScheme" to if (credential.isNullOrBlank()) "none" else authSchemeLabel(auth),
+        )
+
+        val response = try {
+            transport.execute(
+                HttpRequestSpec(
+                    method = "GET",
+                    url = url,
+                    headers = headers,
+                    connectTimeoutMillis = connectTimeoutMillis,
+                    readTimeoutMillis = readTimeoutMillis,
+                ),
+            )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            val kind = transportKind(error)
+            trace.failure(
+                "ERROR",
+                "stage" to "transport",
+                "path" to diagnosticPath(url),
+                "kind" to kind.name,
+                "exception" to error.javaClass.name,
+                "message" to sanitizeForLog(error.message ?: error.javaClass.name),
+                "elapsedMs" to elapsedMillis(startedNanos),
+                "retries" to timeoutRetries,
+            )
+            return DiscoveryResult.Failed(
+                kind = kind,
+                message = transportMessage(error),
+            )
+        }
+
+        val elapsed = elapsedMillis(startedNanos)
+        trace.stage(
+            "RESPONSE",
+            "status" to response.statusCode,
+            "elapsedMs" to elapsed,
+            "bodyBytes" to response.body.length,
+            "contentType" to contentTypeOf(response.headers),
+            "requestId" to requestIdOf(response.headers),
+            "retryAfter" to (response.headers.firstHeaderValue("Retry-After") ?: "-"),
+            "rateLimitHeaders" to (response.headers.rateLimitHeaderNames().joinToString(",").ifBlank { "-" }),
+            "success" to (response.statusCode in 200..299),
+        )
+
+        return when (response.statusCode) {
+            in 200..299 -> parseSuccess(
+                candidate = candidate,
+                protocol = protocol,
+                body = response.body,
+                preferredModelId = preferredModelId,
+                catalogPreferred = catalogPreferred,
+                requestedUrl = url,
+                trace = trace,
+            )
+
+            401, 403 -> {
+                trace.failure(
+                    "ERROR",
+                    "stage" to "http",
+                    "status" to response.statusCode,
+                    "kind" to DiscoveryFailureKind.AUTHENTICATION_REQUIRED.name,
+                    "path" to diagnosticPath(url),
+                    "authScheme" to if (credential.isNullOrBlank()) "none" else authSchemeLabel(auth),
+                    "message" to "The server is reachable, but authentication is required.",
+                )
+                DiscoveryResult.Failed(
+                    kind = DiscoveryFailureKind.AUTHENTICATION_REQUIRED,
+                    message = "The server is reachable, but authentication is required.",
+                    httpStatus = response.statusCode,
+                    reachable = true,
+                )
+            }
+
+            404 -> {
+                trace.failure(
+                    "ERROR",
+                    "stage" to "http",
+                    "status" to 404,
+                    "kind" to DiscoveryFailureKind.NOT_FOUND.name,
+                    "path" to diagnosticPath(url),
+                    "message" to "No model list was found at ${diagnosticPath(url)}.",
+                )
+                DiscoveryResult.Failed(
+                    kind = DiscoveryFailureKind.NOT_FOUND,
+                    // The path (never the credential, never a query string) is part of
+                    // the message: it is what makes a wrong model-list location obvious.
+                    message = "No model list was found at ${diagnosticPath(url)}.",
+                    httpStatus = 404,
+                    reachable = true,
+                )
+            }
+
+            408 -> {
+                trace.failure(
+                    "ERROR",
+                    "stage" to "http",
+                    "status" to 408,
+                    "kind" to DiscoveryFailureKind.TIMEOUT.name,
+                    "path" to diagnosticPath(url),
+                    "message" to TIMEOUT_MESSAGE,
+                )
+                DiscoveryResult.Failed(
+                    kind = DiscoveryFailureKind.TIMEOUT,
+                    message = TIMEOUT_MESSAGE,
+                    httpStatus = 408,
+                    reachable = true,
+                )
+            }
+
+            429 -> {
+                trace.failure(
+                    "ERROR",
+                    "stage" to "http",
+                    "status" to 429,
+                    "kind" to DiscoveryFailureKind.RATE_LIMITED.name,
+                    "path" to diagnosticPath(url),
+                    "retryAfter" to (response.headers.firstHeaderValue("Retry-After") ?: "-"),
+                    "rateLimitHeaders" to (response.headers.rateLimitHeaderNames().joinToString(",").ifBlank { "-" }),
+                    "message" to "The model endpoint is rate-limiting requests. Try again shortly.",
+                )
+                DiscoveryResult.Failed(
+                    kind = DiscoveryFailureKind.RATE_LIMITED,
+                    message = "The model endpoint is rate-limiting requests. Try again shortly.",
+                    httpStatus = 429,
+                    reachable = true,
+                )
+            }
+
+            in 500..599 -> {
+                trace.failure(
+                    "ERROR",
+                    "stage" to "http",
+                    "status" to response.statusCode,
+                    "kind" to DiscoveryFailureKind.SERVER_ERROR.name,
+                    "path" to diagnosticPath(url),
+                    "preview" to (safeResponsePreview(response.body) ?: "omitted"),
+                )
+                DiscoveryResult.Failed(
+                    kind = DiscoveryFailureKind.SERVER_ERROR,
+                    message = "The model endpoint returned HTTP ${response.statusCode}.",
+                    httpStatus = response.statusCode,
+                    reachable = true,
+                )
+            }
+
+            else -> {
+                trace.failure(
+                    "ERROR",
+                    "stage" to "http",
+                    "status" to response.statusCode,
+                    "kind" to DiscoveryFailureKind.UNSUPPORTED.name,
+                    "path" to diagnosticPath(url),
+                    "preview" to (safeResponsePreview(response.body) ?: "omitted"),
+                )
+                DiscoveryResult.Failed(
+                    kind = DiscoveryFailureKind.UNSUPPORTED,
+                    message = "The endpoint returned HTTP ${response.statusCode}.",
+                    httpStatus = response.statusCode,
+                    reachable = true,
+                )
+            }
+        }
+    }
+
+    /**
+     * Retries a probe that timed out, within [timeoutRetries].
+     *
+     * Only timeouts are retried: 401/404/429 and the like are real answers and
+     * repeating them would just be noise. The retry exists for the cold-tunnel
+     * case, where the first request is what brings the tunnel up.
+     */
+    private suspend fun probeWithWarmUp(
+        candidate: EndpointResolver.Candidate,
+        protocol: ModelApiProtocol,
+        credential: String?,
+        preferredModelId: String?,
+        catalogPreferred: String?,
+        modelList: ModelListRequest? = null,
+        trace: ApiTrace,
+    ): DiscoveryResult {
+        var attempt = 0
+        while (true) {
+            val result = probeCandidate(
+                candidate = candidate,
+                protocol = protocol,
+                credential = credential,
+                preferredModelId = preferredModelId,
+                catalogPreferred = catalogPreferred,
+                modelList = modelList,
+                trace = trace,
+            )
+            if (result !is DiscoveryResult.Failed || result.kind != DiscoveryFailureKind.TIMEOUT) return result
+            if (attempt >= timeoutRetries) return result
+            attempt++
+            trace.warn("RETRY", "reason" to "timeout", "attempt" to attempt, "path" to diagnosticPath(modelList?.url ?: healthUrl(candidate, protocol)))
+        }
+    }
+
+    private fun parseSuccess(
+        candidate: EndpointResolver.Candidate,
+        protocol: ModelApiProtocol,
+        body: String,
+        preferredModelId: String?,
+        catalogPreferred: String?,
+        requestedUrl: String,
+        trace: ApiTrace,
+    ): DiscoveryResult {
+        val parsed = runCatching { JsonCodec.parse(body) }
+        val parseError = parsed.exceptionOrNull()
+        val root = parsed.getOrNull()?.objectOrNull()
+        if (root == null) {
+            traceParseFailure(
+                trace = trace,
+                requestedUrl = requestedUrl,
+                body = body,
+                fieldPath = "none",
+                exception = parseError,
+                reason = if (parseError == null) "non-object-json" else "invalid-json",
+            )
+            return DiscoveryResult.Failed(
+                kind = DiscoveryFailureKind.UNSUPPORTED,
+                message = "Server is reachable, but AgentX could not detect a supported API.",
+                reachable = true,
+            )
+        }
+        val extracted = extractModels(protocol, root)
+        if (extracted == null) {
+            traceParseFailure(
+                trace = trace,
+                requestedUrl = requestedUrl,
+                body = body,
+                fieldPath = "none",
+                exception = null,
+                reason = "expected-field-missing",
+            )
+            return DiscoveryResult.Failed(
+                kind = DiscoveryFailureKind.UNSUPPORTED,
+                message = "Server is reachable, but AgentX could not detect a supported API.",
+                reachable = true,
+            )
+        }
+
+        // The field the parser actually used, and every entry it saw: this is what
+        // separates "the API answered in an unexpected shape" from "the list was
+        // empty" or "the ids were normalized away".
+        trace.stage(
+            "PARSE",
+            "fieldPath" to extracted.fieldPath,
+            "rawModels" to extracted.rawCount,
+            "usable" to extracted.accepted.size,
+            "dropped" to extracted.dropped.size,
+        )
+        extracted.dropped.forEach { dropped ->
+            trace.stage(
+                "MODEL",
+                "raw" to (dropped.raw ?: "none"),
+                "normalized" to "-",
+                "accepted" to false,
+                "reason" to dropped.reason,
+            )
+        }
+        extracted.accepted.forEach { entry ->
+            trace.stage(
+                "MODEL",
+                "raw" to entry.raw,
+                "normalized" to entry.normalized,
+                "accepted" to true,
+                "normalizedFromPrefix" to (entry.raw != entry.normalized),
+            )
+        }
+
+        val models = extracted.accepted.map { it.normalized }
+        if (models.isEmpty()) {
+            trace.failure(
+                "PARSE_FAIL",
+                "reason" to "no-models",
+                "fieldPath" to extracted.fieldPath,
+                "rawModels" to extracted.rawCount,
+                "path" to diagnosticPath(requestedUrl),
+                "message" to "The model list at ${diagnosticPath(requestedUrl)} contained no models.",
+            )
+            // Answered, but with nothing usable. Reported as a parsing outcome so it
+            // is never mistaken for "no compatible provider", and so a caller cannot
+            // present its built-in fallback as if discovery had found these models.
+            return DiscoveryResult.Failed(
+                kind = DiscoveryFailureKind.MALFORMED,
+                message = "The model list at ${diagnosticPath(requestedUrl)} contained no models.",
+                reachable = true,
+            )
+        }
+
+        val unique = models.distinct()
+        models.groupingBy { it }.eachCount().filterValues { count -> count > 1 }.keys.forEach { duplicate ->
+            trace.stage("FILTER", "id" to duplicate, "reason" to "duplicate")
+        }
+        // Only meaningful when the selector has to choose: with a single model, or
+        // an explicit preference, the utility filter is never reached.
+        if (unique.size > 1) {
+            unique.filter(::isUtilityModel).forEach { id ->
+                trace.stage("FILTER", "id" to id, "reason" to "utility-model", "excluded" to true)
+            }
+        }
+
+        val selected = selectDiscoveredModel(models, preferredModelId, catalogPreferred)
+        trace.stage(
+            "SELECT",
+            "preferred" to (preferredModelId ?: "-"),
+            "catalogPreferred" to (catalogPreferred ?: "-"),
+            "candidates" to unique.size,
+            "selected" to (selected ?: "none"),
+            "reason" to when {
+                selected == null -> if (unique.size > 1) "ambiguous" else "no-usable-model"
+                preferredModelId != null && selected == normalizeModelId(preferredModelId) -> "preferred"
+                catalogPreferred != null && selected == normalizeModelId(catalogPreferred) -> "catalog-preferred"
+                unique.size == 1 -> "single"
+                else -> "auto"
+            },
+        )
+        val api = DiscoveredApi(
+            protocol = protocol,
+            rootUrl = candidate.rootUrl,
+            apiBasePath = candidate.apiBasePath,
+            modelIds = models,
+            selectedModelId = selected,
+            candidate = candidate,
+        )
+        return if (selected == null && models.size > 1) {
+            DiscoveryResult.NeedsModelChoice(api, models)
+        } else {
+            DiscoveryResult.Found(api)
+        }
+    }
+
+    /**
+     * Logs one terminal line for a discovery, so a single operation always ends
+     * with either COMPLETE or ERROR regardless of how many candidates were tried.
+     */
+    private fun traceOutcome(trace: ApiTrace, result: DiscoveryResult) {
+        when (result) {
+            is DiscoveryResult.Found -> trace.stage(
+                "COMPLETE",
+                "outcome" to "found",
+                "catalog" to result.api.modelIds.size,
+                "selected" to (result.api.selectedModelId ?: "none"),
+                "fallback" to result.api.catalogFallback,
+                "rootUrl" to diagnosticPath(result.api.rootUrl),
+                "basePath" to result.api.apiBasePath.ifBlank { "-" },
+            )
+
+            is DiscoveryResult.NeedsModelChoice -> trace.stage(
+                "COMPLETE",
+                "outcome" to "needs-choice",
+                "catalog" to result.modelIds.size,
+                "selected" to "none",
+                "fallback" to false,
+            )
+
+            is DiscoveryResult.Failed -> trace.failure(
+                "ERROR",
+                "kind" to result.kind.name,
+                "status" to (result.httpStatus ?: "-"),
+                "reachable" to result.reachable,
+                "message" to sanitizeForLog(result.message),
+            )
+        }
+    }
+
+    private fun traceParseFailure(
+        trace: ApiTrace,
+        requestedUrl: String,
+        body: String,
+        fieldPath: String,
+        exception: Throwable?,
+        reason: String,
+    ) {
+        trace.failure(
+            "PARSE_FAIL",
+            "reason" to reason,
+            "path" to diagnosticPath(requestedUrl),
+            "fieldPath" to fieldPath,
+            "bodyBytes" to body.length,
+            "exception" to (exception?.javaClass?.name ?: "-"),
+            "message" to sanitizeForLog(exception?.message ?: reason),
+            // A preview is only ever attached for a small structured body, redacted
+            // and flattened; anything else is reported structurally instead.
+            "preview" to (safeResponsePreview(body) ?: "omitted"),
+        )
+    }
+
+    private fun healthUrl(candidate: EndpointResolver.Candidate, protocol: ModelApiProtocol): String {
+        val base = candidate.rootUrl.trimEnd('/')
+        return if (protocol.healthIsRelativeToApiBase) {
+            base + candidate.apiBasePath + protocol.defaultHealthPath
+        } else {
+            base + protocol.defaultHealthPath
+        }
+    }
+
+    /** The model-list path a provider will ask, without a credential or query. */
+    private fun modelListDiagnosticPath(spec: KnownProviderSpec, rootUrl: String): String =
+        diagnosticPath(spec.modelListUrlFor(rootUrl))
+
+    /**
+     * Model ids from a model-list response, kept structured so each entry can be
+     * logged with both its raw and normalized form.
+     *
+     * The OpenAI-compatible `data` array is tried first, then a provider's own
+     * `models` array (Gemini's shape, where each entry names the model as
+     * `models/<id>`). Ids are normalized so the two forms resolve to one model.
+     */
+    private fun extractModels(protocol: ModelApiProtocol, root: JsonObject): ExtractedModels? {
+        val (fieldPath, items) = when (protocol) {
+            ModelApiProtocol.OPENAI_COMPATIBLE -> {
+                val data = root.arrayOrNull("data")
+                if (data != null) {
+                    "data" to data
+                } else {
+                    val models = root.arrayOrNull("models")
+                    if (models != null) "models" to models else return null
+                }
+            }
+
+            // Gemini's own list, like Ollama, answers with a `models` array.
+            ModelApiProtocol.OLLAMA,
+            ModelApiProtocol.GEMINI_NATIVE,
+            -> {
+                val models = root.arrayOrNull("models")
+                if (models != null) "models" to models else return null
+            }
+        }
+
+        val accepted = mutableListOf<ModelEntry>()
+        val dropped = mutableListOf<DroppedEntry>()
+        items.forEach { item ->
+            val obj = item.objectOrNull()
+            if (obj == null) {
+                dropped += DroppedEntry(null, "not-an-object")
+                return@forEach
+            }
+            val raw = obj.stringOrNull("id") ?: obj.stringOrNull("name") ?: obj.stringOrNull("model")
+            if (raw == null) {
+                dropped += DroppedEntry(null, "missing-id")
+                return@forEach
+            }
+            val normalized = normalizeModelId(raw)
+            if (normalized.isBlank()) {
+                dropped += DroppedEntry(raw, "blank-id")
+                return@forEach
+            }
+            accepted += ModelEntry(raw, normalized)
+        }
+        return ExtractedModels(
+            fieldPath = fieldPath,
+            rawCount = items.size,
+            accepted = accepted,
+            dropped = dropped,
+        )
+    }
+
+    private fun elapsedMillis(startedNanos: Long): Long = (System.nanoTime() - startedNanos) / 1_000_000
+
+    private fun contentTypeOf(headers: Map<String, List<String>>): String =
+        headers.firstHeaderValue("Content-Type")?.substringBefore(';')?.trim() ?: "-"
+
+    private fun requestIdOf(headers: Map<String, List<String>>): String =
+        headers.firstHeaderValue("x-request-id")
+            ?: headers.firstHeaderValue("request-id")
+            ?: headers.firstHeaderValue("x-groq-request-id")
+            ?: "-"
+
+    private fun transportKind(error: Throwable): DiscoveryFailureKind = when (error) {
+        is SocketTimeoutException -> DiscoveryFailureKind.TIMEOUT
+        is UnknownHostException, is ConnectException -> DiscoveryFailureKind.UNREACHABLE
+        is IOException -> DiscoveryFailureKind.UNREACHABLE
+        else -> DiscoveryFailureKind.UNKNOWN
+    }
+
+    private fun transportMessage(error: Throwable): String = when (error) {
+        is SocketTimeoutException -> TIMEOUT_MESSAGE
+        is UnknownHostException -> "The model endpoint host could not be resolved."
+        is ConnectException -> "The model endpoint refused the connection."
+        is IOException -> "The model endpoint could not be reached."
+        else -> "The model endpoint could not be reached."
+    }
+
+    /** One model-list entry as it arrived, plus the id the app derives from it. */
+    private data class ModelEntry(val raw: String, val normalized: String)
+
+    /** An entry that could not become a model id, and why it was dropped. */
+    private data class DroppedEntry(val raw: String?, val reason: String)
+
+    /** A parsed model list with everything a diagnostic log needs. */
+    private data class ExtractedModels(
+        val fieldPath: String,
+        val rawCount: Int,
+        val accepted: List<ModelEntry>,
+        val dropped: List<DroppedEntry>,
+    )
+
+    companion object {
+        /** Reaching the Colab/ngrok/Cloudflare edge. */
+        const val DEFAULT_CONNECT_TIMEOUT_MILLIS: Int = 15_000
+
+        /**
+         * Waiting for the model list. Deliberately larger than the connect
+         * timeout: on first contact a free tunnel can hold the request while it
+         * finishes coming up.
+         */
+        const val DEFAULT_READ_TIMEOUT_MILLIS: Int = 30_000
+
+        const val DEFAULT_TIMEOUT_RETRIES: Int = 1
+
+        /**
+         * Hard cap for trying every candidate/protocol combination, so a
+         * pathological endpoint cannot leave the app in "Discovering API…".
+         */
+        const val DEFAULT_OVERALL_TIMEOUT_MILLIS: Long = 90_000
+
+        /**
+         * Shown before any retry has been exhausted, so it tells the user what
+         * to do rather than only what failed.
+         */
+        private const val TIMEOUT_MESSAGE: String =
+            "The model endpoint did not respond in time. A Colab or ngrok tunnel " +
+                "can be slow on its first request — try again."
+
+        /** Label for an endpoint the user typed rather than a known provider. */
+        private const val GENERIC_PROVIDER_LABEL: String = "ENDPOINT"
+    }
+}
+
+/** The credential header a model list uses; a scheme name, never a value. */
+private fun authSchemeLabel(auth: ModelListAuth): String = when (auth) {
+    ModelListAuth.BEARER -> "bearer"
+    ModelListAuth.API_KEY_HEADER -> "api-key-header"
+}
+package com.agentx.app.model.catalog
+
+import com.agentx.app.core.ForgeError
+import com.agentx.app.core.ForgeErrorCode
+import com.agentx.app.core.ForgeResult
+import com.agentx.app.core.failure
+import com.agentx.app.core.success
+import com.agentx.app.core.logging.ForgeLogger
+import com.agentx.app.core.logging.ForgeLoggers
+import com.agentx.app.core.logging.LogLevel
+import com.agentx.app.model.ModelCapabilities
+import com.agentx.app.model.ModelConfig
+import com.agentx.app.model.http.HttpRequestSpec
+import com.agentx.app.model.http.HttpTransport
+import com.agentx.app.model.http.UrlConnectionHttpTransport
+import com.agentx.app.model.json.JsonCodec
+import com.agentx.app.model.json.JsonObject
+import com.agentx.app.model.json.arrayOrNull
+import com.agentx.app.model.json.booleanOrNull
+import com.agentx.app.model.json.numberOrNull
+import com.agentx.app.model.json.objectOrNull
+import com.agentx.app.model.json.stringOrNull
+import com.agentx.app.model.connect.KnownModelProviders
+import com.agentx.app.model.connect.KnownProviderSpec
+import com.agentx.app.model.connect.ModelListAuth
+import com.agentx.app.model.connect.ModelSetupKind
+import com.agentx.app.model.connect.diagnosticPath
+import com.agentx.app.model.connect.normalizeModelId
+import com.agentx.app.model.connect.originOf
+import com.agentx.app.model.preset.ModelProviderIds
+import kotlin.coroutines.cancellation.CancellationException
+
+/** Path, relative to a Groq API base URL, of the OpenAI-compatible model list. */
+object GroqModelCatalog {
+    const val PROVIDER_ID: String = ModelProviderIds.GROQ
+
+    /**
+     * Groq's model list, as documented on the host: `<host>/openai/v1/models`.
+     * The provider base URL already ends in `/openai/v1`, so the endpoint the
+     * catalog calls is `<baseUrl>/models`.
+     */
+    const val MODELS_PATH_FROM_HOST: String = "/openai/v1/models"
+
+    fun modelsUrl(baseUrl: String): String = baseUrl.trimEnd('/') + "/models"
+}
+
+/**
+ * Gemini's model list.
+ *
+ * The chat endpoint is the OpenAI-compatible surface
+ * (`https://generativelanguage.googleapis.com/v1beta/openai`), but that surface
+ * has no `/models` route: asking it for one answers 404, which is why the
+ * provider appeared to have no models to discover. The list is served by the
+ * Gemini API itself, at `/v1beta/models`, authenticated with the documented key
+ * header. The URL is built from the connection's own host and the path declared
+ * by the provider catalogue, so a preset pointed at a proxy lists through that
+ * proxy and no host is hardcoded here.
+ */
+object GeminiModelCatalog {
+    const val PROVIDER_ID: String = ModelProviderIds.GEMINI
+
+    /** Gemini's own model list, relative to the provider's host. */
+    const val MODELS_PATH_FROM_HOST: String = "/v1beta/models"
+
+    fun modelsUrl(baseUrl: String): String = originOf(baseUrl) + MODELS_PATH_FROM_HOST
+}
+
+/**
+ * A catalog fetched from a provider's OpenAI-compatible model-list endpoint.
+ *
+ * Caching: a snapshot is reused until [ttlMillis] has elapsed, so the catalog is
+ * never fetched before every inference request. A refresh merges the fetched
+ * models with the previous snapshot: a model that has disappeared is kept and
+ * marked unavailable instead of being silently dropped, which lets Settings show
+ * a saved role assignment as unavailable rather than quietly replacing it.
+ */
+class RemoteModelCatalog(
+    override val providerId: String,
+    /** Produces the model-list URL, or null when the provider is not connected. */
+    private val modelsUrl: () -> String?,
+    /** Produces the credential, or null for an unauthenticated endpoint. */
+    private val credential: () -> String? = { null },
+    /**
+     * Where the credential goes. A hosted compatible API takes a bearer token;
+     * a provider's own API may document a dedicated key header (Gemini). The key
+     * never travels in the URL, so it cannot leak through a logged address.
+     */
+    private val authHeaderName: String = "Authorization",
+    private val authScheme: String = "Bearer ",
+    private val transport: HttpTransport = UrlConnectionHttpTransport(),
+    private val store: ModelCatalogStore = InMemoryModelCatalogStore(),
+    private val ttlMillis: Long = DEFAULT_TTL_MILLIS,
+    private val clock: () -> Long = System::currentTimeMillis,
+    private val connectTimeoutMillis: Int = DEFAULT_TIMEOUT_MILLIS,
+    private val readTimeoutMillis: Int = DEFAULT_TIMEOUT_MILLIS,
+    private val logger: ForgeLogger = ForgeLoggers.create(
+        level = LogLevel.INFO,
+        baseFields = mapOf("component" to "model-catalog"),
+    ),
+) : ModelCatalog {
+
+    private val lock = Any()
+
+    @Volatile
+    private var snapshot: ModelCatalogSnapshot? = null
+
+    override fun cached(): ModelCatalogSnapshot? = snapshot
+
+    override fun isStale(nowMillis: Long): Boolean {
+        val current = snapshot ?: return true
+        return nowMillis - current.fetchedAtMillis > ttlMillis
+    }
+
+    suspend fun restore() {
+        if (snapshot != null) return
+        val stored = runCatching { store.load(providerId) }.getOrNull() ?: return
+        synchronized(lock) {
+            if (snapshot == null) snapshot = stored
+        }
+    }
+
+    /**
+     * Seeds a rebuilt catalog with the snapshot of the catalog it replaces.
+     *
+     * A catalog is rebuilt when the provider's connection changed (a corrected API
+     * key, a new endpoint). Carrying the previous list over means a refresh that
+     * then fails still leaves the last list the provider actually reported, instead
+     * of dropping the picker back to a built-in list. Never overwrites a snapshot
+     * this catalog already has.
+     */
+    internal fun adoptSnapshot(previous: ModelCatalogSnapshot?) {
+        if (previous == null) return
+        synchronized(lock) {
+            if (snapshot == null) snapshot = previous
+        }
+    }
+
+    override suspend fun refresh(force: Boolean): ForgeResult<ModelCatalogSnapshot, ForgeError> {
+        restore()
+        val now = clock()
+        val existing = snapshot
+        if (!force && existing != null && now - existing.fetchedAtMillis <= ttlMillis) {
+            return success(existing.copy(source = CatalogSource.CACHE))
+        }
+
+        val url = modelsUrl()
+        if (url.isNullOrBlank()) return failure(unavailable("The provider is not connected."))
+
+        val headers = LinkedHashMap<String, String>()
+        headers["Accept"] = "application/json"
+        credential()?.takeIf { it.isNotBlank() }?.let { headers[authHeaderName] = "$authScheme$it" }
+
+        val response = try {
+            transport.execute(
+                HttpRequestSpec(
+                    method = "GET",
+                    url = url,
+                    headers = headers,
+                    connectTimeoutMillis = connectTimeoutMillis,
+                    readTimeoutMillis = readTimeoutMillis,
+                ),
+            )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            return failure(unavailable("Could not reach the model list: ${error.message ?: "network error"}"))
+        }
+
+        if (!response.isSuccess) {
+            logger.warn(
+                "Model list request failed",
+                mapOf(
+                    "providerId" to providerId,
+                    "path" to diagnosticPath(url),
+                    "httpStatus" to response.statusCode,
+                    "count" to response.body.length,
+                ),
+            )
+            return failure(
+                unavailable("The model list endpoint returned HTTP ${response.statusCode}.", response.statusCode),
+            )
+        }
+
+        val parsed = parseModels(response.body)
+        if (parsed == null) {
+            logger.warn(
+                "Model list response could not be parsed",
+                mapOf(
+                    "providerId" to providerId,
+                    "path" to diagnosticPath(url),
+                    "httpStatus" to response.statusCode,
+                    "reason" to "the body is not a model list",
+                ),
+            )
+            return failure(unavailable("The model list response could not be parsed."))
+        }
+        logger.info(
+            "Model list received",
+            mapOf(
+                "providerId" to providerId,
+                "path" to diagnosticPath(url),
+                "httpStatus" to response.statusCode,
+                "received" to parsed.received,
+                "accepted" to parsed.models.size,
+                "rejected" to parsed.rejected.size,
+                "rejectionReasons" to parsed.rejected.take(REJECTION_SAMPLE_SIZE),
+            ),
+        )
+        // The final handoff to the Settings/model picker: what the provider
+        // reported, what the text runtime rejected, and what the picker will
+        // actually offer. The ids are model names only — never a credential.
+        val exposed = parsed.models.filter { it.available }
+        logger.info(
+            "[${providerLabel()}][CATALOG] discovered=${parsed.received} " +
+                "filtered=${parsed.rejected.size} exposedToUi=${exposed.size}",
+        )
+        logger.info("[${providerLabel()}][CATALOG] uiModels=${exposed.joinToString(",") { it.id }}")
+        // An answer that parsed but yielded nothing usable is reported as such: it
+        // must never look like "this provider has no models", and the caller must
+        // not present its built-in fallback as if discovery had returned these.
+        if (parsed.received == 0) {
+            return failure(unavailable("The model list response contained no models."))
+        }
+        if (parsed.models.isEmpty()) {
+            val reasons = parsed.rejected.take(REJECTION_SAMPLE_SIZE).joinToString("; ")
+            return failure(
+                unavailable(
+                    "The provider listed ${parsed.received} models, but none of them can run text " +
+                        "generation. Rejected: $reasons",
+                ),
+            )
+        }
+
+        val merged = merge(existing, parsed.models)
+        val fresh = ModelCatalogSnapshot(
+            providerId = providerId,
+            models = merged,
+            fetchedAtMillis = now,
+            source = CatalogSource.REMOTE,
+        )
+        synchronized(lock) { snapshot = fresh }
+        runCatching { store.save(fresh) }
+        return success(fresh)
+    }
+
+    // --- parsing -----------------------------------------------------------
+
+    /** What a model list contained: what survived, and why the rest did not. */
+    private data class ParsedCatalog(
+        val models: List<CatalogModel>,
+        val received: Int,
+        val rejected: List<String>,
+    )
+
+    private data class ParsedModel(
+        val model: CatalogModel?,
+        val id: String,
+        val rejection: String? = null,
+    )
+
+    /**
+     * Parses a provider's model list, keeping only models this runtime can drive.
+     *
+     * Two shapes are accepted, because providers answer with either: the
+     * OpenAI-compatible `data` array, and the provider's own `models` array
+     * (Gemini's model list reports `models/<id>`, a display name and the token
+     * limits). A missing field stays null — nothing about a model is invented.
+     */
+    private fun parseModels(body: String): ParsedCatalog? {
+        val root = runCatching { JsonCodec.parse(body).objectOrNull() }.getOrNull() ?: return null
+        val entries = root.arrayOrNull("data") ?: root.arrayOrNull("models") ?: return null
+        val parsed = entries.mapNotNull { item -> item.objectOrNull()?.let(::parseModel) }
+        return ParsedCatalog(
+            models = parsed.mapNotNull { it.model },
+            received = parsed.size,
+            rejected = parsed.mapNotNull { entry -> entry.rejection?.let { "${entry.id}: $it" } },
+        )
+    }
+
+    private fun parseModel(model: JsonObject): ParsedModel {
+        val rawId = model.stringOrNull("id") ?: model.stringOrNull("name")
+        // Gemini reports `models/<id>`; the id sent to chat is the bare one.
+        val id = rawId?.let(::normalizeModelId).orEmpty()
+        if (id.isEmpty()) return ParsedModel(null, UNNAMED_MODEL, "the entry has no id or name")
+        val methods = stringList(model, "supportedGenerationMethods", "supported_generation_methods")
+        if (!isRunnableTextModel(id, methods)) {
+            return ParsedModel(
+                model = null,
+                id = id,
+                rejection = if (methods.isEmpty()) {
+                    "not a text-generation model"
+                } else {
+                    "does not report $GENERATE_CONTENT_METHOD (${methods.joinToString("/")})"
+                },
+            )
+        }
+        val deprecated = deprecationOf(model)
+        val catalogModel = CatalogModel(
+            id = id,
+            displayName = (model.stringOrNull("displayName") ?: model.stringOrNull("display_name"))
+                ?.takeIf { it.isNotBlank() },
+            contextWindowTokens = firstInt(
+                model,
+                "context_window",
+                "context_window_tokens",
+                "max_context",
+                "inputTokenLimit",
+                "input_token_limit",
+            ),
+            maxOutputTokens = firstInt(
+                model,
+                "max_output_tokens",
+                "max_completion_tokens",
+                "outputTokenLimit",
+                "output_token_limit",
+            ),
+            capabilities = capabilitiesFor(id),
+            deprecated = deprecated,
+            available = (model.booleanOrNull("active") ?: true) && deprecated != true,
+            providerOwnedBy = model.stringOrNull("owned_by")?.takeIf { it.isNotBlank() },
+            createdAtMillis = model.numberOrNull("created")?.toLong(),
+        )
+        return ParsedModel(model = catalogModel, id = id)
+    }
+
+    /**
+     * Keeps models the text agent runtime can drive.
+     *
+     * Provider-reported generation methods win when present: the runtime needs
+     * text generation. Without them the identifier is filtered against the known
+     * non-text families, which is the documented behaviour for every provider.
+     */
+    private fun isRunnableTextModel(id: String, methods: List<String>): Boolean {
+        // The provider's own generation methods are proof, so they decide alone: a
+        // model that reports text generation is never dropped on its name, which
+        // keeps a newly released family (whose name nothing recognises yet) usable.
+        if (methods.isNotEmpty()) {
+            return methods.any { it.equals(GENERATE_CONTENT_METHOD, ignoreCase = true) }
+        }
+        if (!isUsableTextModel(id)) return false
+        if (providerId == ModelProviderIds.GEMINI) {
+            val lower = id.lowercase()
+            return GEMINI_NON_TEXT_MARKERS.none { lower.contains(it) }
+        }
+        return true
+    }
+
+    /** A provider-reported deprecation, or null when the provider did not say. */
+    private fun deprecationOf(model: JsonObject): Boolean? {
+        model.booleanOrNull("deprecated")?.let { return it }
+        model.booleanOrNull("retired")?.let { return it }
+        return when (val status = model.stringOrNull("status")?.lowercase()) {
+            null -> null
+            else -> when {
+                status.contains("deprecat") || status.contains("retired") || status.contains("shutdown") -> true
+                status.contains("active") || status.contains("available") -> false
+                else -> null
+            }
+        }
+    }
+
+    private fun stringList(model: JsonObject, vararg keys: String): List<String> {
+        keys.forEach { key ->
+            val array = model.arrayOrNull(key) ?: return@forEach
+            return array.mapNotNull { it.stringOrNull() }
+        }
+        return emptyList()
+    }
+
+    /**
+     * A previously known model that is absent from [fetched] is retained with
+     * `available = false`. Nothing is removed, so a role assignment never
+     * silently points at a different model.
+     */
+    private fun merge(previous: ModelCatalogSnapshot?, fetched: List<CatalogModel>): List<CatalogModel> {
+        if (previous == null) return fetched
+        val fetchedIds = fetched.map { it.id }.toHashSet()
+        val removed = previous.models
+            .filter { it.id !in fetchedIds }
+            .map { it.copy(available = false) }
+        return fetched + removed
+    }
+
+    /** The uppercase provider identity used as a log tag. Never a credential. */
+    private fun providerLabel(): String = providerId.uppercase()
+
+    private fun capabilitiesFor(id: String): ModelCapabilities {
+        val lower = id.lowercase()
+        // The AgentX text/model runtime needs streaming chat. Tool calling is not
+        // assumed per model; it is only advertised when the identifier makes the
+        // capability unambiguous rather than sold as a guess.
+        val toolCalling = lower.contains("llama-3") || lower.contains("-tools") || lower.contains("function")
+        return ModelCapabilities(streaming = true, toolCalling = toolCalling, systemMessages = true)
+    }
+
+    private fun firstInt(model: JsonObject, vararg keys: String): Int? {
+        keys.forEach { key -> model.numberOrNull(key)?.let { return it.toInt() } }
+        return null
+    }
+
+    private fun unavailable(message: String, httpStatus: Int? = null): ForgeError = ForgeError(
+        code = ForgeErrorCode.MODEL_CATALOG_UNAVAILABLE,
+        message = message,
+        details = mutableMapOf<String, Any?>("providerId" to providerId).apply {
+            httpStatus?.let { put("httpStatus", it) }
+        },
+    )
+
+    companion object {
+        /** Fifteen minutes: long enough that inference never refetches the list. */
+        const val DEFAULT_TTL_MILLIS: Long = 15L * 60L * 1_000L
+        const val DEFAULT_TIMEOUT_MILLIS: Int = 15_000
+
+        /** The generation method that means "this model does text chat". */
+        const val GENERATE_CONTENT_METHOD: String = "generateContent"
+
+        /** How many rejection reasons are reported, so a log stays readable. */
+        const val REJECTION_SAMPLE_SIZE: Int = 3
+
+        private const val UNNAMED_MODEL: String = "(unnamed)"
+
+        /**
+         * Gemini families that are not text-agent models: embeddings, image and
+         * video generation, speech/audio synthesis, transcription, music, and
+         * question answering. Applied only when the provider reports no generation
+         * methods, and only to Gemini, so the Groq list is filtered exactly as
+         * before. A model the API reports as text-generating is never dropped on
+         * its name, so a newly released text family stays usable.
+         */
+        val GEMINI_NON_TEXT_MARKERS: List<String> = listOf(
+            "embedding",
+            "imagen",
+            "image",
+            "veo",
+            "tts",
+            "transcribe",
+            "speech",
+            "audio",
+            "lyria",
+            "rerank",
+            "guard",
+            "moderation",
+            "aqa",
+        )
+
+        /**
+         * Groq's list also returns speech, guard and embedding models that the
+         * AgentX text runtime cannot drive. Those are not exposed as choices.
+         */
+        fun isUsableTextModel(id: String): Boolean {
+            val lower = id.lowercase()
+            val excluded = listOf(
+                "whisper",
+                "tts",
+                "playai-tts",
+                "embed",
+                "guard",
+                "moderation",
+                "rerank",
+                "speech",
+                "dall-e",
+            )
+            return excluded.none { lower.contains(it) }
+        }
+    }
+}
+
+/**
+ * Builds a catalog per connected provider identity. Catalogs are created lazily
+ * from the live connections, so a provider that is connected later (or
+ * reconnected) simply gets a fresh catalog; nothing is hardcoded to a model list.
+ */
+interface ModelCatalogRegistry {
+    /** Provider identities that currently have a catalog. */
+    fun providers(): List<String>
+
+    fun catalog(providerId: String): ModelCatalog?
+
+    /** Cached snapshot; never triggers a network request. */
+    fun snapshot(providerId: String): ModelCatalogSnapshot?
+
+    /** Available (non-deprecated) models for [providerId]; empty when unknown. */
+    fun availableModels(providerId: String): List<CatalogModel>
+
+    suspend fun refresh(providerId: String, force: Boolean = false): ForgeResult<ModelCatalogSnapshot, ForgeError>
+
+    suspend fun refreshAll(force: Boolean = false): Map<String, ModelCatalogSnapshot>
+
+    /** Loads persisted snapshots into memory; safe to call more than once. */
+    suspend fun restore()
+}
+
+/** Factory so tests can supply a canned catalog. */
+fun interface ModelCatalogFactory {
+    fun create(providerId: String, connection: ModelConfig): ModelCatalog?
+}
+
+/**
+ * Default factory: a connected provider gets a remote catalog pointed at its own
+ * model list. Groq's is `<host>/openai/v1/models` (see [GroqModelCatalog]);
+ * Gemini's is Gemini's own `/v1beta/models` (see [GeminiModelCatalog]), because
+ * the OpenAI-compatible surface it chats on does not serve `/models`.
+ *
+ * Each provider keeps its own catalog, credential and cache: adding Gemini does
+ * not change what Groq or a local endpoint resolves to.
+ */
+class RemoteModelCatalogFactory(
+    private val transport: HttpTransport = UrlConnectionHttpTransport(),
+    private val store: ModelCatalogStore = InMemoryModelCatalogStore(),
+    private val ttlMillis: Long = RemoteModelCatalog.DEFAULT_TTL_MILLIS,
+    private val clock: () -> Long = System::currentTimeMillis,
+    /** Diagnostics for what a model list returned; never carries a credential. */
+    private val catalogLogger: ForgeLogger = ForgeLoggers.create(
+        level = LogLevel.INFO,
+        baseFields = mapOf("component" to "model-catalog"),
+    ),
+) : ModelCatalogFactory {
+
+    override fun create(providerId: String, connection: ModelConfig): ModelCatalog? {
+        if (!supports(providerId)) return null
+        val auth = KnownModelProviders.spec(ModelSetupKind.fromId(providerId))?.modelListAuth
+            ?: ModelListAuth.BEARER
+        return RemoteModelCatalog(
+            providerId = providerId,
+            modelsUrl = { modelsUrlFor(providerId, connection.baseUrl) },
+            credential = { connection.apiKey },
+            // Gemini's list is served by the Gemini API and takes the key in its own
+            // header; the credential used for chat is unchanged.
+            authHeaderName = auth.headerName,
+            authScheme = auth.scheme,
+            transport = transport,
+            store = store,
+            ttlMillis = ttlMillis,
+            clock = clock,
+            logger = catalogLogger,
+        )
+    }
+
+    /**
+     * Providers whose model list this layer understands.
+     *
+     * A local OpenAI-compatible endpoint is deliberately not included: it may not
+     * expose a model list at all, and its models are configured by hand.
+     */
+    fun supports(providerId: String): Boolean =
+        providerId == ModelProviderIds.GROQ || providerId == ModelProviderIds.GEMINI
+
+    /**
+     * The model-list endpoint for a provider.
+     *
+     * A provider that declares its own model-list path (Gemini) is asked there, on
+     * the host of the connection itself, so `/models` is never appended to a
+     * surface that does not serve it. Everything else keeps `<baseUrl>/models`.
+     */
+    fun modelsUrlFor(providerId: String, baseUrl: String): String {
+        val spec = KnownModelProviders.spec(ModelSetupKind.fromId(providerId))
+        if (spec?.modelListPath != null) return spec.modelListUrlFor(baseUrl)
+        return when (providerId) {
+            ModelProviderIds.GROQ -> GroqModelCatalog.modelsUrl(baseUrl)
+            ModelProviderIds.GEMINI -> GeminiModelCatalog.modelsUrl(baseUrl)
+            else -> baseUrl.trimEnd('/') + KnownProviderSpec.MODEL_LIST_PATH
+        }
+    }
+}
+
+class DefaultModelCatalogRegistry(
+    private val connections: () -> Map<String, ModelConfig>,
+    private val factory: ModelCatalogFactory = RemoteModelCatalogFactory(),
+) : ModelCatalogRegistry {
+
+    private val lock = Any()
+    private val catalogs = LinkedHashMap<String, ModelCatalog>()
+
+    /** The connection each catalog was built from, so a changed one is rebuilt. */
+    private val origins = LinkedHashMap<String, ModelConfig>()
+
+    override fun providers(): List<String> = synchronized(lock) { catalogs.keys.toList() }
+
+    /**
+     * The catalog for [providerId], created lazily from that provider's current
+     * connection.
+     *
+     * A connection that changed (a corrected key, a different endpoint) rebuilds the
+     * catalog, carrying the previous snapshot over, so a later refresh uses the new
+     * credential instead of the one captured when the catalog was first created. A
+     * provider that is no longer configured loses its catalog.
+     */
+    override fun catalog(providerId: String): ModelCatalog? = synchronized(lock) {
+        val connection = connections()[providerId] ?: run {
+            catalogs.remove(providerId)
+            origins.remove(providerId)
+            return null
+        }
+        val existing = catalogs[providerId]
+        if (existing != null && origins[providerId] == connection) return existing
+        val created = factory.create(providerId, connection) ?: return null
+        (created as? RemoteModelCatalog)?.adoptSnapshot(existing?.cached())
+        catalogs[providerId] = created
+        origins[providerId] = connection
+        created
+    }
+
+    override fun snapshot(providerId: String): ModelCatalogSnapshot? = catalog(providerId)?.cached()
+
+    override fun availableModels(providerId: String): List<CatalogModel> =
+        snapshot(providerId)?.availableModels().orEmpty()
+
+    override suspend fun refresh(providerId: String, force: Boolean): ForgeResult<ModelCatalogSnapshot, ForgeError> {
+        val target = catalog(providerId)
+            ?: return failure(
+                ForgeError(
+                    code = ForgeErrorCode.MODEL_CATALOG_UNAVAILABLE,
+                    message = "No model catalog is available for '$providerId'.",
+                    details = mapOf("providerId" to providerId),
+                ),
+            )
+        return target.refresh(force)
+    }
+
+    override suspend fun refreshAll(force: Boolean): Map<String, ModelCatalogSnapshot> {
+        val result = LinkedHashMap<String, ModelCatalogSnapshot>()
+        connections().keys.forEach { providerId ->
+            val catalog = catalog(providerId) ?: return@forEach
+            when (val refreshed = catalog.refresh(force)) {
+                is ForgeResult.Success -> result[providerId] = refreshed.value
+                is ForgeResult.Failure -> catalog.cached()?.let { result[providerId] = it }
+            }
+        }
+        return result
+    }
+
+    override suspend fun restore() {
+        synchronized(lock) { catalogs.values.toList() }.forEach { catalog ->
+            (catalog as? RemoteModelCatalog)?.restore()
+        }
+    }
+}
+package com.agentx.app.ui.ide.screens
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.unit.dp
+import com.agentx.app.model.connect.ModelSetupKind
+import com.agentx.app.ui.ide.components.IdeSectionLabel
+import com.agentx.app.ui.ide.components.IdeSettingRow
+import com.agentx.app.ui.ide.components.IdeSpacer
+import com.agentx.app.ui.ide.components.IdeTopBar
+import com.agentx.app.ui.ide.state.API_PROVIDER_KINDS
+import com.agentx.app.ui.ide.state.ModelConnectionType
+import com.agentx.app.ui.ide.state.ModelChoices
+import com.agentx.app.ui.ide.state.ModelEditorState
+import com.agentx.app.ui.ide.state.ModelSetupField
+import com.agentx.app.ui.ide.state.ModelSetupForm
+import com.agentx.app.ui.theme.ForgeAmber
+import com.agentx.app.ui.theme.ForgeCanvas
+import com.agentx.app.ui.theme.ForgeDanger
+import com.agentx.app.ui.theme.ForgeMint
+import com.agentx.app.ui.theme.ForgeMuted
+
+/**
+ * Add/Edit model.
+ *
+ * Two decisions, then the fields that belong to them: a connection type, a
+ * provider and model, and either a server URL or an API key. Nothing else is
+ * asked for — the remaining preset fields are derived or inherited.
+ */
+@Composable
+fun ModelEditorScreen(
+    state: ModelEditorState,
+    onBack: () -> Unit,
+    onEdit: ((ModelSetupForm) -> ModelSetupForm) -> Unit,
+    onSelectConnectionType: (ModelConnectionType) -> Unit,
+    onSelectProvider: (ModelSetupKind) -> Unit,
+    onSelectModel: (String) -> Unit,
+    onToggleManualModel: (Boolean) -> Unit,
+    onRetryCatalog: () -> Unit,
+    onConnect: () -> Unit,
+    onSave: () -> Unit,
+    onRemoveCredential: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Scaffold(
+        modifier = modifier.fillMaxSize(),
+        containerColor = ForgeCanvas,
+        topBar = {
+            IdeTopBar(
+                title = if (state.isEditing) "Edit model" else "Add model",
+                onBack = onBack,
+            )
+        },
+    ) { padding ->
+        if (state.loading) {
+            Box(
+                modifier = Modifier.fillMaxSize().padding(padding),
+                contentAlignment = Alignment.Center,
+            ) {
+                CircularProgressIndicator(color = ForgeMint, modifier = Modifier.size(20.dp))
+            }
+            return@Scaffold
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+        ) {
+            if (state.missing) {
+                Text(
+                    text = "This model no longer exists. It may have been deleted.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = ForgeDanger,
+                )
+                return@Column
+            }
+
+            ConnectionTypeSelector(state, onSelectConnectionType)
+
+            if (state.form.connectionType == ModelConnectionType.API) {
+                ProviderSelector(state, onSelectProvider)
+            }
+
+            FormField(
+                label = "Name",
+                value = state.form.name,
+                onValueChange = { value -> onEdit { it.copy(name = value) } },
+                supporting = "How this model appears in the list",
+            )
+
+            if (state.form.connectionType == ModelConnectionType.LOCAL) {
+                FormField(
+                    label = "Model",
+                    value = state.form.modelId,
+                    onValueChange = { value -> onEdit { it.copy(modelId = value) } },
+                    supporting = "Model id sent to the endpoint",
+                )
+                FormField(
+                    label = "Server URL",
+                    value = state.form.serverUrl,
+                    onValueChange = { value -> onEdit { it.copy(serverUrl = value) } },
+                    keyboardType = KeyboardType.Uri,
+                    isError = state.issue(ModelSetupField.SERVER_URL) != null,
+                    supporting = state.issue(ModelSetupField.SERVER_URL)
+                        ?: ModelConnectionType.LOCAL.helper,
+                )
+            } else {
+                ModelField(state, onEdit, onSelectModel, onToggleManualModel, onRetryCatalog)
+                FormField(
+                    label = if (state.form.hasStoredCredential) "Replace API key" else "API key",
+                    value = state.form.credential,
+                    onValueChange = { value -> onEdit { it.copy(credential = value) } },
+                    visualTransformation = PasswordVisualTransformation(),
+                    isError = state.issue(ModelSetupField.API_KEY) != null,
+                    supporting = state.issue(ModelSetupField.API_KEY)
+                        ?: "Stored encrypted on this device",
+                )
+                if (state.form.hasStoredCredential) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "A key is already stored for this model.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = ForgeMuted,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TextButton(onClick = onRemoveCredential) { Text("Remove") }
+                    }
+                }
+            }
+
+            if (state.discoveredModels.isNotEmpty()) {
+                IdeSpacer(8)
+                IdeSectionLabel("Choose a model")
+                state.discoveredModels.forEach { id ->
+                    IdeSettingRow(
+                        label = id,
+                        value = if (id == state.form.modelId) "Selected" else null,
+                        onClick = { onSelectModel(id) },
+                    )
+                }
+            }
+
+            if (state.connecting) {
+                IdeSpacer(10)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(color = ForgeMint, modifier = Modifier.size(16.dp))
+                    Text(
+                        text = state.connectPhase?.displayName ?: "Connecting…",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = ForgeMuted,
+                        modifier = Modifier.padding(start = 8.dp),
+                    )
+                }
+            }
+
+            state.catalogError?.let { message ->
+                IdeSpacer(8)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = ForgeAmber,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = onRetryCatalog) { Text("Retry") }
+                }
+            }
+
+            if (state.errors.isNotEmpty()) {
+                IdeSpacer(8)
+                state.errors.forEach { error ->
+                    Text(
+                        text = error,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = ForgeDanger,
+                    )
+                }
+            }
+
+            IdeSpacer(14)
+            Button(
+                onClick = onConnect,
+                enabled = !state.busy,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(state.primaryActionLabel)
+            }
+            TextButton(
+                onClick = onSave,
+                enabled = !state.busy,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(if (state.saving) "Saving…" else "Save without testing")
+            }
+            IdeSpacer(16)
+        }
+    }
+}
+
+/** Local/API choice, rendered as two compact chips. */
+@Composable
+private fun ConnectionTypeSelector(
+    state: ModelEditorState,
+    onSelect: (ModelConnectionType) -> Unit,
+) {
+    IdeSectionLabel("Connection")
+    IdeSpacer(6)
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        ModelConnectionType.entries.forEach { type ->
+            FilterChip(
+                selected = state.form.connectionType == type,
+                onClick = { onSelect(type) },
+                label = { Text(type.displayName) },
+                leadingIcon = if (state.form.connectionType == type) {
+                    { Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                } else {
+                    null
+                },
+            )
+        }
+    }
+    IdeSpacer(6)
+    Text(
+        text = state.form.connectionType.helper,
+        style = MaterialTheme.typography.bodySmall,
+        color = ForgeMuted,
+    )
+    IdeSpacer(10)
+}
+
+@Composable
+private fun ProviderSelector(
+    state: ModelEditorState,
+    onSelect: (ModelSetupKind) -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        IdeSettingRow(
+            label = "Provider",
+            value = state.form.apiProvider.displayName,
+            onClick = { open = true },
+        )
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            API_PROVIDER_KINDS.forEach { kind ->
+                DropdownMenuItem(
+                    text = { Text(kind.displayName) },
+                    onClick = {
+                        open = false
+                        onSelect(kind)
+                    },
+                )
+            }
+        }
+    }
+}
+
+/** The model id: a picker when a list is available, a field otherwise. */
+@Composable
+private fun ModelField(
+    state: ModelEditorState,
+    onEdit: ((ModelSetupForm) -> ModelSetupForm) -> Unit,
+    onSelectModel: (String) -> Unit,
+    onToggleManualModel: (Boolean) -> Unit,
+    onRefreshModels: () -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+
+    if (state.hasModelList) {
+        Box {
+            IdeSettingRow(
+                label = "Model",
+                value = ModelChoices.labelFor(state.models, state.form.modelId).ifBlank { "Select" },
+                enabled = !state.catalogLoading,
+                onClick = { open = true },
+            )
+            DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+                state.models.forEach { choice ->
+                    DropdownMenuItem(
+                        text = { Text(choice.label) },
+                        onClick = {
+                            open = false
+                            onSelectModel(choice.id)
+                        },
+                    )
+                }
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = sourceLabel(state),
+                style = MaterialTheme.typography.bodySmall,
+                color = ForgeMuted,
+                modifier = Modifier.weight(1f),
+            )
+            if (state.catalogLoading) {
+                CircularProgressIndicator(color = ForgeMint, modifier = Modifier.size(14.dp))
+            }
+            TextButton(onClick = onRefreshModels, enabled = !state.catalogLoading) { Text("Refresh") }
+            TextButton(onClick = { onToggleManualModel(true) }) { Text("Enter manually") }
+        }
+    } else {
+        FormField(
+            label = "Model",
+            value = state.form.modelId,
+            onValueChange = { value -> onEdit { it.copy(modelId = value) } },
+            isError = state.issue(ModelSetupField.MODEL) != null,
+            supporting = state.issue(ModelSetupField.MODEL)
+                ?: "Model id sent to the provider",
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (state.catalogLoading) {
+                CircularProgressIndicator(color = ForgeMint, modifier = Modifier.size(14.dp))
+            }
+            if (state.models.isNotEmpty()) {
+                TextButton(onClick = { onToggleManualModel(false) }) { Text("Choose from list") }
+            }
+            TextButton(onClick = onRefreshModels, enabled = !state.catalogLoading) { Text("Refresh") }
+        }
+    }
+}
+
+/** Where the offered models came from, so a fallback list is never mistaken for a live one. */
+private fun sourceLabel(state: ModelEditorState): String = when {
+    state.modelsFromCatalog -> "From ${state.form.apiProvider.displayName}'s model list"
+    state.catalogError != null -> "${state.form.apiProvider.displayName} models unavailable"
+    else -> "Built-in ${state.form.apiProvider.displayName} list"
+}
+
+@Composable
+private fun FormField(
+    label: String,
+    value: String,
+    onValueChange: (String) -> Unit,
+    supporting: String? = null,
+    keyboardType: KeyboardType = KeyboardType.Text,
+    visualTransformation: VisualTransformation = VisualTransformation.None,
+    isError: Boolean = false,
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(label) },
+        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+        singleLine = true,
+        isError = isError,
+        keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
+        visualTransformation = visualTransformation,
+        supportingText = supporting?.let { text -> { Text(text) } },
+        shape = RoundedCornerShape(10.dp),
+    )
+}
+package com.agentx.app.ui.ide.state
+
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.agentx.app.core.ForgeError
+import com.agentx.app.core.errorOrNull
+import com.agentx.app.core.valueOrNull
+import com.agentx.app.model.catalog.ModelCatalogRegistry
+import com.agentx.app.model.connect.KnownModelProviders
+import com.agentx.app.model.connect.ModelConnectOutcome
+import com.agentx.app.model.connect.ModelConnectPhase
+import com.agentx.app.model.connect.ModelSetupKind
+import com.agentx.app.model.connect.selectDiscoveredModel
+import com.agentx.app.model.manager.ModelManager
+import com.agentx.app.model.preset.ModelApiProtocol
+import com.agentx.app.model.preset.ModelPreset
+import com.agentx.app.model.preset.ModelProviderIds
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
+
+/**
+ * Add/Edit model state.
+ *
+ * The form is the simplified one: connection type, provider/model, server URL or
+ * API key. Everything else is derived by [ModelSetupForm] and the provider
+ * catalogue, so no Advanced section is needed.
+ */
+data class ModelEditorState(
+    val loading: Boolean = true,
+    val missing: Boolean = false,
+    val form: ModelSetupForm = ModelSetupForm(),
+    /** Which models the form offers for the current provider. */
+    val models: List<ModelChoice> = emptyList(),
+    /** True when [models] came from the provider's own catalog, not its suggestions. */
+    val modelsFromCatalog: Boolean = false,
+    val catalogLoading: Boolean = false,
+    /** Set only when a connected provider's catalog could not be read. */
+    val catalogError: String? = null,
+    /** Model ids a connect attempt discovered and wants the user to choose from. */
+    val discoveredModels: List<String> = emptyList(),
+    val saving: Boolean = false,
+    val connecting: Boolean = false,
+    val connectPhase: ModelConnectPhase? = null,
+    /** Set once the model is saved; the screen leaves afterwards. */
+    val saved: Boolean = false,
+    val errors: List<String> = emptyList(),
+) {
+    val busy: Boolean get() = saving || connecting
+
+    val isEditing: Boolean get() = form.isEditing
+
+    /** True when the model id can be picked from a list. */
+    val hasModelList: Boolean get() = models.isNotEmpty() && !form.manualModel
+
+    fun issue(field: ModelSetupField): String? = form.issueFor(field)
+
+    val primaryActionLabel: String
+        get() = when {
+            connecting -> connectPhase?.displayName ?: "Connecting…"
+            isEditing -> "Save and connect"
+            else -> "Add model"
+        }
+}
+
+/**
+ * Drives the Add/Edit model screen.
+ *
+ * The ViewModel keeps user intent, validation and the catalog in one place; all
+ * connection work still happens inside the Model Manager, and nothing here talks
+ * HTTP or invents a connection state.
+ */
+class ModelEditorViewModel(
+    private val manager: ModelManager,
+    private val presetId: String?,
+    private val catalog: ModelCatalogRegistry? = null,
+) : ViewModel() {
+
+    var state by mutableStateOf(ModelEditorState())
+        private set
+
+    private var existing: ModelPreset? = null
+
+    init {
+        viewModelScope.launch {
+            val loaded = presetId?.let { manager.preset(it) }
+            existing = loaded
+            state = when {
+                loaded != null -> state.copy(loading = false, form = ModelSetupForm.from(loaded))
+                presetId != null -> state.copy(loading = false, missing = true)
+                else -> state.copy(loading = false, form = ModelSetupForm())
+            }
+            // A new model offers the provider's models straight away.
+            loadModels(force = false)
+        }
+    }
+
+    /** Applies a form edit and clears results that no longer apply. */
+    fun edit(block: (ModelSetupForm) -> ModelSetupForm) {
+        if (state.busy) return
+        state = state.copy(
+            form = block(state.form),
+            errors = emptyList(),
+            discoveredModels = emptyList(),
+        )
+    }
+
+    /** Switches connection type, which also switches the fields on screen. */
+    fun selectConnectionType(type: ModelConnectionType) {
+        if (state.busy || state.form.connectionType == type) return
+        edit { form -> form.copy(connectionType = type) }
+        viewModelScope.launch { loadModels(force = false) }
+    }
+
+    /** Switches API provider; the model list is reloaded for the new provider. */
+    fun selectProvider(kind: ModelSetupKind) {
+        if (state.busy || state.form.apiProvider == kind) return
+        edit { form -> form.copy(apiProvider = kind, manualModel = false) }
+        viewModelScope.launch { loadModels(force = false) }
+    }
+
+    fun selectModel(modelId: String) {
+        edit { form -> form.copy(modelId = modelId) }
+    }
+
+    fun toggleManualModel(enabled: Boolean) {
+        edit { form -> form.copy(manualModel = enabled) }
+    }
+
+    /** Retries the provider catalog after a failure, keeping the typed values. */
+    fun retryCatalog() {
+        if (state.busy || state.catalogLoading) return
+        viewModelScope.launch { loadModels(force = true) }
+    }
+
+    fun removeStoredCredential() {
+        edit { form -> form.copy(clearCredential = true, hasStoredCredential = false) }
+    }
+
+    /** Validates, then connects through the Model Manager and saves on success. */
+    fun connect() {
+        if (state.busy) return
+        val issues = state.form.issues()
+        if (issues.isNotEmpty()) {
+            state = state.copy(errors = issues.map { it.message })
+            return
+        }
+        state = state.copy(
+            connecting = true,
+            errors = emptyList(),
+            discoveredModels = emptyList(),
+            catalogError = null,
+            connectPhase = ModelConnectPhase.CONNECTING,
+            saved = false,
+        )
+        viewModelScope.launch {
+            try {
+                val duplicate = duplicateTarget()
+                val result = manager.connectQuick(state.form.toConnectRequest(duplicate)) { phase ->
+                    state = state.copy(connectPhase = phase)
+                }
+                val failure = result.errorOrNull()
+                if (failure != null) {
+                    state = state.copy(
+                        connecting = false,
+                        connectPhase = null,
+                        errors = fieldErrorsOf(failure) ?: listOf(failure.message ?: "Could not connect"),
+                    )
+                    return@launch
+                }
+                when (val outcome = result.valueOrNull()) {
+                    is ModelConnectOutcome.NeedsModelChoice -> state = state.copy(
+                        connecting = false,
+                        connectPhase = null,
+                        discoveredModels = outcome.models,
+                        errors = listOf(outcome.message),
+                    )
+
+                    is ModelConnectOutcome.Connected -> {
+                        existing = outcome.preset
+                        state = state.copy(
+                            connecting = false,
+                            connectPhase = ModelConnectPhase.CONNECTED,
+                            saved = true,
+                            form = ModelSetupForm.from(outcome.preset),
+                        )
+                    }
+
+                    null -> state = state.copy(
+                        connecting = false,
+                        connectPhase = null,
+                        errors = listOf("Could not connect"),
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                state = state.copy(
+                    connecting = false,
+                    connectPhase = null,
+                    errors = listOf(error.message ?: "Could not connect"),
+                )
+            }
+        }
+    }
+
+    /**
+     * Saves without contacting the endpoint.
+     *
+     * This is the recovery path for a local server that is not up yet: the
+     * configuration is kept, the user is never asked to retype it, and no
+     * connection state is claimed.
+     */
+    fun save() {
+        if (state.busy) return
+        val issues = state.form.issues()
+        if (issues.isNotEmpty()) {
+            state = state.copy(errors = issues.map { it.message })
+            return
+        }
+        state = state.copy(saving = true, errors = emptyList())
+        viewModelScope.launch {
+            try {
+                val target = existing ?: duplicateTarget()
+                val preset = state.form.toPreset(target)
+                val result = if (target == null) {
+                    manager.createPreset(preset, state.form.credential.takeIf { it.isNotBlank() })
+                } else {
+                    manager.updatePreset(
+                        preset = preset,
+                        credential = state.form.credential.takeIf { it.isNotBlank() },
+                        clearCredential = state.form.clearCredential,
+                    )
+                }
+                val failure = result.errorOrNull()
+                state = if (failure == null) {
+                    existing = result.valueOrNull() ?: existing
+                    state.copy(saving = false, saved = true)
+                } else {
+                    state.copy(
+                        saving = false,
+                        errors = fieldErrorsOf(failure) ?: listOf(failure.message ?: "The model could not be saved"),
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                state = state.copy(
+                    saving = false,
+                    errors = listOf(error.message ?: "The model could not be saved"),
+                )
+            }
+        }
+    }
+
+    /** An already-saved preset describing the same connection, if there is one. */
+    private fun duplicateTarget(): ModelPreset? {
+        if (state.form.presetId != null) return null
+        return ModelSetupForm.equivalent(manager.state.value.presets, state.form)
+    }
+
+    private suspend fun loadModels(force: Boolean) {
+        if (state.form.connectionType == ModelConnectionType.LOCAL) {
+            state = state.copy(models = emptyList(), modelsFromCatalog = false, catalogError = null)
+            return
+        }
+        val providerId = ModelProviderIds.forPreset(state.form.setupKind.id, ModelApiProtocol.OPENAI_COMPATIBLE)
+        val registry = catalog
+        state = state.copy(catalogLoading = true, catalogError = null)
+        val failure = if (registry == null) {
+            null
+        } else {
+            runCatching { registry.refresh(providerId, force) }.getOrNull()?.errorOrNull()
+        }
+        val fromCatalog = ModelChoices.catalogChoices(registry, providerId)
+        val connected = registry?.catalog(providerId) != null
+        // A live catalog replaces the built-in compatibility list outright; the
+        // compatibility list only fills the gap when discovery cannot answer at all,
+        // so a fallback id is never presented as one the provider offers.
+        val offers = if (fromCatalog.isNotEmpty()) {
+            fromCatalog
+        } else {
+            ModelChoices.suggestions(providerId).map { ModelChoice(it, it) }
+        }
+        state = state.copy(
+            catalogLoading = false,
+            models = offers,
+            modelsFromCatalog = fromCatalog.isNotEmpty(),
+            // Only a connected provider that failed to answer is worth a retry; an
+            // unconnected one simply has no model list yet.
+            catalogError = failure?.message?.takeIf { connected || fromCatalog.isNotEmpty() },
+            form = resolveStaleSavedModel(state.form, fromCatalog, providerId),
+        )
+    }
+
+    /**
+     * Re-points a saved model the provider no longer lists at a valid one from the
+     * live catalog, using the same selection rules connect uses.
+     *
+     * Only an edit of an existing preset is touched, and only when discovery really
+     * answered: a failed refresh keeps the saved model untouched rather than
+     * guessing. When no valid replacement can be resolved the saved value is kept,
+     * so nothing is silently erased.
+     */
+    private fun resolveStaleSavedModel(
+        form: ModelSetupForm,
+        live: List<ModelChoice>,
+        providerId: String,
+    ): ModelSetupForm {
+        if (!form.isEditing || form.manualModel || form.modelId.isBlank() || live.isEmpty()) return form
+        if (live.any { it.id == form.modelId }) return form
+        val preferred = KnownModelProviders.spec(ModelSetupKind.fromId(providerId))?.preferredModel
+        val resolved = selectDiscoveredModel(live.map { it.id }, preferred = null, catalogPreferred = preferred)
+            ?: return form
+        return form.copy(modelId = resolved)
+    }
+
+    private fun fieldErrorsOf(failure: ForgeError): List<String>? =
+        (failure.details["errors"] as? List<*>)?.map { it.toString() }?.takeIf { it.isNotEmpty() }
+}

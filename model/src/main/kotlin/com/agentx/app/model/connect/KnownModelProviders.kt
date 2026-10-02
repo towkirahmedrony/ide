@@ -136,10 +136,10 @@ object KnownModelProviders {
          * not kept here.
          */
         suggestedModels = listOf(
-            "gemini-2.0-flash",
-            "gemini-2.0-flash-lite",
+            "gemini-3.5-flash",
+            "gemini-3.5-flash-lite",
         ),
-        preferredModel = "gemini-2.0-flash",
+        preferredModel = "gemini-3.5-flash",
     )
 
     val groq: KnownProviderSpec = KnownProviderSpec(
