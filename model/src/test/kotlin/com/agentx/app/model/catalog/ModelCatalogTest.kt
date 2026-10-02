@@ -283,7 +283,7 @@ class ModelCatalogTest {
             response = HttpResponseSpec(
                 statusCode = 200,
                 body = geminiModelsJson(
-                    geminiModel("gemini-3.5-flash", displayName = "Gemini 2.0 Flash", inputTokenLimit = 1_048_576, outputTokenLimit = 8_192),
+                    geminiModel("gemini-3.5-flash", displayName = "Gemini 3.5 Flash", inputTokenLimit = 1_048_576, outputTokenLimit = 8_192),
                     // A release the source code has never heard of, with a version
                     // shape no whitelist could predict.
                     geminiModel("gemini-9-ultra-preview", displayName = "Gemini 9 Ultra (preview)", inputTokenLimit = 2_000_000),
@@ -300,7 +300,7 @@ class ModelCatalogTest {
         assertEquals("secret-key", transport.lastRequest?.headers?.get("x-goog-api-key"))
         assertFalse(transport.lastRequest?.headers?.containsKey("Authorization") == true)
         val flash = assertNotNull(snapshot.find("gemini-3.5-flash"))
-        assertEquals("Gemini 2.0 Flash", flash.displayName)
+        assertEquals("Gemini 3.5 Flash", flash.displayName)
         assertEquals(1_048_576, flash.contextWindowTokens)
         assertEquals(8_192, flash.maxOutputTokens)
         assertTrue(flash.available)
@@ -322,7 +322,7 @@ class ModelCatalogTest {
 
         val snapshot = (geminiRegistry(transport).refresh(ModelProviderIds.GEMINI, force = true) as ForgeResult.Success).value
 
-        assertEquals(listOf("gemini-3.5-flash", "gemini-3.1-flash"), snapshot.models.map { it.id }.sorted())
+        assertEquals(listOf("gemini-3.1-flash", "gemini-3.5-flash"), snapshot.models.map { it.id }.sorted())
         val flash = assertNotNull(snapshot.find("gemini-3.1-flash"))
         assertEquals("Gemini 3.1 Flash", flash.displayName)
         // Both forms resolve to the same saved model.
