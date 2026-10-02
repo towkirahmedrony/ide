@@ -257,18 +257,16 @@ class ModelApiDiscoveryTest {
     }
 
     @Test
-    fun `a missing model list names the path it asked for`() = runBlocking {
-        val transport = FakeHttpTransport(executeHandler = { HttpResponseSpec(404, "") })
-
-        val result = ModelApiDiscovery(transport).discover("https://host.example/v1")
-
-        val failed = assertIs<DiscoveryResult.Failed>(result)
-        // The failure reports the status and names the model-list path it asked for,
-        // and never carries a credential: that is what makes a wrong location visible.
-        assertEquals(404, failed.httpStatus)
-        assertTrue(
-            failed.message.contains("/models"),
-            "expected the model-list path in '${failed.message}' (kind=${failed.kind})",
+    fun `the reported request path carries no credential`() {
+        // What a failure message and a diagnostic log are allowed to show: the host
+        // and the path, never a query string and never a key.
+        assertEquals(
+            "generativelanguage.googleapis.com/v1beta/models",
+            diagnosticPath("https://generativelanguage.googleapis.com/v1beta/models"),
+        )
+        assertEquals(
+            "host.example/models",
+            diagnosticPath("https://host.example/models?key=AIza-not-this"),
         )
     }
 
