@@ -220,7 +220,7 @@ class ModelApiDiscoveryTest {
                 assertFalse(request.headers.containsKey("Authorization"))
                 HttpResponseSpec(
                     200,
-                    geminiModelsJson(geminiModel("gemini-3.1-flash"), geminiModel("gemini-2.0-flash")),
+                    geminiModelsJson(geminiModel("gemini-3.1-flash"), geminiModel("gemini-3.5-flash")),
                 )
             },
         )
@@ -239,7 +239,7 @@ class ModelApiDiscoveryTest {
         assertEquals(ModelApiProtocol.GEMINI_NATIVE, found.api.protocol)
         assertFalse(found.api.rootUrl.contains("/openai"))
         // `models/<id>` and `<id>` resolve to the same model.
-        assertEquals(listOf("gemini-3.1-flash", "gemini-2.0-flash"), found.api.modelIds)
+        assertEquals(listOf("gemini-3.1-flash", "gemini-3.5-flash"), found.api.modelIds)
         assertEquals("gemini-3.1-flash", found.api.selectedModelId)
     }
 
@@ -286,7 +286,7 @@ class ModelApiDiscoveryTest {
         // The fallback is marked as such, so it is never mistaken for discovery output.
         assertTrue(found.api.catalogFallback)
         assertEquals(KnownModelProviders.gemini.suggestedModels, found.api.modelIds)
-        assertEquals("gemini-2.0-flash", found.api.selectedModelId)
+        assertEquals("gemini-3.5-flash", found.api.selectedModelId)
         assertEquals("https://generativelanguage.googleapis.com", found.api.rootUrl)
         assertEquals(ModelApiProtocol.GEMINI_NATIVE, found.api.protocol)
     }
