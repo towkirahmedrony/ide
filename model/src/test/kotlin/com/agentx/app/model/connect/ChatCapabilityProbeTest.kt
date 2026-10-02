@@ -8,6 +8,7 @@ import com.agentx.app.model.preset.ModelApiProtocol
 import com.agentx.app.model.preset.ModelPreset
 import com.agentx.app.model.preset.ModelProviderType
 import com.agentx.app.model.manager.DefaultModelProviderFactory
+import com.agentx.app.model.provider.openai.OpenAiCompatibleProvider
 import com.agentx.app.model.preset.EndpointConfig
 import com.agentx.app.model.preset.EndpointDiscoveryMode
 import com.agentx.app.model.connect.ModelSetupKind

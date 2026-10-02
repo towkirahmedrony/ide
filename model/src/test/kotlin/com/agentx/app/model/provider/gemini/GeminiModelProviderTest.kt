@@ -13,6 +13,7 @@ import com.agentx.app.model.ModelToolParameter
 import com.agentx.app.model.ModelToolParameterType
 import com.agentx.app.model.ModelToolSpec
 import com.agentx.app.model.http.HttpResponseSpec
+import com.agentx.app.model.json.Json
 import com.agentx.app.model.json.JsonCodec
 import com.agentx.app.model.json.arrayOrNull
 import com.agentx.app.model.json.objectOrNull
@@ -168,7 +169,7 @@ class GeminiModelProviderTest {
     @Test
     fun `a tool result answers the function by name`() = runBlocking {
         val transport = FakeHttpTransport(response = HttpResponseSpec(200, nativeResponse()))
-        val call = ModelToolCall(id = "call-1", name = "read_file", arguments = mapOf("path" to "A.kt"))
+        val call = ModelToolCall(id = "call-1", name = "read_file", arguments = mapOf("path" to Json.of("A.kt")))
         GeminiModelProvider(transport = transport).complete(
             ModelRequest(
                 config = config(),
@@ -227,8 +228,8 @@ class GeminiModelProviderTest {
         val providerError = error as ModelProviderError
         assertEquals(404, providerError.httpStatus)
         assertEquals(ModelProviderErrorCode.UNSUPPORTED, providerError.code)
-        assertTrue(providerError.message.contains("not found"), providerError.message)
-        assertFalse(providerError.message.contains("AIza-secret"))
+        assertTrue(providerError.message.orEmpty().contains("not found"), providerError.message)
+        assertFalse(providerError.message.orEmpty().contains("AIza-secret"))
     }
 
     @Test
@@ -261,7 +262,7 @@ class GeminiModelProviderTest {
         }.exceptionOrNull() as ModelProviderError
 
         assertEquals(ModelProviderErrorCode.INVALID_RESPONSE, error.code)
-        assertTrue(error.message.contains("SAFETY"), error.message)
+        assertTrue(error.message.orEmpty().contains("SAFETY"), error.message)
     }
 
     @Test
