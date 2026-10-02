@@ -260,14 +260,30 @@ class ModelApiDiscoveryTest {
     fun `a missing model list names the path it asked for`() = runBlocking {
         val transport = FakeHttpTransport(executeHandler = { HttpResponseSpec(404, "") })
 
+        val result = ModelApiDiscovery(transport).discover("https://example.test")
+
+        val failed = assertIs<DiscoveryResult.Failed>(result)
+        assertEquals(DiscoveryFailureKind.NOT_FOUND, failed.kind)
+        // The path is named, without any credential: it is what shows a wrong
+        // model-list location.
+        assertTrue(failed.message.contains("example.test/models"), failed.message)
+    }
+
+    @Test
+    fun `a genuine gemini failure falls back to the built-in compatibility list`() = runBlocking {
+        val transport = FakeHttpTransport(executeHandler = { HttpResponseSpec(404, "") })
+
         val result = ModelApiDiscovery(transport).discoverKnown(
             spec = KnownModelProviders.gemini,
             credential = "AIza-test",
         )
 
-        val failed = assertIs<DiscoveryResult.Failed>(result)
-        assertEquals(DiscoveryFailureKind.NOT_FOUND, failed.kind)
-        assertTrue(failed.message.contains("/v1beta/models"), failed.message)
+        val found = assertIs<DiscoveryResult.Found>(result)
+        // The fallback is marked as such, so it is never mistaken for discovery output.
+        assertTrue(found.api.catalogFallback)
+        assertEquals(KnownModelProviders.gemini.suggestedModels, found.api.modelIds)
+        assertEquals("gemini-2.0-flash", found.api.selectedModelId)
+        assertEquals("https://generativelanguage.googleapis.com/v1beta/openai", found.api.rootUrl)
     }
 
     @Test

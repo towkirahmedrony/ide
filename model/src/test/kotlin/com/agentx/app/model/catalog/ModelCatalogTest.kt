@@ -317,7 +317,7 @@ class ModelCatalogTest {
 
         val snapshot = (geminiRegistry(transport).refresh(ModelProviderIds.GEMINI, force = true) as ForgeResult.Success).value
 
-        assertEquals(listOf("gemini-2.0-flash", "gemini-3.1-flash"), snapshot.models.map { it.id })
+        assertEquals(listOf("gemini-2.0-flash", "gemini-3.1-flash"), snapshot.models.map { it.id }.sorted())
         val flash = assertNotNull(snapshot.find("gemini-3.1-flash"))
         assertEquals("Gemini 3.1 Flash", flash.displayName)
         // Both forms resolve to the same saved model.
@@ -473,7 +473,7 @@ class ModelCatalogTest {
 
         assertEquals(
             listOf("gemini-2.5-flash-image", "gemini-2.5-flash-preview-tts"),
-            snapshot.models.map { it.id },
+            snapshot.models.map { it.id }.sorted(),
         )
     }
 
