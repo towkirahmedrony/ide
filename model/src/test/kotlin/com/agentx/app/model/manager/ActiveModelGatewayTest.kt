@@ -46,7 +46,7 @@ class ActiveModelGatewayTest {
         policy = ModelConnectionPolicy(maxStartAttempts = 2, initialBackoffMillis = 1, maxBackoffMillis = 2),
         runners = listOf(runner),
         monitorEnabled = false,
-        providerFactory = OpenAiCompatibleProviderFactory(transport),
+        providerFactory = DefaultModelProviderFactory(transport),
         scope = scope,
         ioDispatcher = Dispatchers.Unconfined,
     )

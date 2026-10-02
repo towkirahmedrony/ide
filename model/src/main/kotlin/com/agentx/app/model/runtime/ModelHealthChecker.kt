@@ -149,7 +149,9 @@ class HttpModelHealthChecker(
     private fun extractModels(protocol: ModelApiProtocol, root: com.agentx.app.model.json.JsonObject): List<String>? {
         val items = when (protocol) {
             ModelApiProtocol.OPENAI_COMPATIBLE -> root.arrayOrNull("data")
-            ModelApiProtocol.OLLAMA -> root.arrayOrNull("models")
+            ModelApiProtocol.OLLAMA,
+            ModelApiProtocol.GEMINI_NATIVE,
+            -> root.arrayOrNull("models")
         } ?: return null
 
         return items.mapNotNull { item ->

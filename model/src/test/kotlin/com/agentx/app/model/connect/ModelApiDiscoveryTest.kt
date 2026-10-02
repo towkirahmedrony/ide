@@ -231,10 +231,13 @@ class ModelApiDiscoveryTest {
         )
 
         val found = assertIs<DiscoveryResult.Found>(result)
-        // The chat endpoint a preset keeps is the OpenAI-compatible root, and the
-        // list endpoint is never mistaken for it.
-        assertEquals("https://generativelanguage.googleapis.com/v1beta/openai", found.api.rootUrl)
-        assertEquals("", found.api.apiBasePath)
+        // The endpoint the preset keeps is Gemini's own API root, and it is recorded
+        // as the native protocol: the OpenAI-compatible surface is a different
+        // endpoint and is never derived from the model-list path.
+        assertEquals("https://generativelanguage.googleapis.com", found.api.rootUrl)
+        assertEquals("/v1beta", found.api.apiBasePath)
+        assertEquals(ModelApiProtocol.GEMINI_NATIVE, found.api.protocol)
+        assertFalse(found.api.rootUrl.contains("/openai"))
         // `models/<id>` and `<id>` resolve to the same model.
         assertEquals(listOf("gemini-3.1-flash", "gemini-2.0-flash"), found.api.modelIds)
         assertEquals("gemini-3.1-flash", found.api.selectedModelId)
@@ -284,7 +287,8 @@ class ModelApiDiscoveryTest {
         assertTrue(found.api.catalogFallback)
         assertEquals(KnownModelProviders.gemini.suggestedModels, found.api.modelIds)
         assertEquals("gemini-2.0-flash", found.api.selectedModelId)
-        assertEquals("https://generativelanguage.googleapis.com/v1beta/openai", found.api.rootUrl)
+        assertEquals("https://generativelanguage.googleapis.com", found.api.rootUrl)
+        assertEquals(ModelApiProtocol.GEMINI_NATIVE, found.api.protocol)
     }
 
     @Test

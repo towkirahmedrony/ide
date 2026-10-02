@@ -9,13 +9,13 @@ package com.agentx.app.model.preset
  * at the same time, one per identity.
  *
  * The transport is deliberately not part of the identity. Gemini and Groq are
- * reached through the same generic OpenAI-compatible provider; they get distinct
- * identities because they are distinct services with separate endpoints and
- * credentials that must be able to coexist.
+ * distinct services with separate endpoints and credentials that must be able to
+ * coexist, so each gets its own identity even though their requests differ:
+ * Gemini speaks its own API, Groq the OpenAI-compatible one.
  */
 object ModelProviderIds {
 
-    /** Google Gemini (OpenAI-compatible surface). */
+    /** Google Gemini, reached through its own API (not the compatible surface). */
     const val GEMINI: String = "gemini"
 
     /** Groq (OpenAI-compatible surface). */

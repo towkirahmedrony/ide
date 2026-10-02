@@ -786,10 +786,14 @@ class ModelApiDiscovery(
                 }
             }
 
-            ModelApiProtocol.OLLAMA -> {
+            // Gemini's own list, like Ollama, answers with a `models` array.
+            ModelApiProtocol.OLLAMA,
+            ModelApiProtocol.GEMINI_NATIVE,
+            -> {
                 val models = root.arrayOrNull("models")
                 if (models != null) "models" to models else return null
             }
+        }
         }
 
         val accepted = mutableListOf<ModelEntry>()

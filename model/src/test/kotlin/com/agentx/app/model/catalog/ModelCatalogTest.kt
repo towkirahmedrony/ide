@@ -218,7 +218,8 @@ class ModelCatalogTest {
 
     // --- Gemini ---------------------------------------------------------------
 
-    private val geminiBaseUrl = "https://generativelanguage.googleapis.com/v1beta/openai"
+    /** The base URL a native Gemini connection uses: root plus `/v1beta`. */
+    private val geminiBaseUrl = "https://generativelanguage.googleapis.com/v1beta"
 
     /** The connection registry the manager uses, so a preset really becomes a ModelConfig. */
     private fun gatewayRegistry() = GatewayModelConnectionRegistry(gateway = DefaultModelGateway())
@@ -228,9 +229,9 @@ class ModelCatalogTest {
         displayName = "Gemini",
         providerType = ModelProviderType.REMOTE_OPENAI_COMPATIBLE,
         modelIdentifier = modelId,
-        apiProtocol = ModelApiProtocol.OPENAI_COMPATIBLE,
-        apiBasePath = "",
-        endpoint = EndpointConfig(EndpointDiscoveryMode.CONFIGURED_ENDPOINT, geminiBaseUrl),
+        apiProtocol = ModelApiProtocol.GEMINI_NATIVE,
+        apiBasePath = "/v1beta",
+        endpoint = EndpointConfig(EndpointDiscoveryMode.CONFIGURED_ENDPOINT, "https://generativelanguage.googleapis.com"),
         setupKind = ModelSetupKind.GEMINI.id,
     )
 
@@ -612,6 +613,12 @@ class ModelCatalogTest {
         assertEquals(
             "https://generativelanguage.googleapis.com/v1beta/models",
             factory.modelsUrlFor(ModelProviderIds.GEMINI, geminiBaseUrl),
+        )
+        // The old OpenAI-compatible base still lists from the same place: the model
+        // list is resolved against the host, so an existing preset keeps working.
+        assertEquals(
+            "https://generativelanguage.googleapis.com/v1beta/models",
+            factory.modelsUrlFor(ModelProviderIds.GEMINI, "https://generativelanguage.googleapis.com/v1beta/openai"),
         )
     }
 

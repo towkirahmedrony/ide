@@ -62,7 +62,25 @@ enum class ModelApiProtocol(
      */
     val defaultHealthPath: String,
     val healthIsRelativeToApiBase: Boolean,
+    /**
+     * Chat path that addresses the model inside the path instead of the body.
+     *
+     * Gemini's own API is `models/<model>:generateContent`; when this is set the
+     * provider builds the URL from the template and the request body carries no
+     * model name. OpenAI-compatible protocols leave it null and send the model in
+     * the body at [chatPath].
+     */
+    val chatPathTemplate: String? = null,
 ) {
+
+    /** Chat path for [modelId], for protocols that address the model in the path. */
+    fun chatPathFor(modelId: String): String =
+        chatPathTemplate?.replace(MODEL_TOKEN, modelId.trim().removePrefix("models/")) ?: chatPath
+
+    companion object {
+        const val MODEL_TOKEN: String = "{model}"
+    }
+}
     OPENAI_COMPATIBLE(
         displayName = "OpenAI compatible",
         providerId = "openai-compatible",
@@ -78,6 +96,27 @@ enum class ModelApiProtocol(
         chatPath = "/chat/completions",
         defaultHealthPath = "/api/tags",
         healthIsRelativeToApiBase = false,
+    ),
+
+    /**
+     * Gemini's own API.
+     *
+     * Not the same thing as Google's OpenAI-compatible surface: the model list is
+     * `/v1beta/models`, a completion is
+     * `POST /v1beta/models/<model>:generateContent` with the key in the
+     * `x-goog-api-key` header, and the prompt travels in a native `contents`
+     * payload. The compatible surface is a separate endpoint and is only used when
+     * a preset is configured for it, so `/v1beta/openai/chat/completions` is never
+     * requested on a native connection.
+     */
+    GEMINI_NATIVE(
+        displayName = "Gemini API",
+        providerId = "gemini",
+        defaultApiBasePath = "/v1beta",
+        chatPath = "",
+        defaultHealthPath = "/models",
+        healthIsRelativeToApiBase = true,
+        chatPathTemplate = "/models/{model}:generateContent",
     ),
 }
 

@@ -19,7 +19,6 @@ import com.agentx.app.model.connect.ModelConnectRequest
 import com.agentx.app.model.connect.ModelConnectService
 import com.agentx.app.model.http.HttpTransport
 import com.agentx.app.model.http.UrlConnectionHttpTransport
-import com.agentx.app.model.provider.openai.OpenAiCompatibleProvider
 import com.agentx.app.model.preset.ModelCredentialResolver
 import com.agentx.app.model.preset.ModelPreset
 import com.agentx.app.model.preset.ModelPresetRepository
@@ -88,13 +87,11 @@ class DefaultModelManager(
             discovery = ModelApiDiscovery(transport, logger = logger),
             chatProbe = ChatCapabilityProbe(
                 gateway = DefaultModelGateway(),
-                providerFactory = { protocol ->
-                    OpenAiCompatibleProvider(
-                        id = protocol.providerId,
-                        transport = transport,
-                        chatPath = protocol.chatPath,
-                        logger = logger,
-                    )
+                // The same provider selection the runtime uses, so verification
+                // exercises the protocol the preset will actually chat with, and the
+                // trace keeps flowing into the manager's logger.
+                providerFactory = { preset ->
+                    DefaultModelProviderFactory(transport, logger).create(preset)
                 },
                 logger = logger,
             ),

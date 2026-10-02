@@ -15,6 +15,7 @@ import com.agentx.app.model.preset.DefaultModelPresetRepository
 import com.agentx.app.model.preset.EndpointDiscoveryMode
 import com.agentx.app.model.preset.InMemoryModelPresetStore
 import com.agentx.app.model.preset.InMemoryModelSecretStore
+import com.agentx.app.model.preset.ModelApiProtocol
 import com.agentx.app.model.preset.ModelProviderType
 import com.agentx.app.model.preset.StoreBackedModelCredentialResolver
 import com.agentx.app.model.runtime.ModelLifecycleState
@@ -33,6 +34,10 @@ import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+
+/** A minimal native Gemini completion, so the probe has something to parse. */
+private const val NATIVE_RESPONSE: String =
+    """{"candidates":[{"content":{"parts":[{"text":"pong"}]},"finishReason":"STOP"}]}"""
 
 class ModelConnectServiceTest {
 
@@ -79,6 +84,8 @@ class ModelConnectServiceTest {
         listStatus: Int = 200,
         chatBody: String = SUCCESS_RESPONSE,
         chatStatus: Int = 200,
+        nativeBody: String = NATIVE_RESPONSE,
+        nativeStatus: Int = 200,
     ): FakeHttpTransport = FakeHttpTransport(
         executeHandler = { request ->
             when {
@@ -86,10 +93,17 @@ class ModelConnectServiceTest {
                     HttpResponseSpec(listStatus, listBody)
                 request.method == "POST" && request.url.endsWith("/chat/completions") ->
                     HttpResponseSpec(chatStatus, chatBody)
+                // Gemini's native completion addresses the model in the path.
+                request.method == "POST" && request.url.contains(":generateContent") ->
+                    HttpResponseSpec(nativeStatus, nativeBody)
                 else -> HttpResponseSpec(404, "")
             }
         },
     )
+
+    /** Gemini's own model list: a `models` array whose entries are `models/<id>`. */
+    private fun geminiModelsJson(vararg ids: String): String =
+        """{"models":[${ids.joinToString(",") { """{"name":"models/$it","displayName":"$it"}""" }}]}"""
 
     @Test
     fun `successful custom connect saves the discovered id and comes online`() = runBlocking {
@@ -228,8 +242,8 @@ class ModelConnectServiceTest {
     }
 
     @Test
-    fun `gemini requires an api key and uses the known endpoint`() = runBlocking {
-        val manager = manager(openAiTransport(listBody = modelsJson("gemini-2.0-flash")))
+    fun `gemini requires an api key and connects over its own api, not the compatible surface`() = runBlocking {
+        val manager = manager(openAiTransport(listBody = geminiModelsJson("gemini-3.5-flash")))
 
         val missing = assertNotNull(
             manager.connectQuick(
@@ -250,8 +264,14 @@ class ModelConnectServiceTest {
             ),
         )
         assertEquals("gemini", connected.preset.setupKind)
-        assertEquals("gemini-2.0-flash", connected.preset.modelIdentifier)
-        assertTrue(connected.preset.endpoint.explicitUrl!!.contains("generativelanguage.googleapis.com"))
+        assertEquals("gemini-3.5-flash", connected.preset.modelIdentifier)
+        // Gemini's own API, recorded as such: a later completion addresses
+        // `models/<model>:generateContent`, never `/v1beta/openai/chat/completions`.
+        assertEquals(ModelApiProtocol.GEMINI_NATIVE, connected.preset.apiProtocol)
+        val endpoint = connected.preset.endpoint.explicitUrl!!
+        assertTrue(endpoint.contains("generativelanguage.googleapis.com"), endpoint)
+        assertFalse(endpoint.contains("/openai"), endpoint)
+        assertEquals("/v1beta", connected.preset.normalizedApiBasePath)
         assertEquals(ModelProviderType.REMOTE_OPENAI_COMPATIBLE, connected.preset.providerType)
     }
 

@@ -16,7 +16,8 @@ import com.agentx.app.model.diagnostics.configuredFlag
 import com.agentx.app.model.diagnostics.sanitizeForLog
 import com.agentx.app.model.preset.ModelApiProtocol
 import com.agentx.app.model.preset.ModelPreset
-import com.agentx.app.model.provider.openai.OpenAiCompatibleProvider
+import com.agentx.app.model.connect.diagnosticPath
+import com.agentx.app.model.manager.DefaultModelProviderFactory
 import kotlin.coroutines.cancellation.CancellationException
 
 enum class ChatProbeStatus { OK, FAILED }
@@ -32,9 +33,15 @@ data class ChatProbeResult(
 
 /**
  * Verifies that a discovered endpoint can actually chat, using the existing
- * Model Gateway / OpenAI-compatible provider — never a second HTTP client.
+ * Model Gateway and the provider the preset's protocol selects — never a second
+ * HTTP client and never a second endpoint construction.
  *
- * The request is tiny (`max_tokens = 1`) so connecting is cheap.
+ * Because the provider comes from the same factory the runtime uses, verification
+ * and normal agent requests cannot diverge: a Gemini connection is verified with
+ * a native `models/<model>:generateContent` call, an OpenAI-compatible one with
+ * `<base>/chat/completions`, exactly as its later completions will be.
+ *
+ * The request is tiny (one output token) so connecting is cheap.
  */
 class ChatCapabilityProbe(
     /**
@@ -43,11 +50,8 @@ class ChatCapabilityProbe(
      * The provider still speaks through the same OpenAI-compatible stack.
      */
     private val gateway: ModelGateway = DefaultModelGateway(),
-    private val providerFactory: (ModelApiProtocol) -> ModelProvider = { protocol ->
-        OpenAiCompatibleProvider(
-            id = protocol.providerId,
-            chatPath = protocol.chatPath,
-        )
+    private val providerFactory: (ModelPreset) -> ModelProvider = { preset ->
+        DefaultModelProviderFactory().create(preset)
     },
     private val timeoutMillis: Long = DEFAULT_TIMEOUT_MILLIS,
     /** Structured Developer Log sink for the verification request; null disables it. */
@@ -73,7 +77,9 @@ class ChatCapabilityProbe(
             "provider" to providerId,
             "preset" to preset.id.ifBlank { "-" },
             "endpoint" to diagnosticPath(baseUrl),
-            "path" to diagnosticPath(baseUrl.trimEnd('/') + preset.apiProtocol.chatPath),
+            "path" to diagnosticPath(
+                baseUrl.trimEnd('/') + preset.apiProtocol.chatPathFor(modelId),
+            ),
             "model" to modelId,
             "protocol" to preset.apiProtocol.name,
             "stream" to false,
@@ -83,7 +89,9 @@ class ChatCapabilityProbe(
             "timeoutMs" to timeoutMillis,
         )
         val config = ModelConfig(
-            providerId = preset.apiProtocol.providerId,
+            // The provider identity the runtime connection uses, so the probe and a
+            // real request resolve the same provider instance.
+            providerId = preset.providerId,
             baseUrl = baseUrl,
             model = modelId,
             apiKey = credential,
@@ -108,7 +116,7 @@ class ChatCapabilityProbe(
             )
         }
 
-        val provider = providerFactory(preset.apiProtocol)
+        val provider = providerFactory(preset)
         val previous = gateway.provider(provider.id)
         gateway.registerOrReplace(provider)
         return try {

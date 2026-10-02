@@ -119,12 +119,13 @@ object KnownModelProviders {
 
     val gemini: KnownProviderSpec = KnownProviderSpec(
         kind = ModelSetupKind.GEMINI,
-        rootUrl = "https://generativelanguage.googleapis.com/v1beta/openai",
-        apiBasePath = "",
-        // Chat goes through the OpenAI-compatible surface, but the model list is
-        // Gemini's own (`/v1beta/models`, key in the documented header). The
-        // compatible surface has no /models route, which is why discovery must not
-        // ask it for one.
+        // Gemini's own API root. The OpenAI-compatible surface is a separate
+        // endpoint (`.../v1beta/openai`) that this provider never builds a path on:
+        // chat is `models/<model>:generateContent` and the list is `/v1beta/models`,
+        // both on the native API, both with the key in the documented header.
+        rootUrl = "https://generativelanguage.googleapis.com",
+        apiBasePath = "/v1beta",
+        protocol = ModelApiProtocol.GEMINI_NATIVE,
         modelListPath = "/v1beta/models",
         modelListAuth = ModelListAuth.API_KEY_HEADER,
         /**

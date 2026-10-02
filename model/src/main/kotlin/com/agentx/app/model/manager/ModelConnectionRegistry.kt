@@ -10,6 +10,7 @@ import com.agentx.app.model.ModelProvider
 import com.agentx.app.model.http.HttpTransport
 import com.agentx.app.model.http.UrlConnectionHttpTransport
 import com.agentx.app.model.preset.ModelPreset
+import com.agentx.app.model.provider.gemini.GeminiModelProvider
 import com.agentx.app.model.provider.openai.OpenAiCompatibleProvider
 import com.agentx.app.model.runtime.ModelEndpoint
 
@@ -19,12 +20,17 @@ fun interface ModelProviderFactory {
 }
 
 /**
- * Default factory: the protocol decides the chat path and the preset's
+ * Default factory: the preset's protocol decides which provider speaks to it, and
  * [ModelPreset.providerId] decides the provider identity, so Gemini, Groq and a
- * local OpenAI-compatible endpoint are distinct provider instances of the same
- * transport and never overwrite one another.
+ * local OpenAI-compatible endpoint stay distinct provider instances that never
+ * overwrite one another.
+ *
+ * Gemini's own API is not the OpenAI-compatible protocol: it addresses
+ * `models/<model>:generateContent` with Gemini's key header, so it gets its own
+ * provider. Groq, a local server and every other compatible endpoint keep the
+ * OpenAI-compatible provider and its `<base>/chat/completions` path, unchanged.
  */
-class OpenAiCompatibleProviderFactory(
+class DefaultModelProviderFactory(
     private val transport: HttpTransport = UrlConnectionHttpTransport(),
     /**
      * Optional structured Developer Log sink. Passing the connection registry's
@@ -34,12 +40,24 @@ class OpenAiCompatibleProviderFactory(
     private val logger: ForgeLogger? = null,
 ) : ModelProviderFactory {
 
-    override fun create(preset: ModelPreset): ModelProvider = OpenAiCompatibleProvider(
-        id = preset.providerId,
-        transport = transport,
-        chatPath = preset.apiProtocol.chatPath,
-        logger = logger,
-    )
+    override fun create(preset: ModelPreset): ModelProvider = when (preset.apiProtocol) {
+        // Gemini's own API: the model travels in the path and the key in Gemini's
+        // header, so it is a different protocol rather than a compatible endpoint.
+        ModelApiProtocol.GEMINI_NATIVE -> GeminiModelProvider(
+            id = preset.providerId,
+            transport = transport,
+            logger = logger,
+        )
+
+        ModelApiProtocol.OPENAI_COMPATIBLE,
+        ModelApiProtocol.OLLAMA,
+        -> OpenAiCompatibleProvider(
+            id = preset.providerId,
+            transport = transport,
+            chatPath = preset.apiProtocol.chatPath,
+            logger = logger,
+        )
+    }
 }
 
 /**
@@ -79,7 +97,7 @@ interface ModelConnectionRegistry {
 
 class GatewayModelConnectionRegistry(
     private val gateway: ModelGateway = DefaultModelGateway(),
-    private val providerFactory: ModelProviderFactory = OpenAiCompatibleProviderFactory(),
+    private val providerFactory: ModelProviderFactory = DefaultModelProviderFactory(),
     private val logger: ForgeLogger = ForgeLoggers.create(
         level = LogLevel.WARN,
         baseFields = mapOf("component" to "model-connection"),

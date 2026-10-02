@@ -142,13 +142,17 @@ class ModelSetupFormTest {
     }
 
     @Test
-    fun `a Gemini model keeps the provider root URL and does not gain a base path`() {
+    fun `a Gemini model keeps the provider root URL and its own API version path`() {
         val preset = apiForm().toPreset(null)
 
         assertEquals("gemini", preset.providerId)
         assertEquals(KnownModelProviders.gemini.rootUrl, preset.endpoint.explicitUrl)
-        // Gemini's root URL already ends in the API version.
-        assertEquals("", preset.apiBasePath)
+        // The native API version comes from the provider catalogue, and the base URL
+        // is that root plus this path — `.../v1beta`, so a completion is
+        // `.../v1beta/models/<model>:generateContent`. A chat path is never appended
+        // to the OpenAI-compatible surface.
+        assertEquals("/v1beta", preset.apiBasePath)
+        assertEquals(ModelApiProtocol.GEMINI_NATIVE, preset.apiProtocol)
         assertTrue(preset.validate().isEmpty(), preset.validate().toString())
     }
 
