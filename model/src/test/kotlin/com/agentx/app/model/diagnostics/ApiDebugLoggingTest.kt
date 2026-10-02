@@ -70,13 +70,13 @@ class ApiDebugLoggingTest {
         val sink = RecordingLogSink()
         val discovery = geminiDiscovery(sink) { request ->
             assertEquals("https://generativelanguage.googleapis.com/v1beta/models", request.url)
-            HttpResponseSpec(200, geminiModelsJson("gemini-2.0-flash", "gemini-2.0-flash-lite"))
+            HttpResponseSpec(200, geminiModelsJson("gemini-3.5-flash", "gemini-3.5-flash-lite"))
         }
 
         val result = discovery.discoverKnown(
             spec = KnownModelProviders.gemini,
             credential = GEMINI_KEY,
-            preferredModelId = "gemini-2.0-flash",
+            preferredModelId = "gemini-3.5-flash",
         )
 
         assertIs<DiscoveryResult.Found>(result)
@@ -93,11 +93,11 @@ class ApiDebugLoggingTest {
         assertTrue(text.contains("bodyBytes="), text)
         assertTrue(text.contains("PARSE fieldPath=models rawModels=2"), text)
         assertTrue(
-            text.contains("MODEL raw=models/gemini-2.0-flash normalized=gemini-2.0-flash accepted=true"),
+            text.contains("MODEL raw=models/gemini-3.5-flash normalized=gemini-3.5-flash accepted=true"),
             text,
         )
         assertTrue(text.contains("SELECT"), text)
-        assertTrue(text.contains("selected=gemini-2.0-flash"), text)
+        assertTrue(text.contains("selected=gemini-3.5-flash"), text)
         assertTrue(text.contains("COMPLETE outcome=found"), text)
 
         // One operation, one id: every line of the attempt correlates.
@@ -150,7 +150,7 @@ class ApiDebugLoggingTest {
     fun `gemini model name prefix is normalized and reported`() = runBlocking {
         val sink = RecordingLogSink()
         val discovery = geminiDiscovery(sink) {
-            HttpResponseSpec(200, geminiModelsJson("gemini-3.1-flash", "gemini-2.0-flash"))
+            HttpResponseSpec(200, geminiModelsJson("gemini-3.1-flash", "gemini-3.5-flash"))
         }
 
         val result = discovery.discoverKnown(
@@ -161,7 +161,7 @@ class ApiDebugLoggingTest {
 
         val found = assertIs<DiscoveryResult.Found>(result)
         // The catalog the app stores and the picker show carries bare ids.
-        assertEquals(listOf("gemini-3.1-flash", "gemini-2.0-flash"), found.api.modelIds)
+        assertEquals(listOf("gemini-3.1-flash", "gemini-3.5-flash"), found.api.modelIds)
         val text = sink.text()
         assertTrue(
             text.contains("MODEL raw=models/gemini-3.1-flash normalized=gemini-3.1-flash accepted=true"),
@@ -177,14 +177,14 @@ class ApiDebugLoggingTest {
         val discovery = geminiDiscovery(sink) {
             HttpResponseSpec(
                 200,
-                geminiModelsJson("gemini-2.0-flash", "gemini-2.0-flash-lite", "text-embedding-004"),
+                geminiModelsJson("gemini-3.5-flash", "gemini-3.5-flash-lite", "text-embedding-004"),
             )
         }
 
         val result = discovery.discoverKnown(
             spec = KnownModelProviders.gemini,
             credential = GEMINI_KEY,
-            preferredModelId = "gemini-2.0-flash",
+            preferredModelId = "gemini-3.5-flash",
         )
 
         assertIs<DiscoveryResult.Found>(result)
@@ -198,7 +198,7 @@ class ApiDebugLoggingTest {
     fun `an entry without a usable id is reported as rejected, not silently dropped`() = runBlocking {
         val sink = RecordingLogSink()
         val discovery = geminiDiscovery(sink) {
-            HttpResponseSpec(200, """{"models":[{"displayName":"no id here"},{"name":"models/gemini-2.0-flash"}]}""")
+            HttpResponseSpec(200, """{"models":[{"displayName":"no id here"},{"name":"models/gemini-3.5-flash"}]}""")
         }
 
         val result = discovery.discoverKnown(KnownModelProviders.gemini, credential = GEMINI_KEY)
@@ -327,7 +327,7 @@ class ApiDebugLoggingTest {
                 openAiConfig(
                     providerId = "gemini",
                     baseUrl = GEMINI_ROOT,
-                    model = "gemini-2.0-flash",
+                    model = "gemini-3.5-flash",
                     apiKey = GEMINI_KEY,
                 ),
                 ModelMessage.user("hello"),
@@ -407,7 +407,7 @@ class ApiDebugLoggingTest {
             preset = geminiPreset(),
             rootUrl = GEMINI_ROOT,
             apiBasePath = "",
-            modelId = "gemini-2.0-flash",
+            modelId = "gemini-3.5-flash",
             credential = GEMINI_KEY,
         )
 
@@ -483,6 +483,6 @@ class ApiDebugLoggingTest {
     private fun geminiPreset(): ModelPreset = colabPreset(
         id = "gemini",
         name = "Google Gemini",
-        model = "gemini-2.0-flash",
+        model = "gemini-3.5-flash",
     ).copy(setupKind = "gemini", providerType = ModelProviderType.REMOTE_OPENAI_COMPATIBLE)
 }

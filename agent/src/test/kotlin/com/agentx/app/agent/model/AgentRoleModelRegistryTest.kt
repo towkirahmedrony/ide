@@ -102,11 +102,11 @@ class AgentRoleModelRegistryTest {
         val connections = mapOf(
             AgentModelProviders.GEMINI to connection(AgentModelProviders.GEMINI, "gemini-1.5-flash"),
         )
-        val active = connection(AgentModelProviders.GEMINI, "gemini-2.0-flash")
+        val active = connection(AgentModelProviders.GEMINI, "gemini-3.5-flash")
         val resolver = resolver(registry, connections)
 
-        runBlocking { registry.save(AgentRole.MAIN, AgentModelProviders.GEMINI, "gemini-2.0-flash") }
-        assertEquals("gemini-2.0-flash", resolver.resolve(AgentRole.MAIN, active).model)
+        runBlocking { registry.save(AgentRole.MAIN, AgentModelProviders.GEMINI, "gemini-3.5-flash") }
+        assertEquals("gemini-3.5-flash", resolver.resolve(AgentRole.MAIN, active).model)
 
         runBlocking { registry.save(AgentRole.MAIN, AgentModelProviders.GEMINI, "gemini-1.5-pro") }
         assertEquals("gemini-1.5-pro", resolver.resolve(AgentRole.MAIN, active).model)
@@ -129,12 +129,12 @@ class AgentRoleModelRegistryTest {
     fun `main and coder resolve different models`() {
         val registry = registry()
         val connections = mapOf(
-            AgentModelProviders.GEMINI to connection(AgentModelProviders.GEMINI, "gemini-2.0-flash"),
+            AgentModelProviders.GEMINI to connection(AgentModelProviders.GEMINI, "gemini-3.5-flash"),
             AgentModelProviders.OPENAI_COMPATIBLE_LOCAL to
                 connection(AgentModelProviders.OPENAI_COMPATIBLE_LOCAL, "qwen2.5-coder-14b"),
         )
         val resolver = resolver(registry, connections)
-        val active = connection(AgentModelProviders.GEMINI, "gemini-2.0-flash")
+        val active = connection(AgentModelProviders.GEMINI, "gemini-3.5-flash")
 
         val main = resolver.resolve(AgentRole.MAIN, active)
         val coder = resolver.resolve(AgentRole.CODER, active)
@@ -163,7 +163,7 @@ class AgentRoleModelRegistryTest {
     fun `a role whose provider is not connected keeps the active model as compatibility`() {
         val registry = registry()
         val resolver = resolver(registry, emptyMap())
-        val active = connection(AgentModelProviders.GEMINI, "gemini-2.0-flash")
+        val active = connection(AgentModelProviders.GEMINI, "gemini-3.5-flash")
 
         // Coder's provider is not in the connected set, so the run stays possible
         // on the active model — the Phase 1 compatibility behaviour.

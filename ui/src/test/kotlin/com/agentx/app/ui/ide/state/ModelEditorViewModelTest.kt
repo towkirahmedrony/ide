@@ -106,13 +106,13 @@ class ModelEditorViewModelTest {
 
     @Test
     fun `a successful gemini discovery fills the picker with the live catalog`() {
-        val live = snapshot("gemini-3.1-flash", "gemini-2.0-flash")
+        val live = snapshot("gemini-3.1-flash", "gemini-3.5-flash")
         val viewModel = newGeminiForm(FakeCatalogRegistry(live, ForgeResult.Success(live)))
 
-        assertEquals(listOf("gemini-2.0-flash", "gemini-3.1-flash"), viewModel.state.models.map { it.id })
+        assertEquals(listOf("gemini-3.5-flash", "gemini-3.1-flash"), viewModel.state.models.map { it.id })
         assertTrue(viewModel.state.modelsFromCatalog)
         // The built-in compatibility list is never mixed into a live catalog.
-        assertTrue(viewModel.state.models.none { it.id == "gemini-2.0-flash-lite" })
+        assertTrue(viewModel.state.models.none { it.id == "gemini-3.5-flash-lite" })
     }
 
     @Test
@@ -135,22 +135,22 @@ class ModelEditorViewModelTest {
 
     @Test
     fun `refreshing the provider updates the picker without a restart`() {
-        val first = snapshot("gemini-2.0-flash")
+        val first = snapshot("gemini-3.5-flash")
         val registry = FakeCatalogRegistry(first, ForgeResult.Success(first))
         val viewModel = newGeminiForm(registry)
-        assertEquals(listOf("gemini-2.0-flash"), viewModel.state.models.map { it.id })
+        assertEquals(listOf("gemini-3.5-flash"), viewModel.state.models.map { it.id })
 
-        val second = snapshot("gemini-3.1-flash", "gemini-2.0-flash")
+        val second = snapshot("gemini-3.1-flash", "gemini-3.5-flash")
         registry.current = second
         registry.result = ForgeResult.Success(second)
         viewModel.retryCatalog()
 
-        assertEquals(listOf("gemini-2.0-flash", "gemini-3.1-flash"), viewModel.state.models.map { it.id })
+        assertEquals(listOf("gemini-3.5-flash", "gemini-3.1-flash"), viewModel.state.models.map { it.id })
     }
 
     @Test
     fun `a saved model the provider dropped is replaced from the live catalog`() {
-        val live = snapshot("gemini-3.1-flash", "gemini-2.0-flash")
+        val live = snapshot("gemini-3.1-flash", "gemini-3.5-flash")
         val registry = FakeCatalogRegistry(live, ForgeResult.Success(live))
 
         val viewModel = ModelEditorViewModel(
@@ -161,7 +161,7 @@ class ModelEditorViewModelTest {
 
         // The catalog's preferred model is present, so the dropped saved model is
         // re-pointed at one the provider still lists.
-        assertEquals("gemini-2.0-flash", viewModel.state.form.modelId)
+        assertEquals("gemini-3.5-flash", viewModel.state.form.modelId)
         assertTrue(viewModel.state.models.none { it.id == "gemini-legacy-flash" })
     }
 }

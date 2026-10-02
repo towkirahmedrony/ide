@@ -93,7 +93,7 @@ class AgentModelsViewModelTest {
         vm.save(AgentRole.CODER, AgentModelProviders.OPENAI_COMPATIBLE_LOCAL, "qwen2.5-coder-14b", "preset-1")
 
         val local = config(AgentModelProviders.OPENAI_COMPATIBLE_LOCAL, "qwen2.5-coder-14b")
-        val active = config(AgentModelProviders.GEMINI, "gemini-2.0-flash")
+        val active = config(AgentModelProviders.GEMINI, "gemini-3.5-flash")
         val resolver = AgentModelResolver(
             preferences = AgentModelPreferences.DEFAULT,
             connections = { mapOf(AgentModelProviders.OPENAI_COMPATIBLE_LOCAL to local) },
@@ -152,7 +152,7 @@ class AgentModelsViewModelTest {
         source = CatalogSource.REMOTE,
     )
 
-    private fun geminiPreset(modelId: String = "gemini-2.0-flash") = ModelPreset(
+    private fun geminiPreset(modelId: String = "gemini-3.5-flash") = ModelPreset(
         id = "gemini-preset",
         displayName = "Gemini",
         providerType = ModelProviderType.REMOTE_OPENAI_COMPATIBLE,
@@ -178,43 +178,43 @@ class AgentModelsViewModelTest {
 
     @Test
     fun `the live catalog is offered and the built-in fallback list is not`() {
-        val vm = viewModelWithCatalog(FakeCatalogRegistry(geminiSnapshot("gemini-3.1-flash", "gemini-2.0-flash")))
+        val vm = viewModelWithCatalog(FakeCatalogRegistry(geminiSnapshot("gemini-3.1-flash", "gemini-3.5-flash")))
 
         vm.refresh()
 
         val gemini = vm.options.single { it.providerId == AgentModelProviders.GEMINI }
-        assertEquals(listOf("gemini-3.1-flash", "gemini-2.0-flash"), gemini.models)
-        assertTrue(gemini.models.none { it == "gemini-2.0-flash-lite" })
+        assertEquals(listOf("gemini-3.1-flash", "gemini-3.5-flash"), gemini.models)
+        assertTrue(gemini.models.none { it == "gemini-3.5-flash-lite" })
     }
 
     @Test
     fun `a saved model the live catalog dropped is reported unavailable`() {
         val vm = viewModelWithCatalog(
-            FakeCatalogRegistry(geminiSnapshot("gemini-3.1-flash", unavailable = listOf("gemini-2.0-flash"))),
+            FakeCatalogRegistry(geminiSnapshot("gemini-3.1-flash", unavailable = listOf("gemini-3.5-flash"))),
         )
 
         vm.refresh()
 
         val gemini = vm.options.single { it.providerId == AgentModelProviders.GEMINI }
         assertEquals(listOf("gemini-3.1-flash"), gemini.models)
-        assertEquals(listOf("gemini-2.0-flash"), gemini.unavailableModels)
+        assertEquals(listOf("gemini-3.5-flash"), gemini.unavailableModels)
     }
 
     @Test
     fun `refreshing the catalog updates what the picker offers`() {
-        val catalog = FakeCatalogRegistry(geminiSnapshot("gemini-2.0-flash"))
+        val catalog = FakeCatalogRegistry(geminiSnapshot("gemini-3.5-flash"))
         val vm = viewModelWithCatalog(catalog)
         vm.refresh()
         assertEquals(
-            listOf("gemini-2.0-flash"),
+            listOf("gemini-3.5-flash"),
             vm.options.single { it.providerId == AgentModelProviders.GEMINI }.models,
         )
 
-        catalog.current = geminiSnapshot("gemini-3.1-flash", "gemini-2.0-flash")
+        catalog.current = geminiSnapshot("gemini-3.1-flash", "gemini-3.5-flash")
         vm.refreshCatalog()
 
         assertEquals(
-            listOf("gemini-3.1-flash", "gemini-2.0-flash"),
+            listOf("gemini-3.1-flash", "gemini-3.5-flash"),
             vm.options.single { it.providerId == AgentModelProviders.GEMINI }.models,
         )
     }

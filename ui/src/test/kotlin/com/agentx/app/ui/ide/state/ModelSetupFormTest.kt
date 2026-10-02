@@ -45,7 +45,7 @@ class ModelSetupFormTest {
 
     private fun apiForm(
         provider: ModelSetupKind = ModelSetupKind.GEMINI,
-        model: String = "gemini-2.0-flash",
+        model: String = "gemini-3.5-flash",
         name: String = "Gemini",
         key: String = "test-key",
     ) = ModelSetupForm(
@@ -238,7 +238,7 @@ class ModelSetupFormTest {
             id = "p2",
             displayName = "Gemini",
             providerType = ModelProviderType.REMOTE_OPENAI_COMPATIBLE,
-            modelIdentifier = "gemini-2.0-flash",
+            modelIdentifier = "gemini-3.5-flash",
             credentialRef = "models.secret.p2",
             setupKind = ModelSetupKind.GEMINI.id,
         )

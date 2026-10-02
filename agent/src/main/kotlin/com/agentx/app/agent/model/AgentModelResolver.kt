@@ -35,7 +35,7 @@ object AgentModelProviders {
  * configured catalog rather than an arbitrary one.
  */
 object AgentModelIds {
-    const val GEMINI = "gemini-2.0-flash"
+    const val GEMINI = "gemini-3.5-flash"
     const val GROQ = "llama-3.3-70b-versatile"
     const val QWEN_CODER = "qwen2.5-coder-14b"
 }

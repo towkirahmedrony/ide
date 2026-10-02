@@ -29,8 +29,8 @@ enum class ApiOperation(val label: String) {
  * [GEMINI][DISCOVERY][a1b2c3] START provider=gemini …
  * [GEMINI][DISCOVERY][a1b2c3] REQUEST method=GET path=… authScheme=api-key-header
  * [GEMINI][DISCOVERY][a1b2c3] RESPONSE status=200 elapsedMs=184 bodyBytes=1024
- * [GEMINI][DISCOVERY][a1b2c3] MODEL raw=models/gemini-2.0-flash normalized=gemini-2.0-flash accepted=true
- * [GEMINI][DISCOVERY][a1b2c3] SELECT selected=gemini-2.0-flash
+ * [GEMINI][DISCOVERY][a1b2c3] MODEL raw=models/gemini-3.5-flash normalized=gemini-3.5-flash accepted=true
+ * [GEMINI][DISCOVERY][a1b2c3] SELECT selected=gemini-3.5-flash
  * [GEMINI][DISCOVERY][a1b2c3] COMPLETE outcome=found catalog=2
  * ```
  *

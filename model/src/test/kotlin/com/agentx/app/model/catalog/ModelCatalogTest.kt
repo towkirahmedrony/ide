@@ -246,7 +246,7 @@ class ModelCatalogTest {
                     ModelProviderIds.GEMINI to ModelConfig(
                         providerId = ModelProviderIds.GEMINI,
                         baseUrl = geminiBaseUrl,
-                        model = "gemini-2.0-flash",
+                        model = "gemini-3.5-flash",
                         apiKey = "secret-key",
                     ),
                 )
@@ -283,7 +283,7 @@ class ModelCatalogTest {
             response = HttpResponseSpec(
                 statusCode = 200,
                 body = geminiModelsJson(
-                    geminiModel("gemini-2.0-flash", displayName = "Gemini 2.0 Flash", inputTokenLimit = 1_048_576, outputTokenLimit = 8_192),
+                    geminiModel("gemini-3.5-flash", displayName = "Gemini 2.0 Flash", inputTokenLimit = 1_048_576, outputTokenLimit = 8_192),
                     // A release the source code has never heard of, with a version
                     // shape no whitelist could predict.
                     geminiModel("gemini-9-ultra-preview", displayName = "Gemini 9 Ultra (preview)", inputTokenLimit = 2_000_000),
@@ -293,13 +293,13 @@ class ModelCatalogTest {
 
         val snapshot = (geminiRegistry(transport).refresh(ModelProviderIds.GEMINI, force = true) as ForgeResult.Success).value
 
-        assertEquals(listOf("gemini-2.0-flash", "gemini-9-ultra-preview"), snapshot.models.map { it.id })
+        assertEquals(listOf("gemini-3.5-flash", "gemini-9-ultra-preview"), snapshot.models.map { it.id })
         // Gemini's list is the Gemini API's, with its documented key header; the
         // OpenAI-compatible chat root is never asked for /models.
         assertEquals("https://generativelanguage.googleapis.com/v1beta/models", transport.lastRequest?.url)
         assertEquals("secret-key", transport.lastRequest?.headers?.get("x-goog-api-key"))
         assertFalse(transport.lastRequest?.headers?.containsKey("Authorization") == true)
-        val flash = assertNotNull(snapshot.find("gemini-2.0-flash"))
+        val flash = assertNotNull(snapshot.find("gemini-3.5-flash"))
         assertEquals("Gemini 2.0 Flash", flash.displayName)
         assertEquals(1_048_576, flash.contextWindowTokens)
         assertEquals(8_192, flash.maxOutputTokens)
@@ -315,14 +315,14 @@ class ModelCatalogTest {
                 statusCode = 200,
                 body = geminiModelsJson(
                     geminiModel("gemini-3.1-flash", displayName = "Gemini 3.1 Flash"),
-                    geminiModel("gemini-2.0-flash"),
+                    geminiModel("gemini-3.5-flash"),
                 ),
             ),
         )
 
         val snapshot = (geminiRegistry(transport).refresh(ModelProviderIds.GEMINI, force = true) as ForgeResult.Success).value
 
-        assertEquals(listOf("gemini-2.0-flash", "gemini-3.1-flash"), snapshot.models.map { it.id }.sorted())
+        assertEquals(listOf("gemini-3.5-flash", "gemini-3.1-flash"), snapshot.models.map { it.id }.sorted())
         val flash = assertNotNull(snapshot.find("gemini-3.1-flash"))
         assertEquals("Gemini 3.1 Flash", flash.displayName)
         // Both forms resolve to the same saved model.
@@ -447,7 +447,7 @@ class ModelCatalogTest {
             response = HttpResponseSpec(
                 statusCode = 200,
                 body = geminiModelsJson(
-                    geminiModel("gemini-2.0-flash"),
+                    geminiModel("gemini-3.5-flash"),
                     geminiModel("gemini-embedding-001", methods = listOf("embedContent")),
                     geminiModel("imagen-3.0-generate-002", methods = listOf("predict")),
                     geminiModel("veo-3.0-generate-preview", methods = listOf("predictLongRunning")),
@@ -457,7 +457,7 @@ class ModelCatalogTest {
 
         val snapshot = (geminiRegistry(transport).refresh(ModelProviderIds.GEMINI, force = true) as ForgeResult.Success).value
 
-        assertEquals(listOf("gemini-2.0-flash"), snapshot.models.map { it.id })
+        assertEquals(listOf("gemini-3.5-flash"), snapshot.models.map { it.id })
     }
 
     @Test
@@ -488,7 +488,7 @@ class ModelCatalogTest {
             response = HttpResponseSpec(
                 statusCode = 200,
                 body = modelsJson(
-                    "gemini-2.0-flash",
+                    "gemini-3.5-flash",
                     "gemini-4-experimental",
                     "gemini-embedding-001",
                     "imagen-3.0-generate-002",
@@ -500,7 +500,7 @@ class ModelCatalogTest {
 
         val snapshot = (geminiRegistry(transport).refresh(ModelProviderIds.GEMINI, force = true) as ForgeResult.Success).value
 
-        assertEquals(listOf("gemini-2.0-flash", "gemini-4-experimental"), snapshot.models.map { it.id })
+        assertEquals(listOf("gemini-3.5-flash", "gemini-4-experimental"), snapshot.models.map { it.id })
     }
 
     @Test
@@ -509,7 +509,7 @@ class ModelCatalogTest {
             response = HttpResponseSpec(
                 statusCode = 200,
                 body = geminiModelsJson(
-                    geminiModel("gemini-2.0-flash"),
+                    geminiModel("gemini-3.5-flash"),
                     geminiModel("gemini-legacy-flash", status = "deprecated"),
                 ),
             ),
@@ -521,13 +521,13 @@ class ModelCatalogTest {
         assertEquals(true, legacy.deprecated)
         assertFalse(legacy.available)
         assertFalse(snapshot.isAvailable("gemini-legacy-flash"))
-        assertEquals(listOf("gemini-2.0-flash"), snapshot.availableModels().map { it.id })
+        assertEquals(listOf("gemini-3.5-flash"), snapshot.availableModels().map { it.id })
     }
 
     @Test
     fun `a gemini cache is reused and a forced refresh refetches`() = runSuspend {
         val transport = FakeHttpTransport(
-            response = HttpResponseSpec(statusCode = 200, body = geminiModelsJson(geminiModel("gemini-2.0-flash"))),
+            response = HttpResponseSpec(statusCode = 200, body = geminiModelsJson(geminiModel("gemini-3.5-flash"))),
         )
         var now = 0L
         val registry = geminiRegistry(transport, now = { now })
@@ -546,7 +546,7 @@ class ModelCatalogTest {
     @Test
     fun `a gemini discovery failure keeps the previous list`() = runSuspend {
         val transport = FakeHttpTransport(
-            response = HttpResponseSpec(statusCode = 200, body = geminiModelsJson(geminiModel("gemini-2.0-flash"))),
+            response = HttpResponseSpec(statusCode = 200, body = geminiModelsJson(geminiModel("gemini-3.5-flash"))),
         )
         val registry = geminiRegistry(transport)
         registry.refresh(ModelProviderIds.GEMINI, force = true)
@@ -555,7 +555,7 @@ class ModelCatalogTest {
         val result = registry.refresh(ModelProviderIds.GEMINI, force = true)
 
         assertTrue(result is ForgeResult.Failure)
-        assertEquals(listOf("gemini-2.0-flash"), registry.availableModels(ModelProviderIds.GEMINI).map { it.id })
+        assertEquals(listOf("gemini-3.5-flash"), registry.availableModels(ModelProviderIds.GEMINI).map { it.id })
     }
 
     @Test
@@ -633,7 +633,7 @@ class ModelCatalogTest {
                 statusCode = 200,
                 body = geminiModelsJson(
                     geminiModel("gemini-3.1-flash"),
-                    geminiModel("gemini-2.0-flash"),
+                    geminiModel("gemini-3.5-flash"),
                     geminiModel("gemini-embedding-001", methods = listOf("embedContent")),
                 ),
             ),
@@ -643,8 +643,8 @@ class ModelCatalogTest {
 
         // The live list is the whole catalog: the built-in compatibility list fills no
         // gaps once discovery answered, so a fallback id cannot look like a real model.
-        assertEquals(listOf("gemini-3.1-flash", "gemini-2.0-flash"), snapshot.availableModels().map { it.id })
-        assertFalse(snapshot.availableModels().any { it.id == "gemini-2.0-flash-lite" })
+        assertEquals(listOf("gemini-3.1-flash", "gemini-3.5-flash"), snapshot.availableModels().map { it.id })
+        assertFalse(snapshot.availableModels().any { it.id == "gemini-3.5-flash-lite" })
         assertTrue(snapshot.availableModels().none { it.id == KnownModelProviders.gemini.suggestedModels.last() })
     }
 
@@ -677,7 +677,7 @@ class ModelCatalogTest {
                 statusCode = 200,
                 body = geminiModelsJson(
                     geminiModel("gemini-3.1-flash"),
-                    geminiModel("gemini-2.0-flash"),
+                    geminiModel("gemini-3.5-flash"),
                     geminiModel("gemini-embedding-001", methods = listOf("embedContent")),
                 ),
             ),
@@ -703,7 +703,7 @@ class ModelCatalogTest {
         assertEquals("[GEMINI][CATALOG] discovered=3 filtered=1 exposedToUi=2", handoff)
         val ids = messages.single { it.startsWith("[GEMINI][CATALOG] uiModels=") }
         assertTrue(ids.contains("gemini-3.1-flash"), ids)
-        assertTrue(ids.contains("gemini-2.0-flash"), ids)
+        assertTrue(ids.contains("gemini-3.5-flash"), ids)
         assertFalse(ids.contains("embedding"), ids)
         assertTrue(records.none { it.fields.values.toString().contains("secret-key") })
     }

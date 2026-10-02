@@ -65,11 +65,11 @@ class SettingsRoleRoutingTest {
         val registry = AgentRoleModelRegistry(
             DefaultAgentRoleModelRepository(InMemoryAgentRoleModelStore()),
         )
-        registry.save(AgentRole.MAIN, AgentModelProviders.GEMINI, "gemini-2.0-flash")
+        registry.save(AgentRole.MAIN, AgentModelProviders.GEMINI, "gemini-3.5-flash")
         registry.save(AgentRole.CODER, AgentModelProviders.OPENAI_COMPATIBLE, "qwen2.5-coder-14b")
 
         val connections = mapOf(
-            AgentModelProviders.GEMINI to config(AgentModelProviders.GEMINI, "gemini-2.0-flash"),
+            AgentModelProviders.GEMINI to config(AgentModelProviders.GEMINI, "gemini-3.5-flash"),
             AgentModelProviders.OPENAI_COMPATIBLE to
                 config(AgentModelProviders.OPENAI_COMPATIBLE, "qwen2.5-coder-14b"),
         )
@@ -87,7 +87,7 @@ class SettingsRoleRoutingTest {
         )
         val result = runtime.orchestrator.run(
             request = AgentRunRequest(prompt = "fix it"),
-            modelConfig = config(AgentModelProviders.GEMINI, "gemini-2.0-flash"),
+            modelConfig = config(AgentModelProviders.GEMINI, "gemini-3.5-flash"),
             sink = CollectingEventSink(),
         )
 

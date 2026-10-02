@@ -33,7 +33,7 @@ class CatalogConnectionsTest {
     private val geminiRootUrl = "https://generativelanguage.googleapis.com"
 
     private fun geminiPreset(
-        modelId: String = "gemini-2.0-flash",
+        modelId: String = "gemini-3.5-flash",
         credentialRef: String? = "gemini-credential",
     ) = ModelPreset(
         id = "gemini-preset",
@@ -81,7 +81,7 @@ class CatalogConnectionsTest {
         val transport = FakeHttpTransport(
             response = HttpResponseSpec(
                 statusCode = 200,
-                body = geminiModelsJson("gemini-3.1-flash", "gemini-2.0-flash"),
+                body = geminiModelsJson("gemini-3.1-flash", "gemini-3.5-flash"),
             ),
         )
         val registry = DefaultModelCatalogRegistry(
@@ -92,7 +92,7 @@ class CatalogConnectionsTest {
         val snapshot = (registry.refresh(ModelProviderIds.GEMINI, force = true) as ForgeResult.Success).value
 
         assertEquals(
-            listOf("gemini-3.1-flash", "gemini-2.0-flash"),
+            listOf("gemini-3.1-flash", "gemini-3.5-flash"),
             snapshot.availableModels().map { it.id },
         )
         assertEquals("$geminiRootUrl/v1beta/models", transport.lastRequest?.url)
