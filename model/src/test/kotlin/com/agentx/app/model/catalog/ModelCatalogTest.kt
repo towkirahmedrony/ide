@@ -4,6 +4,7 @@ import com.agentx.app.core.ForgeResult
 import com.agentx.app.model.DefaultModelGateway
 import com.agentx.app.model.FakeHttpTransport
 import com.agentx.app.model.ModelConfig
+import com.agentx.app.model.connect.ModelSetupKind
 import com.agentx.app.model.http.HttpResponseSpec
 import com.agentx.app.model.manager.GatewayModelConnectionRegistry
 import com.agentx.app.model.preset.EndpointConfig
