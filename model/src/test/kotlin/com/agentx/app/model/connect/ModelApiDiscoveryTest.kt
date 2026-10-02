@@ -264,9 +264,11 @@ class ModelApiDiscoveryTest {
 
         val failed = assertIs<DiscoveryResult.Failed>(result)
         assertEquals(DiscoveryFailureKind.NOT_FOUND, failed.kind)
-        // The path is named, without any credential: it is what shows a wrong
-        // model-list location.
-        assertTrue(failed.message.contains("example.test/models"), failed.message)
+        // The host and the requested model-list path are named, without any
+        // credential: it is what shows a wrong model-list location. Which candidate
+        // path is reported last depends on the scheme the resolver tried.
+        assertTrue(failed.message.contains("example.test"), failed.message)
+        assertTrue(failed.message.contains("/models"), failed.message)
     }
 
     @Test
