@@ -409,8 +409,12 @@ class GeminiModelProvider(
      * Gemini calls the assistant turn `model`, and a tool result is a
      * `functionResponse` part inside a user turn. A message that carries neither
      * text nor a function part is skipped rather than sent empty.
+     *
+     * A system prompt is not a turn at all: it travels in `systemInstruction`, so
+     * emitting it here as well would send it twice.
      */
     private fun serializeMessage(message: ModelMessage, request: ModelRequest): JsonValue? {
+        if (message.role == ModelRole.SYSTEM) return null
         val parts = mutableListOf<JsonValue>()
         if (message.content.isNotBlank() && message.toolCallId == null) {
             parts += Json.obj("text" to Json.of(message.content))

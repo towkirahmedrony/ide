@@ -218,8 +218,11 @@ class ModelCatalogTest {
 
     // --- Gemini ---------------------------------------------------------------
 
+    /** Gemini's own API root, as the provider catalogue declares it. */
+    private val geminiRootUrl = "https://generativelanguage.googleapis.com"
+
     /** The base URL a native Gemini connection uses: root plus `/v1beta`. */
-    private val geminiBaseUrl = "https://generativelanguage.googleapis.com/v1beta"
+    private val geminiBaseUrl = "$geminiRootUrl/v1beta"
 
     /** The connection registry the manager uses, so a preset really becomes a ModelConfig. */
     private fun gatewayRegistry() = GatewayModelConnectionRegistry(gateway = DefaultModelGateway())
@@ -231,7 +234,7 @@ class ModelCatalogTest {
         modelIdentifier = modelId,
         apiProtocol = ModelApiProtocol.GEMINI_NATIVE,
         apiBasePath = "/v1beta",
-        endpoint = EndpointConfig(EndpointDiscoveryMode.CONFIGURED_ENDPOINT, "https://generativelanguage.googleapis.com"),
+        endpoint = EndpointConfig(EndpointDiscoveryMode.CONFIGURED_ENDPOINT, geminiRootUrl),
         setupKind = ModelSetupKind.GEMINI.id,
     )
 
@@ -567,7 +570,7 @@ class ModelCatalogTest {
 
         val config = gatewayRegistry().connect(
             preset = geminiPreset(discovered.id),
-            endpoint = ModelEndpoint(geminiBaseUrl, EndpointSource.CONFIGURED),
+            endpoint = ModelEndpoint(geminiRootUrl, EndpointSource.CONFIGURED),
             credential = "secret-key",
         )
 
@@ -590,7 +593,7 @@ class ModelCatalogTest {
         // Discovery failing must not stop the model that is already saved.
         val config = gatewayRegistry().connect(
             preset = geminiPreset("gemini-1.5-pro"),
-            endpoint = ModelEndpoint(geminiBaseUrl, EndpointSource.CONFIGURED),
+            endpoint = ModelEndpoint(geminiRootUrl, EndpointSource.CONFIGURED),
             credential = "secret-key",
         )
 
