@@ -131,7 +131,11 @@ data class ModelSetupForm(
         if (connectionType == ModelConnectionType.LOCAL) {
             return existing?.apiProtocol ?: ModelApiProtocol.OPENAI_COMPATIBLE
         }
-        return if (sameKind) existing.apiProtocol else ModelApiProtocol.OPENAI_COMPATIBLE
+        if (sameKind) return existing.apiProtocol
+        // A known provider states how its own API is spoken; Gemini is not an
+        // OpenAI-compatible service, so the protocol must come from the catalogue
+        // rather than defaulting to the compatible surface.
+        return KnownModelProviders.spec(setupKind)?.protocol ?: ModelApiProtocol.OPENAI_COMPATIBLE
     }
 
     /**
@@ -147,8 +151,8 @@ data class ModelSetupForm(
         val inherit = if (connectionType == ModelConnectionType.LOCAL || sameKind) existing else null
         val spec = KnownModelProviders.spec(setupKind)
         val protocol = protocolFor(existing)
-        // A known provider keeps its own base path even when that is empty: Gemini's
-        // root URL already ends in the API version, so appending "/v1" would be wrong.
+        // A known provider declares its own API version path (Gemini: "/v1beta"), so
+        // the base URL is that provider's root plus this path.
         val basePath = when {
             !inherit?.apiBasePath.isNullOrBlank() -> inherit.apiBasePath
             connectionType == ModelConnectionType.API && spec != null -> spec.apiBasePath
