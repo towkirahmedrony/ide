@@ -221,6 +221,10 @@ class ModelConnectServiceTest {
         assertEquals("sk-secret-value", secrets.get(ref))
         assertFalse(connected.preset.toString().contains("sk-secret-value"))
         assertFalse(logs.contains("sk-secret-value"))
+        // The pre-existing structured logging still works alongside the new API
+        // traces, and neither one mentions the credential.
+        assertTrue(logs.contains("Model credential stored"))
+        assertTrue(logs.contains("Active model connection updated"))
     }
 
     @Test

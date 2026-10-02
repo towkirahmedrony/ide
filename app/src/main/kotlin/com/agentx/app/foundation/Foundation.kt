@@ -32,7 +32,9 @@ import com.agentx.app.core.di.ServiceContainer
 import com.agentx.app.core.foundation.ServiceKeys
 import com.agentx.app.core.health.HealthMonitor
 import com.agentx.app.core.health.HealthReport
+import com.agentx.app.core.logging.ConsoleLogSink
 import com.agentx.app.core.logging.ForgeLoggers
+import com.agentx.app.core.logging.LogSink
 import com.agentx.app.core.timeout.AgentTimeouts
 import com.agentx.app.core.module.ModuleRegistry
 import com.agentx.app.git.GIT_LAYER
@@ -134,9 +136,16 @@ object Foundation {
          * never drift apart; see [AgentTimeouts].
          */
         timeouts: AgentTimeouts = AgentTimeouts.DEFAULT,
+        /**
+         * Where structured records are written. The app passes a sink that also
+         * mirrors them into the Developer Log; tests and headless callers keep the
+         * console sink.
+         */
+        logSink: LogSink = ConsoleLogSink,
     ): FoundationState {
         val logger = ForgeLoggers.create(
             level = config.logLevel,
+            sink = logSink,
             baseFields = mapOf("app" to config.appName),
         )
 

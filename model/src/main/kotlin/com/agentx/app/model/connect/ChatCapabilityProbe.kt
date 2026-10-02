@@ -1,5 +1,6 @@
 package com.agentx.app.model.connect
 
+import com.agentx.app.core.logging.ForgeLogger
 import com.agentx.app.model.DefaultModelGateway
 import com.agentx.app.model.ModelConfig
 import com.agentx.app.model.ModelGateway
@@ -9,6 +10,10 @@ import com.agentx.app.model.ModelProvider
 import com.agentx.app.model.ModelProviderError
 import com.agentx.app.model.ModelProviderErrorCode
 import com.agentx.app.model.ModelRequest
+import com.agentx.app.model.diagnostics.ApiOperation
+import com.agentx.app.model.diagnostics.ApiTrace
+import com.agentx.app.model.diagnostics.configuredFlag
+import com.agentx.app.model.diagnostics.sanitizeForLog
 import com.agentx.app.model.preset.ModelApiProtocol
 import com.agentx.app.model.preset.ModelPreset
 import com.agentx.app.model.provider.openai.OpenAiCompatibleProvider
@@ -45,6 +50,8 @@ class ChatCapabilityProbe(
         )
     },
     private val timeoutMillis: Long = DEFAULT_TIMEOUT_MILLIS,
+    /** Structured Developer Log sink for the verification request; null disables it. */
+    private val logger: ForgeLogger? = null,
 ) {
 
     suspend fun verify(
@@ -54,9 +61,30 @@ class ChatCapabilityProbe(
         modelId: String,
         credential: String?,
     ): ChatProbeResult {
+        // The provider identity the preset connects as: Gemini, Groq or a plain
+        // OpenAI-compatible endpoint. It is what makes the verification log line
+        // addressable next to the discovery it follows.
+        val providerId = preset.providerId
+        val baseUrl = EndpointResolver.join(rootUrl, apiBasePath)
+        val trace = ApiTrace.create(logger, providerId, ApiOperation.CONNECTION)
+        trace.stage(
+            "START",
+            "operation" to "connection-verification",
+            "provider" to providerId,
+            "preset" to preset.id.ifBlank { "-" },
+            "endpoint" to diagnosticPath(baseUrl),
+            "path" to diagnosticPath(baseUrl.trimEnd('/') + preset.apiProtocol.chatPath),
+            "model" to modelId,
+            "protocol" to preset.apiProtocol.name,
+            "stream" to false,
+            "toolCalling" to "NO",
+            "hasApiKey" to configuredFlag(!credential.isNullOrBlank()),
+            "maxOutputTokens" to 1,
+            "timeoutMs" to timeoutMillis,
+        )
         val config = ModelConfig(
             providerId = preset.apiProtocol.providerId,
-            baseUrl = EndpointResolver.join(rootUrl, apiBasePath),
+            baseUrl = baseUrl,
             model = modelId,
             apiKey = credential,
             stream = false,
@@ -65,6 +93,14 @@ class ChatCapabilityProbe(
         )
         val problems = config.validate()
         if (problems.isNotEmpty()) {
+            trace.failure(
+                "ERROR",
+                "stage" to "config",
+                "provider" to providerId,
+                "model" to modelId,
+                "kind" to DiscoveryFailureKind.MALFORMED.name,
+                "message" to sanitizeForLog(problems.first()),
+            )
             return ChatProbeResult(
                 status = ChatProbeStatus.FAILED,
                 message = problems.first(),
@@ -82,17 +118,45 @@ class ChatCapabilityProbe(
                     messages = listOf(ModelMessage.user("ping")),
                 ),
             )
+            trace.stage(
+                "COMPLETE",
+                "outcome" to "ok",
+                "provider" to providerId,
+                "model" to modelId,
+                "status" to "-",
+            )
             ChatProbeResult(ChatProbeStatus.OK, "Chat endpoint responded.")
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: ModelProviderError) {
+            val kind = kindFor(error)
+            trace.failure(
+                "ERROR",
+                "stage" to "chat-probe",
+                "provider" to providerId,
+                "model" to modelId,
+                "status" to (error.httpStatus ?: "-"),
+                "kind" to kind.name,
+                "code" to error.code.name,
+                "retryable" to error.retryable,
+                "message" to sanitizeForLog(error.message ?: ""),
+            )
             ChatProbeResult(
                 status = ChatProbeStatus.FAILED,
                 message = userMessage(error),
                 httpStatus = error.httpStatus,
-                kind = kindFor(error),
+                kind = kind,
             )
-        } catch (_: Throwable) {
+        } catch (error: Throwable) {
+            trace.failure(
+                "ERROR",
+                "stage" to "chat-probe",
+                "provider" to providerId,
+                "model" to modelId,
+                "kind" to DiscoveryFailureKind.UNKNOWN.name,
+                "exception" to error.javaClass.name,
+                "message" to sanitizeForLog(error.message ?: error.javaClass.name),
+            )
             ChatProbeResult(
                 status = ChatProbeStatus.FAILED,
                 message = "The chat endpoint could not be verified.",

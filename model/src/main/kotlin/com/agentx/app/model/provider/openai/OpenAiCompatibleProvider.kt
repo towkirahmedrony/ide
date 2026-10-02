@@ -1,7 +1,16 @@
 package com.agentx.app.model.provider.openai
 
+import com.agentx.app.core.logging.ForgeLogger
 import com.agentx.app.core.timeout.AgentTimeouts
 import com.agentx.app.model.*
+import com.agentx.app.model.connect.diagnosticPath
+import com.agentx.app.model.diagnostics.ApiOperation
+import com.agentx.app.model.diagnostics.ApiTrace
+import com.agentx.app.model.diagnostics.configuredFlag
+import com.agentx.app.model.diagnostics.firstHeaderValue
+import com.agentx.app.model.diagnostics.rateLimitHeaderNames
+import com.agentx.app.model.diagnostics.safeResponsePreview
+import com.agentx.app.model.diagnostics.sanitizeForLog
 import com.agentx.app.model.http.*
 import com.agentx.app.model.json.*
 import java.io.IOException
@@ -28,15 +37,65 @@ class OpenAiCompatibleProvider(
     private val transport: HttpTransport = UrlConnectionHttpTransport(),
     private val defaultCapabilities: ModelCapabilities = DEFAULT_CAPABILITIES,
     private val chatPath: String = DEFAULT_CHAT_PATH,
+    /**
+     * Optional structured Developer Log sink for API diagnostics.
+     *
+     * Null (the default) disables tracing, so existing callers and tests keep
+     * exactly the previous behaviour. Prompt text, source code and tool arguments
+     * are never written: only the request shape and the response metadata are.
+     */
+    private val logger: ForgeLogger? = null,
 ) : ModelProvider {
 
     override fun capabilities(modelId: String): ModelCapabilities = defaultCapabilities
 
     override suspend fun complete(request: ModelRequest): ModelResponse {
-        val response = send(request, buildRequestBody(request, stream = false))
-        if (!response.isSuccess) throw httpError(response)
-        if (response.body.isBlank()) throw invalidResponse("Model endpoint returned an empty response")
-        return parseCompletion(parseJson(response.body), request)
+        val trace = ApiTrace.create(logger, id, ApiOperation.COMPLETION)
+        val body = buildRequestBody(request, stream = false)
+        traceRequest(trace, request, body, stream = false, purpose = "normal-completion")
+        val started = System.nanoTime()
+        val response = try {
+            send(request, body)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            traceTransportFailure(trace, request, error, started)
+            throw error
+        }
+        traceResponse(trace, request, response, started, bytes = response.body.length)
+        if (!response.isSuccess) {
+            val failure = httpError(response)
+            traceHttpFailure(trace, request, failure, started)
+            throw failure
+        }
+        if (response.body.isBlank()) {
+            traceParseFailure(
+                trace = trace,
+                request = request,
+                response = response,
+                error = invalidResponse(EMPTY_BODY_MESSAGE),
+            )
+            throw invalidResponse(EMPTY_BODY_MESSAGE)
+        }
+        val parsed = try {
+            parseCompletion(parseJson(response.body), request)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: ModelProviderError) {
+            traceParseFailure(trace, request, response, error)
+            throw error
+        }
+        trace.stage(
+            "COMPLETE",
+            "provider" to id,
+            "model" to parsed.model,
+            "stream" to false,
+            "finishReason" to (parsed.finishReason?.name ?: "-"),
+            "contentChars" to parsed.content.length,
+            "toolCalls" to parsed.toolCalls.size,
+            "elapsedMs" to elapsedMillis(started),
+        )
+        return parsed
     }
 
     override suspend fun stream(
@@ -45,18 +104,36 @@ class OpenAiCompatibleProvider(
     ): ModelResponse {
         val accumulator = StreamAccumulator()
         val rawBody = StringBuilder()
+        val trace = ApiTrace.create(logger, id, ApiOperation.STREAM)
         onEvent(ModelStreamEvent.Started(request.model, id))
-        val response = sendStreaming(request, buildRequestBody(request, stream = true)) { line ->
-            if (rawBody.isNotEmpty()) rawBody.append('\n')
-            rawBody.append(line)
-            handleStreamLine(line, accumulator, onEvent)
+        val body = buildRequestBody(request, stream = true)
+        traceRequest(trace, request, body, stream = true, purpose = "streaming-completion")
+        val started = System.nanoTime()
+        val response = try {
+            sendStreaming(request, body) { line ->
+                if (rawBody.isNotEmpty()) rawBody.append('\n')
+                rawBody.append(line)
+                handleStreamLine(line, accumulator, onEvent)
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            traceTransportFailure(trace, request, error, started)
+            throw error
         }
-        if (!response.isSuccess) throw httpError(response)
+        // A streamed success carries its payload on the wire instead of in the
+        // response body, so the accumulated SSE size is what represents it.
+        traceResponse(trace, request, response, started, bytes = rawBody.length)
+        if (!response.isSuccess) {
+            val failure = httpError(response)
+            traceHttpFailure(trace, request, failure, started)
+            throw failure
+        }
         if (accumulator.content.isEmpty() && accumulator.toolCalls().isEmpty() && !accumulator.done) {
             applyNonStreamFallback(accumulator, rawBody.toString(), request, onEvent)
         }
         onEvent(ModelStreamEvent.Completed(accumulator.finishReason, accumulator.usage))
-        return ContentToolCallParser.normalize(
+        val normalized = ContentToolCallParser.normalize(
             ModelResponse(
                 model = accumulator.model ?: request.model,
                 providerId = id,
@@ -66,7 +143,153 @@ class OpenAiCompatibleProvider(
                 usage = accumulator.usage,
             ),
         )
+        trace.stage(
+            "COMPLETE",
+            "provider" to id,
+            "model" to normalized.model,
+            "stream" to true,
+            "finishReason" to (normalized.finishReason?.name ?: "-"),
+            "contentChars" to normalized.content.length,
+            "toolCalls" to normalized.toolCalls.size,
+            "sseBytes" to rawBody.length,
+            "elapsedMs" to elapsedMillis(started),
+        )
+        return normalized
     }
+
+    // --- diagnostics --------------------------------------------------------
+
+    /**
+     * Logs the outbound shape of a request, never its content.
+     *
+     * Message text, source code and tool arguments stay out of the log, so the
+     * Developer Log cannot become a leak of the user's project; the counts,
+     * model, endpoint and generation parameters are enough to tell a malformed
+     * request from a rejected one.
+     */
+    private fun traceRequest(
+        trace: ApiTrace,
+        request: ModelRequest,
+        body: String,
+        stream: Boolean,
+        purpose: String,
+    ) {
+        val generation = request.effectiveGeneration
+        trace.stage(
+            "REQUEST",
+            "method" to "POST",
+            "path" to diagnosticPath(endpoint(request.config)),
+            "purpose" to purpose,
+            "provider" to id,
+            "model" to request.model,
+            "stream" to stream,
+            "bodyBytes" to body.length,
+            "messageCount" to request.messages.size,
+            "toolCount" to request.tools.size,
+            "toolCalling" to configuredFlag(request.tools.isNotEmpty()),
+            "hasApiKey" to configuredFlag(!request.config.apiKey.isNullOrBlank()),
+            "temperature" to (generation.temperature ?: "-"),
+            "maxTokens" to (generation.maxOutputTokens ?: "-"),
+            "topP" to (generation.topP ?: "-"),
+            "customHeaderNames" to if (request.config.headers.isEmpty()) {
+                "none"
+            } else {
+                request.config.headers.keys.joinToString(",")
+            },
+        )
+    }
+
+    private fun traceResponse(
+        trace: ApiTrace,
+        request: ModelRequest,
+        response: HttpResponseSpec,
+        startedNanos: Long,
+        bytes: Int,
+    ) {
+        // Status first: it is the single most useful field when scanning the log.
+        trace.stage(
+            "RESPONSE",
+            "status" to response.statusCode,
+            "elapsedMs" to elapsedMillis(startedNanos),
+            "bodyBytes" to bytes,
+            "contentType" to (response.headers.firstHeaderValue("Content-Type")?.substringBefore(';')?.trim() ?: "-"),
+            "requestId" to (
+                response.headers.firstHeaderValue("x-request-id")
+                    ?: response.headers.firstHeaderValue("request-id")
+                    ?: "-"
+                ),
+            "retryAfter" to (response.headers.firstHeaderValue("Retry-After") ?: "-"),
+            "rateLimitHeaders" to (
+                response.headers.rateLimitHeaderNames().joinToString(",").ifBlank { "-" }
+                ),
+            "success" to response.isSuccess,
+            "provider" to id,
+            "model" to request.model,
+        )
+    }
+
+    private fun traceHttpFailure(
+        trace: ApiTrace,
+        request: ModelRequest,
+        error: ModelProviderError,
+        startedNanos: Long,
+    ) {
+        trace.failure(
+            "ERROR",
+            "stage" to "http",
+            "provider" to id,
+            "model" to request.model,
+            "status" to (error.httpStatus ?: "-"),
+            "kind" to error.code.name,
+            "retryable" to error.retryable,
+            "retryAfterMs" to (error.retryAfterMillis ?: "-"),
+            "providerErrorType" to (error.providerErrorType ?: "-"),
+            "message" to sanitizeForLog(error.message ?: ""),
+            "elapsedMs" to elapsedMillis(startedNanos),
+        )
+    }
+
+    private fun traceTransportFailure(
+        trace: ApiTrace,
+        request: ModelRequest,
+        error: Throwable,
+        startedNanos: Long,
+    ) {
+        val mapped = error as? ModelProviderError
+        trace.failure(
+            "ERROR",
+            "stage" to "transport",
+            "provider" to id,
+            "model" to request.model,
+            "kind" to (mapped?.code?.name ?: ModelProviderErrorCode.UNKNOWN.name),
+            "exception" to error.javaClass.name,
+            "message" to sanitizeForLog(error.message ?: error.javaClass.name),
+            "retryable" to (mapped?.retryable ?: false),
+            "elapsedMs" to elapsedMillis(startedNanos),
+        )
+    }
+
+    private fun traceParseFailure(
+        trace: ApiTrace,
+        request: ModelRequest,
+        response: HttpResponseSpec,
+        error: ModelProviderError,
+    ) {
+        trace.failure(
+            "PARSE_FAIL",
+            "provider" to id,
+            "model" to request.model,
+            "status" to response.statusCode,
+            "bodyBytes" to response.body.length,
+            "kind" to error.code.name,
+            "message" to sanitizeForLog(error.message ?: ""),
+            // Only a small structured body is previewed, redacted and flattened;
+            // anything else is reported structurally instead.
+            "preview" to (safeResponsePreview(response.body) ?: "omitted"),
+        )
+    }
+
+    private fun elapsedMillis(startedNanos: Long): Long = (System.nanoTime() - startedNanos) / 1_000_000
 
     // --- transport ---------------------------------------------------------
 
@@ -578,6 +801,8 @@ class OpenAiCompatibleProvider(
         const val DEFAULT_ID: String = "openai-compatible"
         const val DEFAULT_CHAT_PATH: String = "/chat/completions"
         const val CONNECT_TIMEOUT_MILLIS: Int = 15_000
+
+        private const val EMPTY_BODY_MESSAGE: String = "Model endpoint returned an empty response"
 
         /**
          * One model response, streamed or not, follows the central model-request

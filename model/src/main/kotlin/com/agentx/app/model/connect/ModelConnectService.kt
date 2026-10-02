@@ -5,8 +5,13 @@ import com.agentx.app.core.ForgeErrorCode
 import com.agentx.app.core.ForgeResult
 import com.agentx.app.core.errorOrNull
 import com.agentx.app.core.failure
+import com.agentx.app.core.logging.ForgeLogger
 import com.agentx.app.core.success
 import com.agentx.app.core.valueOrNull
+import com.agentx.app.model.diagnostics.ApiOperation
+import com.agentx.app.model.diagnostics.ApiTrace
+import com.agentx.app.model.diagnostics.configuredFlag
+import com.agentx.app.model.diagnostics.sanitizeForLog
 import com.agentx.app.model.http.HttpTransport
 import com.agentx.app.model.http.UrlConnectionHttpTransport
 import com.agentx.app.model.manager.ModelManager
@@ -77,13 +82,54 @@ class ModelConnectService(
     private val discovery: ModelApiDiscovery = ModelApiDiscovery(transport),
     private val chatProbe: ChatCapabilityProbe = ChatCapabilityProbe(),
     private val resolveStoredCredential: suspend (ModelPreset) -> String? = { null },
+    /** Structured Developer Log sink for the connect orchestration; null disables it. */
+    private val logger: ForgeLogger? = null,
 ) {
 
     suspend fun connect(
         request: ModelConnectRequest,
         onPhase: (ModelConnectPhase) -> Unit = {},
     ): ForgeResult<ModelConnectOutcome, ForgeError> {
-        onPhase(ModelConnectPhase.CONNECTING)
+        // The provider identity the user asked for (`gemini`, `groq`, `custom`),
+        // so one search in the Developer Log follows a whole connect attempt.
+        val trace = ApiTrace.create(logger, request.setupKind.id, ApiOperation.CONNECT)
+        trace.stage(
+            "START",
+            "operation" to "connect",
+            "setupKind" to request.setupKind.id,
+            "provider" to request.setupKind.id,
+            "preset" to (request.presetId ?: "new"),
+            "displayName" to request.displayName.ifBlank { "-" },
+            "endpoint" to (request.endpoint.takeIf { it.isNotBlank() }?.let(::diagnosticPath) ?: "-"),
+            "modelOverride" to request.modelIdentifier.ifBlank { "-" },
+            "protocol" to (request.apiProtocol?.name ?: "auto"),
+            "hasCredential" to configuredFlag(!request.credential.isNullOrBlank()),
+        )
+        // Every phase is logged next to the existing callback, so the UI progress
+        // and the Developer Log tell the same story.
+        val reportPhase: (ModelConnectPhase) -> Unit = { phase ->
+            trace.stage("PHASE", "phase" to phase.name)
+            onPhase(phase)
+        }
+        // A terminal failure line for the orchestration itself; the discovery,
+        // provider and probe traces beneath it already say which stage failed.
+        fun fail(message: String, kind: DiscoveryFailureKind): ForgeResult<ModelConnectOutcome, ForgeError> {
+            trace.failure(
+                "ERROR",
+                "stage" to "connect",
+                "kind" to kind.name,
+                "message" to sanitizeForLog(message),
+            )
+            return failure(
+                ForgeError(
+                    code = ForgeErrorCode.MODEL_OPERATION_FAILED,
+                    message = message,
+                    details = mapOf("kind" to kind.name),
+                ),
+            )
+        }
+
+        reportPhase(ModelConnectPhase.CONNECTING)
         val existing = request.presetId?.let { manager.preset(it) }
 
         val prepared = prepare(request, existing)
@@ -108,7 +154,7 @@ class ModelConnectService(
 
         val credential = credentialForProbe(request, existing)
 
-        onPhase(ModelConnectPhase.DISCOVERING)
+        reportPhase(ModelConnectPhase.DISCOVERING)
         val discovered = try {
             discover(request, prepared, credential)
         } catch (cancelled: CancellationException) {
@@ -121,6 +167,12 @@ class ModelConnectService(
             is DiscoveryResult.Failed -> return fail(discovered.message, discovered.kind)
             is DiscoveryResult.NeedsModelChoice -> {
                 if (request.modelIdentifier.isBlank()) {
+                    trace.stage(
+                        "COMPLETE",
+                        "outcome" to "needs-choice",
+                        "models" to discovered.modelIds.size,
+                        "selected" to "none",
+                    )
                     return success(ModelConnectOutcome.NeedsModelChoice(discovered.modelIds))
                 }
                 discovered.api.copy(selectedModelId = request.modelIdentifier.trim())
@@ -128,7 +180,16 @@ class ModelConnectService(
             is DiscoveryResult.Found -> discovered.api
         }
 
-        onPhase(ModelConnectPhase.DETECTING_MODEL)
+        trace.stage(
+            "DISCOVERED",
+            "rootUrl" to diagnosticPath(api.rootUrl),
+            "basePath" to api.apiBasePath.ifBlank { "-" },
+            "protocol" to api.protocol.name,
+            "catalog" to api.modelIds.size,
+            "selected" to (api.selectedModelId ?: "none"),
+            "fallback" to api.catalogFallback,
+        )
+        reportPhase(ModelConnectPhase.DETECTING_MODEL)
         val modelId = request.modelIdentifier.trim().ifBlank { api.selectedModelId.orEmpty() }
         if (modelId.isBlank()) {
             return if (api.modelIds.size > 1) {
@@ -158,7 +219,7 @@ class ModelConnectService(
             catalogFallback = api.catalogFallback,
         )
 
-        onPhase(ModelConnectPhase.TESTING)
+        reportPhase(ModelConnectPhase.TESTING)
         val probe = try {
             chatProbe.verify(
                 preset = draft,
@@ -172,13 +233,33 @@ class ModelConnectService(
         } catch (_: Throwable) {
             return fail("The chat endpoint could not be verified.", DiscoveryFailureKind.UNKNOWN)
         }
+        trace.stage(
+            "VERIFIED",
+            "model" to modelId,
+            "ok" to probe.succeeded,
+            "status" to (probe.httpStatus ?: "-"),
+            "kind" to (probe.kind?.name ?: "-"),
+        )
         if (!probe.succeeded) {
             return fail(probe.message, probe.kind ?: DiscoveryFailureKind.UNKNOWN)
         }
 
+        // Where a model list becomes a saved preset: the catalog count, the id
+        // actually stored and whether the id came from the live list or the
+        // built-in fallback is exactly what the UI picker is built from.
         val stored = persist(draft, request, existing) ?: return fail(
             "The model could not be saved.",
             DiscoveryFailureKind.UNKNOWN,
+        )
+        trace.stage(
+            "SAVED",
+            "preset" to stored.id,
+            "provider" to stored.providerId,
+            "model" to stored.modelIdentifier,
+            "setupKind" to stored.setupKind,
+            "catalogFallback" to api.catalogFallback,
+            "listedModels" to api.modelIds.size,
+            "requiresModelInList" to stored.health.requireModelInList,
         )
 
         val started = manager.selectModel(stored.id)
@@ -191,7 +272,15 @@ class ModelConnectService(
             return fail(status.message, DiscoveryFailureKind.UNKNOWN)
         }
 
-        onPhase(ModelConnectPhase.CONNECTED)
+        reportPhase(ModelConnectPhase.CONNECTED)
+        trace.stage(
+            "COMPLETE",
+            "outcome" to "connected",
+            "preset" to stored.id,
+            "model" to stored.modelIdentifier,
+            "state" to status.state.name,
+            "connections" to manager.connections().size,
+        )
         return success(ModelConnectOutcome.Connected(stored, status))
     }
 
@@ -318,12 +407,4 @@ class ModelConnectService(
         return result.valueOrNull()
     }
 
-    private fun fail(message: String, kind: DiscoveryFailureKind): ForgeResult<ModelConnectOutcome, ForgeError> =
-        failure(
-            ForgeError(
-                code = ForgeErrorCode.MODEL_OPERATION_FAILED,
-                message = message,
-                details = mapOf("kind" to kind.name),
-            ),
-        )
 }

@@ -8,6 +8,7 @@ enum class DeveloperLogFilter(val label: String) {
     INFO("Info"),
     WARNING("Warning"),
     ERROR("Error"),
+    MODEL("Model"),
     PROOT("PRoot"),
     ROOTFS("RootFS"),
     PROCESS("Process"),
@@ -46,6 +47,7 @@ data class DeveloperLogLine(
             DeveloperLogFilter.INFO -> level == DeveloperLogLevel.INFO
             DeveloperLogFilter.WARNING -> level == DeveloperLogLevel.WARN
             DeveloperLogFilter.ERROR -> level == DeveloperLogLevel.ERROR
+            DeveloperLogFilter.MODEL -> category == DeveloperLogCategory.MODEL
             DeveloperLogFilter.PROOT -> category == DeveloperLogCategory.PROOT
             DeveloperLogFilter.ROOTFS -> category == DeveloperLogCategory.ROOTFS
             DeveloperLogFilter.PROCESS -> category == DeveloperLogCategory.PROCESS

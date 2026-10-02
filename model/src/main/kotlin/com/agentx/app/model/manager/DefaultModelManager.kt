@@ -82,7 +82,10 @@ class DefaultModelManager(
         connectServiceFactory?.invoke(this) ?: ModelConnectService(
             manager = this,
             transport = transport,
-            discovery = ModelApiDiscovery(transport),
+            // Every stage of a connect — discovery, the verification chat probe and
+            // the provider request beneath it — logs through the one manager logger,
+            // so the Developer Log shows one addressable trail per provider.
+            discovery = ModelApiDiscovery(transport, logger = logger),
             chatProbe = ChatCapabilityProbe(
                 gateway = DefaultModelGateway(),
                 providerFactory = { protocol ->
@@ -90,10 +93,13 @@ class DefaultModelManager(
                         id = protocol.providerId,
                         transport = transport,
                         chatPath = protocol.chatPath,
+                        logger = logger,
                     )
                 },
+                logger = logger,
             ),
             resolveStoredCredential = { preset -> io { credentials.resolve(preset) } },
+            logger = logger,
         )
 
     private val log: ForgeLogger = logger

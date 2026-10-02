@@ -26,12 +26,19 @@ fun interface ModelProviderFactory {
  */
 class OpenAiCompatibleProviderFactory(
     private val transport: HttpTransport = UrlConnectionHttpTransport(),
+    /**
+     * Optional structured Developer Log sink. Passing the connection registry's
+     * logger here is what gives every normal completion the same
+     * `[GEMINI|GROQ|…][COMPLETION]` trail as discovery and connect.
+     */
+    private val logger: ForgeLogger? = null,
 ) : ModelProviderFactory {
 
     override fun create(preset: ModelPreset): ModelProvider = OpenAiCompatibleProvider(
         id = preset.providerId,
         transport = transport,
         chatPath = preset.apiProtocol.chatPath,
+        logger = logger,
     )
 }
 

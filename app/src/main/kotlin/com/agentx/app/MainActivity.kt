@@ -27,6 +27,7 @@ import com.agentx.app.core.foundation.ServiceKeys
 import com.agentx.app.foundation.ConnectionManagerToolAuthorizer
 import com.agentx.app.foundation.Foundation
 import com.agentx.app.foundation.IntegrationToolSynchronizer
+import com.agentx.app.logging.DeveloperLogSink
 import com.agentx.app.integrations.android.SharedPreferencesIntegrationSetupStore
 import com.agentx.app.integrations.oauth.OAuthCallbackAuthority
 import com.agentx.app.integrations.providers.ConnectionProviders
@@ -136,6 +137,10 @@ class MainActivity : ComponentActivity() {
             // folders, read through the Context Engine's workspace port. Built-in and
             // imported skills are unaffected; with no workspace open nothing is read.
             skillSources = listOf(WorkspaceSkillSource.discovery(contextWorkspace)),
+            // Platform-layer structured records are also mirrored into the
+            // Developer Log, so model/API diagnostics are inspectable beside the
+            // terminal and runtime diagnostics rather than only on stdout.
+            logSink = DeveloperLogSink(),
         )
 
         // The saved role → model assignments are restored off the main thread;

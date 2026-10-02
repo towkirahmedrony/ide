@@ -27,6 +27,11 @@ enum class DeveloperLogCategory {
     INPUT,
     OUTPUT,
     RESTART,
+    /**
+     * Model/API diagnostics: discovery, connection verification and completions,
+     * forwarded from the platform's structured logger by the app-level log sink.
+     */
+    MODEL,
     ERROR,
 }
 

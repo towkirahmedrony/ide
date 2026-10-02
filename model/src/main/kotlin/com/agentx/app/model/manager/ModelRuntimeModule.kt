@@ -81,7 +81,8 @@ object ModelManagers {
         policy: ModelConnectionPolicy = ModelConnectionPolicy(),
         runners: List<ModelRunner>? = null,
         monitorEnabled: Boolean = true,
-        providerFactory: ModelProviderFactory = OpenAiCompatibleProviderFactory(),
+        /** Overrides the provider factory; the default carries the manager logger. */
+        providerFactory: ModelProviderFactory? = null,
         transport: HttpTransport = UrlConnectionHttpTransport(),
         clock: () -> Long = System::currentTimeMillis,
         scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
@@ -119,7 +120,14 @@ object ModelManagers {
         return DefaultModelManager(
             repository = repository,
             runners = runners ?: defaultRunners,
-            registry = GatewayModelConnectionRegistry(gateway, providerFactory, logger),
+            registry = GatewayModelConnectionRegistry(
+                gateway = gateway,
+                // The default factory is built here rather than as a default
+                // argument so it can carry the logger, giving normal completions
+                // the same API trail as discovery and connect.
+                providerFactory = providerFactory ?: OpenAiCompatibleProviderFactory(transport, logger),
+                logger = logger,
+            ),
             credentials = credentials,
             secretStore = secretStore,
             logger = logger,
