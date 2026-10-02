@@ -145,6 +145,47 @@ sealed interface AgentEvent {
         val error: AgentError,
         override val timestampMillis: Long,
     ) : AgentEvent
+
+    /**
+     * A temporary primary-model failure triggered a controlled fallback to a
+     * configured candidate. Operational only: provider/model identifiers, the
+     * role and the reason. It never carries a prompt or a request body.
+     */
+    data class ModelFallbackStarted(
+        override val sessionId: String,
+        val role: AgentRole,
+        val fromProviderId: String,
+        val fromModelId: String,
+        val toProviderId: String,
+        val toModelId: String,
+        val reason: ModelFallbackReason,
+        /** 1-based fallback attempt; the primary attempt is never counted. */
+        val attempt: Int,
+        override val timestampMillis: Long,
+    ) : AgentEvent
+
+    /** The fallback candidate produced a usable response. */
+    data class ModelFallbackSucceeded(
+        override val sessionId: String,
+        val role: AgentRole,
+        val fromProviderId: String,
+        val fromModelId: String,
+        val toProviderId: String,
+        val toModelId: String,
+        val attempts: Int,
+        override val timestampMillis: Long,
+    ) : AgentEvent
+
+    /** Every configured, eligible fallback candidate failed; the original error stands. */
+    data class ModelFallbackExhausted(
+        override val sessionId: String,
+        val role: AgentRole,
+        val providerId: String,
+        val modelId: String,
+        val attempts: Int,
+        val reason: ModelFallbackReason,
+        override val timestampMillis: Long,
+    ) : AgentEvent
 }
 
 fun interface AgentEventSink {

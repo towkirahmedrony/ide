@@ -7,6 +7,8 @@ import com.agentx.app.agent.main.MainAgent
 import com.agentx.app.agent.model.AgentModelPreferences
 import com.agentx.app.agent.model.AgentModelResolver
 import com.agentx.app.agent.model.AgentRoleModelRegistry
+import com.agentx.app.agent.model.ModelFallback
+import com.agentx.app.agent.model.ModelFallbackPolicy
 import com.agentx.app.agent.orchestrator.AgentOrchestrator
 import com.agentx.app.agent.orchestrator.AgentSessionStore
 import com.agentx.app.agent.orchestrator.DefaultAgentOrchestrator
@@ -44,6 +46,11 @@ import com.agentx.app.tools.ToolRouter
 class AgentModule(
     /** Fallback budgets, used when none are registered in the container. */
     private val timeouts: AgentTimeouts = AgentTimeouts.DEFAULT,
+    /**
+     * Controlled model fallback configuration. Disabled unless the composition
+     * root explicitly enables it and declares per-role chains.
+     */
+    private val fallbackPolicy: ModelFallbackPolicy = ModelFallbackPolicy.DISABLED,
 ) : ForgeModule {
 
     override val id: String = "agent"
@@ -74,6 +81,21 @@ class AgentModule(
         // rebuilding the agent core. When no registry is registered the resolver
         // keeps the built-in default mapping.
         val roleModels = context.services.get<AgentRoleModelRegistry>(ServiceKeys.AGENT_ROLE_MODELS)
+        // Built once so the agent core and the fallback layer share the same
+        // resolver, capability registry and rate-limit admission control.
+        val modelResolver = AgentModelResolver(
+            preferences = AgentModelPreferences.DEFAULT,
+            connections = { modelManager?.connections().orEmpty() },
+            livePreferences = roleModels?.let { registry -> { registry.preferences() } },
+            capabilityRegistry = context.services.get<ModelCapabilityRegistry>(
+                ServiceKeys.MODEL_CAPABILITY_REGISTRY,
+            ) ?: InMemoryModelCapabilityRegistry.DEFAULT,
+            // The same admission control the gateway reserves against: the
+            // resolver only asks whether a request is allowed, it never
+            // reserves quota. A model blocked by its rate limit is reported
+            // as ineligible instead of being silently replaced.
+            rateLimitManager = context.services.get<RateLimitManager>(ServiceKeys.RATE_LIMIT_MANAGER),
+        )
         val assembled = assemble(
             gateway = gateway,
             registry = registry,
@@ -88,19 +110,8 @@ class AgentModule(
             conversations = conversationStore,
             // The app boots with the target role → model mapping in place; every
             // role falls back to the active model until its provider is connected.
-            modelResolver = AgentModelResolver(
-                preferences = AgentModelPreferences.DEFAULT,
-                connections = { modelManager?.connections().orEmpty() },
-                livePreferences = roleModels?.let { registry -> { registry.preferences() } },
-                capabilityRegistry = context.services.get<ModelCapabilityRegistry>(
-                    ServiceKeys.MODEL_CAPABILITY_REGISTRY,
-                ) ?: InMemoryModelCapabilityRegistry.DEFAULT,
-                // The same admission control the gateway reserves against: the
-                // resolver only asks whether a request is allowed, it never
-                // reserves quota. A model blocked by its rate limit is reported
-                // as ineligible instead of being silently replaced.
-                rateLimitManager = context.services.get<RateLimitManager>(ServiceKeys.RATE_LIMIT_MANAGER),
-            ),
+            modelResolver = modelResolver,
+            fallbackPolicy = fallbackPolicy,
         )
         context.services.register(ServiceKeys.AGENT_ORCHESTRATOR, assembled.orchestrator)
         context.services.register(ServiceKeys.AGENT_REGISTRY, assembled.specialized)
@@ -127,6 +138,7 @@ class AgentModule(
             sessions: AgentSessionStore = InMemoryAgentSessionStore(),
             conversations: ConversationStore = InMemoryConversationStore(),
             modelResolver: AgentModelResolver = AgentModelResolver(),
+            fallbackPolicy: ModelFallbackPolicy = ModelFallbackPolicy.DISABLED,
         ): AgentRuntime {
             val engine = contextEngine ?: DefaultContextEngine()
             val bridge = AgentToolBridge(registry)
@@ -138,6 +150,7 @@ class AgentModule(
                 prompts = prompts,
                 skillContext = skillContext,
                 timeouts = timeouts,
+                modelFallback = ModelFallback(policy = { fallbackPolicy }, resolver = modelResolver),
             )
             val specialized = SpecializedAgentFactory(
                 loop = loop,

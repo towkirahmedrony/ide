@@ -219,7 +219,7 @@ class DefaultAgentOrchestrator(
                         promptVariables = variables,
                         requiresWorkspace = requiresWorkspace,
                     ),
-                    sink = sink,
+                    sink = trackingSink(sink),
                     subAgentInvoker = SubAgentInvoker { child ->
                         runSubAgent(child, modelConfig, sink) { isCancelled(sessionId) || isCancelled(child.sessionId) }
                     },
@@ -346,7 +346,7 @@ class DefaultAgentOrchestrator(
                         promptVariables = paused.promptVariables,
                         requiresWorkspace = paused.requiresWorkspace,
                     ),
-                    sink = sink,
+                    sink = trackingSink(sink),
                     subAgentInvoker = SubAgentInvoker { child ->
                         runSubAgent(child, modelConfig, sink) { isCancelled(sessionId) || isCancelled(child.sessionId) }
                     },
@@ -743,4 +743,37 @@ class DefaultAgentOrchestrator(
     }
 
     private fun isCancelled(sessionId: String): Boolean = cancellations[sessionId] == true
+
+    /**
+     * Wraps [sink] so a successful model fallback updates the run's recorded
+     * provider/model through the existing session and conversation persistence,
+     * without adding a second store. Only operational identifiers are written —
+     * never a prompt, a request body or a credential.
+     */
+    private fun trackingSink(sink: AgentEventSink): AgentEventSink = AgentEventSink { event ->
+        if (event is AgentEvent.ModelFallbackSucceeded) {
+            sessions.update(event.sessionId) { session ->
+                if (session.modelProviderId == event.toProviderId && session.modelId == event.toModelId) {
+                    session
+                } else {
+                    session.copy(
+                        modelProviderId = event.toProviderId,
+                        modelId = event.toModelId,
+                        updatedAtMillis = clock(),
+                    )
+                }
+            }
+            history?.let { store ->
+                if (store.conversation(event.sessionId) != null) {
+                    store.ensureSession(
+                        sessionId = event.sessionId,
+                        workspaceId = null,
+                        modelProviderId = event.toProviderId,
+                        modelId = event.toModelId,
+                    )
+                }
+            }
+        }
+        sink.emit(event)
+    }
 }

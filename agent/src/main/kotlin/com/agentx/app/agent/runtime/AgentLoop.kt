@@ -14,6 +14,7 @@ import com.agentx.app.agent.domain.PendingPermission
 import com.agentx.app.agent.domain.SubAgentRequest
 import com.agentx.app.agent.domain.SubAgentResult
 import com.agentx.app.agent.domain.ToolActionRecord
+import com.agentx.app.agent.model.ModelFallback
 import com.agentx.app.agent.prompt.PromptManager
 import com.agentx.app.agent.prompt.PromptVariables
 import com.agentx.app.agent.protocol.AgentProtocol
@@ -141,6 +142,11 @@ class AgentLoop(
      */
     private val timeouts: AgentTimeouts = AgentTimeouts.DEFAULT,
     private val logger: ForgeLogger = ForgeLoggers.create(LogLevel.INFO, baseFields = mapOf("layer" to "agent")),
+    /**
+     * Optional controlled model fallback. When absent (the default) a failed
+     * model request is returned unchanged, exactly as before this phase.
+     */
+    private val modelFallback: ModelFallback? = null,
 ) {
 
     suspend fun run(
@@ -302,7 +308,14 @@ class AgentLoop(
 
             val response = try {
                 ContentToolCallParser.normalize(
-                    complete(request.modelConfig, context.messages(), toolSpecs, sink, request.sessionId),
+                    complete(
+                        request.modelConfig,
+                        request.definition.role,
+                        context.messages(),
+                        toolSpecs,
+                        sink,
+                        request.sessionId,
+                    ),
                 )
             } catch (timeout: TimeoutCancellationException) {
                 val agentError = modelTimeout(timeout, request)
@@ -948,40 +961,87 @@ class AgentLoop(
 
     private suspend fun complete(
         config: ModelConfig,
+        role: AgentRole,
         messages: List<ModelMessage>,
         tools: List<ModelToolSpec>,
         sink: AgentEventSink,
         sessionId: String,
     ): ModelResponse = withExecutionBudget(timeouts.modelRequestMillis) {
-        completeWithinBudget(config, messages, tools, sink, sessionId)
+        completeWithinBudget(config, role, messages, tools, sink, sessionId)
     }
 
+    /**
+     * Runs one model request, optionally through the controlled fallback layer.
+     *
+     * The primary request is attempted first; only when the configured policy is
+     * enabled and the failure is temporary may an eligible fallback candidate run.
+     * [outputProduced] tracks streaming safety: once the current attempt has
+     * emitted meaningful output, fallback stops rather than duplicating it.
+     */
     private suspend fun completeWithinBudget(
+        config: ModelConfig,
+        role: AgentRole,
+        messages: List<ModelMessage>,
+        tools: List<ModelToolSpec>,
+        sink: AgentEventSink,
+        sessionId: String,
+    ): ModelResponse {
+        val fallback = modelFallback
+            ?: return invokeModel(config, messages, tools, sink, sessionId) {}
+        var outputProduced = false
+        return fallback.execute(
+            role = role,
+            sessionId = sessionId,
+            primary = config,
+            default = config,
+            sink = sink,
+            outputProduced = { outputProduced },
+        ) { target ->
+            outputProduced = false
+            invokeModel(target, messages, tools, sink, sessionId) { outputProduced = true }
+        }
+    }
+
+    /**
+     * One raw model attempt for [config]. [onOutput] is invoked on the first
+     * meaningful streaming delta (text or tool call), so the fallback layer can
+     * refuse to restart a partially produced response. The same [messages],
+     * [tools] and system instruction are sent for every attempt — only the
+     * configuration differs — so a fallback request is the same logical request.
+     */
+    private suspend fun invokeModel(
         config: ModelConfig,
         messages: List<ModelMessage>,
         tools: List<ModelToolSpec>,
         sink: AgentEventSink,
         sessionId: String,
+        onOutput: () -> Unit,
     ): ModelResponse {
         val request = ModelRequest(config = config, messages = messages, tools = tools)
         return if (config.stream) {
             val streamed = StringBuilder()
             var withheld = false
             val response = gateway.stream(request) { event ->
-                val delta = event as? ModelStreamEvent.TextDelta
-                if (delta != null && delta.text.isNotEmpty()) {
-                    streamed.append(delta.text)
-                    if (withheld || shouldWithholdStreaming(streamed.toString())) {
-                        withheld = true
-                    } else {
-                        sink.emit(
-                            AgentEvent.OutputDelta(
-                                sessionId = sessionId,
-                                text = delta.text,
-                                timestampMillis = clock(),
-                            ),
-                        )
+                when (event) {
+                    is ModelStreamEvent.TextDelta -> {
+                        if (event.text.isEmpty()) return@stream
+                        onOutput()
+                        streamed.append(event.text)
+                        if (withheld || shouldWithholdStreaming(streamed.toString())) {
+                            withheld = true
+                        } else {
+                            sink.emit(
+                                AgentEvent.OutputDelta(
+                                    sessionId = sessionId,
+                                    text = event.text,
+                                    timestampMillis = clock(),
+                                ),
+                            )
+                        }
                     }
+
+                    is ModelStreamEvent.ToolCallDelta -> onOutput()
+                    else -> Unit
                 }
             }
             val normalized = ContentToolCallParser.normalize(response)

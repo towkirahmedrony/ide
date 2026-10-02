@@ -217,6 +217,36 @@ class AgentModelResolver(
     fun preference(role: AgentRole): RoleModelPreference? = currentPreferences()[role]
 
     /**
+     * Resolves an explicit [preference] into a [ModelConfig] using the same
+     * rules [select] applies to a role's configured preference: the default
+     * model when the provider matches, otherwise the supplied connection, with
+     * the preference's model overriding when one is named.
+     *
+     * Returns null when the preference's provider is not connected, so a caller
+     * (the fallback layer) can skip a candidate instead of inventing an
+     * endpoint. It performs no network request and touches no credential beyond
+     * what the supplied connection already holds.
+     */
+    fun configFor(preference: RoleModelPreference, default: ModelConfig): ModelConfig? {
+        val model = preference.model?.takeIf { it.isNotBlank() }
+        if (preference.providerId == default.providerId) return withModel(default, model)
+        val connection = connections()[preference.providerId] ?: return null
+        return withModel(connection, model)
+    }
+
+    /**
+     * Evaluates an explicit [config] for [role] with the shared capability and
+     * rate-limit check. Exposed so the fallback layer judges candidates exactly
+     * as [resolveForRole] judges the role's configured model, without
+     * reimplementing capability or quota logic.
+     */
+    suspend fun eligibilityFor(
+        role: AgentRole,
+        config: ModelConfig,
+        requirements: ModelRequestRequirements = ModelRequestRequirements.DEFAULT,
+    ): ModelEligibility = eligibilityChecker.check(role, config, requirements)
+
+    /**
      * Same selection as [resolve], then checks that the chosen model meets
      * [role]'s required capabilities. Never switches provider or model.
      */
