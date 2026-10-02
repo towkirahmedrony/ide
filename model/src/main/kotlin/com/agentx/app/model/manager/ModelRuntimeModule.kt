@@ -125,7 +125,7 @@ object ModelManagers {
                 // The default factory is built here rather than as a default
                 // argument so it can carry the logger, giving normal completions
                 // the same API trail as discovery and connect.
-                providerFactory = providerFactory ?: OpenAiCompatibleProviderFactory(transport, logger),
+                providerFactory = providerFactory ?: DefaultModelProviderFactory(transport, logger),
                 logger = logger,
             ),
             credentials = credentials,

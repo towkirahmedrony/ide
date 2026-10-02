@@ -15,7 +15,7 @@ import com.agentx.app.model.manager.GatewayModelConnectionRegistry
 import com.agentx.app.model.openAiConfig
 import com.agentx.app.model.preset.ModelPreset
 import com.agentx.app.model.preset.ModelProviderType
-import com.agentx.app.model.provider.openai.OpenAiCompatibleProvider
+import com.agentx.app.model.manager.DefaultModelProviderFactory
 import com.agentx.app.model.request
 import com.agentx.app.model.runtime.EndpointSource
 import com.agentx.app.model.runtime.ModelEndpoint
@@ -396,13 +396,8 @@ class ApiDebugLoggingTest {
         val logger = recordingLogger(sink)
         val probe = ChatCapabilityProbe(
             gateway = DefaultModelGateway(),
-            providerFactory = { protocol ->
-                OpenAiCompatibleProvider(
-                    id = protocol.providerId,
-                    transport = transport,
-                    chatPath = protocol.chatPath,
-                    logger = logger,
-                )
+            providerFactory = { preset ->
+                DefaultModelProviderFactory(transport, logger).create(preset)
             },
             logger = logger,
         )
