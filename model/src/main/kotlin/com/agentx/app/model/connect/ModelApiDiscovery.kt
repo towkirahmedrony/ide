@@ -794,7 +794,6 @@ class ModelApiDiscovery(
                 if (models != null) "models" to models else return null
             }
         }
-        }
 
         val accepted = mutableListOf<ModelEntry>()
         val dropped = mutableListOf<DroppedEntry>()

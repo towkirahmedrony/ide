@@ -16,6 +16,7 @@ import com.agentx.app.model.openAiConfig
 import com.agentx.app.model.preset.ModelPreset
 import com.agentx.app.model.preset.ModelProviderType
 import com.agentx.app.model.manager.DefaultModelProviderFactory
+import com.agentx.app.model.provider.openai.OpenAiCompatibleProvider
 import com.agentx.app.model.request
 import com.agentx.app.model.runtime.EndpointSource
 import com.agentx.app.model.runtime.ModelEndpoint

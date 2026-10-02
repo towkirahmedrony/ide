@@ -72,15 +72,6 @@ enum class ModelApiProtocol(
      */
     val chatPathTemplate: String? = null,
 ) {
-
-    /** Chat path for [modelId], for protocols that address the model in the path. */
-    fun chatPathFor(modelId: String): String =
-        chatPathTemplate?.replace(MODEL_TOKEN, modelId.trim().removePrefix("models/")) ?: chatPath
-
-    companion object {
-        const val MODEL_TOKEN: String = "{model}"
-    }
-}
     OPENAI_COMPATIBLE(
         displayName = "OpenAI compatible",
         providerId = "openai-compatible",
@@ -118,6 +109,15 @@ enum class ModelApiProtocol(
         healthIsRelativeToApiBase = true,
         chatPathTemplate = "/models/{model}:generateContent",
     ),
+    ;
+
+    /** Chat path for [modelId], for protocols that address the model in the path. */
+    fun chatPathFor(modelId: String): String =
+        chatPathTemplate?.replace(MODEL_TOKEN, modelId.trim().removePrefix("models/")) ?: chatPath
+
+    companion object {
+        const val MODEL_TOKEN: String = "{model}"
+    }
 }
 
 /** How the runner is expected to find the model endpoint. */
