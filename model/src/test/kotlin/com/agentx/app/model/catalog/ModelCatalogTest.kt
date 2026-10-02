@@ -419,7 +419,7 @@ class ModelCatalogTest {
         val result = geminiRegistry(transport).refresh(ModelProviderIds.GEMINI, force = true)
 
         assertTrue(result is ForgeResult.Failure)
-        val message = (result as ForgeResult.Failure).error.message
+        val message = (result as ForgeResult.Failure).error.message.orEmpty()
         assertTrue(message.contains("none of them can run text generation"), message)
         // The reason a model was dropped is reported, never the credential.
         assertTrue(!message.contains("secret-key"))
