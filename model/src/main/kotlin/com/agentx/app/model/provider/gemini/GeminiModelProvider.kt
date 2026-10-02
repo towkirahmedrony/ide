@@ -497,7 +497,7 @@ class GeminiModelProvider(
 
     private fun parseCompletion(json: JsonObject, request: ModelRequest): ModelResponse {
         if (json.objectOrNull("error") != null) {
-            val info = extractErrorInfo(JsonCodec.encode(json))
+            val info = extractErrorInfo(JsonCodec.encode(JsonValue.Obj(json)))
             throw ModelProviderError(
                 code = ModelProviderErrorCode.PROVIDER_ERROR,
                 message = info.message ?: "Gemini reported an error",

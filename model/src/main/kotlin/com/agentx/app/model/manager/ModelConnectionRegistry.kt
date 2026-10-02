@@ -9,6 +9,7 @@ import com.agentx.app.model.ModelGateway
 import com.agentx.app.model.ModelProvider
 import com.agentx.app.model.http.HttpTransport
 import com.agentx.app.model.http.UrlConnectionHttpTransport
+import com.agentx.app.model.preset.ModelApiProtocol
 import com.agentx.app.model.preset.ModelPreset
 import com.agentx.app.model.provider.gemini.GeminiModelProvider
 import com.agentx.app.model.provider.openai.OpenAiCompatibleProvider
