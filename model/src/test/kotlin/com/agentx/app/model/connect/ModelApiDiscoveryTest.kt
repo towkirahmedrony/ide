@@ -260,15 +260,14 @@ class ModelApiDiscoveryTest {
     fun `a missing model list names the path it asked for`() = runBlocking {
         val transport = FakeHttpTransport(executeHandler = { HttpResponseSpec(404, "") })
 
-        val result = ModelApiDiscovery(transport).discover("https://example.test")
+        val result = ModelApiDiscovery(transport).discover("https://example.com")
 
         val failed = assertIs<DiscoveryResult.Failed>(result)
-        assertEquals(DiscoveryFailureKind.NOT_FOUND, failed.kind)
-        // The host and the requested model-list path are named, without any
-        // credential: it is what shows a wrong model-list location. Which candidate
-        // path is reported last depends on the scheme the resolver tried.
-        assertTrue(failed.message.contains("example.test"), failed.message)
+        // The 404 branch names the model-list path it asked for, and never carries a
+        // credential: that is what makes a wrong location visible.
+        assertEquals(404, failed.httpStatus)
         assertTrue(failed.message.contains("/models"), failed.message)
+        assertTrue(failed.message.contains("example.com"), failed.message)
     }
 
     @Test
