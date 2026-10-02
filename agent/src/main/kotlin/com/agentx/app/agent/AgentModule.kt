@@ -26,6 +26,8 @@ import com.agentx.app.core.module.ForgeModule
 import com.agentx.app.core.module.ModuleContext
 import com.agentx.app.model.DefaultModelGateway
 import com.agentx.app.model.ModelGateway
+import com.agentx.app.model.capability.InMemoryModelCapabilityRegistry
+import com.agentx.app.model.capability.ModelCapabilityRegistry
 import com.agentx.app.model.manager.ModelManager
 import com.agentx.app.skills.SkillManager
 import com.agentx.app.tools.DefaultToolRegistry
@@ -89,6 +91,9 @@ class AgentModule(
                 preferences = AgentModelPreferences.DEFAULT,
                 connections = { modelManager?.connections().orEmpty() },
                 livePreferences = roleModels?.let { registry -> { registry.preferences() } },
+                capabilityRegistry = context.services.get<ModelCapabilityRegistry>(
+                    ServiceKeys.MODEL_CAPABILITY_REGISTRY,
+                ) ?: InMemoryModelCapabilityRegistry.DEFAULT,
             ),
         )
         context.services.register(ServiceKeys.AGENT_ORCHESTRATOR, assembled.orchestrator)

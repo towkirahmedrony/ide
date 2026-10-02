@@ -21,6 +21,9 @@ object ServiceKeys {
 
     /** Dynamic per-provider model catalogs (for example Groq's `/openai/v1/models`). */
     const val MODEL_CATALOG = "forge.model.catalog"
+
+    /** Authoritative provider/model capability lookup. */
+    const val MODEL_CAPABILITY_REGISTRY = "forge.model.capabilities"
     const val AGENT_ORCHESTRATOR = "forge.agent.orchestrator"
     const val AGENT_REGISTRY = "forge.agent.registry"
     const val AGENT_SESSION_STORE = "forge.agent.sessions"

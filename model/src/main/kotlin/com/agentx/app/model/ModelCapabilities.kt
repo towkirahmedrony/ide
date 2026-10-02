@@ -14,6 +14,12 @@ data class ModelCapabilities(
     val systemMessages: Boolean = true,
     val contextWindowTokens: Int? = null,
     val maxOutputTokens: Int? = null,
+    /** True when the model is known to expose a reasoning/thinking channel. */
+    val reasoning: Boolean = false,
+    /** True when the model runs on-device or on a local OpenAI-compatible runtime. */
+    val local: Boolean = false,
+    /** False when the definition is retained but must not be selected. */
+    val enabled: Boolean = true,
 
     /** Escape hatch for provider- or model-specific flags. */
     val extensions: Map<String, Boolean> = emptyMap(),

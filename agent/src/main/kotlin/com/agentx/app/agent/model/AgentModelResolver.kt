@@ -1,8 +1,16 @@
 package com.agentx.app.agent.model
 
 import com.agentx.app.agent.domain.AgentDefinition
+import com.agentx.app.agent.domain.AgentError
+import com.agentx.app.agent.domain.AgentErrorCode
 import com.agentx.app.agent.domain.AgentRole
 import com.agentx.app.model.ModelConfig
+import com.agentx.app.model.capability.InMemoryModelCapabilityRegistry
+import com.agentx.app.model.capability.ModelCapability
+import com.agentx.app.model.capability.ModelCapabilityErrors
+import com.agentx.app.model.capability.ModelCapabilityProfile
+import com.agentx.app.model.capability.ModelCapabilityRegistry
+import com.agentx.app.model.capability.toCapabilityProfile
 import com.agentx.app.model.preset.ModelProviderIds
 
 /**
@@ -17,6 +25,11 @@ object AgentModelProviders {
     const val GEMINI = ModelProviderIds.GEMINI
     const val GROQ = ModelProviderIds.GROQ
     const val OPENAI_COMPATIBLE = ModelProviderIds.OPENAI_COMPATIBLE
+    const val CEREBRAS = ModelProviderIds.CEREBRAS
+    const val MISTRAL = ModelProviderIds.MISTRAL
+    const val OPENROUTER = ModelProviderIds.OPENROUTER
+    const val CLOUDFLARE = ModelProviderIds.CLOUDFLARE
+    const val NVIDIA_NIM = ModelProviderIds.NVIDIA_NIM
 
     /**
      * The local model runtime (for example Qwen 2.5 Coder). It shares the
@@ -137,6 +150,11 @@ class AgentModelResolver(
      * [preferences] value is used.
      */
     private val livePreferences: (() -> AgentModelPreferences)? = null,
+    /**
+     * Authoritative capability lookup used by [validate] and [resolveChecked].
+     * [resolve] itself stays a pure config selection and does not consult this.
+     */
+    private val capabilityRegistry: ModelCapabilityRegistry = InMemoryModelCapabilityRegistry.DEFAULT,
 ) {
 
     /** The mapping in effect for this resolution: the live source when present. */
@@ -173,6 +191,74 @@ class AgentModelResolver(
     /** The configured preference for [role], when any. */
     fun preference(role: AgentRole): RoleModelPreference? = currentPreferences()[role]
 
+    /**
+     * Same selection as [resolve], then checks that the chosen model meets
+     * [role]'s required capabilities. Never switches provider or model.
+     */
+    fun resolveChecked(role: AgentRole, default: ModelConfig): ModelConfig {
+        val config = resolve(role, default)
+        validate(role, config).getOrThrow()
+        return config
+    }
+
+    fun resolveChecked(definition: AgentDefinition, default: ModelConfig): ModelConfig {
+        val config = resolve(definition, default)
+        validate(definition.role, config).getOrThrow()
+        return config
+    }
+
+    /**
+     * Whether [config] can satisfy [role]. A missing capability is a structured
+     * [AgentError] with [AgentErrorCode.MODEL_CAPABILITY_UNSUPPORTED]; this
+     * phase never falls back to another model.
+     */
+    fun validate(role: AgentRole, config: ModelConfig): Result<Unit> {
+        val required = AgentRoleRequirements.required(role)
+        val profile = profileFor(config)
+        val missing = required.filterNot { capability -> profile.supports(capability) }
+        if (missing.isEmpty()) return Result.success(Unit)
+        val first = missing.first()
+        return Result.failure(
+            AgentModelResolutionException(
+                error = capabilityError(role, config, first, profile),
+            ),
+        )
+    }
+
+    fun canSatisfy(role: AgentRole, config: ModelConfig): Boolean = validate(role, config).isSuccess
+
+    private fun profileFor(config: ModelConfig): ModelCapabilityProfile {
+        config.capabilities?.let { override ->
+            return override.toCapabilityProfile(config.providerId, config.model)
+        }
+        return capabilityRegistry.profile(config.providerId, config.model)
+    }
+
+    private fun capabilityError(
+        role: AgentRole,
+        config: ModelConfig,
+        capability: ModelCapability,
+        profile: ModelCapabilityProfile,
+    ): AgentError = AgentError(
+        code = AgentErrorCode.MODEL_CAPABILITY_UNSUPPORTED,
+        message = "${ModelCapabilityErrors.CODE} provider=${config.providerId} " +
+            "model=${config.model} capability=${capability.id}",
+        role = role,
+        details = mapOf(
+            "provider" to config.providerId,
+            "model" to config.model,
+            "capability" to capability.id,
+            "known" to profile.known.toString(),
+            "support" to profile.support(capability).name,
+            "local" to profile.local.toString(),
+        ),
+    )
+
     private fun withModel(config: ModelConfig, model: String?): ModelConfig =
         if (model == null || model == config.model) config else config.copy(model = model)
 }
+
+/** Thrown by [AgentModelResolver.resolveChecked] when a role's model cannot satisfy the role. */
+class AgentModelResolutionException(
+    val error: AgentError,
+) : RuntimeException(error.message)

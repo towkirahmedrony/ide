@@ -18,6 +18,7 @@ import com.agentx.app.agent.domain.SubAgentRequest
 import com.agentx.app.agent.domain.SubAgentResult
 import com.agentx.app.agent.main.MainAgent
 import com.agentx.app.agent.main.MainAgentRequest
+import com.agentx.app.agent.model.AgentModelResolutionException
 import com.agentx.app.agent.model.AgentModelResolver
 import com.agentx.app.agent.prompt.PromptVariables
 import com.agentx.app.agent.runtime.AgentIds
@@ -146,7 +147,18 @@ class DefaultAgentOrchestrator(
             ?: SessionTitle.derive(request.prompt)
         // MAIN resolves its own model from the active configuration and the role
         // mapping; the loop and the session metadata then agree on one config.
-        val mainConfig = modelResolver.resolve(mainAgent.definition, modelConfig)
+        val mainConfig = try {
+            modelResolver.resolveChecked(mainAgent.definition, modelConfig)
+        } catch (unsupported: AgentModelResolutionException) {
+            val error = unsupported.error.copy(sessionId = sessionId)
+            sink.emit(AgentEvent.Failed(sessionId, error, clock()))
+            return AgentResult(
+                sessionId = sessionId,
+                status = AgentStatus.FAILED,
+                summary = error.message,
+                errors = listOf(error),
+            )
+        }
         val session = AgentSession(
             id = sessionId,
             parentSessionId = existing?.parentSessionId,
@@ -298,7 +310,18 @@ class DefaultAgentOrchestrator(
         if (session.status != AgentStatus.WAITING_FOR_PERMISSION) return null
 
         val modelConfig = paused.modelConfig
-        val mainConfig = modelResolver.resolve(mainAgent.definition, modelConfig)
+        val mainConfig = try {
+            modelResolver.resolveChecked(mainAgent.definition, modelConfig)
+        } catch (unsupported: AgentModelResolutionException) {
+            val error = unsupported.error.copy(sessionId = sessionId)
+            sink.emit(AgentEvent.Failed(sessionId, error, clock()))
+            return AgentResult(
+                sessionId = sessionId,
+                status = AgentStatus.FAILED,
+                summary = error.message,
+                errors = listOf(error),
+            )
+        }
         sessions.update(sessionId) { it.withStatus(AgentStatus.RUNNING, clock()) }
         val job = coroutineContext[Job]
         if (job != null) jobs[sessionId] = job
@@ -431,7 +454,37 @@ class DefaultAgentOrchestrator(
         // Each child role resolves its own config from the active model and the
         // role mapping before it is invoked; the session records the same one.
         val agent = specialized.get(request.role)
-        val childConfig = agent?.let { modelResolver.resolve(it.definition, modelConfig) } ?: modelConfig
+        val childConfig = try {
+            agent?.let { modelResolver.resolveChecked(it.definition, modelConfig) } ?: modelConfig
+        } catch (unsupported: AgentModelResolutionException) {
+            val error = unsupported.error.copy(sessionId = request.sessionId)
+            sink.emit(AgentEvent.Failed(request.sessionId, error, clock()))
+            sessions.save(
+                AgentSession(
+                    id = request.sessionId,
+                    parentSessionId = request.parentSessionId,
+                    role = request.role,
+                    status = AgentStatus.FAILED,
+                    task = AgentTask(
+                        id = request.sessionId,
+                        prompt = request.task,
+                        objective = request.objective,
+                        workspaceId = request.workspaceId,
+                    ),
+                    createdAtMillis = now,
+                    updatedAtMillis = now,
+                    workspaceId = request.workspaceId,
+                    title = SessionTitle.derive(request.task),
+                ),
+            )
+            return SubAgentResult(
+                sessionId = request.sessionId,
+                role = request.role,
+                status = AgentStatus.FAILED,
+                summary = error.message,
+                errors = listOf(error),
+            )
+        }
         sessions.save(
             AgentSession(
                 id = request.sessionId,

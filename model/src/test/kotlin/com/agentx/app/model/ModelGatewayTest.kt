@@ -199,7 +199,7 @@ class ModelGatewayTest {
         val capabilities = gateway.capabilities(request(openAiConfig(), ModelMessage.user("hi")))
 
         assertTrue(capabilities.streaming)
-        assertTrue(capabilities.toolCalling)
+        assertFalse(capabilities.toolCalling)
         assertTrue(capabilities.vision)
         assertFalse(capabilities.structuredOutput)
     }

@@ -27,6 +27,21 @@ object ModelProviderIds {
      */
     const val OPENAI_COMPATIBLE: String = "openai-compatible"
 
+    /** Cerebras inference. Distinct from Groq even when the wire protocol matches. */
+    const val CEREBRAS: String = "cerebras"
+
+    /** Mistral API. */
+    const val MISTRAL: String = "mistral"
+
+    /** OpenRouter aggregator. */
+    const val OPENROUTER: String = "openrouter"
+
+    /** Cloudflare Workers AI. */
+    const val CLOUDFLARE: String = "cloudflare"
+
+    /** NVIDIA NIM. */
+    const val NVIDIA_NIM: String = "nvidia-nim"
+
     /**
      * The identity a preset connects as. Gemini and Groq presets are separate
      * identities; everything else follows its wire protocol, which keeps a plain
@@ -36,6 +51,11 @@ object ModelProviderIds {
         when (setupKind.trim().lowercase()) {
             GEMINI -> GEMINI
             GROQ -> GROQ
+            CEREBRAS -> CEREBRAS
+            MISTRAL -> MISTRAL
+            OPENROUTER -> OPENROUTER
+            CLOUDFLARE -> CLOUDFLARE
+            NVIDIA_NIM -> NVIDIA_NIM
             else -> protocol.providerId
         }
 }

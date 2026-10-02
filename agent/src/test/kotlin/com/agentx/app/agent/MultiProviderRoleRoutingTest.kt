@@ -67,7 +67,7 @@ class MultiProviderRoleRoutingTest {
         gateway.register(groq)
 
         val connections = mapOf(
-            AgentModelProviders.GEMINI to config(AgentModelProviders.GEMINI, "gemini-1.5-pro"),
+            AgentModelProviders.GEMINI to config(AgentModelProviders.GEMINI, "gemini-3.5-flash"),
             AgentModelProviders.GROQ to config(
                 AgentModelProviders.GROQ,
                 "llama-3.3-70b-versatile",
@@ -119,7 +119,7 @@ class MultiProviderRoleRoutingTest {
 
         // Only Gemini is connected; MAIN's preference resolves to it.
         val connections = mapOf(
-            AgentModelProviders.GEMINI to config(AgentModelProviders.GEMINI, "gemini-1.5-pro"),
+            AgentModelProviders.GEMINI to config(AgentModelProviders.GEMINI, "gemini-3.5-flash"),
         )
         val resolver = AgentModelResolver(
             preferences = AgentModelPreferences.DEFAULT,

@@ -921,7 +921,17 @@ class AgentLoop(
             ModelProviderErrorCode.CONNECTION_FAILED,
             ModelProviderErrorCode.NETWORK_ERROR,
             -> AgentErrorCode.MODEL_FAILURE
+            ModelProviderErrorCode.UNSUPPORTED ->
+                if (provider.providerErrorType == "MODEL_CAPABILITY_UNSUPPORTED") {
+                    AgentErrorCode.MODEL_CAPABILITY_UNSUPPORTED
+                } else {
+                    AgentErrorCode.MODEL_FAILURE
+                }
             else -> AgentErrorCode.MODEL_FAILURE
+        }
+        val extra = mutableMapOf<String, String>()
+        provider?.details?.forEach { (key, value) ->
+            if (value != null) extra[key] = value.toString()
         }
         return AgentError(
             code = code,
@@ -929,10 +939,10 @@ class AgentLoop(
             role = request.definition.role,
             sessionId = request.sessionId,
             cause = error,
-            details = mapOf(
+            details = (mapOf(
                 "providerError" to (provider?.code?.name ?: error::class.simpleName.orEmpty()),
                 "httpStatus" to (provider?.httpStatus?.toString().orEmpty()),
-            ).filterValues { it.isNotBlank() },
+            ) + extra).filterValues { it.isNotBlank() },
         )
     }
 

@@ -9,6 +9,7 @@ import com.agentx.app.model.ModelRequest
 import com.agentx.app.model.ModelResponse
 import com.agentx.app.model.ModelStreamEvent
 import com.agentx.app.model.ModelCapabilities
+import com.agentx.app.model.capability.isLocalRuntime
 import com.agentx.app.model.preset.ModelProviderType
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -109,6 +110,7 @@ class RateLimitedModelGateway(
 
     /** A local, on-device runtime shares no remote quota and is exempt. */
     private fun isRemote(config: ModelConfig): Boolean {
+        if (config.isLocalRuntime()) return false
         val providerType = config.metadata[PROVIDER_TYPE_METADATA_KEY] ?: return true
         return !providerType.equals(ModelProviderType.LOCAL_PHONE.name, ignoreCase = true)
     }

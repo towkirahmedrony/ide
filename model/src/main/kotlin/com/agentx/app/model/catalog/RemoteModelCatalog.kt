@@ -10,6 +10,8 @@ import com.agentx.app.core.logging.ForgeLoggers
 import com.agentx.app.core.logging.LogLevel
 import com.agentx.app.model.ModelCapabilities
 import com.agentx.app.model.ModelConfig
+import com.agentx.app.model.capability.InMemoryModelCapabilityRegistry
+import com.agentx.app.model.capability.ModelCapabilityRegistry
 import com.agentx.app.model.http.HttpRequestSpec
 import com.agentx.app.model.http.HttpTransport
 import com.agentx.app.model.http.UrlConnectionHttpTransport
@@ -97,6 +99,7 @@ class RemoteModelCatalog(
         level = LogLevel.INFO,
         baseFields = mapOf("component" to "model-catalog"),
     ),
+    private val capabilityRegistry: ModelCapabilityRegistry = InMemoryModelCapabilityRegistry.DEFAULT,
 ) : ModelCatalog {
 
     private val lock = Any()
@@ -385,12 +388,11 @@ class RemoteModelCatalog(
     private fun providerLabel(): String = providerId.uppercase()
 
     private fun capabilitiesFor(id: String): ModelCapabilities {
-        val lower = id.lowercase()
-        // The AgentX text/model runtime needs streaming chat. Tool calling is not
-        // assumed per model; it is only advertised when the identifier makes the
-        // capability unambiguous rather than sold as a guess.
-        val toolCalling = lower.contains("llama-3") || lower.contains("-tools") || lower.contains("function")
-        return ModelCapabilities(streaming = true, toolCalling = toolCalling, systemMessages = true)
+        val known = capabilityRegistry.get(providerId, id)
+        if (known != null && known.known && known.enabled) return known.toModelCapabilities()
+        // Discovered models stay listed, but unknown ones are never treated as
+        // tool-capable until a definition is registered.
+        return ModelCapabilities(streaming = true, toolCalling = false, systemMessages = true)
     }
 
     private fun firstInt(model: JsonObject, vararg keys: String): Int? {

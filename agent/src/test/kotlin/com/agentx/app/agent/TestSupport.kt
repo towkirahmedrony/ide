@@ -36,6 +36,7 @@ internal fun testConfig(): ModelConfig = ModelConfig(
     providerId = "test",
     baseUrl = "http://localhost:9/v1",
     model = "test-model",
+    capabilities = ModelCapabilities(toolCalling = true, streaming = true),
 )
 
 internal fun jsonArgs(vararg pairs: Pair<String, String>): JsonObject =

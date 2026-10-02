@@ -3,6 +3,8 @@ package com.agentx.app.model
 import com.agentx.app.core.foundation.ServiceKeys
 import com.agentx.app.core.module.ForgeModule
 import com.agentx.app.core.module.ModuleContext
+import com.agentx.app.model.capability.InMemoryModelCapabilityRegistry
+import com.agentx.app.model.capability.ModelCapabilityRegistry
 import com.agentx.app.model.ratelimit.RateLimitManager
 import com.agentx.app.model.ratelimit.RateLimitedModelGateway
 
@@ -23,7 +25,11 @@ class ModelModule(
     override val id: String = "model"
 
     override fun initialize(context: ModuleContext) {
-        val base = DefaultModelGateway()
+        val capabilities = context.services.get<ModelCapabilityRegistry>(ServiceKeys.MODEL_CAPABILITY_REGISTRY)
+            ?: InMemoryModelCapabilityRegistry.DEFAULT.also {
+                context.services.register(ServiceKeys.MODEL_CAPABILITY_REGISTRY, it)
+            }
+        val base = DefaultModelGateway(capabilities)
         providers.forEach(base::register)
         val rateLimitManager = context.services.get<RateLimitManager>(ServiceKeys.RATE_LIMIT_MANAGER)
         val gateway: ModelGateway = if (rateLimitManager != null) {
