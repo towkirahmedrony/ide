@@ -43,6 +43,7 @@ import com.agentx.app.ui.ide.components.IdeSpacer
 import com.agentx.app.ui.ide.components.IdeTopBar
 import com.agentx.app.ui.ide.state.API_PROVIDER_KINDS
 import com.agentx.app.ui.ide.state.ModelConnectionType
+import com.agentx.app.ui.ide.state.ModelChoices
 import com.agentx.app.ui.ide.state.ModelEditorState
 import com.agentx.app.ui.ide.state.ModelSetupField
 import com.agentx.app.ui.ide.state.ModelSetupForm
@@ -140,7 +141,7 @@ fun ModelEditorScreen(
                         ?: ModelConnectionType.LOCAL.helper,
                 )
             } else {
-                ModelField(state, onEdit, onSelectModel, onToggleManualModel)
+                ModelField(state, onEdit, onSelectModel, onToggleManualModel, onRetryCatalog)
                 FormField(
                     label = if (state.form.hasStoredCredential) "Replace API key" else "API key",
                     value = state.form.credential,
@@ -296,6 +297,7 @@ private fun ModelField(
     onEdit: ((ModelSetupForm) -> ModelSetupForm) -> Unit,
     onSelectModel: (String) -> Unit,
     onToggleManualModel: (Boolean) -> Unit,
+    onRefreshModels: () -> Unit,
 ) {
     var open by remember { mutableStateOf(false) }
 
@@ -303,17 +305,17 @@ private fun ModelField(
         Box {
             IdeSettingRow(
                 label = "Model",
-                value = state.form.modelId.ifBlank { "Select" },
+                value = ModelChoices.labelFor(state.models, state.form.modelId).ifBlank { "Select" },
                 enabled = !state.catalogLoading,
                 onClick = { open = true },
             )
             DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-                state.models.forEach { id ->
+                state.models.forEach { choice ->
                     DropdownMenuItem(
-                        text = { Text(id) },
+                        text = { Text(choice.label) },
                         onClick = {
                             open = false
-                            onSelectModel(id)
+                            onSelectModel(choice.id)
                         },
                     )
                 }
@@ -321,11 +323,7 @@ private fun ModelField(
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                text = if (state.modelsFromCatalog) {
-                    "From ${state.form.apiProvider.displayName}'s model list"
-                } else {
-                    "Suggested by ${state.form.apiProvider.displayName}"
-                },
+                text = sourceLabel(state),
                 style = MaterialTheme.typography.bodySmall,
                 color = ForgeMuted,
                 modifier = Modifier.weight(1f),
@@ -333,6 +331,7 @@ private fun ModelField(
             if (state.catalogLoading) {
                 CircularProgressIndicator(color = ForgeMint, modifier = Modifier.size(14.dp))
             }
+            TextButton(onClick = onRefreshModels, enabled = !state.catalogLoading) { Text("Refresh") }
             TextButton(onClick = { onToggleManualModel(true) }) { Text("Enter manually") }
         }
     } else {
@@ -344,12 +343,23 @@ private fun ModelField(
             supporting = state.issue(ModelSetupField.MODEL)
                 ?: "Model id sent to the provider",
         )
-        if (state.models.isNotEmpty()) {
-            TextButton(onClick = { onToggleManualModel(false) }) { Text("Choose from list") }
-        } else if (state.catalogLoading) {
-            CircularProgressIndicator(color = ForgeMint, modifier = Modifier.size(14.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (state.catalogLoading) {
+                CircularProgressIndicator(color = ForgeMint, modifier = Modifier.size(14.dp))
+            }
+            if (state.models.isNotEmpty()) {
+                TextButton(onClick = { onToggleManualModel(false) }) { Text("Choose from list") }
+            }
+            TextButton(onClick = onRefreshModels, enabled = !state.catalogLoading) { Text("Refresh") }
         }
     }
+}
+
+/** Where the offered models came from, so a fallback list is never mistaken for a live one. */
+private fun sourceLabel(state: ModelEditorState): String = when {
+    state.modelsFromCatalog -> "From ${state.form.apiProvider.displayName}'s model list"
+    state.catalogError != null -> "${state.form.apiProvider.displayName} models unavailable"
+    else -> "Built-in ${state.form.apiProvider.displayName} list"
 }
 
 @Composable

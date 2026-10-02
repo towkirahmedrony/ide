@@ -286,32 +286,50 @@ data class ModelSetupForm(
 }
 
 /**
+ * One selectable model: the id that gets saved, and what the picker shows for it.
+ *
+ * A provider that reports a human name gets it shown while the id is still what
+ * is stored, so a model can be recognised without hiding what is actually sent.
+ */
+data class ModelChoice(val id: String, val label: String)
+
+/**
  * Models the user may pick for a provider.
  *
  * A connected provider's own catalog wins; when it has not been fetched yet, the
- * provider catalogue's suggestions are offered and a manual id stays possible.
- * Models the catalog reports as unavailable are never offered.
+ * provider catalogue's compatibility list is offered and a manual id stays
+ * possible. Models the catalog reports as unavailable are never offered.
  */
 object ModelChoices {
 
-    fun catalogModels(catalog: ModelCatalogRegistry?, providerId: String): List<String> =
+    fun catalogChoices(catalog: ModelCatalogRegistry?, providerId: String): List<ModelChoice> =
         catalog?.availableModels(providerId)
-            ?.map { it.id }
-            ?.filter { it.isNotBlank() }
-            ?.distinct()
-            ?.sorted()
+            ?.filter { it.id.isNotBlank() }
+            ?.map { model ->
+                ModelChoice(
+                    id = model.id,
+                    label = model.displayName?.takeIf { it.isNotBlank() } ?: model.id,
+                )
+            }
+            ?.distinctBy { it.id }
+            ?.sortedBy { it.id }
             .orEmpty()
 
+    /** The provider's built-in compatibility list, used only when discovery cannot answer. */
     fun suggestions(providerId: String): List<String> =
         KnownModelProviders.spec(ModelSetupKind.fromId(providerId))?.suggestedModels.orEmpty()
 
     /** Catalog first, then suggestions; deterministic and de-duplicated. */
-    fun offered(catalog: ModelCatalogRegistry?, providerId: String): List<String> {
-        val models = linkedSetOf<String>()
-        catalogModels(catalog, providerId).forEach { models += it }
-        suggestions(providerId).forEach { models += it }
-        return models.toList()
+    fun offered(catalog: ModelCatalogRegistry?, providerId: String): List<ModelChoice> {
+        val choices = LinkedHashMap<String, ModelChoice>()
+        catalogChoices(catalog, providerId).forEach { choices[it.id] = it }
+        suggestions(providerId).forEach { id -> choices.putIfAbsent(id, ModelChoice(id, id)) }
+        return choices.values.toList()
     }
+
+    /** The label to show for the currently selected id, even when it is not listed. */
+    fun labelFor(models: List<ModelChoice>, modelId: String): String =
+        models.firstOrNull { it.id == modelId }?.label ?: modelId
 }
 
 /** Where a model's usage is visible today, or why nothing is shown. */

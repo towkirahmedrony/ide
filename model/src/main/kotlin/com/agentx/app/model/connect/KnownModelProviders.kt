@@ -62,11 +62,16 @@ object KnownModelProviders {
         kind = ModelSetupKind.GEMINI,
         rootUrl = "https://generativelanguage.googleapis.com/v1beta/openai",
         apiBasePath = "",
+        /**
+         * Compatibility list only. It is used when the account's own model list
+         * cannot be read (no key yet, offline, rate limited) so the app stays
+         * usable. The provider's live list is authoritative and is what the picker
+         * offers, so newly released models need no code change. Retired entries are
+         * not kept here.
+         */
         suggestedModels = listOf(
             "gemini-2.0-flash",
             "gemini-2.0-flash-lite",
-            "gemini-1.5-flash",
-            "gemini-1.5-pro",
         ),
         preferredModel = "gemini-2.0-flash",
     )

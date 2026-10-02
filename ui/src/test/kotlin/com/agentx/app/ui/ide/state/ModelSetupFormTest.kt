@@ -328,20 +328,42 @@ class ModelSetupFormTest {
 
         val offered = ModelChoices.offered(catalog, "groq")
 
-        assertEquals(listOf("llama-3.1-8b-instant", "llama-3.3-70b-versatile"), ModelChoices.catalogModels(catalog, "groq"))
-        assertTrue(offered.none { it == "retired-model" })
+        assertEquals(
+            listOf("llama-3.1-8b-instant", "llama-3.3-70b-versatile"),
+            ModelChoices.catalogChoices(catalog, "groq").map { it.id },
+        )
+        assertTrue(offered.none { it.id == "retired-model" })
         // Suggestions are appended, never duplicated.
         assertEquals(offered.distinct(), offered)
-        assertTrue(offered.containsAll(KnownModelProviders.groq.suggestedModels))
+        assertTrue(offered.map { it.id }.containsAll(KnownModelProviders.groq.suggestedModels))
     }
 
     @Test
-    fun `without a catalog the provider suggestions are offered`() {
-        assertEquals(
-            KnownModelProviders.gemini.suggestedModels,
-            ModelChoices.offered(null, "gemini"),
+    fun `a discovered display name is shown while the id is what gets saved`() {
+        val catalog = registry(
+            models = listOf(
+                CatalogModel(id = "gemini-9-ultra-preview", displayName = "Gemini 9 Ultra (preview)"),
+            ),
         )
-        assertTrue(ModelChoices.catalogModels(null, "gemini").isEmpty())
+
+        val choices = ModelChoices.offered(catalog, "gemini")
+
+        val preview = choices.single { it.id == "gemini-9-ultra-preview" }
+        assertEquals("Gemini 9 Ultra (preview)", preview.label)
+        // The picker labels by display name, but the id is what the form holds.
+        assertEquals("Gemini 9 Ultra (preview)", ModelChoices.labelFor(choices, "gemini-9-ultra-preview"))
+    }
+
+    @Test
+    fun `a saved model stays selectable when discovery cannot list it`() {
+        val choices = ModelChoices.offered(null, "gemini")
+
+        // Nothing was discovered, so the built-in compatibility list is offered...
+        assertTrue(choices.map { it.id }.containsAll(KnownModelProviders.gemini.suggestedModels))
+        assertTrue(ModelChoices.catalogChoices(null, "gemini").isEmpty())
+        // ...while a model that is already saved keeps its own label.
+        assertEquals("gemini-1.5-pro", ModelChoices.labelFor(choices, "gemini-1.5-pro"))
+        assertEquals("gemini-1.5-pro", ModelChoices.labelFor(emptyList(), "gemini-1.5-pro"))
     }
 
     // --- Detail presentation ------------------------------------------------

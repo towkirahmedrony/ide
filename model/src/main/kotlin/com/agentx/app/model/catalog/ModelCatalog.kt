@@ -29,9 +29,17 @@ enum class CatalogSource {
  */
 data class CatalogModel(
     val id: String,
+    /** Human name the provider reports, when it reports one. */
+    val displayName: String? = null,
     val contextWindowTokens: Int? = null,
     val maxOutputTokens: Int? = null,
     val capabilities: ModelCapabilities = ModelCapabilities(streaming = true),
+    /**
+     * True when the provider explicitly reports the model as deprecated or
+     * retired. Null means the provider did not say, which is not the same as
+     * "current": nothing is inferred from an identifier.
+     */
+    val deprecated: Boolean? = null,
     /**
      * False when an earlier catalog listed this model but the latest refresh did
      * not. Such a model is kept (never silently dropped) so a saved role
@@ -129,8 +137,10 @@ object ModelCatalogCodec {
 
     private fun encodeModel(model: CatalogModel): JsonValue = Json.obj(
         "id" to Json.of(model.id),
+        "displayName" to (model.displayName?.let { Json.of(it) } ?: JsonValue.Null),
         "contextWindowTokens" to (model.contextWindowTokens?.let { Json.of(it) } ?: JsonValue.Null),
         "maxOutputTokens" to (model.maxOutputTokens?.let { Json.of(it) } ?: JsonValue.Null),
+        "deprecated" to (model.deprecated?.let { Json.of(it) } ?: JsonValue.Null),
         "available" to Json.of(model.available),
         "streaming" to Json.of(model.capabilities.streaming),
         "toolCalling" to Json.of(model.capabilities.toolCalling),
@@ -142,8 +152,10 @@ object ModelCatalogCodec {
         val id = json.stringOrNull("id")?.takeIf { it.isNotBlank() } ?: return null
         return CatalogModel(
             id = id,
+            displayName = json.stringOrNull("displayName")?.takeIf { it.isNotBlank() },
             contextWindowTokens = json.numberOrNull("contextWindowTokens")?.toInt(),
             maxOutputTokens = json.numberOrNull("maxOutputTokens")?.toInt(),
+            deprecated = json.booleanOrNull("deprecated"),
             capabilities = ModelCapabilities(
                 streaming = json.booleanOrNull("streaming") ?: true,
                 toolCalling = json.booleanOrNull("toolCalling") ?: false,

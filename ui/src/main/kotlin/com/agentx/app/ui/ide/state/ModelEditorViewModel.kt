@@ -30,8 +30,8 @@ data class ModelEditorState(
     val loading: Boolean = true,
     val missing: Boolean = false,
     val form: ModelSetupForm = ModelSetupForm(),
-    /** Which model ids the form offers for the current provider. */
-    val models: List<String> = emptyList(),
+    /** Which models the form offers for the current provider. */
+    val models: List<ModelChoice> = emptyList(),
     /** True when [models] came from the provider's own catalog, not its suggestions. */
     val modelsFromCatalog: Boolean = false,
     val catalogLoading: Boolean = false,
@@ -272,11 +272,17 @@ class ModelEditorViewModel(
         } else {
             runCatching { registry.refresh(providerId, force) }.getOrNull()?.errorOrNull()
         }
-        val fromCatalog = ModelChoices.catalogModels(registry, providerId)
+        val fromCatalog = ModelChoices.catalogChoices(registry, providerId)
         val connected = registry?.catalog(providerId) != null
         state = state.copy(
             catalogLoading = false,
-            models = if (fromCatalog.isNotEmpty()) fromCatalog else ModelChoices.suggestions(providerId),
+            // The live catalog first; the provider's compatibility list only fills
+            // the gap when discovery could not answer.
+            models = if (fromCatalog.isNotEmpty()) {
+                fromCatalog
+            } else {
+                ModelChoices.suggestions(providerId).map { ModelChoice(it, it) }
+            },
             modelsFromCatalog = fromCatalog.isNotEmpty(),
             // Only a connected provider that failed to answer is worth a retry; an
             // unconnected one simply has no model list yet.
