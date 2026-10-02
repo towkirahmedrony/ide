@@ -109,7 +109,8 @@ class ModelEditorViewModelTest {
         val live = snapshot("gemini-3.1-flash", "gemini-3.5-flash")
         val viewModel = newGeminiForm(FakeCatalogRegistry(live, ForgeResult.Success(live)))
 
-        assertEquals(listOf("gemini-3.5-flash", "gemini-3.1-flash"), viewModel.state.models.map { it.id })
+        // The picker lists the live catalog in ascending id order.
+        assertEquals(listOf("gemini-3.1-flash", "gemini-3.5-flash"), viewModel.state.models.map { it.id })
         assertTrue(viewModel.state.modelsFromCatalog)
         // The built-in compatibility list is never mixed into a live catalog.
         assertTrue(viewModel.state.models.none { it.id == "gemini-3.5-flash-lite" })
@@ -145,7 +146,8 @@ class ModelEditorViewModelTest {
         registry.result = ForgeResult.Success(second)
         viewModel.retryCatalog()
 
-        assertEquals(listOf("gemini-3.5-flash", "gemini-3.1-flash"), viewModel.state.models.map { it.id })
+        // The refreshed catalog replaces the old list, again in ascending id order.
+        assertEquals(listOf("gemini-3.1-flash", "gemini-3.5-flash"), viewModel.state.models.map { it.id })
     }
 
     @Test
