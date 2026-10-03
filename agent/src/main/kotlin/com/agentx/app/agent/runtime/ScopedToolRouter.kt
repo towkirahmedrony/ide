@@ -13,7 +13,6 @@ import com.agentx.app.tools.ToolInput
 import com.agentx.app.tools.ToolResult
 import com.agentx.app.tools.ToolRouter
 import com.agentx.app.tools.effectiveAvailability
-import com.agentx.app.tools.isAvailable
 
 /**
  * The deterministic authorization gate in front of the Tool System.
