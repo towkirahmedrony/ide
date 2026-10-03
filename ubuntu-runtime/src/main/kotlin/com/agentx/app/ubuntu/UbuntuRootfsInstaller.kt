@@ -753,6 +753,9 @@ class UbuntuRootfsInstaller(
         // "configured multiple times" — dozens of warnings per command, and two sources lists to
         // reason about when one of them is wrong. The shipped file is the duplicate here.
         files.deleteRecursively("$tree/etc/apt/sources.list.d/ubuntu.sources")
+        // PRoot exposes Android supplementary GIDs that /etc/group cannot name; this stops
+        // bash.bashrc's sudo hint from running `groups` and printing one warning per GID.
+        files.writeText("$tree/root/.hushlogin", "")
 
         files.writeText(
             "$tree/etc/apt/sources.list",
