@@ -246,7 +246,17 @@ data class ModelCapabilityProfile(
     /** Drops inferred capability flags so a dynamic model cannot look tool-capable. */
     fun withoutInferredCapabilities(): ModelCapabilityProfile {
         if (known || provenance == CapabilityProvenance.HARDCODED) return this
+        // A dynamic profile that asserted support it cannot prove is not trusted for
+        // its metadata either. Its name is cleared as well as its flags, so it cannot
+        // overwrite a name an earlier, honest discovery already settled — otherwise
+        // the unprovable claim would still win the entry it was rejected for.
+        val claimedUnprovenSupport = toolCalling == CapabilitySupport.SUPPORTED ||
+            streaming == CapabilitySupport.SUPPORTED ||
+            vision == CapabilitySupport.SUPPORTED ||
+            structuredOutput == CapabilitySupport.SUPPORTED ||
+            reasoning == CapabilitySupport.SUPPORTED
         return copy(
+            displayName = if (claimedUnprovenSupport) "" else displayName,
             toolCalling = CapabilitySupport.UNKNOWN,
             streaming = CapabilitySupport.UNKNOWN,
             vision = CapabilitySupport.UNKNOWN,
