@@ -10,6 +10,8 @@ import com.agentx.app.core.logging.LogLevel
 import com.agentx.app.model.ModelConfig
 import com.agentx.app.model.ModelProviderError
 import com.agentx.app.model.ModelProviderErrorCode
+import com.agentx.app.model.health.CandidateFailure
+import com.agentx.app.model.health.CandidateHealthTracker
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
@@ -89,6 +91,74 @@ object ModelFallbackErrors {
 }
 
 /**
+ * Maps a temporary fallback reason onto the health kind recorded for a candidate.
+ *
+ * `else` keeps any future reason temporary, so adding a member to the reason enum
+ * cannot accidentally make a failing candidate look healthy.
+ */
+internal fun ModelFallbackReason.toCandidateFailure(): CandidateFailure = when (this) {
+    ModelFallbackReason.RATE_LIMITED -> CandidateFailure.RATE_LIMITED
+    ModelFallbackReason.TIMEOUT -> CandidateFailure.TIMEOUT
+    ModelFallbackReason.NETWORK_FAILURE -> CandidateFailure.CONNECTION
+    ModelFallbackReason.PROVIDER_UNAVAILABLE -> CandidateFailure.PROVIDER_OUTAGE
+    else -> CandidateFailure.TEMPORARY
+}
+
+/**
+ * Structured metadata for one fallback decision.
+ *
+ * This is runtime bookkeeping, not reasoning: which candidate was asked, why the
+ * previous one was passed over, what the capability/quota/health answers were, and
+ * whether the switch happened before a request or after a failure. It is emitted
+ * as structured log fields and is the shape a later phase can surface in the UI.
+ * It never contains a credential.
+ */
+data class ModelFallbackDecision(
+    val role: AgentRole,
+    val sessionId: String,
+    val originalProviderId: String,
+    val originalModelId: String,
+    /** Why the original candidate was passed over. */
+    val ineligibleReason: String? = null,
+    /** The candidate considered for this decision. */
+    val consideredProviderId: String? = null,
+    val consideredModelId: String? = null,
+    /** The capability/quota/health outcome for the considered candidate. */
+    val eligibilityState: String? = null,
+    val healthState: String? = null,
+    val quotaState: String? = null,
+    val selectedProviderId: String? = null,
+    val selectedModelId: String? = null,
+    /** True when a request was actually sent to the selected candidate. */
+    val requestSent: Boolean = false,
+    /** True when the switch happened before any request, false after a failure. */
+    val beforeRequest: Boolean = true,
+    val attempts: Int = 0,
+    /** The reason that triggered the chain, when there was one. */
+    val trigger: String? = null,
+) {
+    /** Credential-free field map for structured logging. */
+    fun fields(): Map<String, Any?> = mapOf(
+        "role" to role.name,
+        "sessionId" to sessionId,
+        "originalProvider" to originalProviderId,
+        "originalModel" to originalModelId,
+        "ineligibleReason" to ineligibleReason,
+        "consideredProvider" to consideredProviderId,
+        "consideredModel" to consideredModelId,
+        "eligibility" to eligibilityState,
+        "health" to healthState,
+        "quota" to quotaState,
+        "selectedProvider" to selectedProviderId,
+        "selectedModel" to selectedModelId,
+        "requestSent" to requestSent,
+        "beforeRequest" to beforeRequest,
+        "attempts" to attempts,
+        "trigger" to trigger,
+    )
+}
+
+/**
  * Controlled, capability- and quota-aware model fallback.
  *
  * It wraps one logical model request ([call]) and, only when the active
@@ -109,6 +179,12 @@ object ModelFallbackErrors {
 class ModelFallback(
     private val policy: () -> ModelFallbackPolicy = { ModelFallbackPolicy.DISABLED },
     private val resolver: AgentModelResolver = AgentModelResolver(),
+    /**
+     * Observed provider/model health. Every attempt is recorded through it, so a
+     * candidate that just failed enters a cooldown and the next attempt — preemptive
+     * or reactive — skips it instead of hammering it.
+     */
+    private val health: CandidateHealthTracker? = null,
     private val clock: () -> Long = { System.currentTimeMillis() },
     private val logger: ForgeLogger = ForgeLoggers.create(
         LogLevel.INFO,
@@ -135,8 +211,32 @@ class ModelFallback(
         outputProduced: () -> Boolean = { false },
         call: suspend (ModelConfig) -> T,
     ): T {
+        // Every attempt — primary, preemptive switch or reactive fallback — is observed
+        // through one wrapper, so health reflects what actually happened rather than
+        // what was planned, and a candidate that just failed cools down before the
+        // next request can reach it.
+        val tracked: suspend (ModelConfig) -> T = { target ->
+            try {
+                val value = call(target)
+                health?.recordSuccess(target.providerId, target.model)
+                value
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                ModelFallbackErrors.triggerFor(error)?.let { reason ->
+                    health?.recordFailure(
+                        providerId = target.providerId,
+                        modelId = target.model,
+                        failure = reason.toCandidateFailure(),
+                        retryAfterMillis = (error as? ModelProviderError)?.retryAfterMillis,
+                    )
+                }
+                throw error
+            }
+        }
+
         val active = policy()
-        if (!active.enabledFor(role)) return call(primary)
+        if (!active.enabledFor(role)) return tracked(primary)
 
         // Preemptive headroom protection, before anything is sent.
         //
@@ -147,17 +247,17 @@ class ModelFallback(
         // last-resort signal.
         when (val preflight = preflight(role, sessionId, primary, default, sink, requirements, active)) {
             Preflight.Primary -> Unit
-            is Preflight.Switch -> return call(preflight.config)
+            is Preflight.Switch -> return tracked(preflight.config)
             is Preflight.NoHeadroom -> throw preflight.error
         }
 
         return try {
-            call(primary)
+            tracked(primary)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Throwable) {
             val reason = ModelFallbackErrors.triggerFor(error) ?: throw error
-            runChain(role, sessionId, primary, default, sink, requirements, outputProduced, active, reason, error, call)
+            runChain(role, sessionId, primary, default, sink, requirements, outputProduced, active, reason, error, tracked)
         }
     }
 
@@ -228,6 +328,30 @@ class ModelFallback(
 
             attempts += 1
             emitStarted(sink, sessionId, role, primary, candidate, ModelFallbackReason.RATE_LIMITED, attempts)
+            // The structured record of this decision: what was asked, why it was passed
+            // over, what the candidate's eligibility was, and that the switch happened
+            // before any request rather than after a failure. Credential-free.
+            logger.info(
+                "Model fallback decision",
+                ModelFallbackDecision(
+                    role = role,
+                    sessionId = sessionId,
+                    originalProviderId = primary.providerId,
+                    originalModelId = primary.model,
+                    ineligibleReason = eligibility.state.name,
+                    consideredProviderId = candidate.providerId,
+                    consideredModelId = candidate.model,
+                    eligibilityState = candidateEligibility.state.name,
+                    healthState = candidateEligibility.healthState?.name,
+                    quotaState = candidateEligibility.rateLimitKind?.name,
+                    selectedProviderId = candidate.providerId,
+                    selectedModelId = candidate.model,
+                    requestSent = true,
+                    beforeRequest = true,
+                    attempts = attempts,
+                    trigger = ModelFallbackReason.RATE_LIMITED.name,
+                ).fields(),
+            )
             // Structured, credential-free record that the switch happened *before*
             // the primary was asked, so an observer can tell a preemptive switch
             // from a reactive recovery.

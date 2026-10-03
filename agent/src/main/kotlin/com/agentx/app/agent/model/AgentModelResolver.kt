@@ -1,5 +1,7 @@
 package com.agentx.app.agent.model
 
+import com.agentx.app.model.health.CandidateHealthTracker
+
 import com.agentx.app.agent.domain.AgentDefinition
 import com.agentx.app.agent.domain.AgentError
 import com.agentx.app.agent.domain.AgentErrorCode
@@ -163,6 +165,12 @@ class AgentModelResolver(
      * phase. Quota is only evaluated here, never reserved.
      */
     private val rateLimitManager: RateLimitManager? = null,
+    /**
+     * Observed provider/model health, consulted by [resolveForRole] alongside
+     * capabilities and quota so a candidate inside its cooldown is never chosen.
+     * A null tracker means health is not recorded for this host.
+     */
+    private val healthTracker: CandidateHealthTracker? = null,
 ) {
 
     /**
@@ -170,7 +178,7 @@ class AgentModelResolver(
      * through it, so no individual agent reimplements eligibility.
      */
     private val eligibilityChecker: ModelEligibilityChecker =
-        ModelEligibilityChecker(capabilityRegistry, rateLimitManager)
+        ModelEligibilityChecker(capabilityRegistry, rateLimitManager, healthTracker)
 
     /** The mapping in effect for this resolution: the live source when present. */
     private fun currentPreferences(): AgentModelPreferences = livePreferences?.invoke() ?: preferences

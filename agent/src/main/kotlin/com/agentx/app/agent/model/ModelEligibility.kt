@@ -1,5 +1,9 @@
 package com.agentx.app.agent.model
 
+import com.agentx.app.model.health.CandidateHealthScope
+import com.agentx.app.model.health.CandidateHealthState
+import com.agentx.app.model.health.CandidateHealthTracker
+
 import com.agentx.app.agent.domain.AgentError
 import com.agentx.app.agent.domain.AgentErrorCode
 import com.agentx.app.agent.domain.AgentRole
@@ -27,6 +31,14 @@ enum class ModelEligibilityState {
 
     /** The provider's rate-limit state currently forbids a request. */
     RATE_LIMITED,
+
+    /**
+     * The candidate recently failed and is inside its cooldown, or its provider
+     * has a problem that reaches beyond one model (rejected credentials, an
+     * invalid configuration). Distinct from [RATE_LIMITED]: this is observed
+     * runtime health, not a quota declaration.
+     */
+    PROVIDER_UNHEALTHY,
 
     /** A required capability is authoritatively unsupported by this model. */
     CAPABILITY_UNSUPPORTED,
@@ -73,6 +85,9 @@ data class ModelEligibility(
     val missingCapabilities: List<ModelCapability> = emptyList(),
     val retryAfterMs: Long? = null,
     val rateLimitKind: RateLimitKind? = null,
+    /** Observed health of the candidate when it was rejected for that reason. */
+    val healthState: CandidateHealthState? = null,
+    val healthScope: CandidateHealthScope? = null,
     val reason: String? = null,
 ) {
     val eligible: Boolean get() = state == ModelEligibilityState.AVAILABLE
@@ -94,6 +109,8 @@ data class ModelEligibility(
         first?.let { details["capability"] = it.id }
         retryAfterMs?.let { details["retryAfterMs"] = it.toString() }
         rateLimitKind?.let { details["rateLimitKind"] = it.name }
+        healthState?.let { details["healthState"] = it.name }
+        healthScope?.let { details["healthScope"] = it.name }
         details["local"] = profile.local.toString()
         val message = buildString {
             append("MODEL_NOT_ELIGIBLE role=${role.name} provider=$providerId model=$modelId")
@@ -140,6 +157,11 @@ data class ModelEligibility(
 class ModelEligibilityChecker(
     private val capabilityRegistry: ModelCapabilityRegistry = InMemoryModelCapabilityRegistry.DEFAULT,
     private val rateLimitManager: RateLimitManager? = null,
+    /**
+     * Observed runtime health. Optional: a host that records none behaves exactly
+     * as before, because health only ever *subtracts* eligibility.
+     */
+    private val healthTracker: CandidateHealthTracker? = null,
 ) {
 
     /** The capability profile in effect for [config], honoring an explicit override. */
@@ -204,8 +226,31 @@ class ModelEligibilityChecker(
             )
         }
 
+        // Observed health. A candidate that just failed is given its cooldown instead
+        // of being hammered again, and a provider-wide problem (rejected credentials,
+        // an invalid configuration) is respected for every model of that provider.
+        // Checked before quota because a cooled-down candidate must not be asked at
+        // all, and after capability because an impossible model is a hard rejection
+        // however healthy its provider looks.
+        healthTracker?.let { tracker ->
+            if (!tracker.isUsable(config.providerId, config.model)) {
+                val health = tracker.state(config.providerId, config.model)
+                return ModelEligibility(
+                    role = role,
+                    providerId = config.providerId,
+                    modelId = config.model,
+                    state = ModelEligibilityState.PROVIDER_UNHEALTHY,
+                    profile = profile,
+                    retryAfterMs = tracker.cooldownRemainingMillis(config.providerId, config.model),
+                    healthState = health.state,
+                    healthScope = health.scope,
+                    reason = "candidate health is ${health.state.name} (${health.reason ?: "no detail"})",
+                )
+            }
+        }
+
         // No manager registered means rate limiting is not in play for this host
-        // (tests, headless previews); capabilities decide eligibility.
+        // (tests, headless previews); capabilities decide health.
         val manager = rateLimitManager ?: return ModelEligibility.available(role, config, profile)
 
         val decision = manager.canRequest(

@@ -9,6 +9,7 @@ import com.agentx.app.agent.model.AgentModelResolver
 import com.agentx.app.agent.model.AgentRoleModelRegistry
 import com.agentx.app.agent.model.ModelFallback
 import com.agentx.app.agent.model.ModelFallbackPolicy
+import com.agentx.app.model.health.CandidateHealthTracker
 import com.agentx.app.agent.orchestrator.AgentOrchestrator
 import com.agentx.app.agent.orchestrator.AgentSessionStore
 import com.agentx.app.agent.orchestrator.DefaultAgentOrchestrator
@@ -83,6 +84,12 @@ class AgentModule(
         val roleModels = context.services.get<AgentRoleModelRegistry>(ServiceKeys.AGENT_ROLE_MODELS)
         // Built once so the agent core and the fallback layer share the same
         // resolver, capability registry and rate-limit admission control.
+        //
+        // Observed provider/model health is shared the same way: the fallback layer
+        // records what actually happened, and the resolver consults it, so a candidate
+        // that just failed is skipped rather than hammered. It is in-memory and
+        // pruned, so one transient error never becomes a permanent ban.
+        val healthTracker = CandidateHealthTracker()
         val modelResolver = AgentModelResolver(
             preferences = AgentModelPreferences.DEFAULT,
             connections = { modelManager?.connections().orEmpty() },
@@ -95,6 +102,7 @@ class AgentModule(
             // reserves quota. A model blocked by its rate limit is reported
             // as ineligible instead of being silently replaced.
             rateLimitManager = context.services.get<RateLimitManager>(ServiceKeys.RATE_LIMIT_MANAGER),
+            healthTracker = healthTracker,
         )
         val assembled = assemble(
             gateway = gateway,
@@ -107,6 +115,7 @@ class AgentModule(
             prompts = prompts,
             skillContext = skillContext,
             sessions = sessionStore,
+            healthTracker = healthTracker,
             conversations = conversationStore,
             // The app boots with the target role → model mapping in place; every
             // role falls back to the active model until its provider is connected.
@@ -139,6 +148,11 @@ class AgentModule(
             conversations: ConversationStore = InMemoryConversationStore(),
             modelResolver: AgentModelResolver = AgentModelResolver(),
             fallbackPolicy: ModelFallbackPolicy = ModelFallbackPolicy.DISABLED,
+            /**
+             * Observed candidate health, shared with the resolver so the fallback
+             * layer records what happened and selection respects it.
+             */
+            healthTracker: CandidateHealthTracker? = null,
         ): AgentRuntime {
             val engine = contextEngine ?: DefaultContextEngine()
             val bridge = AgentToolBridge(registry)
@@ -150,7 +164,11 @@ class AgentModule(
                 prompts = prompts,
                 skillContext = skillContext,
                 timeouts = timeouts,
-                modelFallback = ModelFallback(policy = { fallbackPolicy }, resolver = modelResolver),
+                modelFallback = ModelFallback(
+                    policy = { fallbackPolicy },
+                    resolver = modelResolver,
+                    health = healthTracker,
+                ),
             )
             val specialized = SpecializedAgentFactory(
                 loop = loop,
