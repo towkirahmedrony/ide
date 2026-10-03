@@ -124,9 +124,32 @@ object ProotCommand {
         return ProotInvocation(
             executable = layout.proot,
             arguments = arguments,
-            environment = prootEnvironment(layout, include32BitLoader = false, hostLibraryPath = null),
+            environment = prootEnvironment(
+                layout = layout,
+                include32BitLoader = false,
+                hostLibraryPath = null,
+                l2sDir = extractionStore(intoDir),
+            ),
         )
     }
+
+    /**
+     * The link-to-symlink store that belongs to the tree being unpacked, `intoDir`.
+     *
+     * Derived from the destination, **never** from `layout.l2s`. During an installation those are
+     * two different trees: `layout.l2s` is the *live* rootfs's store, while the extraction writes
+     * into `rootfs.installing`. Taking the store from the layout is how the live store came to be
+     * handed to an extraction that was filling the temporary tree — the log said
+     * `rootfs.installing/.l2s` while the child process was given `rootfs/.l2s`.
+     *
+     * That mismatch is not cosmetic. `-l` records the store's absolute path inside every emulated
+     * link it creates, so a store outside the tree being unpacked produces links that are made and
+     * then cannot be resolved, which `tar` reports as
+     * `can't link 'usr/bin/perl5.38.2' -> 'usr/bin/perl': No such file or directory`. The two
+     * paths are therefore derived from one value in one place, so they cannot disagree again.
+     */
+    fun extractionStore(intoDir: String): String =
+        "${intoDir.trimEnd('/')}/${NativeRuntimeLayout.L2S_DIR}"
 
     /**
      * Builds the invocation.
@@ -185,6 +208,7 @@ object ProotCommand {
         layout: NativeRuntimeLayout,
         include32BitLoader: Boolean,
         hostLibraryPath: String?,
+        l2sDir: String = layout.l2s,
     ): Map<String, String> {
         val environment = LinkedHashMap<String, String>()
         environment["PROOT_LOADER"] = layout.loader
@@ -194,7 +218,7 @@ object ProotCommand {
             environment["PROOT_LOADER32"] = layout.loader32
         }
         environment["PROOT_TMP_DIR"] = layout.tmp
-        environment["PROOT_L2S_DIR"] = layout.l2s
+        environment["PROOT_L2S_DIR"] = l2sDir
         if (!hostLibraryPath.isNullOrBlank()) {
             environment["LD_LIBRARY_PATH"] = hostLibraryPath
         }

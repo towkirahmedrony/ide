@@ -2,6 +2,7 @@ package com.agentx.app.ubuntu
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -134,9 +135,43 @@ class ProotCommandTest {
         // No -r: PRoot is the link interposer here, not a guest root.
         assertFalse(invocation.arguments.contains("-r"))
         assertEquals("${layout.nativeLibraryDir}/libproot_loader.so", invocation.environment["PROOT_LOADER"])
-        assertEquals(layout.l2s, invocation.environment["PROOT_L2S_DIR"])
-        // The store is created inside the tree being unpacked, because -l writes its path into
-        // every symlink it leaves behind; a store anywhere else is unreachable from the guest.
-        assertTrue(invocation.environment["PROOT_L2S_DIR"]!!.startsWith("${layout.rootfs}/"))
+        // The store follows the destination, not the layout. This assertion used to read
+        // `assertEquals(layout.l2s, ...)` while `intoDir` was a different directory, which is
+        // precisely the mismatch that shipped: the log named one store and PRoot was given another.
+        assertEquals("/x/rootfs-staging/.l2s", invocation.environment["PROOT_L2S_DIR"])
+        assertTrue(invocation.environment["PROOT_L2S_DIR"]!!.startsWith("/x/rootfs-staging/"))
+    }
+
+    /**
+     * The reported defect, pinned: extracting into `rootfs.installing` must put the emulated-link
+     * store inside `rootfs.installing`, and must never name the live rootfs's store.
+     *
+     * `-l` records the store's absolute path inside every link it creates, so a store outside the
+     * tree being unpacked makes links that are created and then cannot be resolved: `tar` reports
+     * `can't link 'usr/bin/perl5.38.2' -> 'usr/bin/perl': No such file or directory`.
+     */
+    @Test
+    fun `extraction into the installing tree keeps the link store inside it`() {
+        val destination = "${layout.runtimeDir}/${NativeRuntimeLayout.INSTALLING_DIR}"
+        val invocation = ProotCommand.extraction(
+            layout = layout,
+            hostTar = "/system/bin/tar",
+            archivePath = "/x/ubuntu-base.tar.gz",
+            intoDir = destination,
+        )
+
+        val store = invocation.environment["PROOT_L2S_DIR"]
+        assertEquals("$destination/.l2s", store)
+        assertEquals(ProotCommand.extractionStore(destination), store)
+        // The live rootfs's store is a different directory and must not appear here.
+        assertNotEquals(layout.l2s, store)
+        assertFalse(store!!.startsWith("${layout.rootfs}/"))
+        // It is inside the tree that tar is being pointed at.
+        assertEquals(destination, invocation.arguments.last())
+        assertTrue(store.startsWith("${destination.trimEnd('/')}/"))
+
+        // And the derivation is the destination's, for any destination.
+        assertEquals("/tmp/other-tree/.l2s", ProotCommand.extractionStore("/tmp/other-tree"))
+        assertEquals("/tmp/other-tree/.l2s", ProotCommand.extractionStore("/tmp/other-tree/"))
     }
 }

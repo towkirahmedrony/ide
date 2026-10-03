@@ -398,12 +398,16 @@ class UbuntuRootfsInstaller(
         // emulated hard link pointing at the path the tree used to have. See
         // [NativeRuntimeLayout.l2s].
         val tree = layout.installing
+        // The store is a function of the destination, and this is the same call the PRoot
+        // invocation makes, so what is logged here is what the child process is given. Deriving it
+        // from the live layout instead is exactly how the log and the process came to disagree
+        // (logged `rootfs.installing/.l2s`, launched with `rootfs/.l2s`).
+        val store = ProotCommand.extractionStore(tree)
         DeveloperLogger.info(
             DeveloperLogCategory.ROOTFS,
             "Extraction started: archive=${archive.name} destination=$tree " +
-                "mechanism=PRoot-(-l) PROOT_L2S_DIR=${layout.forInstalling().l2s} " +
-                "storeInsideDestination=" +
-                layout.forInstalling().l2s.startsWith(tree.trimEnd('/') + "/"),
+                "mechanism=PRoot-(-l) PROOT_L2S_DIR=$store " +
+                "storeInsideDestination=${store.startsWith(tree.trimEnd('/') + "/")}",
         )
         if (!files.deleteRecursively(tree)) {
             throw UbuntuRootfsException(UbuntuInstallStage.EXTRACTION, "Could not clear $tree")
@@ -414,13 +418,29 @@ class UbuntuRootfsInstaller(
         // PRoot opens PROOT_L2S_DIR at the first link(2) the archive contains and answers ENOENT
         // for that link when it cannot, so the store has to exist before tar runs. The archive has
         // no `.l2s` entry of its own, so nothing here is overwritten.
-        val store = "${layout.forInstalling().l2s}"
         if (!files.mkdirs(store)) {
             throw UbuntuRootfsException(
                 UbuntuInstallStage.EXTRACTION,
                 "Could not create the link-to-symlink store $store",
             )
         }
+        // Existence is not enough: a store that cannot be written fails identically a moment
+        // later, with an errno instead of a name. Probed before PRoot is launched, and reported,
+        // so "the store was there and writable" is on the record rather than inferred.
+        val probe = "$store/.agentx-write-probe"
+        try {
+            files.writeText(probe, "probe\n")
+            files.deleteRecursively(probe)
+        } catch (unwritable: Exception) {
+            throw UbuntuRootfsException(
+                UbuntuInstallStage.EXTRACTION,
+                "The link-to-symlink store $store is not writable: ${unwritable.message}",
+            )
+        }
+        DeveloperLogger.info(
+            DeveloperLogCategory.ROOTFS,
+            "Link store ready: $store exists=true writable=true",
+        )
 
         // The extraction is the one step that has to run *through* the native PRoot.
         requireProotTooling()
@@ -584,7 +604,7 @@ class UbuntuRootfsInstaller(
      * links that name somewhere else is the first case, not the second.
      */
     private fun extractionDiagnostics(tree: String): String {
-        val store = "$tree/${NativeRuntimeLayout.L2S_DIR}"
+        val store = ProotCommand.extractionStore(tree)
         val storeInsideTree = store.startsWith(tree.trimEnd('/') + "/")
         val storeEntries = File(store).list()?.size ?: -1
         val links = UbuntuRootfsCatalog.REQUIRED_HARD_LINKS.joinToString(" ") { hardLink ->
@@ -607,7 +627,7 @@ class UbuntuRootfsInstaller(
     /** Non-throwing form of [validateLinkStore], for the predicates above. */
     private fun linkStoreIsInside(tree: String): Boolean {
         val rootPrefix = tree.trimEnd('/') + "/"
-        val store = "$tree/${NativeRuntimeLayout.L2S_DIR}"
+        val store = ProotCommand.extractionStore(tree)
         if (!store.startsWith(rootPrefix)) return false
         return UbuntuRootfsCatalog.REQUIRED_HARD_LINKS.all { hardLink ->
             listOf(hardLink.file, hardLink.link).all { relative ->
@@ -638,7 +658,7 @@ class UbuntuRootfsInstaller(
         // Derived from the tree being validated, not from the live layout: during an installation
         // the tree is rootfs.installing and its store is inside *it*. Asking layout.l2s here was
         // wrong the moment extraction stopped writing to the live rootfs.
-        val store = "$tree/${NativeRuntimeLayout.L2S_DIR}"
+        val store = ProotCommand.extractionStore(tree)
         if (!store.startsWith(rootPrefix)) {
             throw UbuntuRootfsException(
                 UbuntuInstallStage.VALIDATION,
