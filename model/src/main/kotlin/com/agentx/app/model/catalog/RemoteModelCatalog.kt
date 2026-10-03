@@ -228,8 +228,14 @@ class RemoteModelCatalog(
         }
     }
 
-    /** Validates, merges, registers and persists one successful discovery. */
-    private fun accept(
+    /**
+     * Validates, merges, registers and persists one successful discovery.
+     *
+     * Suspending because persisting the snapshot is: a catalog that was never
+     * written to its store is a catalog a restart loses, which is the defect this
+     * layer exists to fix.
+     */
+    private suspend fun accept(
         discovered: ModelDiscoveryOutcome.Discovered,
         previous: ModelCatalogSnapshot?,
         now: Long,
