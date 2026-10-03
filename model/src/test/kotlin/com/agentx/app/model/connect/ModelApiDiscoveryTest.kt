@@ -4,6 +4,7 @@ import com.agentx.app.model.FakeHttpTransport
 import com.agentx.app.model.http.HttpRequestSpec
 import com.agentx.app.model.http.HttpResponseSpec
 import com.agentx.app.model.preset.ModelApiProtocol
+import com.agentx.app.model.preset.NGROK_SKIP_BROWSER_WARNING_HEADER
 import kotlinx.coroutines.runBlocking
 import java.net.ConnectException
 import java.net.SocketTimeoutException
@@ -207,6 +208,141 @@ class ModelApiDiscoveryTest {
         val found = assertIs<DiscoveryResult.Found>(result)
         assertEquals(ModelApiProtocol.OLLAMA, found.api.protocol)
         assertEquals("qwen2.5-coder:14b", found.api.selectedModelId)
+    }
+
+
+    // --- custom / local endpoints -------------------------------------------
+
+    @Test
+    fun `connection headers are sent with every discovery request`() = runBlocking {
+        val transport = FakeHttpTransport(
+            executeHandler = { HttpResponseSpec(200, modelsJson("only")) },
+        )
+
+        ModelApiDiscovery(transport).discover(
+            rawEndpoint = "https://armored-fantasy-stuffing.ngrok-free.dev",
+            headers = mapOf(NGROK_SKIP_BROWSER_WARNING_HEADER to "true"),
+        )
+
+        assertEquals("true", transport.lastRequest?.headers?.get(NGROK_SKIP_BROWSER_WARNING_HEADER))
+    }
+
+    @Test
+    fun `a v1 endpoint is asked for v1 models exactly once`() = runBlocking {
+        val urls = mutableListOf<String>()
+        val transport = FakeHttpTransport(
+            executeHandler = { request ->
+                urls += request.url
+                if (request.url == "https://host.example/v1/models") {
+                    HttpResponseSpec(200, modelsJson("only"))
+                } else {
+                    HttpResponseSpec(404, "")
+                }
+            },
+        )
+
+        val found = assertIs<DiscoveryResult.Found>(ModelApiDiscovery(transport).discover("https://host.example/v1"))
+
+        assertEquals("/v1", found.api.apiBasePath)
+        assertTrue(urls.none { it.contains("/v1/v1") }, urls.toString())
+    }
+
+    @Test
+    fun `an explicitly chosen protocol is the only one probed`() = runBlocking {
+        val urls = mutableListOf<String>()
+        val transport = FakeHttpTransport(
+            executeHandler = { request ->
+                urls += request.url
+                if (request.url.endsWith("/models")) {
+                    HttpResponseSpec(200, modelsJson("only"))
+                } else {
+                    HttpResponseSpec(404, "")
+                }
+            },
+        )
+
+        val found = assertIs<DiscoveryResult.Found>(
+            ModelApiDiscovery(transport).discover(
+                rawEndpoint = "http://127.0.0.1:11434",
+                protocols = listOf(ModelApiProtocol.OPENAI_COMPATIBLE),
+            ),
+        )
+
+        assertEquals(ModelApiProtocol.OPENAI_COMPATIBLE, found.api.protocol)
+        assertTrue(
+            urls.none { it.endsWith("/api/tags") },
+            "a server stated to be OpenAI-compatible is never also asked Ollama's list: $urls",
+        )
+    }
+
+    @Test
+    fun `an explicitly chosen ollama protocol asks only its own model list`() = runBlocking {
+        val urls = mutableListOf<String>()
+        val transport = FakeHttpTransport(
+            executeHandler = { request ->
+                urls += request.url
+                if (request.url.endsWith("/api/tags")) {
+                    HttpResponseSpec(200, """{"models":[{"name":"qwen2.5-coder:14b"}]}""")
+                } else {
+                    HttpResponseSpec(404, "")
+                }
+            },
+        )
+
+        val found = assertIs<DiscoveryResult.Found>(
+            ModelApiDiscovery(transport).discover(
+                rawEndpoint = "http://127.0.0.1:11434",
+                protocols = listOf(ModelApiProtocol.OLLAMA),
+            ),
+        )
+
+        assertEquals(ModelApiProtocol.OLLAMA, found.api.protocol)
+        assertTrue(urls.all { it.endsWith("/api/tags") }, "only Ollama's list is asked: $urls")
+    }
+
+    @Test
+    fun `a reachable server that needs a key is authentication, and says so`() = runBlocking {
+        val result = discovery { HttpResponseSpec(403, "<html>proxy</html>") }
+            .discover("https://armored-fantasy-stuffing.ngrok-free.dev")
+
+        val failed = assertIs<DiscoveryResult.Failed>(result)
+        assertEquals(DiscoveryFailureKind.AUTHENTICATION_REQUIRED, failed.kind)
+        assertTrue(failed.reachable, "a 403 proves the server was reached")
+        assertTrue(failed.message.contains("requires authentication"))
+        assertTrue(failed.message.contains("API key"), "the UI is told a credential is needed")
+        assertFalse(failed.message.contains("could not be reached"))
+    }
+
+    @Test
+    fun `a refused credential is authentication, and never echoes the key`() = runBlocking {
+        val result = discovery { HttpResponseSpec(401, """{"error":"no"}""") }
+            .discover("https://host.example", credential = "sk-wrong-secret")
+
+        val failed = assertIs<DiscoveryResult.Failed>(result)
+        assertEquals(DiscoveryFailureKind.AUTHENTICATION_REQUIRED, failed.kind)
+        assertTrue(failed.reachable)
+        assertTrue(failed.message.contains("authentication"))
+        assertFalse(failed.message.contains("sk-wrong-secret"))
+    }
+
+    @Test
+    fun `a non-2xx that is not an auth answer stays a failure, not an auth answer`() = runBlocking {
+        val result = discovery { HttpResponseSpec(404, "") }.discover("https://host.example/v1")
+
+        val failed = assertIs<DiscoveryResult.Failed>(result)
+        assertTrue(failed.kind != DiscoveryFailureKind.AUTHENTICATION_REQUIRED)
+        assertTrue(failed.kind != DiscoveryFailureKind.UNREACHABLE, "a 404 means the server answered")
+    }
+
+    @Test
+    fun `an opaque model id is discovered exactly as the server reports it`() = runBlocking {
+        val id = "hf.co/unsloth/Devstral-Small-2-24B-Instruct-2512-GGUF:Q3_K_M"
+        val result = discovery { HttpResponseSpec(200, modelsJson(id)) }
+            .discover("https://host.example/v1", preferredModelId = id)
+
+        val found = assertIs<DiscoveryResult.Found>(result)
+        assertEquals(listOf(id), found.api.modelIds)
+        assertEquals(id, found.api.selectedModelId)
     }
 
     @Test

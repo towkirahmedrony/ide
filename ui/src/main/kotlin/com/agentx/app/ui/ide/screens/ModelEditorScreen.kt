@@ -46,6 +46,7 @@ import com.agentx.app.ui.ide.state.API_PROVIDER_KINDS
 import com.agentx.app.ui.ide.state.ModelConnectionType
 import com.agentx.app.ui.ide.state.ModelChoices
 import com.agentx.app.ui.ide.state.ModelEditorState
+import com.agentx.app.ui.ide.state.ModelProtocolChoice
 import com.agentx.app.ui.ide.state.ModelSetupField
 import com.agentx.app.ui.ide.state.ModelSetupForm
 import com.agentx.app.ui.theme.ForgeAmber
@@ -130,7 +131,7 @@ fun ModelEditorScreen(
                     label = "Model",
                     value = state.form.modelId,
                     onValueChange = { value -> onEdit { it.copy(modelId = value) } },
-                    supporting = "Model id sent to the endpoint",
+                    supporting = "Model id sent to the endpoint, exactly as the server names it",
                 )
                 FormField(
                     label = "Server URL",
@@ -141,28 +142,31 @@ fun ModelEditorScreen(
                     supporting = state.issue(ModelSetupField.SERVER_URL)
                         ?: ModelConnectionType.LOCAL.helper,
                 )
+                // A local server often needs no key, but one behind a tunnel or a
+                // proxy usually does, and there was no way to supply it before: the
+                // same encrypted credential store as an API provider is used.
+                CredentialField(
+                    state = state,
+                    onEdit = onEdit,
+                    onRemoveCredential = onRemoveCredential,
+                    label = if (state.form.hasStoredCredential) {
+                        "Replace API key"
+                    } else {
+                        "API key (optional)"
+                    },
+                    supporting = "Only needed when this server requires one. " +
+                        "Stored encrypted on this device",
+                )
+                ProtocolSelector(state, onEdit)
             } else {
                 ModelField(state, onEdit, onSelectModel, onToggleManualModel, onRetryCatalog)
-                FormField(
+                CredentialField(
+                    state = state,
+                    onEdit = onEdit,
+                    onRemoveCredential = onRemoveCredential,
                     label = if (state.form.hasStoredCredential) "Replace API key" else "API key",
-                    value = state.form.credential,
-                    onValueChange = { value -> onEdit { it.copy(credential = value) } },
-                    visualTransformation = PasswordVisualTransformation(),
-                    isError = state.issue(ModelSetupField.API_KEY) != null,
-                    supporting = state.issue(ModelSetupField.API_KEY)
-                        ?: "Stored encrypted on this device",
+                    supporting = "Stored encrypted on this device",
                 )
-                if (state.form.hasStoredCredential) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = "A key is already stored for this model.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = ForgeMuted,
-                            modifier = Modifier.weight(1f),
-                        )
-                        TextButton(onClick = onRemoveCredential) { Text("Remove") }
-                    }
-                }
             }
 
             if (state.discoveredModels.isNotEmpty()) {
@@ -289,6 +293,68 @@ private fun ProviderSelector(
             }
         }
     }
+}
+
+/** The credential input, plus the "a key is already stored" row. */
+@Composable
+private fun CredentialField(
+    state: ModelEditorState,
+    onEdit: ((ModelSetupForm) -> ModelSetupForm) -> Unit,
+    onRemoveCredential: () -> Unit,
+    label: String,
+    supporting: String,
+) {
+    FormField(
+        label = label,
+        value = state.form.credential,
+        onValueChange = { value -> onEdit { it.copy(credential = value) } },
+        visualTransformation = PasswordVisualTransformation(),
+        isError = state.issue(ModelSetupField.API_KEY) != null,
+        supporting = state.issue(ModelSetupField.API_KEY) ?: supporting,
+    )
+    if (state.form.hasStoredCredential) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "A key is already stored for this model.",
+                style = MaterialTheme.typography.bodySmall,
+                color = ForgeMuted,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = onRemoveCredential) { Text("Remove") }
+        }
+    }
+}
+
+/**
+ * Which protocol a Local endpoint is spoken to with.
+ *
+ * "Auto" is the only choice that probes more than one protocol, so a user whose
+ * server is known to be Ollama or OpenAI-compatible stops generating a second,
+ * unrelated request and a second, confusing error.
+ */
+@Composable
+private fun ProtocolSelector(
+    state: ModelEditorState,
+    onEdit: ((ModelSetupForm) -> ModelSetupForm) -> Unit,
+) {
+    IdeSpacer(10)
+    IdeSectionLabel("Protocol")
+    IdeSpacer(6)
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        ModelProtocolChoice.entries.forEach { choice ->
+            FilterChip(
+                selected = state.form.protocol == choice,
+                onClick = { onEdit { it.copy(protocol = choice) } },
+                label = { Text(choice.displayName) },
+            )
+        }
+    }
+    IdeSpacer(4)
+    Text(
+        text = state.form.protocol.helper,
+        style = MaterialTheme.typography.bodySmall,
+        color = ForgeMuted,
+    )
 }
 
 /** The model id: a picker when a list is available, a field otherwise. */

@@ -127,6 +127,71 @@ class ModelSetupFormTest {
         assertNotNull(localForm(model = " ").issueFor(ModelSetupField.MODEL))
     }
 
+    // --- Local credentials and protocol -------------------------------------
+
+    @Test
+    fun `a local server may carry an optional api key, which is submitted but never stored in the preset`() {
+        val form = localForm(url = "armored-fantasy-stuffing.ngrok-free.dev").copy(
+            credential = "sk-local-secret",
+        )
+
+        val preset = form.toPreset(existing = null)
+
+        assertEquals("sk-local-secret", form.toConnectRequest().credential)
+        // The secret is never part of the saved configuration; the credential store
+        // owns it and the preset keeps only a reference.
+        assertNull(preset.credentialRef)
+        assertFalse(preset.toString().contains("sk-local-secret"))
+        // Optional for Local: a blank key is never a blocking issue.
+        assertTrue(form.issues().none { it.field == ModelSetupField.API_KEY })
+    }
+
+    @Test
+    fun `an explicit protocol is submitted while auto leaves detection to decide`() {
+        val compatible = localForm(url = "127.0.0.1:8000")
+            .copy(protocol = ModelProtocolChoice.OPENAI_COMPATIBLE)
+        assertEquals(ModelApiProtocol.OPENAI_COMPATIBLE, compatible.toConnectRequest().apiProtocol)
+        assertEquals(ModelApiProtocol.OPENAI_COMPATIBLE, compatible.toPreset(existing = null).apiProtocol)
+
+        val ollama = localForm(url = "127.0.0.1:11434").copy(protocol = ModelProtocolChoice.OLLAMA)
+        assertEquals(ModelApiProtocol.OLLAMA, ollama.toConnectRequest().apiProtocol)
+        assertEquals(ModelApiProtocol.OLLAMA, ollama.toPreset(existing = null).apiProtocol)
+
+        val auto = localForm(url = "127.0.0.1:8000").copy(protocol = ModelProtocolChoice.AUTO)
+        assertNull(auto.toConnectRequest().apiProtocol, "auto means detection decides")
+        assertEquals(ModelApiProtocol.OPENAI_COMPATIBLE, auto.toPreset(existing = null).apiProtocol)
+    }
+
+    @Test
+    fun `the saved protocol is loaded back into the form`() {
+        val preset = localForm(url = "http://127.0.0.1:11434")
+            .toPreset(existing = null)
+            .copy(id = "p2", apiProtocol = ModelApiProtocol.OLLAMA)
+
+        assertEquals(ModelProtocolChoice.OLLAMA, ModelSetupForm.from(preset).protocol)
+    }
+
+    @Test
+    fun `an opaque custom model id is kept exactly as typed`() {
+        val id = "hf.co/unsloth/Devstral-Small-2-24B-Instruct-2512-GGUF:Q3_K_M"
+        val form = localForm(url = "armored-fantasy-stuffing.ngrok-free.dev").copy(modelId = id)
+
+        assertEquals(id, form.toPreset(existing = null).modelIdentifier)
+        assertEquals(id, form.toConnectRequest().modelIdentifier)
+        assertTrue(form.issues().none { it.field == ModelSetupField.MODEL })
+    }
+
+    @Test
+    fun `a local display name stays a label, never the endpoint or the model`() {
+        val preset = localForm(url = "armored-fantasy-stuffing.ngrok-free.dev", name = "geminj")
+            .toPreset(existing = null)
+
+        assertEquals("geminj", preset.displayName)
+        assertFalse(assertNotNull(preset.endpoint.explicitUrl).contains("geminj"))
+        assertFalse(preset.modelIdentifier.contains("geminj"))
+        assertFalse(preset.providerId.contains("geminj"))
+    }
+
     // --- API flow -----------------------------------------------------------
 
     @Test

@@ -5,6 +5,8 @@ import com.agentx.app.core.logging.ForgeLoggers
 import com.agentx.app.core.logging.LogLevel
 import com.agentx.app.core.logging.LogRecord
 import com.agentx.app.core.logging.LogSink
+import com.agentx.app.model.connect.ModelSetupKind
+import com.agentx.app.model.preset.CUSTOM_SETUP_KIND
 import com.agentx.app.model.preset.ColabRuntimeConfig
 import com.agentx.app.model.preset.EndpointConfig
 import com.agentx.app.model.preset.EndpointDiscoveryMode
@@ -64,6 +66,36 @@ internal fun geminiPreset(
     endpoint = EndpointConfig(EndpointDiscoveryMode.CONFIGURED_ENDPOINT, endpoint),
     tunnel = TunnelConfig(type = TunnelType.NONE),
     health = HealthCheckConfig(requireModelInList = requireModelInList),
+    setupKind = ModelSetupKind.GEMINI.id,
+)
+
+/**
+ * A saved Custom/Local preset shaped like one the connect flow persists: the user's
+ * endpoint, the compatible surface, an opaque model id and — when the server needs
+ * one — a credential reference.
+ *
+ * The id is deliberately the kind a local server reports (a repository path plus a
+ * quantization), because it must survive every hop unchanged.
+ */
+internal fun customPreset(
+    id: String = "custom-preset",
+    name: String = "Devstral",
+    model: String = "hf.co/unsloth/Devstral-Small-2-24B-Instruct-2512-GGUF:Q3_K_M",
+    endpoint: String? = "https://armored-fantasy-stuffing.ngrok-free.dev",
+    credentialRef: String? = null,
+    requireModelInList: Boolean = true,
+): ModelPreset = ModelPreset(
+    id = id,
+    displayName = name,
+    providerType = ModelProviderType.REMOTE_OPENAI_COMPATIBLE,
+    modelIdentifier = model,
+    apiProtocol = ModelApiProtocol.OPENAI_COMPATIBLE,
+    apiBasePath = "/v1",
+    credentialRef = credentialRef,
+    endpoint = EndpointConfig(EndpointDiscoveryMode.CONFIGURED_ENDPOINT, endpoint),
+    tunnel = TunnelConfig(type = TunnelType.NONE),
+    health = HealthCheckConfig(requireModelInList = requireModelInList),
+    setupKind = CUSTOM_SETUP_KIND,
 )
 
 /** Discovery stub with a scripted outcome and a call count. */

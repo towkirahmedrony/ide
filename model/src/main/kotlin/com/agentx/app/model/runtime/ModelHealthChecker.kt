@@ -60,6 +60,10 @@ class HttpModelHealthChecker(
         // — Gemini's API reads `x-goog-api-key`, an OpenAI-compatible surface reads
         // `Authorization: Bearer`. It is never logged and never placed in the URL.
         headers += preset.apiProtocol.credentialHeaders(credential)
+        // Connection-level headers the endpoint needs on every request (a tunnel
+        // proxy's flag, for example): the health check is not special, so it sends
+        // exactly what discovery and chat send.
+        headers += preset.requestHeaders
 
         val started = clock()
         val response = try {

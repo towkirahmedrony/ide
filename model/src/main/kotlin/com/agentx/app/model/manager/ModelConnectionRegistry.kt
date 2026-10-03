@@ -132,6 +132,9 @@ class GatewayModelConnectionRegistry(
             model = preset.modelIdentifier,
             apiKey = credential,
             stream = true,
+            // Carried by the connection, not by each call: normal completions and
+            // the catalog's model list go through this same config.
+            headers = preset.requestHeaders,
             // Only non-secret bookkeeping travels in metadata: never the URL or key.
             metadata = mapOf(
                 "modelPresetId" to preset.id,

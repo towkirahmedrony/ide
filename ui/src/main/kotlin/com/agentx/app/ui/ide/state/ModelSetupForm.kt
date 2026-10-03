@@ -40,6 +40,39 @@ enum class ModelConnectionType(val displayName: String, val helper: String) {
     ),
 }
 
+/**
+ * How a Custom/Local endpoint should be spoken to.
+ *
+ * AUTO is the default and the only value that probes more than one protocol: a
+ * user-supplied URL says nothing about what answers it, so the compatible model
+ * list is tried first and Ollama's second. A user who knows their server picks
+ * that protocol outright, and then only that one is asked — an Ollama server is
+ * never additionally probed as OpenAI-compatible, and vice versa.
+ */
+enum class ModelProtocolChoice(val displayName: String, val helper: String) {
+    AUTO("Auto", "Try the OpenAI-compatible model list, then Ollama's."),
+    OPENAI_COMPATIBLE("OpenAI-compatible", "llama.cpp, vLLM, LM Studio, most servers."),
+    OLLAMA("Ollama", "Ollama's own /api/tags model list."),
+    ;
+
+    /** The protocol to probe, or null when detection decides. */
+    fun toProtocol(): ModelApiProtocol? = when (this) {
+        AUTO -> null
+        OPENAI_COMPATIBLE -> ModelApiProtocol.OPENAI_COMPATIBLE
+        OLLAMA -> ModelApiProtocol.OLLAMA
+    }
+
+    companion object {
+        /** The choice describing [protocol], for filling the form from a preset. */
+        fun forProtocol(protocol: ModelApiProtocol): ModelProtocolChoice = when (protocol) {
+            ModelApiProtocol.OPENAI_COMPATIBLE -> OPENAI_COMPATIBLE
+            ModelApiProtocol.OLLAMA -> OLLAMA
+            // A provider's own API is stated by the provider catalogue, not here.
+            ModelApiProtocol.GEMINI_NATIVE -> AUTO
+        }
+    }
+}
+
 /** Providers offered by the API flow, in presentation order. */
 val API_PROVIDER_KINDS: List<ModelSetupKind> = listOf(ModelSetupKind.GEMINI, ModelSetupKind.GROQ)
 
@@ -67,6 +100,11 @@ data class ModelSetupForm(
     val modelId: String = "",
     val serverUrl: String = "",
     val credential: String = "",
+    /**
+     * How the endpoint should be spoken to. Applies to Local only; an API provider
+     * states its own protocol through the provider catalogue.
+     */
+    val protocol: ModelProtocolChoice = ModelProtocolChoice.AUTO,
     val hasStoredCredential: Boolean = false,
     val clearCredential: Boolean = false,
     /**
@@ -129,7 +167,12 @@ data class ModelSetupForm(
     private fun protocolFor(existing: ModelPreset?): ModelApiProtocol {
         val sameKind = existing != null && ModelSetupKind.fromId(existing.setupKind) == setupKind
         if (connectionType == ModelConnectionType.LOCAL) {
-            return existing?.apiProtocol ?: ModelApiProtocol.OPENAI_COMPATIBLE
+            // An explicit choice wins. Auto keeps the protocol the preset already
+            // used, so editing a working connection never rewrites how it is spoken
+            // to, and a brand-new one starts at the compatible surface.
+            return protocol.toProtocol()
+                ?: existing?.apiProtocol
+                ?: ModelApiProtocol.OPENAI_COMPATIBLE
         }
         if (sameKind) return existing.apiProtocol
         // A known provider states how its own API is spoken; Gemini is not an
@@ -205,6 +248,10 @@ data class ModelSetupForm(
         credential = credential.takeIf { it.isNotBlank() },
         clearCredential = clearCredential,
         modelIdentifier = modelId.trim(),
+        // Local only: null means "let detection decide", which is what makes an
+        // unspecified protocol probe more than one. An API provider is addressed
+        // through its catalogue's protocol instead.
+        apiProtocol = if (connectionType == ModelConnectionType.LOCAL) protocol.toProtocol() else null,
         enabled = duplicateOf?.enabled ?: true,
         startupScript = duplicateOf?.startupScript.orEmpty(),
         colabNotebookUrl = duplicateOf?.colab?.notebookUrl,
@@ -281,6 +328,7 @@ data class ModelSetupForm(
                 name = preset.displayName,
                 modelId = preset.modelIdentifier,
                 serverUrl = preset.endpoint.explicitUrl.orEmpty(),
+                protocol = ModelProtocolChoice.forProtocol(preset.apiProtocol),
                 credential = "",
                 hasStoredCredential = preset.credentialRef != null,
                 inheritsEndpointDiscovery = preset.endpoint.mode != EndpointDiscoveryMode.CONFIGURED_ENDPOINT,

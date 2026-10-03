@@ -330,6 +330,9 @@ class DefaultModelManager(
                 // The credential is read from the store, never from a logged field.
                 apiKey = catalogCredentials[preset.id]?.takeIf { it.isNotBlank() },
                 stream = true,
+                // A saved connection's own headers travel with it here too, so asking
+                // a custom endpoint for its model list cannot 403 where chat succeeds.
+                headers = preset.requestHeaders,
                 metadata = mapOf(
                     "modelPresetId" to preset.id,
                     "modelPresetName" to preset.displayName,

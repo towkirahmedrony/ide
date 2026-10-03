@@ -1,10 +1,12 @@
 package com.agentx.app.model.connect
 
+import com.agentx.app.model.preset.CUSTOM_SETUP_KIND
 import com.agentx.app.model.preset.DEFAULT_CREDENTIAL_HEADER
 import com.agentx.app.model.preset.DEFAULT_CREDENTIAL_SCHEME
 import com.agentx.app.model.preset.GEMINI_API_KEY_HEADER
 import com.agentx.app.model.preset.ModelApiProtocol
 import com.agentx.app.model.preset.ModelProviderType
+import com.agentx.app.model.preset.customEndpointRequestHeaders
 import com.agentx.app.model.preset.normalizeModelId
 
 /**
@@ -21,7 +23,7 @@ enum class ModelSetupKind(
     val showsEndpointField: Boolean,
 ) {
     CUSTOM(
-        id = "custom",
+        id = CUSTOM_SETUP_KIND,
         displayName = "Local / Colab / ngrok",
         description = "A local, Colab, ngrok or Cloudflare endpoint you already run.",
         requiresApiKey = false,
@@ -42,6 +44,13 @@ enum class ModelSetupKind(
         showsEndpointField = false,
     ),
     ;
+
+    /**
+     * Headers every request to this provider's endpoint carries, so connect,
+     * discovery, reconnect and the runtime all derive them from one rule (see
+     * [customEndpointRequestHeaders]) instead of each attaching their own.
+     */
+    val requestHeaders: Map<String, String> get() = customEndpointRequestHeaders(id)
 
     companion object {
         fun fromId(raw: String?): ModelSetupKind =

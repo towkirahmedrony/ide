@@ -169,6 +169,43 @@ fun normalizeModelId(raw: String): String =
 /** Prefix a model id carries in the model list of a provider like Gemini. */
 const val MODELS_PREFIX: String = "models/"
 
+/**
+ * The setup kind of an endpoint the user runs themselves — Local, ngrok, Cloudflare
+ * Tunnel, Colab.
+ *
+ * Declared here rather than in the connect layer because a preset stores it and the
+ * runtime derives the endpoint's request headers from it, so both halves have to
+ * read the same value without the runtime depending on the connect package.
+ */
+const val CUSTOM_SETUP_KIND: String = "custom"
+
+/**
+ * The request flag Ngrok's free tier requires before it will answer an automated
+ * client instead of its browser interstitial, which replies HTTP 403 to anything
+ * without it.
+ *
+ * It is a request flag, not a credential: no secret, nothing user-specific, and it
+ * never weakens authentication or TLS. Every real model server ignores an unknown
+ * header, so it is safe to send whenever AgentX talks to a user-supplied endpoint.
+ */
+const val NGROK_SKIP_BROWSER_WARNING_HEADER: String = "ngrok-skip-browser-warning"
+
+/**
+ * The headers every request to a user-supplied endpoint carries.
+ *
+ * A Custom/Local endpoint is a server AgentX knows nothing about: it may be a bare
+ * local runtime, or that same runtime reached through a proxy that inspects clients.
+ * Anything the proxy needs has to be attached to *every* request — discovery, the
+ * chat probe, the runtime health check and normal completions — which is why the
+ * rule lives here once and every layer reads it from the same place.
+ */
+fun customEndpointRequestHeaders(setupKind: String): Map<String, String> =
+    if (setupKind.trim().equals(CUSTOM_SETUP_KIND, ignoreCase = true)) {
+        mapOf(NGROK_SKIP_BROWSER_WARNING_HEADER to "true")
+    } else {
+        emptyMap()
+    }
+
 /** Default credential header: an OpenAI-compatible bearer token. */
 const val DEFAULT_CREDENTIAL_HEADER: String = "Authorization"
 
@@ -296,6 +333,18 @@ data class ModelPreset(
 
     /** Normalized API base path (may be empty when the endpoint already has one). */
     val normalizedApiBasePath: String get() = normalizePath(apiBasePath)
+
+    /**
+     * Extra headers every request to this preset's endpoint carries, on top of the
+     * credential.
+     *
+     * Part of the saved connection rather than a per-request detail: discovery, the
+     * chat probe, the runtime health check and normal completions all read this same
+     * map, so a saved preset reconnects with exactly the configuration that
+     * connected. Derived from [setupKind], which is what is persisted, so a restart
+     * reconstructs it without a second stored copy.
+     */
+    val requestHeaders: Map<String, String> get() = customEndpointRequestHeaders(setupKind)
 
     /**
      * Returns every configuration problem found; an empty list means the preset

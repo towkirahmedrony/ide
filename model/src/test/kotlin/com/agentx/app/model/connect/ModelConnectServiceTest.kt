@@ -16,6 +16,7 @@ import com.agentx.app.model.preset.EndpointDiscoveryMode
 import com.agentx.app.model.preset.InMemoryModelPresetStore
 import com.agentx.app.model.preset.InMemoryModelSecretStore
 import com.agentx.app.model.preset.ModelApiProtocol
+import com.agentx.app.model.preset.NGROK_SKIP_BROWSER_WARNING_HEADER
 import com.agentx.app.model.preset.ModelProviderType
 import com.agentx.app.model.preset.StoreBackedModelCredentialResolver
 import com.agentx.app.model.runtime.ModelLifecycleState
@@ -317,5 +318,232 @@ class ModelConnectServiceTest {
         assertEquals("https://host.example", reloaded.endpoint.explicitUrl)
         assertEquals("/v1", reloaded.apiBasePath)
         assertEquals("custom", reloaded.setupKind)
+    }
+
+    // --- custom / local endpoints -------------------------------------------
+
+    /** The id a local server reports for this repository; it must travel unchanged. */
+    private val devstral = "hf.co/unsloth/Devstral-Small-2-24B-Instruct-2512-GGUF:Q3_K_M"
+
+    @Test
+    fun `an authenticated custom endpoint uses one credential for discovery, verification and the runtime`() = runBlocking {
+        val transport = openAiTransport(listBody = modelsJson(devstral))
+        val manager = manager(transport)
+
+        val connected = assertIs<ModelConnectOutcome.Connected>(
+            assertNotNull(
+                manager.connectQuick(
+                    ModelConnectRequest(
+                        displayName = "Devstral",
+                        endpoint = "https://armored-fantasy-stuffing.ngrok-free.dev",
+                        credential = "sk-local-secret",
+                        modelIdentifier = devstral,
+                    ),
+                ).valueOrNull(),
+            ),
+        )
+
+        assertEquals(devstral, connected.preset.modelIdentifier)
+        assertEquals("custom", connected.preset.setupKind)
+
+        val discovery = assertNotNull(transport.requests.firstOrNull { it.method == "GET" })
+        val verification = assertNotNull(
+            transport.requests.firstOrNull { it.url.endsWith("/chat/completions") },
+        )
+
+        // The credential the user typed is the one discovery and verification both send.
+        assertEquals("Bearer sk-local-secret", discovery.headers["Authorization"])
+        assertEquals("Bearer sk-local-secret", verification.headers["Authorization"])
+        // And the endpoint's own connection flag travels with both, so a proxy can
+        // never let one request through and block the next.
+        assertEquals("true", discovery.headers[NGROK_SKIP_BROWSER_WARNING_HEADER])
+        assertEquals("true", verification.headers[NGROK_SKIP_BROWSER_WARNING_HEADER])
+        // The runtime connection the gateway chats over carries them as well.
+        assertEquals(
+            "true",
+            assertNotNull(manager.activeConfig()).headers[NGROK_SKIP_BROWSER_WARNING_HEADER],
+        )
+        // A reference is stored, never the secret.
+        assertFalse(assertNotNull(connected.preset.credentialRef).contains("sk-local-secret"))
+        assertFalse(logs.contains("sk-local-secret"))
+    }
+
+    @Test
+    fun `an unauthenticated local server connects and sends no credential`() = runBlocking {
+        val transport = openAiTransport(listBody = modelsJson("qwen2.5-coder:14b"))
+        val manager = manager(transport)
+
+        val connected = assertIs<ModelConnectOutcome.Connected>(
+            assertNotNull(
+                manager.connectQuick(
+                    ModelConnectRequest(
+                        displayName = "Local",
+                        endpoint = "http://127.0.0.1:8000",
+                        modelIdentifier = "qwen2.5-coder:14b",
+                    ),
+                ).valueOrNull(),
+            ),
+        )
+
+        assertNull(connected.preset.credentialRef)
+        val discovery = assertNotNull(transport.requests.firstOrNull { it.method == "GET" })
+        assertNull(discovery.headers["Authorization"], "no key was configured")
+        assertEquals("true", discovery.headers[NGROK_SKIP_BROWSER_WARNING_HEADER])
+    }
+
+    @Test
+    fun `a 403 from a custom endpoint is authentication, not unreachable`() = runBlocking {
+        val transport = FakeHttpTransport(
+            executeHandler = { HttpResponseSpec(403, "<html>proxy warning</html>") },
+        )
+        val manager = manager(transport)
+
+        val error = assertNotNull(
+            manager.connectQuick(
+                ModelConnectRequest(displayName = "Behind a proxy", endpoint = "https://host.example"),
+            ).errorOrNull(),
+        )
+
+        assertTrue(error.message!!.contains("authentication"))
+        assertFalse(error.message!!.contains("unreachable"))
+        assertFalse(error.message!!.contains("could not be reached"))
+        assertTrue(store.load().isEmpty(), "nothing is stored before the endpoint answers")
+    }
+
+    @Test
+    fun `a chosen protocol decides which model list the custom endpoint is asked for`() = runBlocking {
+        val gets = mutableListOf<String>()
+        val manager = manager(
+            FakeHttpTransport(
+                executeHandler = { request ->
+                    if (request.method == "GET") gets += request.url
+                    when {
+                        request.url.endsWith("/api/tags") ->
+                            HttpResponseSpec(200, """{"models":[{"name":"qwen2.5-coder:14b"}]}""")
+                        request.url.endsWith("/models") -> HttpResponseSpec(200, modelsJson("only"))
+                        request.url.endsWith("/chat/completions") ->
+                            HttpResponseSpec(200, SUCCESS_RESPONSE)
+                        else -> HttpResponseSpec(404, "")
+                    }
+                },
+            ),
+        )
+
+        val connected = assertIs<ModelConnectOutcome.Connected>(
+            assertNotNull(
+                manager.connectQuick(
+                    ModelConnectRequest(
+                        displayName = "Ollama",
+                        endpoint = "http://127.0.0.1:11434",
+                        apiProtocol = ModelApiProtocol.OLLAMA,
+                        modelIdentifier = "qwen2.5-coder:14b",
+                    ),
+                ).valueOrNull(),
+            ),
+        )
+
+        assertEquals(ModelApiProtocol.OLLAMA, connected.preset.apiProtocol)
+        assertEquals(listOf("http://127.0.0.1:11434/api/tags"), gets, "only Ollama's list is asked")
+    }
+
+    @Test
+    fun `an openai-compatible choice never probes ollama`() = runBlocking {
+        val gets = mutableListOf<String>()
+        val manager = manager(
+            FakeHttpTransport(
+                executeHandler = { request ->
+                    if (request.method == "GET") gets += request.url
+                    when {
+                        request.url.endsWith("/api/tags") ->
+                            HttpResponseSpec(200, """{"models":[{"name":"qwen2.5-coder:14b"}]}""")
+                        request.url.endsWith("/models") -> HttpResponseSpec(200, modelsJson("only"))
+                        request.url.endsWith("/chat/completions") ->
+                            HttpResponseSpec(200, SUCCESS_RESPONSE)
+                        else -> HttpResponseSpec(404, "")
+                    }
+                },
+            ),
+        )
+
+        assertIs<ModelConnectOutcome.Connected>(
+            assertNotNull(
+                manager.connectQuick(
+                    ModelConnectRequest(
+                        displayName = "Server",
+                        endpoint = "http://127.0.0.1:11434",
+                        apiProtocol = ModelApiProtocol.OPENAI_COMPATIBLE,
+                        modelIdentifier = "only",
+                    ),
+                ).valueOrNull(),
+            ),
+        )
+
+        assertTrue(gets.any { it.endsWith("/models") }, gets.toString())
+        assertTrue(
+            gets.none { it.endsWith("/api/tags") },
+            "a server stated to speak the compatible surface is never also asked Ollama's list: $gets",
+        )
+    }
+
+    @Test
+    fun `the display name stays a label, never an endpoint or a model`() = runBlocking {
+        val manager = manager(openAiTransport(listBody = modelsJson("only")))
+
+        val connected = assertIs<ModelConnectOutcome.Connected>(
+            assertNotNull(
+                manager.connectQuick(
+                    ModelConnectRequest(
+                        displayName = "geminj",
+                        endpoint = "https://host.example",
+                        modelIdentifier = "only",
+                    ),
+                ).valueOrNull(),
+            ),
+        )
+
+        val preset = connected.preset
+        assertEquals("geminj", preset.displayName)
+        assertFalse(assertNotNull(preset.endpoint.explicitUrl).contains("geminj"))
+        assertFalse(preset.modelIdentifier.contains("geminj"))
+        assertFalse(preset.providerId.contains("geminj"))
+    }
+
+    @Test
+    fun `a saved custom preset reconnects from its persisted configuration`() = runBlocking {
+        val first = openAiTransport(listBody = modelsJson(devstral))
+        val connected = assertIs<ModelConnectOutcome.Connected>(
+            assertNotNull(
+                manager(first).connectQuick(
+                    ModelConnectRequest(
+                        displayName = "Devstral",
+                        endpoint = "https://armored-fantasy-stuffing.ngrok-free.dev/v1",
+                        credential = "sk-local-secret",
+                        modelIdentifier = devstral,
+                    ),
+                ).valueOrNull(),
+            ),
+        )
+
+        // A second manager over the same stores: only what was persisted survives.
+        val restarted = manager(openAiTransport(listBody = modelsJson(devstral)))
+        val reloaded = assertNotNull(restarted.preset(connected.preset.id))
+
+        assertEquals("https://armored-fantasy-stuffing.ngrok-free.dev", reloaded.endpoint.explicitUrl)
+        assertEquals("/v1", reloaded.normalizedApiBasePath)
+        assertEquals(devstral, reloaded.modelIdentifier)
+        assertEquals("custom", reloaded.setupKind)
+        assertEquals(ModelApiProtocol.OPENAI_COMPATIBLE, reloaded.apiProtocol)
+        assertEquals("Devstral", reloaded.displayName)
+        assertEquals("sk-local-secret", secrets.get(assertNotNull(reloaded.credentialRef)))
+        assertTrue(reloaded.requestHeaders.containsKey(NGROK_SKIP_BROWSER_WARNING_HEADER))
+
+        restarted.selectModel(reloaded.id)
+
+        val config = assertNotNull(restarted.activeConfig())
+        assertTrue(config.baseUrl.endsWith("/v1"), config.baseUrl)
+        assertFalse(config.baseUrl.contains("/v1/v1"), "the saved path is composed once")
+        assertEquals(devstral, config.model)
+        assertEquals("sk-local-secret", config.apiKey)
+        assertEquals("true", config.headers[NGROK_SKIP_BROWSER_WARNING_HEADER])
     }
 }

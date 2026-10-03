@@ -98,6 +98,12 @@ class RemoteModelCatalog(
      */
     private val authHeaderName: String = "Authorization",
     private val authScheme: String = "Bearer ",
+    /**
+     * Connection-level headers the endpoint needs on every request, taken from the
+     * connection itself, so this fallback list request sends what the runtime's
+     * completion and the connect probe send.
+     */
+    private val extraHeaders: Map<String, String> = emptyMap(),
     private val transport: HttpTransport = UrlConnectionHttpTransport(),
     private val store: ModelCatalogStore = InMemoryModelCatalogStore(),
     private val ttlMillis: Long = DEFAULT_TTL_MILLIS,
@@ -315,6 +321,7 @@ class RemoteModelCatalog(
         val headers = LinkedHashMap<String, String>()
         headers["Accept"] = "application/json"
         credential()?.takeIf { it.isNotBlank() }?.let { key -> headers[authHeaderName] = "$authScheme$key" }
+        extraHeaders.forEach { (name, value) -> headers[name] = value }
 
         val response = try {
             transport.execute(
@@ -504,6 +511,7 @@ class RemoteModelCatalogFactory(
             // header; the credential used for chat is unchanged.
             authHeaderName = auth.headerName,
             authScheme = auth.scheme,
+            extraHeaders = connection.headers,
             transport = transport,
             store = store,
             ttlMillis = ttlMillis,

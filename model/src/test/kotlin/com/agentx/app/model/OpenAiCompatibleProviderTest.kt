@@ -9,6 +9,7 @@ import com.agentx.app.model.json.booleanOrNull
 import com.agentx.app.model.json.numberOrNull
 import com.agentx.app.model.json.objectOrNull
 import com.agentx.app.model.json.stringOrNull
+import com.agentx.app.model.preset.NGROK_SKIP_BROWSER_WARNING_HEADER
 import com.agentx.app.model.provider.openai.OpenAiCompatibleProvider
 import java.io.IOException
 import java.net.ConnectException
@@ -154,6 +155,39 @@ class OpenAiCompatibleProviderTest {
         runSuspend { provider.complete(request(openAiConfig(apiKey = "secret"), ModelMessage.user("hi"))) }
 
         assertEquals("Bearer secret", transport.lastRequest?.headers?.get("Authorization"))
+    }
+
+    // --- connection headers -------------------------------------------------
+
+    /**
+     * A custom endpoint's connection-level headers (a proxy flag, say) are part of
+     * the saved connection, so they must reach the wire on a normal completion and
+     * not only on discovery.
+     */
+    @Test
+    fun `connection headers are sent with a normal completion`() {
+        val transport = FakeHttpTransport(response = HttpResponseSpec(200, SUCCESS_RESPONSE))
+        val provider = provider(transport)
+        val config = openAiConfig(apiKey = "secret")
+            .copy(headers = mapOf(NGROK_SKIP_BROWSER_WARNING_HEADER to "true"))
+
+        runSuspend { provider.complete(request(config, ModelMessage.user("hi"))) }
+
+        assertEquals("true", transport.lastRequest?.headers?.get(NGROK_SKIP_BROWSER_WARNING_HEADER))
+        assertEquals("Bearer secret", transport.lastRequest?.headers?.get("Authorization"))
+    }
+
+    @Test
+    fun `connection headers are sent with the provider's own model list request`() {
+        val transport = FakeHttpTransport(
+            response = HttpResponseSpec(200, """{"object":"list","data":[{"id":"only"}]}"""),
+        )
+        val provider = provider(transport)
+        val config = openAiConfig().copy(headers = mapOf(NGROK_SKIP_BROWSER_WARNING_HEADER to "true"))
+
+        runSuspend { provider.discoverModels(config) }
+
+        assertEquals("true", transport.lastRequest?.headers?.get(NGROK_SKIP_BROWSER_WARNING_HEADER))
     }
 
     // --- streaming ---------------------------------------------------------

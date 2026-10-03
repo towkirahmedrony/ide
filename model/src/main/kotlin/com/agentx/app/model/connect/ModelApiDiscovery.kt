@@ -116,6 +116,20 @@ class ModelApiDiscovery(
         credential: String? = null,
         preferredModelId: String? = null,
         catalogPreferred: String? = null,
+        /**
+         * Protocols to probe, in order. Null means "detect": a user-supplied
+         * endpoint whose protocol nobody stated is asked the compatible surface
+         * first and Ollama second. A caller that knows the protocol — because the
+         * user chose it — passes exactly that one, so a server that is not probed
+         * cannot produce a confusing second failure.
+         */
+        protocols: List<ModelApiProtocol>? = null,
+        /**
+         * Headers the endpoint needs on *every* request beyond the credential (for
+         * example the flag a tunnel's proxy requires). Applied to each probe, so a
+         * connection cannot succeed at discovery and then 403 elsewhere.
+         */
+        headers: Map<String, String> = emptyMap(),
     ): DiscoveryResult {
         val trace = ApiTrace.create(logger, GENERIC_PROVIDER_LABEL, ApiOperation.DISCOVERY)
         val resolved = when (val outcome = EndpointResolver.resolve(rawEndpoint)) {
@@ -148,6 +162,8 @@ class ModelApiDiscovery(
             credential = credential,
             preferredModelId = preferredModelId,
             catalogPreferred = catalogPreferred,
+            protocols = protocols ?: DEFAULT_PROBE_PROTOCOLS,
+            extraHeaders = headers,
             trace = trace,
         )
         traceOutcome(trace, result)
@@ -252,10 +268,9 @@ class ModelApiDiscovery(
         credential: String?,
         preferredModelId: String?,
         catalogPreferred: String?,
-        protocols: List<ModelApiProtocol> = listOf(
-            ModelApiProtocol.OPENAI_COMPATIBLE,
-            ModelApiProtocol.OLLAMA,
-        ),
+        protocols: List<ModelApiProtocol> = DEFAULT_PROBE_PROTOCOLS,
+        /** Headers every request needs beyond the credential; see [discover]. */
+        extraHeaders: Map<String, String> = emptyMap(),
         trace: ApiTrace? = null,
     ): DiscoveryResult {
         val active = trace ?: ApiTrace.create(null, GENERIC_PROVIDER_LABEL, ApiOperation.DISCOVERY)
@@ -293,6 +308,7 @@ class ModelApiDiscovery(
                         credential = credential,
                         preferredModelId = preferredModelId,
                         catalogPreferred = catalogPreferred,
+                        extraHeaders = extraHeaders,
                         trace = active,
                     )
                 ) {
@@ -316,9 +332,19 @@ class ModelApiDiscovery(
         }
 
         if (sawAuth) {
+            // The server answered, so this is never a network problem: either the
+            // request carried no credential, or the one it carried was refused.
+            // Saying which is what tells the UI whether to ask for a key.
+            val message = if (credential.isNullOrBlank()) {
+                "The server is reachable, but it requires authentication. " +
+                    "Add the API key for this endpoint."
+            } else {
+                "The server is reachable, but authentication was rejected. " +
+                    "Check the API key for this endpoint."
+            }
             return DiscoveryResult.Failed(
                 kind = DiscoveryFailureKind.AUTHENTICATION_REQUIRED,
-                message = "The server is reachable, but authentication is required.",
+                message = message,
                 httpStatus = last?.httpStatus,
                 reachable = true,
             )
@@ -343,6 +369,7 @@ class ModelApiDiscovery(
         preferredModelId: String?,
         catalogPreferred: String?,
         modelList: ModelListRequest? = null,
+        extraHeaders: Map<String, String> = emptyMap(),
         trace: ApiTrace,
     ): DiscoveryResult {
         val url = modelList?.url ?: healthUrl(candidate, protocol)
@@ -350,6 +377,10 @@ class ModelApiDiscovery(
         headers["Accept"] = "application/json"
         val auth = modelList?.auth ?: ModelListAuth.BEARER
         credential?.takeIf { it.isNotBlank() }?.let { headers[auth.headerName] = "${auth.scheme}$it" }
+        // Connection-level headers the endpoint needs on every request. Names only
+        // are ever logged: a value here is not a credential, but it is not assumed
+        // to be safe to print either.
+        extraHeaders.forEach { (name, value) -> headers[name] = value }
 
         // Wall-clock timing uses nanoTime, never the injected [clock]: the clock is
         // the deadline's input, and counting extra reads would change how many
@@ -364,6 +395,7 @@ class ModelApiDiscovery(
             "accept" to "application/json",
             "hasApiKey" to configuredFlag(!credential.isNullOrBlank()),
             "authScheme" to if (credential.isNullOrBlank()) "none" else authSchemeLabel(auth),
+            "requestHeaders" to extraHeaders.keys.joinToString(",").ifBlank { "-" },
         )
 
         val response = try {
@@ -543,6 +575,7 @@ class ModelApiDiscovery(
         preferredModelId: String?,
         catalogPreferred: String?,
         modelList: ModelListRequest? = null,
+        extraHeaders: Map<String, String> = emptyMap(),
         trace: ApiTrace,
     ): DiscoveryResult {
         var attempt = 0
@@ -554,6 +587,7 @@ class ModelApiDiscovery(
                 preferredModelId = preferredModelId,
                 catalogPreferred = catalogPreferred,
                 modelList = modelList,
+                extraHeaders = extraHeaders,
                 trace = trace,
             )
             if (result !is DiscoveryResult.Failed || result.kind != DiscoveryFailureKind.TIMEOUT) return result
@@ -865,6 +899,18 @@ class ModelApiDiscovery(
     )
 
     companion object {
+        /**
+         * The protocols probed when the caller did not state one: the compatible
+         * model list first, Ollama's own second.
+         *
+         * Only "auto" fans out. A caller that already knows the protocol — because
+         * the user picked it — passes that one alone.
+         */
+        val DEFAULT_PROBE_PROTOCOLS: List<ModelApiProtocol> = listOf(
+            ModelApiProtocol.OPENAI_COMPATIBLE,
+            ModelApiProtocol.OLLAMA,
+        )
+
         /** Reaching the Colab/ngrok/Cloudflare edge. */
         const val DEFAULT_CONNECT_TIMEOUT_MILLIS: Int = 15_000
 

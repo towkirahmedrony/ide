@@ -6,6 +6,7 @@ import com.agentx.app.model.preset.EndpointConfig
 import com.agentx.app.model.preset.EndpointDiscoveryMode
 import com.agentx.app.model.preset.HealthCheckConfig
 import com.agentx.app.model.preset.ModelApiProtocol
+import com.agentx.app.model.preset.NGROK_SKIP_BROWSER_WARNING_HEADER
 import com.agentx.app.model.preset.ModelProviderType
 import kotlinx.coroutines.runBlocking
 import java.net.ConnectException
@@ -115,6 +116,43 @@ class ModelHealthCheckerTest {
 
         assertEquals(ModelHealthStatus.HEALTHY, health.status)
         assertEquals(listOf("gemini-3.5-flash-lite"), health.models)
+    }
+
+    /**
+     * A custom endpoint can sit behind a proxy that inspects clients, and the flag it
+     * needs is part of the saved connection — so the health check sends it too. A
+     * hosted provider that needs no such flag must not receive one.
+     */
+    @Test
+    fun `a custom endpoint's connection headers are sent with the health check`() {
+        val (health, transport) = run(
+            body = """{"object":"list","data":[{"id":"hf.co/unsloth/Devstral-Small-2-24B-Instruct-2512-GGUF:Q3_K_M"}]}""",
+            preset = customPreset(),
+            endpoint = ModelEndpoint(
+                "https://armored-fantasy-stuffing.ngrok-free.dev",
+                EndpointSource.CONFIGURED,
+            ),
+        )
+
+        assertEquals(ModelHealthStatus.HEALTHY, health.status)
+        assertEquals(
+            "https://armored-fantasy-stuffing.ngrok-free.dev/v1/models",
+            transport.lastRequest?.url,
+        )
+        assertEquals("true", transport.lastRequest?.headers?.get(NGROK_SKIP_BROWSER_WARNING_HEADER))
+
+        val (_, gemini) = run(
+            body = """{"models":[{"name":"models/gemini-3.5-flash-lite"}]}""",
+            preset = geminiPreset(),
+            endpoint = ModelEndpoint(
+                "https://generativelanguage.googleapis.com",
+                EndpointSource.CONFIGURED,
+            ),
+        )
+        assertNull(
+            gemini.lastRequest?.headers?.get(NGROK_SKIP_BROWSER_WARNING_HEADER),
+            "a hosted provider is not a user-run endpoint",
+        )
     }
 
     @Test

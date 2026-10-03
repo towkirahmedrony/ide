@@ -85,6 +85,7 @@ class ChatCapabilityProbe(
             "stream" to false,
             "toolCalling" to "NO",
             "hasApiKey" to configuredFlag(!credential.isNullOrBlank()),
+            "requestHeaders" to preset.requestHeaders.keys.joinToString(",").ifBlank { "-" },
             "maxOutputTokens" to 1,
             "timeoutMs" to timeoutMillis,
         )
@@ -98,6 +99,10 @@ class ChatCapabilityProbe(
             stream = false,
             generation = ModelGenerationSettings(maxOutputTokens = 1, temperature = 0.0),
             timeoutMillis = timeoutMillis,
+            // The same connection headers the discovery request carried: a tunnel
+            // that refuses an unflagged client must not pass discovery and then
+            // reject the verification.
+            headers = preset.requestHeaders,
         )
         val problems = config.validate()
         if (problems.isNotEmpty()) {
@@ -151,7 +156,7 @@ class ChatCapabilityProbe(
             )
             ChatProbeResult(
                 status = ChatProbeStatus.FAILED,
-                message = userMessage(error),
+                message = userMessage(error, hasCredential = !credential.isNullOrBlank()),
                 httpStatus = error.httpStatus,
                 kind = kind,
             )
@@ -192,11 +197,20 @@ class ChatCapabilityProbe(
         else -> DiscoveryFailureKind.UNKNOWN
     }
 
-    private fun userMessage(error: ModelProviderError): String {
+    private fun userMessage(error: ModelProviderError, hasCredential: Boolean): String {
         val status = error.httpStatus
         return when {
+            // 401/403 means the server was reached and said no. Which half of the
+            // handshake failed decides whether the UI must ask for a key or point
+            // at the one it already sent.
             error.code == ModelProviderErrorCode.AUTHENTICATION_FAILED ->
-                "The server is reachable, but authentication is required."
+                if (hasCredential) {
+                    "The server is reachable, but authentication was rejected. " +
+                        "Check the API key for this endpoint."
+                } else {
+                    "The server is reachable, but it requires authentication. " +
+                        "Add the API key for this endpoint."
+                }
             error.code == ModelProviderErrorCode.TIMEOUT ->
                 "The chat endpoint did not respond in time."
             error.code == ModelProviderErrorCode.RATE_LIMITED ->

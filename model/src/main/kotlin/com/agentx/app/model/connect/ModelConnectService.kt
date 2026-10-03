@@ -347,7 +347,18 @@ class ModelConnectService(
         return if (spec != null) {
             discovery.discoverKnown(spec, credential, preferred)
         } else {
-            discovery.discover(request.endpoint, credential, preferred)
+            discovery.discover(
+                rawEndpoint = request.endpoint,
+                credential = credential,
+                preferredModelId = preferred,
+                // A protocol the user chose is probed alone: a server known to
+                // speak OpenAI-compatible must not also be asked Ollama's list,
+                // and vice versa. Only "auto" probes both.
+                protocols = request.apiProtocol?.let { listOf(it) },
+                // Whatever this endpoint needs on every request travels with the
+                // probe, so discovery cannot succeed where verification 403s.
+                headers = request.setupKind.requestHeaders,
+            )
         }
     }
 

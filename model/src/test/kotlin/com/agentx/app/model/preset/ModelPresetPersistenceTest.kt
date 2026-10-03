@@ -4,6 +4,7 @@ import com.agentx.app.core.ForgeErrorCode
 import com.agentx.app.core.errorOrNull
 import com.agentx.app.core.valueOrNull
 import com.agentx.app.model.runtime.colabPreset
+import com.agentx.app.model.runtime.customPreset
 import com.agentx.app.model.runtime.geminiPreset
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
@@ -182,6 +183,57 @@ class ModelPresetPersistenceTest {
         assertNull(ModelPresetCodec.decode("""{"id":"x","providerType":"TELEPATHY","displayName":"Nope"}"""))
         assertNull(ModelPresetCodec.decode("not json"))
         assertTrue(ModelPresetCodec.decodeAll("""[{"broken":true}]""").isEmpty())
+    }
+
+    // --- custom / local identity separation --------------------------------
+
+    @Test
+    fun `a saved custom preset round trips with every part of the connection kept apart`() {
+        val preset = customPreset(credentialRef = "model-credential-9")
+
+        val decoded = assertNotNull(ModelPresetCodec.decode(ModelPresetCodec.encode(preset)))
+
+        assertEquals("custom", decoded.setupKind)
+        assertEquals("openai-compatible", decoded.providerId)
+        assertEquals(ModelApiProtocol.OPENAI_COMPATIBLE, decoded.apiProtocol)
+        assertEquals("https://armored-fantasy-stuffing.ngrok-free.dev", decoded.endpoint.explicitUrl)
+        assertEquals("/v1", decoded.apiBasePath)
+        assertEquals(
+            "hf.co/unsloth/Devstral-Small-2-24B-Instruct-2512-GGUF:Q3_K_M",
+            decoded.modelIdentifier,
+        )
+        assertEquals("model-credential-9", decoded.credentialRef)
+        assertEquals("Devstral", decoded.displayName)
+        assertEquals(EndpointDiscoveryMode.CONFIGURED_ENDPOINT, decoded.endpoint.mode)
+        assertEquals(preset, decoded)
+    }
+
+    @Test
+    fun `a custom preset's display name is never an endpoint, a path or a model`() {
+        val decoded = assertNotNull(
+            ModelPresetCodec.decode(ModelPresetCodec.encode(customPreset(name = "geminj"))),
+        )
+
+        val identity = listOf(
+            decoded.endpoint.explicitUrl.orEmpty(),
+            decoded.apiBasePath,
+            decoded.modelIdentifier,
+            decoded.providerId,
+            decoded.apiProtocol.providerId,
+        )
+
+        assertTrue(
+            identity.none { it.contains(decoded.displayName) },
+            "the display name must never appear in a persisted endpoint, path or model id",
+        )
+    }
+
+    @Test
+    fun `a serialized custom preset carries only a credential reference`() {
+        val json = ModelPresetCodec.encode(customPreset(credentialRef = "model-credential-9"))
+
+        assertTrue(json.contains("model-credential-9"), "the reference is what gets persisted")
+        assertFalse(json.contains("sk-"), "no credential material is stored")
     }
 
     // --- gemini identity separation ----------------------------------------
