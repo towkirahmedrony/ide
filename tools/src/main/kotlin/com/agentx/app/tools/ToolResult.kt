@@ -8,6 +8,8 @@ enum class ToolErrorCode {
     INVALID_ARGUMENTS,
     PERMISSION_DENIED,
     APPROVAL_REQUIRED,
+    /** Declared but not implemented, or implemented but not enabled in this build. */
+    TOOL_UNAVAILABLE,
     EXECUTION_FAILED,
     TIMEOUT,
     CANCELLED,

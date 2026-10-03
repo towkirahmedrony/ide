@@ -105,6 +105,13 @@ data class ToolDefinition(
     val permission: ToolPermissionDecision = ToolPermissionDecision.ALLOW,
     val capabilities: Set<ToolCapability> = emptySet(),
     val metadata: Map<String, String> = emptyMap(),
+    /**
+     * Whether the runtime can actually run this tool yet. A tool can be declared,
+     * described and referenced by a role policy while its implementation does not
+     * exist; such a tool is [ToolAvailability.UNAVAILABLE] and is never offered to
+     * a model and never executed.
+     */
+    val availability: ToolAvailability = ToolAvailability.AVAILABLE,
     val category: ToolCategory = ToolCategory.OTHER,
     val requiredPermissions: Set<ToolPermissionLevel> = emptySet(),
     /**

@@ -204,10 +204,14 @@ class AgentLoop(
         var subAgentCalls = 0
         var finished: AgentResult? = null
 
+        // The role and its policy are handed to the router, so it re-decides every
+        // call instead of trusting the list this loop passed in.
         val scopedRouter = ScopedToolRouter(
             inner = toolRouter,
+            role = request.definition.role,
             allowedTools = request.allowedTools.toSet(),
             permissionLevel = request.permissionLevel,
+            definitionOf = { name -> bridge.definitionsFor(listOf(name)).firstOrNull() },
             toolAllowed = { name ->
                 val definition = bridge.definitionsFor(listOf(name)).firstOrNull()
                 definition == null || request.permissionLevel.allows(definition.capabilities)

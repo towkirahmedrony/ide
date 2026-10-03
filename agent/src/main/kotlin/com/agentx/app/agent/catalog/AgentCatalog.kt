@@ -4,17 +4,19 @@ import com.agentx.app.agent.domain.AgentDefinition
 import com.agentx.app.agent.domain.AgentRole
 import com.agentx.app.agent.domain.PermissionLevel
 import com.agentx.app.agent.model.AgentModelIds
+import com.agentx.app.agent.policy.AgentToolPolicy
 import com.agentx.app.agent.prompt.DefaultAgentPrompts
-import com.agentx.app.agent.protocol.AgentProtocol
-import com.agentx.app.tools.filesystem.ListDirectoryTool
-import com.agentx.app.tools.filesystem.ReadFileTool
-import com.agentx.app.tools.filesystem.SearchFilesTool
-import com.agentx.app.tools.filesystem.WriteFileTool
 
 /**
  * The static shape of each agent: name, tools, permissions and step budget.
  *
- * The system prompt is not defined here any more. Each definition references the
+ * Tools are no longer written out here. Each definition takes its tool list from
+ * [AgentToolPolicy], which is the single authoritative place a role's tools are
+ * declared. The previous per-role literals are what let MAIN and the
+ * code-intelligence tools drift apart, and what left several roles with no tools
+ * at all — a gap the sub-agent factory then filled with the whole registry.
+ *
+ * The system prompt is not defined here either. Each definition references the
  * centralized default from [DefaultAgentPrompts], and the active prompt is
  * resolved at run time by [com.agentx.app.agent.prompt.PromptManager] so a user
  * override in Settings takes effect without touching this catalog.
@@ -24,18 +26,14 @@ object AgentCatalog {
     const val DEFAULT_MAIN_MAX_STEPS = 16
     const val DEFAULT_SUB_MAX_STEPS = 8
 
+    /** The tools a role may use, resolved from the authoritative policy. */
+    private fun toolsFor(role: AgentRole): List<String> = AgentToolPolicy.toolIdsFor(role)
+
     val MAIN: AgentDefinition = AgentDefinition(
         role = AgentRole.MAIN,
         name = "Main Agent",
         systemInstructions = DefaultAgentPrompts.MAIN,
-        allowedTools = listOf(
-            AgentProtocol.DELEGATE_TOOL,
-            AgentProtocol.FINISH_TOOL,
-            ListDirectoryTool.NAME,
-            SearchFilesTool.NAME,
-            ReadFileTool.NAME,
-            WriteFileTool.NAME,
-        ),
+        allowedTools = toolsFor(AgentRole.MAIN),
         permissionLevel = PermissionLevel.WORKSPACE_WRITE,
         isReadOnly = false,
         maxSteps = DEFAULT_MAIN_MAX_STEPS,
@@ -46,11 +44,7 @@ object AgentCatalog {
         role = AgentRole.EXPLORER,
         name = "Explorer",
         systemInstructions = DefaultAgentPrompts.EXPLORER,
-        allowedTools = listOf(
-            ListDirectoryTool.NAME,
-            SearchFilesTool.NAME,
-            ReadFileTool.NAME,
-        ),
+        allowedTools = toolsFor(AgentRole.EXPLORER),
         permissionLevel = PermissionLevel.READ_ONLY,
         isReadOnly = true,
         maxSteps = DEFAULT_SUB_MAX_STEPS,
@@ -61,7 +55,7 @@ object AgentCatalog {
         role = AgentRole.RESEARCHER,
         name = "Researcher",
         systemInstructions = DefaultAgentPrompts.RESEARCHER,
-        allowedTools = emptyList(),
+        allowedTools = toolsFor(AgentRole.RESEARCHER),
         permissionLevel = PermissionLevel.NETWORK,
         isReadOnly = true,
         maxSteps = DEFAULT_SUB_MAX_STEPS,
@@ -72,7 +66,7 @@ object AgentCatalog {
         role = AgentRole.CODER,
         name = "Coder",
         systemInstructions = DefaultAgentPrompts.CODER,
-        allowedTools = emptyList(),
+        allowedTools = toolsFor(AgentRole.CODER),
         permissionLevel = PermissionLevel.WORKSPACE_WRITE,
         isReadOnly = false,
         maxSteps = DEFAULT_SUB_MAX_STEPS,
@@ -83,7 +77,7 @@ object AgentCatalog {
         role = AgentRole.DEBUGGER,
         name = "Debugger",
         systemInstructions = DefaultAgentPrompts.DEBUGGER,
-        allowedTools = emptyList(),
+        allowedTools = toolsFor(AgentRole.DEBUGGER),
         permissionLevel = PermissionLevel.COMMAND_EXECUTION,
         isReadOnly = false,
         maxSteps = DEFAULT_SUB_MAX_STEPS,
@@ -94,7 +88,7 @@ object AgentCatalog {
         role = AgentRole.REVIEWER,
         name = "Reviewer",
         systemInstructions = DefaultAgentPrompts.REVIEWER,
-        allowedTools = emptyList(),
+        allowedTools = toolsFor(AgentRole.REVIEWER),
         permissionLevel = PermissionLevel.READ_ONLY,
         isReadOnly = true,
         maxSteps = DEFAULT_SUB_MAX_STEPS,
@@ -105,7 +99,7 @@ object AgentCatalog {
         role = AgentRole.TESTER,
         name = "Tester",
         systemInstructions = DefaultAgentPrompts.TESTER,
-        allowedTools = emptyList(),
+        allowedTools = toolsFor(AgentRole.TESTER),
         permissionLevel = PermissionLevel.COMMAND_EXECUTION,
         isReadOnly = false,
         maxSteps = DEFAULT_SUB_MAX_STEPS,
@@ -116,11 +110,7 @@ object AgentCatalog {
         role = AgentRole.PLANNER,
         name = "Planner",
         systemInstructions = DefaultAgentPrompts.PLANNER,
-        allowedTools = listOf(
-            ListDirectoryTool.NAME,
-            SearchFilesTool.NAME,
-            ReadFileTool.NAME,
-        ),
+        allowedTools = toolsFor(AgentRole.PLANNER),
         permissionLevel = PermissionLevel.READ_ONLY,
         isReadOnly = true,
         maxSteps = DEFAULT_SUB_MAX_STEPS,
@@ -130,12 +120,7 @@ object AgentCatalog {
         role = AgentRole.FAST_CODER,
         name = "Fast Coder",
         systemInstructions = DefaultAgentPrompts.FAST_CODER,
-        allowedTools = listOf(
-            ListDirectoryTool.NAME,
-            SearchFilesTool.NAME,
-            ReadFileTool.NAME,
-            WriteFileTool.NAME,
-        ),
+        allowedTools = toolsFor(AgentRole.FAST_CODER),
         permissionLevel = PermissionLevel.WORKSPACE_WRITE,
         isReadOnly = false,
         maxSteps = DEFAULT_SUB_MAX_STEPS,
@@ -145,11 +130,7 @@ object AgentCatalog {
         role = AgentRole.SECURITY_REVIEWER,
         name = "Security Reviewer",
         systemInstructions = DefaultAgentPrompts.SECURITY_REVIEWER,
-        allowedTools = listOf(
-            ListDirectoryTool.NAME,
-            SearchFilesTool.NAME,
-            ReadFileTool.NAME,
-        ),
+        allowedTools = toolsFor(AgentRole.SECURITY_REVIEWER),
         permissionLevel = PermissionLevel.READ_ONLY,
         isReadOnly = true,
         maxSteps = DEFAULT_SUB_MAX_STEPS,
@@ -159,12 +140,7 @@ object AgentCatalog {
         role = AgentRole.DOCS,
         name = "Docs",
         systemInstructions = DefaultAgentPrompts.DOCS,
-        allowedTools = listOf(
-            ListDirectoryTool.NAME,
-            SearchFilesTool.NAME,
-            ReadFileTool.NAME,
-            WriteFileTool.NAME,
-        ),
+        allowedTools = toolsFor(AgentRole.DOCS),
         permissionLevel = PermissionLevel.WORKSPACE_WRITE,
         isReadOnly = false,
         maxSteps = DEFAULT_SUB_MAX_STEPS,
@@ -174,7 +150,7 @@ object AgentCatalog {
         role = AgentRole.COMMIT_PR,
         name = "Commit/PR",
         systemInstructions = DefaultAgentPrompts.COMMIT_PR,
-        allowedTools = emptyList(),
+        allowedTools = toolsFor(AgentRole.COMMIT_PR),
         permissionLevel = PermissionLevel.GIT_WRITE,
         isReadOnly = false,
         maxSteps = DEFAULT_SUB_MAX_STEPS,
