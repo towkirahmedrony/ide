@@ -172,28 +172,68 @@ object UbuntuRootfsCatalog {
     }
 
     /**
-     * Files that prove the extracted tree is a usable Ubuntu userland.
+     * The entries that prove the extracted tree is a complete Ubuntu userland.
      *
-     * Declared before [entries] because an [Entry]'s default refers to it. Checked before the
-     * install marker is written. `bin/bash` is listed as well as `usr/bin/bash` on purpose:
-     * Ubuntu uses a merged `/usr`, so `bin` is a symlink to `usr/bin`, and requiring both
-     * proves symlinks survived extraction.
+     * Declared before [entries] because an [Entry]'s default refers to it. These are checked by
+     * [UbuntuRootfsInstaller] as the *authoritative* answer to "is this a rootfs?" — the same list
+     * decides whether a tree found on disk may be reused, whether the install marker may be
+     * honoured, and whether an installation may be promoted. A marker never overrides it.
+     *
+     * Directories are listed, not only files. A tree that kept `/usr/bin/perl` while losing `/usr`
+     * or `/var` is not a Ubuntu rootfs, and "the files I looked for happen to be there" is exactly
+     * the answer that let a stale tree be treated as installed.
+     *
+     * `bin/bash` is listed as well as `usr/bin/bash` on purpose: Ubuntu uses a merged `/usr`, so
+     * `bin` is a symlink to `usr/bin`, and requiring both proves symlinks survived extraction.
+     * The hard-link pairs are here because dpkg and coreutils resolve through them; see
+     * [REQUIRED_HARD_LINKS] and the relationship check in the installer.
      */
     val REQUIRED_GUEST_FILES: List<String> = listOf(
-        "usr/bin/bash",
+        // The guest shell, by both names.
+        "bin/sh",
+        "bin/bash",
         "usr/bin/sh",
+        "usr/bin/bash",
         "usr/bin/dash",
+        // Identity of the guest root.
+        "etc/os-release",
+        // The userland tree itself.
+        "usr",
+        "usr/bin",
+        "usr/lib",
+        "etc",
+        "var",
+        "var/lib",
+        "home",
+        "root",
+        "tmp",
+        // The package manager, which is what the whole installation exists to use.
         "usr/bin/apt-get",
         "usr/bin/dpkg",
         "usr/bin/env",
         "usr/bin/ls",
-        "bin/bash",
-        // The hard-link pairs are part of "usable", because dpkg and coreutils resolve through
-        // them; see [REQUIRED_HARD_LINKS] and the relationship check in the installer.
+        // The hard-link pairs.
         "usr/bin/perl",
         "usr/bin/perl5.38.2",
         "usr/bin/gunzip",
         "usr/bin/uncompress",
+    )
+
+    /**
+     * Directories a complete runtime has that the base archive does not necessarily ship.
+     *
+     * They are created by the installer's configuration step — `apt` and `dpkg` need them and
+     * create them on first use, which is too late to be a precondition of using apt. Checked
+     * after configuration, not after extraction, so validation never demands something the
+     * archive was never going to contain.
+     */
+    val REQUIRED_RUNTIME_DIRECTORIES: List<String> = listOf(
+        "var/lib/dpkg",
+        "var/cache/apt",
+        "var/cache/apt/archives",
+        "var/log/apt",
+        "run",
+        "tmp",
     )
 
     val entries: List<Entry> = listOf(

@@ -22,7 +22,7 @@ class UbuntuRootfsInstallerTest {
     @Test
     fun `a complete tree without a marker is extracted, not installed`() {
         val files = files()
-        files.addTree(layout.rootfs, UbuntuRootfsCatalog.REQUIRED_GUEST_FILES)
+        addCompleteRootfs(files, layout.rootfs)
         val installer = UbuntuRootfsInstaller(
             layout = layout,
             supportedAbis = listOf("arm64-v8a"),
@@ -35,7 +35,7 @@ class UbuntuRootfsInstallerTest {
     @Test
     fun `repair keeps a complete unmarked rootfs`() {
         val files = files()
-        files.addTree(layout.rootfs, UbuntuRootfsCatalog.REQUIRED_GUEST_FILES)
+        addCompleteRootfs(files, layout.rootfs)
         val installer = UbuntuRootfsInstaller(
             layout = layout,
             supportedAbis = listOf("arm64-v8a"),
@@ -70,7 +70,7 @@ class UbuntuRootfsInstallerTest {
     @Test
     fun `discarding a rootfs removes the tree and every marker that described it`() {
         val files = files()
-        files.addTree(layout.rootfs, UbuntuRootfsCatalog.REQUIRED_GUEST_FILES)
+        addCompleteRootfs(files, layout.rootfs)
         files.present += layout.marker
         files.present += layout.verificationMarker
         files.present += layout.toolchainMarker
@@ -100,7 +100,7 @@ class UbuntuRootfsInstallerTest {
     @Test
     fun `repair removes a complete tree that was marked for recreation`() {
         val files = files()
-        files.addTree(layout.rootfs, UbuntuRootfsCatalog.REQUIRED_GUEST_FILES)
+        addCompleteRootfs(files, layout.rootfs)
         files.present += layout.recreateMarker
         val installer = UbuntuRootfsInstaller(
             layout = layout,
@@ -137,7 +137,7 @@ class UbuntuRootfsInstallerTest {
     @Test
     fun `a complete extracted tree is already installed and is not re-downloaded`() {
         val files = files()
-        files.addTree(layout.rootfs, UbuntuRootfsCatalog.REQUIRED_GUEST_FILES)
+        addCompleteRootfs(files, layout.rootfs)
         NativeRuntimeLayout.REQUIRED_LIBRARIES.forEach { name ->
             files.present += "${layout.nativeLibraryDir}/$name"
         }
@@ -160,7 +160,7 @@ class UbuntuRootfsInstallerTest {
     @Test
     fun `the install marker is written only on request after guest probes`() {
         val files = files()
-        files.addTree(layout.rootfs, UbuntuRootfsCatalog.REQUIRED_GUEST_FILES)
+        addCompleteRootfs(files, layout.rootfs)
         val installer = UbuntuRootfsInstaller(
             layout = layout,
             supportedAbis = listOf("arm64-v8a"),
@@ -171,6 +171,8 @@ class UbuntuRootfsInstallerTest {
         assertTrue(installer.isInstalled())
         installer.clearInstallMarker()
         assertFalse(installer.isInstalled())
+        // The tree is untouched by the marker going away: a complete tree without a marker is
+        // "not verified yet", which is a different answer from "not there".
         assertTrue(installer.hasExtractedRootfs())
     }
 
@@ -198,7 +200,7 @@ class UbuntuRootfsInstallerTest {
      * afterwards are load-bearing.
      */
     @Test
-    fun `extraction unpacks into the rootfs and creates the link store inside it`() {
+    fun `extraction unpacks into the installing tree and creates the link store inside it`() {
         val files = files()
         NativeRuntimeLayout.REQUIRED_LIBRARIES.forEach { name ->
             files.present += "${layout.nativeLibraryDir}/$name"
@@ -206,16 +208,26 @@ class UbuntuRootfsInstallerTest {
         var extractedInto: String? = null
         val installer = installerWithArchive(files) { intoDir ->
             extractedInto = intoDir
-            files.addTree(intoDir, UbuntuRootfsCatalog.REQUIRED_GUEST_FILES)
-            emulatedHardLinks(files, intoDir)
+            addCompleteRootfs(files, intoDir)
         }
 
         val result = installer.provision()
 
-        assertIs<UbuntuInstallResult.Installed>(result)
-        assertEquals(layout.rootfs, extractedInto)
+        assertIs<UbuntuInstallResult.Prepared>(result)
+        assertEquals(layout.installing, extractedInto)
+        assertTrue(files.directories.contains(layout.forInstalling().l2s))
+        // Nothing is at the live rootfs path yet: the tree is still being built.
+        assertFalse(installer.hasExtractedRootfs())
+        assertFalse(installer.isInstalled())
+
+        // Promotion rewrites the emulated links to the path the tree is about to have, so it is
+        // valid where it ends up rather than where it was unpacked.
+        assertTrue(installer.promote())
+        assertTrue(installer.isConfiguredRootfs(layout.rootfs))
         assertTrue(files.directories.contains(layout.l2s))
-        assertTrue(installer.hasExtractedRootfs())
+        for (target in files.links.values) {
+            assertTrue(target.startsWith("${layout.rootfs}/"), target)
+        }
     }
 
     /**
@@ -233,7 +245,7 @@ class UbuntuRootfsInstallerTest {
             files.present += "${layout.nativeLibraryDir}/$name"
         }
         val installer = installerWithArchive(files) { intoDir ->
-            files.addTree(intoDir, UbuntuRootfsCatalog.REQUIRED_GUEST_FILES)
+            addCompleteRootfs(files, intoDir)
             // Exactly what the old layout produced: the target is a real host path, but not one
             // that lies under the guest root.
             val store = "${layout.runtimeDir}/l2s"
@@ -250,6 +262,62 @@ class UbuntuRootfsInstallerTest {
         assertTrue(failed.message.contains("outside the guest rootfs"), failed.message)
         // Nothing half-populated is left behind for a later attempt to reuse.
         assertFalse(installer.hasExtractedRootfs())
+    }
+
+    /**
+     * The reported failure, at the state level.
+     *
+     * The logs showed `installMarker=true` while `<rootfs>/bin/bash`, `<rootfs>/usr` and
+     * `<rootfs>/var` did not exist. A marker is a claim about the filesystem, never a substitute
+     * for it, so it must not be able to make this true.
+     */
+    @Test
+    fun `a stale install marker over an incomplete rootfs is not honoured`() {
+        val files = files()
+        files.present += layout.marker
+        files.present += layout.verificationMarker
+        files.present += layout.toolchainMarker
+        val installer = UbuntuRootfsInstaller(
+            layout = layout,
+            supportedAbis = listOf("arm64-v8a"),
+            files = files,
+        )
+
+        assertFalse(installer.isInstalled(), "a marker must never override the filesystem")
+        assertFalse(installer.hasExtractedRootfs())
+
+        // And the stale claim is cleared, so the next attempt cannot be misled by it either.
+        assertTrue(installer.repairIncompleteInstallation())
+        assertFalse(files.present.contains(layout.marker))
+        assertFalse(files.present.contains(layout.verificationMarker))
+        assertFalse(files.present.contains(layout.toolchainMarker))
+    }
+
+    /**
+     * A total tree is reusable without a marker, and a marker is not enough without the tree.
+     *
+     * This is the other half of the rule: `NOT_INSTALLED` on disk with a complete, valid rootfs
+     * must be resolved by looking at the filesystem, not by trusting either the marker or the
+     * previous status.
+     */
+    @Test
+    fun `a complete tree is reusable without a marker and a marker is useless without one`() {
+        val files = files()
+        addCompleteRootfs(files, layout.rootfs)
+        NativeRuntimeLayout.REQUIRED_LIBRARIES.forEach { name ->
+            files.present += "${layout.nativeLibraryDir}/$name"
+        }
+        val installer = UbuntuRootfsInstaller(
+            layout = layout,
+            supportedAbis = listOf("arm64-v8a"),
+            files = files,
+        )
+
+        assertFalse(installer.isInstalled())
+        assertTrue(installer.hasExtractedRootfs())
+        assertTrue(installer.isConfiguredRootfs(layout.rootfs))
+        // Reused, not re-downloaded: the filesystem decided, not a marker.
+        assertIs<UbuntuInstallResult.AlreadyInstalled>(installer.provision())
     }
 
     /** Builds an installer whose download and tar are faked, but whose digest check is real. */
@@ -277,6 +345,13 @@ class UbuntuRootfsInstallerTest {
             files = files,
             dnsServers = { listOf("8.8.8.8") },
         )
+    }
+
+    /** Adds everything isConfiguredRootfs asks for, so a fake tree means "installed". */
+    private fun addCompleteRootfs(files: RecordingFiles, tree: String) {
+        files.addTree(tree, UbuntuRootfsCatalog.REQUIRED_GUEST_FILES)
+        files.addTree(tree, UbuntuRootfsCatalog.REQUIRED_RUNTIME_DIRECTORIES)
+        emulatedHardLinks(files, tree)
     }
 
     private fun emulatedHardLinks(files: RecordingFiles, intoDir: String) {
@@ -327,6 +402,38 @@ class UbuntuRootfsInstallerTest {
         }
 
         override fun isDirectory(path: String): Boolean = path in directories
+
+        override fun rename(from: String, to: String): Boolean {
+            fun move(map: MutableMap<String, String>) {
+                for (key in map.keys.filter { it == from || it.startsWith("$from/") }.toList()) {
+                    val value = map.remove(key)!!
+                    map[to + key.removePrefix(from)] = value
+                }
+            }
+            for (entry in present.filter { it == from || it.startsWith("$from/") }.toList()) {
+                present.remove(entry)
+                present += to + entry.removePrefix(from)
+            }
+            for (entry in directories.filter { it == from || it.startsWith("$from/") }.toList()) {
+                directories.remove(entry)
+                directories += to + entry.removePrefix(from)
+            }
+            move(links)
+            move(written)
+            directories += to
+            return true
+        }
+
+        override fun rewriteSymlinkTargets(tree: String, fromPrefix: String, toPrefix: String): Int {
+            var rewritten = 0
+            for ((path, target) in links.toMap()) {
+                if (target.startsWith(fromPrefix)) {
+                    links[path] = toPrefix + target.removePrefix(fromPrefix)
+                    rewritten++
+                }
+            }
+            return rewritten
+        }
 
         override fun readLink(path: String): String? = links[path]
 

@@ -81,8 +81,15 @@ class LocalUbuntuRuntime(
     /** Copies a SAF project into app storage so it can be bind-mounted as `/workspace/project`. */
     private val materializer = UbuntuWorkspaceMaterializer(appContext, layout)
 
-    /** Runs the installed rootfs through PRoot before it may be called READY. */
-    private val verifier = UbuntuRuntimeVerifier(layout)
+    /**
+     * Runs a tree through PRoot before it may be called READY.
+     *
+     * Built per tree rather than once, because an installation is verified *before* it is
+     * promoted: during a fresh install the tree under test is
+     * [NativeRuntimeLayout.forInstalling], and on a runtime that is already in place it is the
+     * live rootfs. Verifying the wrong one would be worse than not verifying at all.
+     */
+    private fun verifierFor(tree: NativeRuntimeLayout) = UbuntuRuntimeVerifier(tree)
 
     /**
      * Installs and then verifies the developer packages inside the guest.
@@ -92,12 +99,12 @@ class LocalUbuntuRuntime(
      * user. `resolv.conf` is read lazily: it is written by the installer's configure step, which
      * runs after this object is built.
      */
-    private val toolchain = UbuntuToolchain(
-        layout = layout,
+    private fun toolchainFor(tree: NativeRuntimeLayout) = UbuntuToolchain(
+        layout = tree,
         runner = ubuntuGuestCommandRunner(
-            layout = layout,
-            hostWorkingDirectory = layout.runtimeDir,
-            resolvConf = { layout.resolvConf.takeIf { File(it).isFile } },
+            layout = tree,
+            hostWorkingDirectory = tree.runtimeDir,
+            resolvConf = { tree.resolvConf.takeIf { File(it).isFile } },
         ),
     )
 
@@ -254,12 +261,69 @@ class LocalUbuntuRuntime(
 
         var recreated = false
         while (true) {
-            if (!installRootfs()) return statusFlow.value
-            if (!verifyRootfs()) return statusFlow.value
+            // 1. Make sure a complete, configured Ubuntu tree exists. A fresh one is assembled in
+            //    rootfs.installing; an existing one is reused only if the filesystem passes the
+            //    same authoritative check (see UbuntuRootfsInstaller.isConfiguredRootfs).
+            val prepared = installer.provision { state -> statusFlow.value = state }
+            when (prepared) {
+                is UbuntuInstallResult.Unavailable -> {
+                    Log.w(TAG, prepared.reason)
+                    return statusFlow.value
+                }
+                is UbuntuInstallResult.Failed -> {
+                    Log.w(TAG, "[${prepared.stage.wireName}] ${prepared.message}")
+                    return statusFlow.value
+                }
+                is UbuntuInstallResult.AlreadyInstalled, is UbuntuInstallResult.Prepared -> Unit
+            }
+            // The tree this attempt is working on. Everything below — PRoot verification, the
+            // package install — runs against *this* tree, and it is promoted only when all of it
+            // has passed.
+            val fresh = prepared is UbuntuInstallResult.Prepared
+            val tree = if (fresh) layout.forInstalling() else layout
+            DeveloperLogger.info(
+                DeveloperLogCategory.ROOTFS,
+                if (fresh) {
+                    "RootFS extracted into ${tree.rootfs}; verifying before promotion"
+                } else {
+                    "RootFS already present and complete at ${tree.rootfs}; verifying"
+                },
+            )
 
-            when (val outcome = toolchain.provision()) {
+            // 2. Run the tree through PRoot. Nothing is promoted or marked on the strength of the
+            //    files being on disk.
+            if (!verifyTree(tree)) {
+                installer.clearInstallMarkers()
+                if (fresh) {
+                    installer.deleteInstallingTree()
+                } else {
+                    // A tree that is in place but cannot run is not reusable. Recording it means
+                    // the next attempt re-extracts instead of failing the same way again.
+                    installer.discardRootfs("PRoot guest verification failed: ${statusFlow.value.message}")
+                }
+                return statusFlow.value
+            }
+
+            // 3. The developer toolchain, inside the same tree.
+            when (val outcome = toolchainFor(tree).provision()) {
                 is UbuntuToolchainOutcome.Ready -> {
+                    // 4. Promote, then persist READY. In this order: a marker must never describe
+                    //    a tree that is still under construction.
+                    if (fresh && !installer.promote()) {
+                        installer.deleteInstallingTree()
+                        return fail(
+                            "The Ubuntu rootfs was built and verified but could not be moved " +
+                                "into place.",
+                            UbuntuInstallStage.ACTIVATION,
+                        )
+                    }
+                    installer.writeVerificationMarker()
+                    installer.writeInstallMarker()
                     installer.writeToolchainMarker(outcome.verified)
+                    DeveloperLogger.info(
+                        DeveloperLogCategory.ROOTFS,
+                        "Runtime READY: ${layout.rootfs} promoted and verified",
+                    )
                     DeveloperLogger.info(
                         DeveloperLogCategory.ENV,
                         "Developer toolchain verified: ${outcome.verified.joinToString()}",
@@ -274,6 +338,7 @@ class LocalUbuntuRuntime(
                     // Nothing was unpacked, so the tree is still the one that just passed its
                     // PRoot probes. Keep it and report; the next attempt re-runs the install.
                     installer.clearInstallMarkers()
+                    if (fresh) installer.deleteInstallingTree()
                     DeveloperLogger.warn(DeveloperLogCategory.ERROR, outcome.message)
                     return fail(outcome.message, outcome.stage)
                 }
@@ -282,7 +347,12 @@ class LocalUbuntuRuntime(
                     // The tree may be half-modified and there is no way to tell from dpkg's
                     // answers, so it is not repaired in place: it is discarded and rebuilt from
                     // the verified archive, which costs no download.
-                    installer.discardRootfs(outcome.reason)
+                    installer.clearInstallMarkers()
+                    if (fresh) {
+                        installer.deleteInstallingTree()
+                    } else {
+                        installer.discardRootfs(outcome.reason)
+                    }
                     DeveloperLogger.warn(DeveloperLogCategory.ROOTFS, "RootFS recreated: ${outcome.reason}")
                     if (recreated) {
                         return fail(
@@ -298,26 +368,7 @@ class LocalUbuntuRuntime(
     }
 
     /**
-     * Downloads and unpacks the rootfs when it is missing or untrusted, publishing the
-     * installer's own states (DOWNLOADING, VERIFYING, EXTRACTING, INSTALLING) as it goes.
-     *
-     * Returns false when the installer already published an ERROR; its message is the reason.
-     */
-    private fun installRootfs(): Boolean =
-        when (val result = installer.provision { state -> statusFlow.value = state }) {
-            is UbuntuInstallResult.AlreadyInstalled, is UbuntuInstallResult.Installed -> true
-            is UbuntuInstallResult.Unavailable -> {
-                Log.w(TAG, result.reason)
-                false
-            }
-            is UbuntuInstallResult.Failed -> {
-                Log.w(TAG, "[${result.stage.wireName}] ${result.message}")
-                false
-            }
-        }
-
-    /**
-     * Runs the guest probes and only then writes the markers that let the tree be believed.
+     * Runs the guest probes against [tree] and reports what the guest answered.
      *
      * This is the step that turns "the files are on disk" into "a real Ubuntu shell answered".
      * The `perl` and `uncompress` probes are the ones that matter most here: they are the
@@ -325,32 +376,25 @@ class LocalUbuntuRuntime(
      * guest cannot follow it — the fault that used to reach the user as an `apt` unpack error
      * instead.
      *
-     * A failure clears every marker, so an extracted-but-unrunnable rootfs is never offered as a
-     * working terminal, and the rootfs is re-verified (not re-downloaded) on the next attempt.
+     * No marker is written here. The caller writes them after promotion, so a tree that is still
+     * under construction can never be described as usable.
      */
-    private fun verifyRootfs(): Boolean {
+    private fun verifyTree(tree: NativeRuntimeLayout): Boolean {
         statusFlow.value = RuntimeStatus(AgentxRuntimeState.VALIDATING)
-        val verification = verifier.verify()
+        val verification = verifierFor(tree).verify()
         TerminalDiagnostics.record(
             TAG,
             "rootfs verification ok=${verification.ok} summary=${verification.summary}",
         )
         DeveloperLogger.info(
             DeveloperLogCategory.ROOTFS,
-            "RootFS validation ok=${verification.ok} summary=${verification.summary}",
+            "RootFS validation path=${tree.rootfs} ok=${verification.ok} summary=${verification.summary}",
         )
-        if (verification.ok) {
-            markVerified()
-            installer.writeInstallMarker()
-            Log.i(TAG, verification.summary)
-            TerminalDiagnostics.record(TAG, "rootfs verified; marker written in ${layout.rootfs}")
-            return true
-        }
+        if (verification.ok) return true
         // Recorded verbatim: this is where an extracted-but-unrunnable rootfs is caught, and the
         // failure text names the probe (`/bin/sh`, `/bin/bash`, `/usr/bin/perl`, …) that failed.
         TerminalDiagnostics.record(TAG, "rootfs verification FAILED: ${verification.failure}")
         clearVerified()
-        installer.clearInstallMarkers()
         DeveloperLogger.warn(DeveloperLogCategory.ROOTFS, verification.failure.orEmpty())
         fail(verification.failure, UbuntuInstallStage.RUNTIME)
         return false
@@ -366,12 +410,6 @@ class LocalUbuntuRuntime(
         statusFlow.value = status
         Log.w(TAG, message.orEmpty())
         return status
-    }
-
-    private fun markVerified() {
-        val marker = File(layout.verificationMarker)
-        marker.parentFile?.mkdirs()
-        marker.writeText("ok\n${UbuntuEnvironment.RUNTIME_MARKER}\n")
     }
 
     private fun clearVerified() {
@@ -533,7 +571,7 @@ class LocalUbuntuRuntime(
                 transient = false,
             )
         }
-        return when (val outcome = toolchain.provision()) {
+        return when (val outcome = toolchainFor(layout).provision()) {
             is UbuntuToolchainOutcome.Ready -> {
                 installer.writeToolchainMarker(outcome.verified)
                 statusFlow.value = RuntimeStatus.Ready

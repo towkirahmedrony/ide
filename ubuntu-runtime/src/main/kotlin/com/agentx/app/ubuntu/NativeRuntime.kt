@@ -19,6 +19,15 @@ data class NativeRuntimeLayout(
     val nativeLibraryDir: String,
     /** App-private directory that holds the rootfs, the link2symlink store and scratch space. */
     val runtimeDir: String,
+    /**
+     * Which directory under [runtimeDir] is the guest root.
+     *
+     * Normally [ROOTFS_DIR]. It is a parameter so the *same* layout type can describe the tree an
+     * installation is being built in ([forInstalling]) as well as the one in use: every derived
+     * path — [l2s] above all, which has to live inside whichever tree it belongs to — then follows
+     * automatically rather than being duplicated, or worse, mixed up.
+     */
+    val rootfsDir: String = ROOTFS_DIR,
 ) {
 
     // ---- Native executables (nativeLibraryDir) -------------------------------------------
@@ -40,18 +49,32 @@ data class NativeRuntimeLayout(
 
     // ---- Guest side (app-private runtime storage) ----------------------------------------
 
-    /** Verified Ubuntu ARM64 rootfs after installation. */
-    val rootfs: String get() = "$runtimeDir/$ROOTFS_DIR"
+    /** The guest root: the installed Ubuntu ARM64 rootfs, or the tree being built. */
+    val rootfs: String get() = "$runtimeDir/$rootfsDir"
+
+    /** True when this layout describes the tree an installation is being built in. */
+    val isInstalling: Boolean get() = rootfsDir == INSTALLING_DIR
 
     /**
-     * Scratch directory a rootfs was unpacked into before activation.
+     * Where an installation is assembled, before it is promoted to [rootfs].
      *
-     * The extraction now writes straight into [rootfs]: the tree may not be moved once it is
-     * unpacked, because `-l` records absolute host paths into [l2s] inside it (see there). The
-     * path is still cleared on every attempt so an install upgraded from a build that staged
-     * first cannot leave a stale tree behind.
+     * Nothing is ever unpacked into [rootfs] itself. A whole installation — extraction, package
+     * installation, toolchain validation — happens here, and only a tree that has passed every
+     * gate is moved into place. If any step fails this directory is deleted and the tree that is
+     * already installed is left untouched, so there is never a half-built rootfs where the runtime
+     * would find it.
      */
-    val staging: String get() = "$runtimeDir/$STAGING_DIR"
+    val installing: String get() = "$runtimeDir/$INSTALLING_DIR"
+
+    /**
+     * The same runtime, but with the tree under construction as its guest root.
+     *
+     * [l2s], [marker] and everything else that hangs off [rootfs] then point into the tree being
+     * built, which is what makes it safe to install packages into it. The markers that describe a
+     * *usable* runtime ([verificationMarker], [toolchainMarker]) deliberately stay outside
+     * [rootfsDir] and are written only after promotion.
+     */
+    fun forInstalling(): NativeRuntimeLayout = copy(rootfsDir = INSTALLING_DIR)
 
     /**
      * The guest shell, inside the rootfs. Not to be confused with an Android shell on the host:
@@ -160,7 +183,15 @@ data class NativeRuntimeLayout(
         const val TALLOC_LIBRARY: String = "libtalloc.so"
 
         const val ROOTFS_DIR: String = "rootfs"
-        const val STAGING_DIR: String = "rootfs-staging"
+
+        /** Where an installation is assembled before it is promoted to [ROOTFS_DIR]. */
+        const val INSTALLING_DIR: String = "rootfs.installing"
+
+        /**
+         * Scratch name used by an older build for the same job. It is always cleared so an app
+         * upgraded from that build cannot leave a stale tree sitting in the runtime directory.
+         */
+        const val LEGACY_STAGING_DIR: String = "rootfs-staging"
 
         /**
          * The link-to-symlink store's name, as upstream spells it (`.l2s`, the `PREFIX` of

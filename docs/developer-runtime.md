@@ -38,7 +38,7 @@ references `TermuxBootstrapCatalog`, `TermuxBootstrapInstaller`, `TermuxPrefixPo
 | `NativeRuntime.kt` | `NativeRuntimeLayout` (nativeLibraryDir + app-private runtime storage, the verification marker and the workspaces directory) and the native library probe. |
 | `ProotCommand.kt` | The `proot -0 -l -r <rootfs> -b … -w … <cmd>` builder, the extraction invocation, bind mounts and `PROOT_LOADER`/`PROOT_L2S_DIR`/`PROOT_TMP_DIR`. |
 | `UbuntuRootfsCatalog.kt` | The pinned Ubuntu Base arm64 entry (URL, SHA-256, size), the required guest files, the required **hard links**, the toolchain package list, the required toolchain executables and the platform tar path. |
-| `UbuntuRootfsInstaller.kt` | Download → SHA-256 → PRoot extraction into the final rootfs → validation (files, hard-link relationships **and link-store location**) → apt/resolv configuration. The installer writes no marker of its own; the install marker is written later by `LocalUbuntuRuntime` after guest probes pass. Also `repairIncompleteInstallation()`, `discardRootfs()` and the marker writers. |
+| `UbuntuRootfsInstaller.kt` | Download → SHA-256 → PRoot extraction into `rootfs.installing` → validation (files, hard-link relationships **and link-store location**) → apt/resolv configuration. Also `isConfiguredRootfs()` (the one authoritative answer to "is this a rootfs?"), `promote()`, `repairIncompleteInstallation()`, `discardRootfs()` and the marker writers. |
 | `UbuntuRuntimeVerifier.kt` | Runs the installed rootfs *through PRoot* and only then lets it become READY — including the `perl`/`uncompress` hard-link probes. |
 | `UbuntuToolchain.kt` | The `apt`/`dpkg` sanity check, `apt-get update`, the package install, and the check that runs every required executable. It decides whether the tree can be retried or must be recreated. |
 | `UbuntuEnvironment.kt` | The guest `HOME`/`USER`/`PATH`/`TERM`/`TMPDIR`/`AGENTX_RUNTIME` environment, with credential filtering. |
@@ -94,7 +94,7 @@ download
   ↓
 SHA-256 verify
   ↓
-extraction into the final rootfs, link store created first
+extraction into rootfs.installing, link store created first
   ↓
 rootfs validation (required files, hard-link relationships, link store location)
   ↓
@@ -111,9 +111,22 @@ install marker + verification marker + toolchain marker
 READY
 ```
 
-The tree is unpacked **straight into its final path** and is never moved afterwards, and the link
-store is created **inside it**. Both are requirements, not conveniences — see
+The tree is unpacked into `runtimeDir/rootfs.installing` and the link store is created **inside
+that tree**. Nothing is ever unpacked into `runtimeDir/rootfs`: extraction, package installation
+and toolchain validation all happen in the installing tree, and only a tree that has passed every
+gate is moved into place. If any step fails the installing tree is deleted and whatever was already
+installed is left untouched, so there is never a half-built rootfs where the runtime would find it.
+
+The move is done by `UbuntuRootfsInstaller.promote()`, and it is not a bare `rename`. `-l` records
+the store's absolute path inside every emulated hard link, so the links are rewritten from the
+installing path to the final one first (`UbuntuFiles.rewriteSymlinkTargets`, the same fix upstream
+`proot-distro` applies after moving a rootfs); the old rootfs is moved aside rather than deleted, so
+a failed move can be undone. See
 [Why the link store must be inside the rootfs](#why-the-link-store-must-be-inside-the-rootfs).
+
+The markers are written after the move, in this order: promotion, then the verification marker,
+then the install marker, then the toolchain marker. A marker can therefore never describe a tree
+that is still under construction.
 
 A failure removes the incomplete tree, clears every marker, leaves the runtime in `ERROR`, and a
 retry starts again — the verified archive is kept, so retrying costs no download. A tree the guest
