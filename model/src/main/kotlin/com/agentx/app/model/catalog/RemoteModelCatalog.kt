@@ -11,6 +11,7 @@ import com.agentx.app.core.logging.LogLevel
 import com.agentx.app.model.ModelCapabilities
 import com.agentx.app.model.ModelConfig
 import com.agentx.app.model.capability.InMemoryModelCapabilityRegistry
+import com.agentx.app.model.capability.ModelCapabilityProfile
 import com.agentx.app.model.capability.ModelCapabilityRegistry
 import com.agentx.app.model.http.HttpRequestSpec
 import com.agentx.app.model.http.HttpTransport
@@ -99,7 +100,7 @@ class RemoteModelCatalog(
         level = LogLevel.INFO,
         baseFields = mapOf("component" to "model-catalog"),
     ),
-    private val capabilityRegistry: ModelCapabilityRegistry = InMemoryModelCapabilityRegistry.DEFAULT,
+    private val capabilityRegistry: ModelCapabilityRegistry = InMemoryModelCapabilityRegistry(),
 ) : ModelCatalog {
 
     private val lock = Any()
@@ -120,6 +121,7 @@ class RemoteModelCatalog(
         synchronized(lock) {
             if (snapshot == null) snapshot = stored
         }
+        registerCatalogModels(stored.models)
     }
 
     /**
@@ -136,6 +138,7 @@ class RemoteModelCatalog(
         synchronized(lock) {
             if (snapshot == null) snapshot = previous
         }
+        registerCatalogModels(previous.models)
     }
 
     override suspend fun refresh(force: Boolean): ForgeResult<ModelCatalogSnapshot, ForgeError> {
@@ -242,6 +245,7 @@ class RemoteModelCatalog(
             source = CatalogSource.REMOTE,
         )
         synchronized(lock) { snapshot = fresh }
+        registerCatalogModels(merged)
         runCatching { store.save(fresh) }
         return success(fresh)
     }
@@ -395,6 +399,25 @@ class RemoteModelCatalog(
         return ModelCapabilities(streaming = true, toolCalling = false, systemMessages = true)
     }
 
+    /**
+     * Identity-only registration. Catalog listing is not capability proof:
+     * discovered models enter the registry with unknown support so absence
+     * from the hardcoded overlay is no longer an eligibility allowlist.
+     */
+    private fun registerCatalogModels(models: List<CatalogModel>) {
+        models.forEach { model ->
+            capabilityRegistry.registerOrUpdate(
+                ModelCapabilityProfile.discovered(
+                    providerId = providerId,
+                    modelId = model.id,
+                    displayName = model.displayName,
+                    maxContextTokens = model.contextWindowTokens,
+                    maxOutputTokens = model.maxOutputTokens,
+                ),
+            )
+        }
+    }
+
     private fun firstInt(model: JsonObject, vararg keys: String): Int? {
         keys.forEach { key -> model.numberOrNull(key)?.let { return it.toInt() } }
         return null
@@ -516,6 +539,7 @@ class RemoteModelCatalogFactory(
         level = LogLevel.INFO,
         baseFields = mapOf("component" to "model-catalog"),
     ),
+    private val capabilityRegistry: ModelCapabilityRegistry = InMemoryModelCapabilityRegistry(),
 ) : ModelCatalogFactory {
 
     override fun create(providerId: String, connection: ModelConfig): ModelCatalog? {
@@ -535,6 +559,7 @@ class RemoteModelCatalogFactory(
             ttlMillis = ttlMillis,
             clock = clock,
             logger = catalogLogger,
+            capabilityRegistry = capabilityRegistry,
         )
     }
 

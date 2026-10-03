@@ -7,6 +7,10 @@ import com.agentx.app.core.logging.ForgeLoggers
 import com.agentx.app.model.DefaultModelGateway
 import com.agentx.app.model.FakeHttpTransport
 import com.agentx.app.model.ModelConfig
+import com.agentx.app.model.capability.CapabilityProvenance
+import com.agentx.app.model.capability.CapabilitySupport
+import com.agentx.app.model.capability.InMemoryModelCapabilityRegistry
+import com.agentx.app.model.capability.ModelCapability
 import com.agentx.app.model.connect.KnownModelProviders
 import com.agentx.app.model.connect.ModelSetupKind
 import com.agentx.app.model.connect.normalizeModelId
@@ -37,6 +41,7 @@ class ModelCatalogTest {
         store: ModelCatalogStore = InMemoryModelCatalogStore(),
         now: () -> Long = { 0L },
         ttlMillis: Long = 60_000L,
+        capabilities: InMemoryModelCapabilityRegistry = InMemoryModelCapabilityRegistry(),
     ) = RemoteModelCatalog(
         providerId = "groq",
         modelsUrl = { modelsUrl },
@@ -45,6 +50,7 @@ class ModelCatalogTest {
         store = store,
         ttlMillis = ttlMillis,
         clock = now,
+        capabilityRegistry = capabilities,
     )
 
     private fun modelsJson(vararg ids: String): String = buildString {
@@ -74,6 +80,47 @@ class ModelCatalogTest {
         // The credential is sent, never stored in a snapshot.
         assertEquals("Bearer secret-key", transport.lastRequest?.headers?.get("Authorization"))
         assertFalse(snapshot.toString().contains("secret-key"))
+    }
+
+    @Test
+    fun `a successful refresh registers discovered models without inventing capabilities`() = runSuspend {
+        val capabilities = InMemoryModelCapabilityRegistry()
+        val transport = FakeHttpTransport(
+            response = HttpResponseSpec(
+                statusCode = 200,
+                body = modelsJson("llama-3.3-70b-versatile", "allam-2-7b"),
+            ),
+        )
+
+        catalog(transport, capabilities = capabilities).refresh(force = true)
+
+        val known = assertNotNull(capabilities.get(ModelProviderIds.GROQ, "llama-3.3-70b-versatile"))
+        assertTrue(known.known)
+        assertTrue(known.supports(ModelCapability.TOOL_CALLING))
+
+        val discovered = assertNotNull(capabilities.get(ModelProviderIds.GROQ, "allam-2-7b"))
+        assertFalse(discovered.known)
+        assertEquals(CapabilityProvenance.DISCOVERED, discovered.provenance)
+        assertEquals(CapabilitySupport.UNKNOWN, discovered.toolCalling)
+        assertEquals(CapabilitySupport.UNKNOWN, discovered.streaming)
+        assertFalse(capabilities.supports(ModelProviderIds.GROQ, "allam-2-7b", ModelCapability.TOOL_CALLING))
+    }
+
+    @Test
+    fun `a failed discovery does not register models or substitute identities`() = runSuspend {
+        val capabilities = InMemoryModelCapabilityRegistry()
+        val transport = FakeHttpTransport(
+            response = HttpResponseSpec(statusCode = 503, body = "{\"error\":{\"message\":\"unavailable\"}}"),
+        )
+
+        val result = catalog(transport, capabilities = capabilities).refresh(force = true)
+
+        assertTrue(result is ForgeResult.Failure)
+        assertNull(capabilities.get(ModelProviderIds.GROQ, "allam-2-7b"))
+        assertNull(capabilities.get(ModelProviderIds.OPENAI_COMPATIBLE, "fallback-model"))
+        val overlay = assertNotNull(capabilities.get(ModelProviderIds.GROQ, "llama-3.3-70b-versatile"))
+        assertEquals("llama-3.3-70b-versatile", overlay.modelId)
+        assertTrue(overlay.known)
     }
 
     @Test

@@ -11,6 +11,8 @@ import com.agentx.app.core.success
 import com.agentx.app.core.valueOrNull
 import com.agentx.app.model.DefaultModelGateway
 import com.agentx.app.model.ModelConfig
+import com.agentx.app.model.capability.InMemoryModelCapabilityRegistry
+import com.agentx.app.model.capability.ModelCapabilityRegistry
 import com.agentx.app.model.connect.ChatCapabilityProbe
 import com.agentx.app.model.connect.ModelApiDiscovery
 import com.agentx.app.model.connect.ModelConnectOutcome
@@ -76,6 +78,7 @@ class DefaultModelManager(
     private val monitorEnabled: Boolean = true,
     transport: HttpTransport = UrlConnectionHttpTransport(),
     connectServiceFactory: ((ModelManager) -> ModelConnectService)? = null,
+    capabilityRegistry: ModelCapabilityRegistry = InMemoryModelCapabilityRegistry(),
 ) : ModelManager {
 
     private val connectService: ModelConnectService =
@@ -98,6 +101,7 @@ class DefaultModelManager(
             ),
             resolveStoredCredential = { preset -> io { credentials.resolve(preset) } },
             logger = logger,
+            capabilityRegistry = capabilityRegistry,
         )
 
     private val log: ForgeLogger = logger

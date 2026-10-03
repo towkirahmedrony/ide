@@ -129,6 +129,33 @@ class AgentModelEligibilityTest {
     }
 
     @Test
+    fun `a registered discovered model is eligible for lookup without becoming tool capable`() = runBlocking {
+        val registry = InMemoryModelCapabilityRegistry()
+        registry.register(
+            ModelCapabilityProfile.discovered(
+                providerId = AgentModelProviders.GROQ,
+                modelId = "allam-2-7b",
+            ),
+        )
+        val preferences = AgentModelPreferences()
+            .with(AgentRole.EXPLORER, RoleModelPreference(AgentModelProviders.GROQ, "allam-2-7b"))
+        val connections = mapOf(
+            AgentModelProviders.GROQ to config(AgentModelProviders.GROQ, "allam-2-7b"),
+        )
+        val result = resolver(connections, capabilityRegistry = registry, preferences = preferences)
+            .resolveForRole(AgentRole.EXPLORER, active)
+
+        assertFalse(result.eligible)
+        assertEquals(ModelEligibilityState.UNKNOWN, result.eligibility.state)
+        assertEquals(AgentModelProviders.GROQ, result.config.providerId)
+        assertEquals("allam-2-7b", result.config.model)
+        assertTrue(result.explicit)
+        assertFalse(result.eligibility.profile.known)
+        assertEquals(CapabilitySupport.UNKNOWN, result.eligibility.profile.toolCalling)
+        assertNull(result.configOrNull())
+    }
+
+    @Test
     fun `a model without tool calling is rejected`() = runBlocking {
         val connections = mapOf(
             AgentModelProviders.GROQ to config(

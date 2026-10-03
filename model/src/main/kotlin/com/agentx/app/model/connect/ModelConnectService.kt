@@ -8,6 +8,9 @@ import com.agentx.app.core.failure
 import com.agentx.app.core.logging.ForgeLogger
 import com.agentx.app.core.success
 import com.agentx.app.core.valueOrNull
+import com.agentx.app.model.capability.InMemoryModelCapabilityRegistry
+import com.agentx.app.model.capability.ModelCapabilityProfile
+import com.agentx.app.model.capability.ModelCapabilityRegistry
 import com.agentx.app.model.diagnostics.ApiOperation
 import com.agentx.app.model.diagnostics.ApiTrace
 import com.agentx.app.model.diagnostics.configuredFlag
@@ -15,6 +18,7 @@ import com.agentx.app.model.diagnostics.sanitizeForLog
 import com.agentx.app.model.http.HttpTransport
 import com.agentx.app.model.http.UrlConnectionHttpTransport
 import com.agentx.app.model.manager.ModelManager
+import com.agentx.app.model.preset.ModelProviderIds
 import com.agentx.app.model.preset.EndpointConfig
 import com.agentx.app.model.preset.EndpointDiscoveryMode
 import com.agentx.app.model.preset.HealthCheckConfig
@@ -84,6 +88,7 @@ class ModelConnectService(
     private val resolveStoredCredential: suspend (ModelPreset) -> String? = { null },
     /** Structured Developer Log sink for the connect orchestration; null disables it. */
     private val logger: ForgeLogger? = null,
+    private val capabilityRegistry: ModelCapabilityRegistry = InMemoryModelCapabilityRegistry(),
 ) {
 
     suspend fun connect(
@@ -167,6 +172,12 @@ class ModelConnectService(
             is DiscoveryResult.Failed -> return fail(discovered.message, discovered.kind)
             is DiscoveryResult.NeedsModelChoice -> {
                 if (request.modelIdentifier.isBlank()) {
+                    registerDiscoveredModels(
+                        providerId = ModelProviderIds.forPreset(request.setupKind.id, discovered.api.protocol),
+                        modelIds = discovered.modelIds,
+                        catalogFallback = discovered.api.catalogFallback,
+                        local = isLocalEndpoint(discovered.api.rootUrl),
+                    )
                     trace.stage(
                         "COMPLETE",
                         "outcome" to "needs-choice",
@@ -247,6 +258,13 @@ class ModelConnectService(
         // Where a model list becomes a saved preset: the catalog count, the id
         // actually stored and whether the id came from the live list or the
         // built-in fallback is exactly what the UI picker is built from.
+        registerConnectedModels(
+            providerId = storedProviderId(draft),
+            listedModels = api.modelIds,
+            selectedModelId = modelId,
+            catalogFallback = api.catalogFallback,
+            local = isLocalEndpoint(api.rootUrl),
+        )
         val stored = persist(draft, request, existing) ?: return fail(
             "The model could not be saved.",
             DiscoveryFailureKind.UNKNOWN,
@@ -405,6 +423,54 @@ class ModelConnectService(
             manager.updatePreset(draft, credential, clearCredential = request.clearCredential)
         }
         return result.valueOrNull()
+    }
+
+    private fun storedProviderId(preset: ModelPreset): String = preset.providerId
+
+    private fun registerDiscoveredModels(
+        providerId: String,
+        modelIds: List<String>,
+        catalogFallback: Boolean,
+        local: Boolean,
+    ) {
+        if (catalogFallback) return
+        modelIds.forEach { modelId ->
+            val id = normalizeModelId(modelId)
+            if (id.isBlank()) return@forEach
+            capabilityRegistry.registerOrUpdate(
+                ModelCapabilityProfile.discovered(
+                    providerId = providerId,
+                    modelId = id,
+                    local = local,
+                ),
+            )
+        }
+    }
+
+    private fun registerConnectedModels(
+        providerId: String,
+        listedModels: List<String>,
+        selectedModelId: String,
+        catalogFallback: Boolean,
+        local: Boolean,
+    ) {
+        if (!catalogFallback) {
+            registerDiscoveredModels(providerId, listedModels, catalogFallback = false, local = local)
+        }
+        val selected = normalizeModelId(selectedModelId)
+        if (selected.isBlank()) return
+        capabilityRegistry.registerOrUpdate(
+            ModelCapabilityProfile.connected(
+                providerId = providerId,
+                modelId = selected,
+                local = local,
+            ),
+        )
+    }
+
+    private fun isLocalEndpoint(rootUrl: String): Boolean {
+        val host = runCatching { java.net.URI(rootUrl.trim()).host?.lowercase() }.getOrNull() ?: return false
+        return host == "localhost" || host == "127.0.0.1" || host == "::1" || host.endsWith(".local")
     }
 
 }

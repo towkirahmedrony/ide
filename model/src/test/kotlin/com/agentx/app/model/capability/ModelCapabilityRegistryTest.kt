@@ -138,6 +138,108 @@ class ModelCapabilityRegistryTest {
     }
 
     @Test
+    fun `register stores a discovered model by provider and model id`() {
+        val isolated = InMemoryModelCapabilityRegistry()
+        isolated.register(
+            ModelCapabilityProfile.discovered(
+                providerId = ModelProviderIds.GROQ,
+                modelId = "allam-2-7b",
+                displayName = "Allam 2 7B",
+                maxContextTokens = 8_192,
+            ),
+        )
+
+        val profile = assertNotNull(isolated.get(ModelProviderIds.GROQ, "allam-2-7b"))
+        assertEquals("Allam 2 7B", profile.displayName)
+        assertEquals(8_192, profile.maxContextTokens)
+        assertFalse(profile.known)
+        assertEquals(CapabilityProvenance.DISCOVERED, profile.provenance)
+        assertEquals(CapabilitySupport.UNKNOWN, profile.toolCalling)
+        assertEquals(CapabilitySupport.UNKNOWN, profile.streaming)
+        assertFalse(isolated.supports(ModelProviderIds.GROQ, "allam-2-7b", ModelCapability.TOOL_CALLING))
+    }
+
+    @Test
+    fun `register is idempotent on provider id plus model id`() {
+        val isolated = InMemoryModelCapabilityRegistry()
+        isolated.register(ModelCapabilityProfile.discovered(ModelProviderIds.GROQ, "allam-2-7b", "Allam"))
+        isolated.register(ModelCapabilityProfile.discovered(ModelProviderIds.GROQ, "allam-2-7b", "Allam 2 7B"))
+        isolated.register(
+            ModelCapabilityProfile(
+                providerId = ModelProviderIds.GROQ,
+                modelId = "allam-2-7b",
+                displayName = "should-not-upgrade",
+                toolCalling = CapabilitySupport.SUPPORTED,
+                streaming = CapabilitySupport.SUPPORTED,
+                known = false,
+                provenance = CapabilityProvenance.DISCOVERED,
+            ),
+        )
+
+        val groq = isolated.models(ModelProviderIds.GROQ).filter { it.modelId == "allam-2-7b" }
+        assertEquals(1, groq.size)
+        assertEquals("Allam 2 7B", groq.single().displayName)
+        assertEquals(CapabilitySupport.UNKNOWN, groq.single().toolCalling)
+        assertEquals(CapabilitySupport.UNKNOWN, groq.single().streaming)
+        assertFalse(groq.single().known)
+    }
+
+    @Test
+    fun `hardcoded overlay is not replaced by a later discovery`() {
+        val isolated = InMemoryModelCapabilityRegistry()
+        val before = assertNotNull(isolated.get(ModelProviderIds.GROQ, "llama-3.3-70b-versatile"))
+        isolated.register(
+            ModelCapabilityProfile.discovered(
+                providerId = ModelProviderIds.GROQ,
+                modelId = "llama-3.3-70b-versatile",
+                displayName = "Discovered Llama",
+            ),
+        )
+        isolated.register(
+            ModelCapabilityProfile.connected(
+                providerId = ModelProviderIds.GROQ,
+                modelId = "llama-3.3-70b-versatile",
+            ),
+        )
+
+        val after = assertNotNull(isolated.get(ModelProviderIds.GROQ, "llama-3.3-70b-versatile"))
+        assertEquals(before.displayName, after.displayName)
+        assertTrue(after.known)
+        assertEquals(CapabilityProvenance.HARDCODED, after.provenance)
+        assertTrue(after.supports(ModelCapability.TOOL_CALLING))
+        assertTrue(after.enabled)
+        assertEquals(before.modelId, after.modelId)
+    }
+
+    @Test
+    fun `refresh does not substitute a different model identity`() {
+        val isolated = InMemoryModelCapabilityRegistry()
+        isolated.register(ModelCapabilityProfile.discovered(ModelProviderIds.GROQ, "allam-2-7b"))
+        isolated.register(ModelCapabilityProfile.discovered(ModelProviderIds.GEMINI, "gemini-9-ultra-preview"))
+        isolated.register(ModelCapabilityProfile.discovered(ModelProviderIds.GROQ, "llama-4-scout"))
+
+        assertEquals(ModelProviderIds.GROQ, isolated.profile(ModelProviderIds.GROQ, "allam-2-7b").providerId)
+        assertEquals("allam-2-7b", isolated.profile(ModelProviderIds.GROQ, "allam-2-7b").modelId)
+        assertEquals(ModelProviderIds.GEMINI, isolated.profile(ModelProviderIds.GEMINI, "gemini-9-ultra-preview").providerId)
+        assertNull(isolated.get(ModelProviderIds.GROQ, "gemini-9-ultra-preview"))
+        assertNull(isolated.get(ModelProviderIds.GEMINI, "allam-2-7b"))
+        assertEquals("llama-4-scout", isolated.profile(ModelProviderIds.GROQ, "llama-4-scout").modelId)
+    }
+
+    @Test
+    fun `a connected model keeps unknown support until overlayed`() {
+        val isolated = InMemoryModelCapabilityRegistry()
+        isolated.register(ModelCapabilityProfile.connected(ModelProviderIds.OPENAI_COMPATIBLE, "local-qwen", local = true))
+
+        val profile = assertNotNull(isolated.get(ModelProviderIds.OPENAI_COMPATIBLE, "local-qwen"))
+        assertEquals(CapabilityProvenance.CONNECTED, profile.provenance)
+        assertTrue(profile.local)
+        assertFalse(profile.known)
+        assertEquals(CapabilitySupport.UNKNOWN, profile.toolCalling)
+        assertFalse(isolated.supports(ModelProviderIds.OPENAI_COMPATIBLE, "local-qwen", ModelCapability.STREAMING))
+    }
+
+    @Test
     fun `a config override is explicit knowledge`() {
         val override = ModelCapabilities(toolCalling = true, streaming = true)
         val capabilities = registry.capabilitiesFor(config(ModelProviderIds.GROQ, "allam-2-7b", override))

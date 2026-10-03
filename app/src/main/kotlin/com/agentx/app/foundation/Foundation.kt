@@ -48,8 +48,11 @@ import com.agentx.app.integrations.connection.InMemoryConnectionStore
 import com.agentx.app.integrations.setup.IntegrationSetupManager
 import com.agentx.app.model.MODEL_LAYER
 import com.agentx.app.model.ModelModule
+import com.agentx.app.model.capability.InMemoryModelCapabilityRegistry
+import com.agentx.app.model.capability.ModelCapabilityRegistry
 import com.agentx.app.model.catalog.DefaultModelCatalogRegistry
 import com.agentx.app.model.catalog.ModelCatalogRegistry
+import com.agentx.app.model.catalog.RemoteModelCatalogFactory
 import com.agentx.app.model.manager.ModelManager
 import com.agentx.app.model.manager.ModelRuntimeModule
 import com.agentx.app.model.ratelimit.DefaultRateLimitManager
@@ -178,6 +181,11 @@ object Foundation {
         val rateLimitManager = DefaultRateLimitManager()
         services.register(ServiceKeys.RATE_LIMIT_MANAGER, rateLimitManager)
         services.register(ServiceKeys.MODEL_USAGE, rateLimitManager.usage)
+        // One shared capability registry: catalog/connect register identities here
+        // and the gateway/resolver read the same instance. Hardcoded overlays stay
+        // authoritative; discovery never invents tool calling.
+        val capabilityRegistry: ModelCapabilityRegistry = InMemoryModelCapabilityRegistry()
+        services.register(ServiceKeys.MODEL_CAPABILITY_REGISTRY, capabilityRegistry)
         // The dynamic model catalog is built lazily from the providers that can be
         // listed, so connecting Groq later simply gives it a fresh catalog. Listing
         // uses catalogConnections, not connections: a saved Gemini (or Groq) provider
@@ -188,6 +196,7 @@ object Foundation {
             connections = {
                 services.get<ModelManager>(ServiceKeys.MODEL_MANAGER)?.catalogConnections().orEmpty()
             },
+            factory = RemoteModelCatalogFactory(capabilityRegistry = capabilityRegistry),
         )
         services.register(ServiceKeys.MODEL_CATALOG, modelCatalog)
 

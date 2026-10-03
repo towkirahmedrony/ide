@@ -49,6 +49,32 @@ enum class CapabilitySupport {
 }
 
 /**
+ * Where a [ModelCapabilityProfile] came from.
+ *
+ * Provenance never implies support: a [DISCOVERED] or [CONNECTED] model stays
+ * [CapabilitySupport.UNKNOWN] until a hardcoded overlay or an explicit
+ * config override says otherwise.
+ */
+enum class CapabilityProvenance {
+    /** Hardcoded overlay from [KnownModelCapabilities]. */
+    HARDCODED,
+    /** Listed by a provider catalog. Not capability proof. */
+    DISCOVERED,
+    /** Selected during connect. Identity only, not capability proof. */
+    CONNECTED,
+    ;
+
+    companion object {
+        fun merge(existing: CapabilityProvenance, incoming: CapabilityProvenance): CapabilityProvenance {
+            val rank = listOf(HARDCODED, DISCOVERED, CONNECTED)
+            val existingRank = rank.indexOf(existing).takeIf { it >= 0 } ?: rank.lastIndex
+            val incomingRank = rank.indexOf(incoming).takeIf { it >= 0 } ?: rank.lastIndex
+            return if (incomingRank < existingRank) incoming else existing
+        }
+    }
+}
+
+/**
  * Authoritative capability record for one provider/model pair.
  *
  * [known] is true only for hardcoded definitions. Dynamically discovered
@@ -69,6 +95,7 @@ data class ModelCapabilityProfile(
     val local: Boolean = false,
     val enabled: Boolean = true,
     val known: Boolean = true,
+    val provenance: CapabilityProvenance = if (known) CapabilityProvenance.HARDCODED else CapabilityProvenance.DISCOVERED,
 ) {
     init {
         require(providerId.isNotBlank()) { "providerId must not be blank" }
@@ -126,6 +153,105 @@ data class ModelCapabilityProfile(
             reasoning = CapabilitySupport.UNKNOWN,
             local = false,
             enabled = true,
+            known = false,
+            provenance = CapabilityProvenance.DISCOVERED,
+        )
+
+        fun discovered(
+            providerId: String,
+            modelId: String,
+            displayName: String? = null,
+            maxContextTokens: Int? = null,
+            maxOutputTokens: Int? = null,
+            local: Boolean = false,
+        ): ModelCapabilityProfile = ModelCapabilityProfile(
+            providerId = providerId,
+            modelId = modelId,
+            displayName = displayName?.takeIf { it.isNotBlank() } ?: modelId,
+            toolCalling = CapabilitySupport.UNKNOWN,
+            streaming = CapabilitySupport.UNKNOWN,
+            vision = CapabilitySupport.UNKNOWN,
+            structuredOutput = CapabilitySupport.UNKNOWN,
+            reasoning = CapabilitySupport.UNKNOWN,
+            maxContextTokens = maxContextTokens,
+            maxOutputTokens = maxOutputTokens,
+            local = local,
+            enabled = true,
+            known = false,
+            provenance = CapabilityProvenance.DISCOVERED,
+        )
+
+        fun connected(
+            providerId: String,
+            modelId: String,
+            displayName: String? = null,
+            local: Boolean = false,
+        ): ModelCapabilityProfile = ModelCapabilityProfile(
+            providerId = providerId,
+            modelId = modelId,
+            displayName = displayName?.takeIf { it.isNotBlank() } ?: modelId,
+            toolCalling = CapabilitySupport.UNKNOWN,
+            streaming = CapabilitySupport.UNKNOWN,
+            vision = CapabilitySupport.UNKNOWN,
+            structuredOutput = CapabilitySupport.UNKNOWN,
+            reasoning = CapabilitySupport.UNKNOWN,
+            local = local,
+            enabled = true,
+            known = false,
+            provenance = CapabilityProvenance.CONNECTED,
+        )
+    }
+
+    /**
+     * Idempotent merge for [providerId] + [modelId].
+     *
+     * Hardcoded overlays keep their capability flags. Discovery and connect
+     * never upgrade [CapabilitySupport.UNKNOWN] to [SUPPORTED], never flip
+     * [enabled], and never invent tool/stream/vision support from a name.
+     */
+    fun mergeFrom(incoming: ModelCapabilityProfile): ModelCapabilityProfile {
+        val overlay = incoming.known || incoming.provenance == CapabilityProvenance.HARDCODED
+        return copy(
+            displayName = mergedDisplayName(incoming, overlay),
+            toolCalling = mergedSupport(toolCalling, incoming.toolCalling, overlay),
+            streaming = mergedSupport(streaming, incoming.streaming, overlay),
+            vision = mergedSupport(vision, incoming.vision, overlay),
+            structuredOutput = mergedSupport(structuredOutput, incoming.structuredOutput, overlay),
+            reasoning = mergedSupport(reasoning, incoming.reasoning, overlay),
+            maxContextTokens = incoming.maxContextTokens ?: maxContextTokens,
+            maxOutputTokens = incoming.maxOutputTokens ?: maxOutputTokens,
+            local = local || incoming.local,
+            enabled = if (overlay) incoming.enabled else enabled,
+            known = known || incoming.known,
+            provenance = CapabilityProvenance.merge(provenance, incoming.provenance),
+        )
+    }
+
+    private fun mergedDisplayName(incoming: ModelCapabilityProfile, overlay: Boolean): String {
+        if (overlay && incoming.displayName.isNotBlank()) return incoming.displayName
+        if (!known && incoming.displayName.isNotBlank()) return incoming.displayName
+        return displayName
+    }
+
+    private fun mergedSupport(
+        existing: CapabilitySupport,
+        incoming: CapabilitySupport,
+        overlay: Boolean,
+    ): CapabilitySupport {
+        if (overlay) return incoming
+        if (known) return existing
+        return existing
+    }
+
+    /** Drops inferred capability flags so a dynamic model cannot look tool-capable. */
+    fun withoutInferredCapabilities(): ModelCapabilityProfile {
+        if (known || provenance == CapabilityProvenance.HARDCODED) return this
+        return copy(
+            toolCalling = CapabilitySupport.UNKNOWN,
+            streaming = CapabilitySupport.UNKNOWN,
+            vision = CapabilitySupport.UNKNOWN,
+            structuredOutput = CapabilitySupport.UNKNOWN,
+            reasoning = CapabilitySupport.UNKNOWN,
             known = false,
         )
     }

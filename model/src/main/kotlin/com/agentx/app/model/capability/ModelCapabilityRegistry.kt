@@ -38,6 +38,17 @@ interface ModelCapabilityRegistry {
     fun register(profile: ModelCapabilityProfile)
 
     /**
+     * Registers [profile] without replacing an existing identity.
+     *
+     * Identity is [ModelCapabilityProfile.providerId] + [ModelCapabilityProfile.modelId].
+     * A second call for the same pair merges metadata; it never substitutes a
+     * different model and never upgrades unknown support to true.
+     */
+    fun registerOrUpdate(profile: ModelCapabilityProfile) {
+        register(profile)
+    }
+
+    /**
      * Runtime flags for a request. Order of precedence:
      * 1. [ModelConfig.capabilities] override on the request
      * 2. A known registry definition
@@ -87,13 +98,20 @@ class InMemoryModelCapabilityRegistry(
         synchronized(lock) { registerUnlocked(profile) }
     }
 
+    override fun registerOrUpdate(profile: ModelCapabilityProfile) {
+        synchronized(lock) { registerUnlocked(profile) }
+    }
+
     override fun capabilitiesFor(config: ModelConfig): ModelCapabilities {
         config.capabilities?.let { return it }
         return profile(config.providerId, config.model).toModelCapabilities()
     }
 
     private fun registerUnlocked(profile: ModelCapabilityProfile) {
-        profiles[key(profile.providerId, profile.modelId)] = profile
+        val incoming = profile.withoutInferredCapabilities()
+        val identity = key(incoming.providerId, incoming.modelId)
+        val existing = profiles[identity]
+        profiles[identity] = if (existing == null) incoming else existing.mergeFrom(incoming)
     }
 
     companion object {

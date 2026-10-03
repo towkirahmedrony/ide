@@ -8,6 +8,8 @@ import com.agentx.app.core.module.ForgeModule
 import com.agentx.app.core.module.ModuleContext
 import com.agentx.app.model.DefaultModelGateway
 import com.agentx.app.model.ModelGateway
+import com.agentx.app.model.capability.InMemoryModelCapabilityRegistry
+import com.agentx.app.model.capability.ModelCapabilityRegistry
 import com.agentx.app.model.http.HttpTransport
 import com.agentx.app.model.http.UrlConnectionHttpTransport
 import com.agentx.app.model.preset.DefaultModelPresetRepository
@@ -50,8 +52,11 @@ class ModelRuntimeModule(
 
     override fun initialize(context: ModuleContext) {
         val gateway = context.services.get<ModelGateway>(ServiceKeys.MODEL_GATEWAY) ?: DefaultModelGateway()
+        val capabilities = context.services.get<ModelCapabilityRegistry>(ServiceKeys.MODEL_CAPABILITY_REGISTRY)
+            ?: InMemoryModelCapabilityRegistry.DEFAULT
         val created = ModelManagers.create(
             gateway = gateway,
+            capabilityRegistry = capabilities,
             presetStore = presetStore,
             secretStore = secretStore,
             runtimeOutput = runtimeOutput,
@@ -91,6 +96,7 @@ object ModelManagers {
             level = LogLevel.WARN,
             baseFields = mapOf("component" to "model-manager"),
         ),
+        capabilityRegistry: ModelCapabilityRegistry = InMemoryModelCapabilityRegistry(),
     ): ModelManager {
         val repository = DefaultModelPresetRepository(presetStore, clock)
         val credentials = StoreBackedModelCredentialResolver(secretStore)
@@ -136,6 +142,7 @@ object ModelManagers {
             ioDispatcher = ioDispatcher,
             monitorEnabled = monitorEnabled,
             transport = transport,
+            capabilityRegistry = capabilityRegistry,
         )
     }
 }
