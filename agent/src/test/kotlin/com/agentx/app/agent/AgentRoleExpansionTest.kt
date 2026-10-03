@@ -336,7 +336,14 @@ class AgentRoleExpansionTest {
         assertTrue(ListDirectoryTool.NAME in AgentCatalog.SECURITY_REVIEWER.allowedTools)
         assertTrue(WriteFileTool.NAME in AgentCatalog.FAST_CODER.allowedTools)
         assertTrue(WriteFileTool.NAME in AgentCatalog.DOCS.allowedTools)
-        assertTrue(AgentCatalog.COMMIT_PR.allowedTools.isEmpty())
+        // Commit/PR inspects what would be committed. Git and GitHub write tools do
+        // not exist yet, so it holds read-only inspection tools and no mutating one.
+        // An empty list was the old bug: it made the sub-agent factory hand this role
+        // the entire tool registry instead.
+        assertTrue(ListDirectoryTool.NAME in AgentCatalog.COMMIT_PR.allowedTools)
+        assertTrue(ReadFileTool.NAME in AgentCatalog.COMMIT_PR.allowedTools)
+        assertFalse(WriteFileTool.NAME in AgentCatalog.COMMIT_PR.allowedTools)
+        assertFalse(AgentProtocol.DELEGATE_TOOL in AgentCatalog.COMMIT_PR.allowedTools)
         assertNull(AgentCatalog.PLANNER.modelPreference)
         assertNull(AgentCatalog.FAST_CODER.modelPreference)
         assertNull(AgentCatalog.SECURITY_REVIEWER.modelPreference)
