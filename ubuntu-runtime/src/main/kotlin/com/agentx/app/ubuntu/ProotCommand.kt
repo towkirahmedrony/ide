@@ -5,8 +5,9 @@ package com.agentx.app.ubuntu
  *
  * A bind with no [guest] exposes the host path at the same path inside the guest, which is
  * what `/dev`, `/proc` and `/sys` need. A bind with a [guest] is how an AgentX project is
- * exposed: the real project directory is mounted at [ProotCommand.GUEST_PROJECT_ROOT] so a
- * file created in the terminal is the same file the IDE's Files and editor show.
+ * exposed: the real project directory — a repository AgentX cloned into its managed storage, or
+ * an existing folder picked from phone storage — is mounted at [ProotCommand.GUEST_PROJECT_ROOT]
+ * so a file created in the terminal is the same file the IDE's Files and editor show.
  */
 data class BindMount(val host: String, val guest: String? = null) {
     init {
@@ -65,8 +66,13 @@ data class ProotInvocation(
  */
 object ProotCommand {
 
-    /** Where an AgentX project is exposed inside the guest. */
-    const val GUEST_PROJECT_ROOT: String = "/workspace/project"
+    /**
+     * Where an AgentX project is exposed inside the guest: exactly `/workspace`, regardless of
+     * where the project comes from (a clone in managed storage or a folder picked through the
+     * Android Storage Access Framework). The host directory is bound here; nothing is copied
+     * into the rootfs.
+     */
+    const val GUEST_PROJECT_ROOT: String = "/workspace"
 
     /** The guest home directory. PRoot's fake root makes the guest user `root`. */
     const val GUEST_HOME: String = "/root"
@@ -248,9 +254,16 @@ object ProotCommand {
         return binds
     }
 
-    /** Adds the project bind when a real host directory is available. */
+    /**
+     * Adds the project bind when a real host directory is available.
+     *
+     * At most one project bind is ever generated — this function appends exactly one or nothing,
+     * and [infrastructureBinds] never carries a [GUEST_PROJECT_ROOT] guest — so the guest cannot
+     * end up with a duplicate `/workspace` binding.
+     */
     fun withProject(binds: List<BindMount>, projectHostPath: String?): List<BindMount> {
         if (projectHostPath.isNullOrBlank()) return binds
+        if (binds.any { it.guest == GUEST_PROJECT_ROOT }) return binds
         return binds + BindMount(projectHostPath, GUEST_PROJECT_ROOT)
     }
 }

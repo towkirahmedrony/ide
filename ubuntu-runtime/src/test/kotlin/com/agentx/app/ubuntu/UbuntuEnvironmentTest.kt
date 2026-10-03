@@ -24,7 +24,7 @@ class UbuntuEnvironmentTest {
         assertTrue(environment.contains("LANG=C.UTF-8"))
         assertTrue(environment.contains("PATH=${UbuntuEnvironment.GUEST_PATH}"))
         assertTrue(environment.contains("AGENTX_RUNTIME=ubuntu"))
-        assertTrue(environment.contains("AGENTX_PROJECT=/workspace/project"))
+        assertTrue(environment.contains("AGENTX_PROJECT=/workspace"))
     }
 
     @Test

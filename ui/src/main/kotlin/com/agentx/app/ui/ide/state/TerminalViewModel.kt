@@ -23,7 +23,6 @@ import com.agentx.app.ubuntu.AgentxRuntimeState
 import com.agentx.app.ubuntu.LocalUbuntuRuntime
 import com.agentx.app.ubuntu.NativeRuntimeLayout
 import com.agentx.app.ubuntu.RuntimeStatus
-import com.agentx.app.ubuntu.UbuntuWorkspaceMaterialization
 import com.termux.terminal.TerminalSession
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -198,9 +197,11 @@ class TerminalViewModel(
     /**
      * The workspace's opaque handle (a `content://` tree URI, or a path), when the app has one.
      *
-     * The embedded Ubuntu runtime binds a real directory at `/workspace/project`; a SAF tree has
-     * no POSIX path, so it has to be materialised first. That needs the handle, which the
-     * workspace manager owns — the display location alone is not enough.
+     * The embedded Ubuntu runtime binds the project at `/workspace`. A real path (a project in
+     * managed storage) is bound as-is; a SAF tree is resolved to the phone-storage path it names
+     * and bound in place, so the terminal, the file browser and the editor all operate on the
+     * same original files — nothing is copied. That needs the handle, which the workspace manager
+     * owns — the display location alone is not enough.
      */
     private val workspaceHandle: () -> String? = { null },
     private val runtime: TermuxRuntime?,
@@ -379,8 +380,8 @@ class TerminalViewModel(
         // back to the workspace shell rather than restarting one that no longer exists.
         val background = scratch || (handle != null && current.sessions.find(handle) == null)
         viewModelScope.launch {
-            // Never on the UI thread: resolving the developer spec can copy a SAF project into app
-            // storage, and starting a process must not block a frame either.
+            // Never on the UI thread: resolving the developer spec probes the filesystem, and
+            // starting a process must not block a frame either.
             val resolved = withContext(Dispatchers.IO) { runCatching { spec(background) } }
             val spec = resolved.getOrNull()
             if (spec != null) {
@@ -508,8 +509,9 @@ class TerminalViewModel(
             openLegacy(current, scratch)
             return
         }
-        // A SAF project may have to be materialised before the guest can bind it, which is disk
-        // I/O; the session is opened on the main dispatcher once that is done.
+        // The project handle has to be matched against real directories before the guest can
+        // bind it, which is disk I/O; the session is opened on the main dispatcher once that is
+        // done.
         val key = workspaceKey(scratch)
         viewModelScope.launch {
             val resolved = withContext(Dispatchers.IO) {
@@ -589,9 +591,10 @@ class TerminalViewModel(
         val current = checkNotNull(runtime) { "Termux runtime is not available" }
         val developer = developerRuntime
         if (developer != null) {
-            // Resolving this can touch the filesystem (a SAF project is materialised into app
-            // storage first). A failure there propagates: the caller turns it into a visible
-            // failure with the real error rather than quietly opening a different shell.
+            // Resolving this can touch the filesystem (the workspace handle is matched against
+            // real directories, including the path a SAF tree names). A failure there propagates:
+            // the caller turns it into a visible failure with the real error rather than quietly
+            // opening a different shell.
             return developerSpecNow(current, developer, workspaceKey(scratch), scratch)
         }
         return current.specFor(
@@ -656,10 +659,11 @@ class TerminalViewModel(
             DeveloperLogger.warn(DeveloperLogCategory.ROOTFS, developer.notReadyReason())
             return null
         }
-        val projectHostPath = if (scratch) null else projectHostPath(current, developer)
+        val handle = if (scratch) null else projectHandle(current)
+
         return developer.specFor(
             workspaceKey = key,
-            projectHostPath = projectHostPath,
+            projectHandle = handle,
             displayLocation = workspaceLocation(),
             extraEnvironment = extraEnvironment(scratch),
         )
@@ -668,9 +672,9 @@ class TerminalViewModel(
     /**
      * The same spec, resolved without suspending.
      *
-     * Used by [restart], which runs on the main thread. The copy a SAF project needs has already
-     * been made by [open] by the time a session exists, so this normally just reads a cached
-     * path.
+     * Used by [restart], which runs on the main thread. Resolving the handle is string matching
+     * against the filesystem — a SAF tree is translated to its phone-storage path — so no copy
+     * and no suspending work stands between a restart and a shell.
      */
     private fun developerSpecNow(
         current: TermuxRuntime,
@@ -686,33 +690,25 @@ class TerminalViewModel(
             DeveloperLogger.warn(DeveloperLogCategory.ROOTFS, developer.notReadyReason())
             return null
         }
-        val projectHostPath = if (scratch) null else (legacyHostPath(current) ?: materialize(developer))
+        val handle = if (scratch) null else projectHandle(current)
         return developer.specFor(
             workspaceKey = key,
-            projectHostPath = projectHostPath,
+            projectHandle = handle,
             displayLocation = workspaceLocation(),
             extraEnvironment = extraEnvironment(scratch),
         )
     }
 
     /**
-     * The host directory to bind at `/workspace/project`.
+     * The workspace handle to bind at `/workspace`.
      *
-     * A real path is used as-is. A SAF tree has none, so it is materialised into app storage
-     * first: a `content://` URI is never handed to PRoot, which could not mount it.
+     * The opaque handle first: a real path (a project in managed storage) is used as-is, and a
+     * SAF `content://` tree is resolved to the phone-storage path it names — the original folder,
+     * in its original location, never a copy. Only when the app has no handle does this fall
+     * back to the directory the legacy runtime resolved.
      */
-    private suspend fun projectHostPath(current: TermuxRuntime, developer: LocalUbuntuRuntime): String? {
-        legacyHostPath(current)?.let { return it }
-        return withContext(Dispatchers.IO) { materialize(developer) }
-    }
-
-    private fun materialize(developer: LocalUbuntuRuntime): String? {
-        val handle = workspaceHandle() ?: return null
-        return when (val prepared = developer.materializeProject(handle, workspaceId)) {
-            is UbuntuWorkspaceMaterialization.Ready -> prepared.hostPath
-            else -> null
-        }
-    }
+    private fun projectHandle(current: TermuxRuntime): String? =
+        workspaceHandle() ?: legacyHostPath(current)
 
     /**
      * The real host directory of the workspace, when it has one.

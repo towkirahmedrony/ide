@@ -29,7 +29,7 @@ class ProotCommandTest {
                 "-r", layout.rootfs,
                 "-0",
                 "-l",
-                "-w", "/workspace/project",
+                "-w", "/workspace",
                 "-b", "/dev",
                 "-b", "/tmp:/tmp",
                 "/bin/bash", "--login",

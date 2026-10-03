@@ -78,7 +78,13 @@ class LocalUbuntuRuntime(
         dnsServers = ::activeDnsServers,
     )
 
-    /** Copies a SAF project into app storage so it can be bind-mounted as `/workspace/project`. */
+    /**
+     * Optional SAF materialiser: copies a `content://` tree into app storage.
+     *
+     * Not part of the terminal's path — the terminal resolves a SAF folder to its original
+     * phone-storage path and binds it in place at `/workspace`. Kept for callers that explicitly
+     * want a private copy.
+     */
     private val materializer = UbuntuWorkspaceMaterializer(appContext, layout)
 
     /**
@@ -560,10 +566,13 @@ class LocalUbuntuRuntime(
     }
 
     /**
-     * Prepares a project for the guest.
+     * Prepares an explicit private copy of a project for a caller that needs one.
      *
-     * A real directory is bound as-is; a `content://` tree is copied into app storage first, so
-     * PRoot is never handed a URI it cannot mount. Blocking: call it off the main thread.
+     * Not how the terminal opens a project: a real directory needs nothing, and a SAF folder is
+     * resolved to its original phone-storage path and bound in place at
+     * [ProotCommand.GUEST_PROJECT_ROOT] — never copied. This exists only for callers that ask
+     * for a copy, so PRoot is never handed a URI it cannot mount. Blocking: call it off the main
+     * thread.
      */
     fun materializeProject(handle: String?, workspaceId: String): UbuntuWorkspaceMaterialization =
         materializer.materialize(handle, workspaceId)
@@ -626,17 +635,22 @@ class LocalUbuntuRuntime(
      * The returned spec is a normal `TermuxShellSpec`: the existing vendored PTY/session
      * machinery runs it unchanged, except that the executable is PRoot and the arguments are
      * the guest command. Nothing about the terminal emulator changes.
+     *
+     * @param projectHandle the workspace handle: a filesystem path (a project in managed
+     *   storage) or a SAF `content://` tree URI. [UbuntuProjectBindings.resolve] derives the
+     *   phone-storage path a SAF tree names, so the original folder is bound at
+     *   [ProotCommand.GUEST_PROJECT_ROOT] without being copied.
      */
     fun specFor(
         workspaceKey: String,
-        projectHostPath: String?,
+        projectHandle: String?,
         displayLocation: String?,
         extraEnvironment: Map<String, String> = emptyMap(),
     ): TermuxShellSpec? {
         if (!isReady()) return null
         val binding = UbuntuProjectBindings.resolve(
-            handle = projectHostPath,
-            displayLocation = displayLocation ?: projectHostPath,
+            handle = projectHandle,
+            displayLocation = displayLocation ?: projectHandle,
             isDirectory = { path -> File(path).let { it.isDirectory && it.canRead() } },
         )
         return specForBinding(workspaceKey, binding, extraEnvironment)

@@ -51,4 +51,64 @@ class UbuntuProjectBindingsTest {
         assertNull(UbuntuProjectBindings.asFilesystemPath("relative/path"))
         assertNull(UbuntuProjectBindings.asFilesystemPath(""))
     }
+
+    @Test
+    fun `a saf tree resolves to the phone storage path it names`() {
+        assertEquals(
+            "/storage/emulated/0/app",
+            UbuntuProjectBindings.safFilesystemPath(
+                "content://com.android.externalstorage.documents/tree/primary%3Aapp",
+            ),
+        )
+        assertEquals(
+            "/storage/emulated/0/Projects/demo app",
+            UbuntuProjectBindings.safFilesystemPath(
+                "content://com.android.externalstorage.documents/tree/primary%3AProjects%2Fdemo%20app",
+            ),
+        )
+        assertEquals(
+            "/storage/1234-ABCD/backups",
+            UbuntuProjectBindings.safFilesystemPath(
+                "content://com.android.externalstorage.documents/tree/1234-ABCD%3Abackups",
+            ),
+        )
+        // The tree id names the picked folder itself; a document id that follows is ignored.
+        assertEquals(
+            "/storage/emulated/0/app",
+            UbuntuProjectBindings.safFilesystemPath(
+                "content://com.android.externalstorage.documents/tree/primary%3Aapp" +
+                    "/document/primary%3Aapp%2Fsub",
+            ),
+        )
+    }
+
+    @Test
+    fun `only provably local tree uris produce a saf path`() {
+        // Not the external-storage provider: a cloud tree has no local path to derive.
+        assertNull(
+            UbuntuProjectBindings.safFilesystemPath(
+                "content://com.google.android.apps.docs.storage/tree/primary%3Aapp",
+            ),
+        )
+        // Not a tree URI.
+        assertNull(
+            UbuntuProjectBindings.safFilesystemPath(
+                "content://com.android.externalstorage.documents/document/primary%3Aapp",
+            ),
+        )
+        // No volume separator, and traversal segments are refused rather than guessed at.
+        assertNull(
+            UbuntuProjectBindings.safFilesystemPath(
+                "content://com.android.externalstorage.documents/tree/nocolon",
+            ),
+        )
+        assertNull(
+            UbuntuProjectBindings.safFilesystemPath(
+                "content://com.android.externalstorage.documents/tree/primary%3A..%2Fetc",
+            ),
+        )
+        // Plain paths and nothing at all are not SAF handles.
+        assertNull(UbuntuProjectBindings.safFilesystemPath("/storage/emulated/0/app"))
+        assertNull(UbuntuProjectBindings.safFilesystemPath(null))
+    }
 }

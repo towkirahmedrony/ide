@@ -42,8 +42,8 @@ references `TermuxBootstrapCatalog`, `TermuxBootstrapInstaller`, `TermuxPrefixPo
 | `UbuntuRuntimeVerifier.kt` | Runs the installed rootfs *through PRoot* and only then lets it become READY — including the `perl`/`uncompress` hard-link probes. |
 | `UbuntuToolchain.kt` | The `apt`/`dpkg` sanity check, `apt-get update`, the package install, and the check that runs every required executable. It decides whether the tree can be retried or must be recreated. |
 | `UbuntuEnvironment.kt` | The guest `HOME`/`USER`/`PATH`/`TERM`/`TMPDIR`/`AGENTX_RUNTIME` environment, with credential filtering. |
-| `UbuntuWorkspaceBinding.kt` | How a project is bind-mounted (or why it is not). |
-| `UbuntuWorkspaceMaterializer.kt` | Copies a SAF `content://` project into app storage so it can be bind-mounted. |
+| `UbuntuWorkspaceBinding.kt` | Resolves a workspace handle into a bind: a real host path as-is, a SAF tree URI as the phone-storage path it names, both exposed at `/workspace` — or why it is not bound. |
+| `UbuntuWorkspaceMaterializer.kt` | Optional: copies a SAF `content://` project into app storage for a caller that explicitly wants a private copy. The terminal does not use it — it binds the original folder. |
 | `AgentxExecution.kt` | The backend-agnostic `execute(command, workingDirectory)` seam for future agents. |
 | `LocalUbuntuRuntime.kt` | The runtime: status flow, provisioning + verification, project preparation, terminal spec, toolchain install, process execution. |
 
@@ -235,16 +235,19 @@ progress. On success the shell is replaced automatically; no bootstrap command i
 
 ## Workspaces
 
-A project with a real host path is bind-mounted to `/workspace/project`, so a file created in the
-terminal is the same file the IDE's Files and editor see.
+Regardless of where a project comes from, the opened project is exposed to the guest at exactly
+`/workspace`. The real host directory — whether it is a repository AgentX cloned into its managed
+storage or an existing folder picked from phone storage — is bind-mounted there, so a file created
+in the terminal is the same file the IDE's Files and editor see, the shell starts with `pwd` =
+`/workspace`, and nothing is ever copied into the rootfs.
 
-A project opened through Android's Storage Access Framework is a `content://` tree and has no
-POSIX path — a `content://` URI is **never** passed to PRoot. `UbuntuWorkspaceMaterializer`
-copies the tree into `<runtimeDir>/workspaces/<name>-<hash>` (bounded, path-safe, using the same
-hostile-name-checked copier as the legacy runtime), marks it complete, and *that* directory is
-bound at `/workspace/project`. The copy is one-way and is labelled as a copy: commands run against
-it and nothing is written back to the original tree. If the copy cannot be made, the shell runs in
-the guest home with the reason, and the terminal stays usable.
+A project opened through Android's Storage Access Framework keeps its files in their original
+location. The persisted tree URI (`primary:Projects/app` style document id) is resolved back to
+the phone-storage path it names (`/storage/emulated/0/Projects/app`) and that directory is what
+gets bound — no copy is made. A `content://` URI is **never** passed to PRoot. When the folder has
+no derivable filesystem path (a cloud provider, say), or the app cannot read the path ("All files
+access" not granted), no bind is made: the shell runs in the guest home with the reason, and the
+terminal stays usable.
 
 With no project selected or in a scratch shell, the terminal starts in `/root` (the guest home).
 
@@ -349,5 +352,5 @@ vendors `jniLibs/arm64-v8a/`, assembles the APK, and fails if `libproot.so` /
 2. the six guest probes pass and the runtime reaches READY;
 3. `/bin/bash --login` starts interactively with a working PTY (typing, Ctrl+C, Ctrl+D, resize);
 4. `apt-get` and `dpkg` work, and `installToolchain()` installs git, gh, python3, node and npm;
-5. a project is visible at `/workspace/project` and `touch` there appears in the IDE's file tree;
+5. a project is visible at `/workspace` and `touch` there appears in the IDE's file tree;
 6. `python3 -m http.server 8080` stays reachable at `http://127.0.0.1:8080` and Ctrl+C stops it.

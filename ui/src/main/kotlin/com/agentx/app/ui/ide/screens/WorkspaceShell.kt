@@ -108,9 +108,10 @@ fun WorkspaceShell(
                         ?.takeIf { it.workspace.id.value == workspaceId }
                         ?.workspace?.metadata?.displayLocation
                 },
-                // The opaque handle of this workspace, so the embedded Ubuntu runtime can
-                // materialise a SAF tree into a real directory before bind-mounting it at
-                // /workspace/project. A content:// URI is never passed to PRoot.
+                // The opaque handle of this workspace, so the embedded Ubuntu runtime can bind
+                // the project at /workspace: a real path as-is, or a SAF tree resolved to its
+                // original phone-storage path (never a copy). A content:// URI is never passed
+                // to PRoot.
                 workspaceHandle = {
                     dependencies.workspaceManager.current
                         ?.takeIf { it.workspace.id.value == workspaceId }

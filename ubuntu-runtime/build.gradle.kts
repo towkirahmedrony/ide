@@ -54,9 +54,9 @@ dependencies {
     // bootstrap reuse.
     api(project(":termux-runtime"))
 
-    // A SAF project (`content://` tree) is materialised into app storage before it is bind-mounted
-    // into the guest as /workspace/project. This is the same reader the workspace-android module
-    // uses; it does not pull in any bootstrap code.
+    // Reads SAF trees (`content://` URIs) for the optional materialiser. The terminal itself
+    // binds the original project folder at /workspace from its real path and never copies.
+    // This is the same reader the workspace-android module uses; no bootstrap code is pulled in.
     implementation(libs.androidx.documentfile)
 
     implementation(libs.kotlinx.coroutines.core)

@@ -16,9 +16,10 @@ interface WorkspaceManager {
      * The opaque handle the current workspace was opened with, when it is known.
      *
      * Still opaque to the domain: it is the platform's identifier (`content://` tree URI, or a
-     * path), and callers must not parse it. It exists so a backend that needs to *materialise*
-     * the workspace on disk — the embedded Ubuntu runtime bind-mounts a real directory at
-     * `/workspace/project` — can ask for it instead of guessing. `null` when nothing is open.
+     * path), and callers must not parse it. It exists so the embedded Ubuntu runtime can
+     * bind-mount the workspace at `/workspace` — a real path as-is, a SAF tree resolved to the
+     * folder it names — by asking for the handle instead of guessing. `null` when nothing is
+     * open.
      */
     val currentHandle: String? get() = null
 

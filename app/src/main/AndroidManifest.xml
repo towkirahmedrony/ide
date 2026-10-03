@@ -6,6 +6,12 @@
          authorization pages are opened in the user's own browser. -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- "All files access" (special, granted by the user in Android Settings) is what lets the
+         PRoot guest read and write a project folder that was picked through the Storage Access
+         Framework directly at its original path — bind-mounted in place at /workspace, with no
+         copy into app storage. The bind falls back to the guest home until it is granted. -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+
     <application
         android:allowBackup="true"
         android:label="@string/app_name"

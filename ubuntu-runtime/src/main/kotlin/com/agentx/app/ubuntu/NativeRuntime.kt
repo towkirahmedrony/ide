@@ -130,9 +130,9 @@ data class NativeRuntimeLayout(
     val resolvConf: String get() = "$runtimeDir/etc/resolv.conf"
 
     /**
-     * Where a SAF project is materialised so the guest can bind-mount it at
-     * `/workspace/project`. A `content://` tree has no POSIX path, so it is copied here first;
-     * PRoot is never handed a `content://` URI.
+     * Where an explicitly requested SAF project copy lives (see
+     * [UbuntuWorkspaceMaterializer]). The terminal does not copy projects: it bind-mounts the
+     * original host directory at `/workspace`, and PRoot is never handed a `content://` URI.
      */
     val workspaces: String get() = "$runtimeDir/$WORKSPACES_DIR"
 
