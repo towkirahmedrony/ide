@@ -5,6 +5,7 @@ import com.agentx.app.model.ModelConfig
 import com.agentx.app.model.capability.CapabilitySupport
 import com.agentx.app.model.capability.InMemoryModelCapabilityRegistry
 import com.agentx.app.model.capability.ModelCapability
+import com.agentx.app.model.capability.ModelCapabilityRegistry
 import com.agentx.app.model.catalog.DefaultModelCatalogRegistry
 import com.agentx.app.model.catalog.InMemoryModelCatalogStore
 import com.agentx.app.model.catalog.ModelCatalogState
@@ -481,11 +482,13 @@ class ProviderModelDiscoveryTest {
             ),
         )
 
-        fun factory() = RemoteModelCatalogFactory(
+        // The factory registers into whichever registry the runtime owns, as the
+        // production wiring does, so a restart really does repopulate the new one.
+        fun factory(registry: ModelCapabilityRegistry) = RemoteModelCatalogFactory(
             transport = transport,
             clock = { 0L },
             store = store,
-            capabilityRegistry = capabilities,
+            capabilityRegistry = registry,
             discoverySource = { providerId, config ->
                 ModelDiscovery {
                     GeminiModelProvider(id = providerId, transport = transport).discoverModels(config)
@@ -495,7 +498,7 @@ class ProviderModelDiscoveryTest {
 
         DefaultModelCatalogRegistry(
             connections = { mapOf(ModelProviderIds.GEMINI to connection) },
-            factory = factory(),
+            factory = factory(capabilities),
             store = store,
             capabilityRegistry = capabilities,
         ).refresh(ModelProviderIds.GEMINI, force = true)
@@ -506,7 +509,7 @@ class ProviderModelDiscoveryTest {
         val restartedCapabilities = InMemoryModelCapabilityRegistry()
         val restarted = DefaultModelCatalogRegistry(
             connections = { mapOf(ModelProviderIds.GEMINI to connection) },
-            factory = factory(),
+            factory = factory(restartedCapabilities),
             store = store,
             capabilityRegistry = restartedCapabilities,
         )
