@@ -23,6 +23,11 @@ object AgentRoleRequirements {
         AgentRole.DEBUGGER,
         AgentRole.REVIEWER,
         AgentRole.TESTER,
+        AgentRole.PLANNER,
+        AgentRole.FAST_CODER,
+        AgentRole.SECURITY_REVIEWER,
+        AgentRole.DOCS,
+        AgentRole.COMMIT_PR,
         -> TOOL_ENABLED
     }
 

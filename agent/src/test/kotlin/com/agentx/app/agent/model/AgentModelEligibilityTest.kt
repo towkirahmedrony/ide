@@ -292,9 +292,15 @@ class AgentModelEligibilityTest {
             AgentModelProviders.OPENAI_COMPATIBLE_LOCAL to localConfig(),
         )
         val live = resolver(connections, manager())
+        val capableDefault = config(
+            "active",
+            "active-model",
+            capabilities = ModelCapabilities(toolCalling = true, streaming = true),
+        )
 
         AgentRole.entries.forEach { role ->
-            val result = live.resolveForRole(role, active)
+            val fallback = if (AgentModelPreferences.DEFAULT[role] == null) capableDefault else active
+            val result = live.resolveForRole(role, fallback)
             assertTrue(result.eligible, "role ${role.name} should resolve an eligible model")
             assertTrue(result.eligibility.profile.supports(ModelCapability.TOOL_CALLING))
             assertTrue(result.eligibility.profile.supports(ModelCapability.STREAMING))

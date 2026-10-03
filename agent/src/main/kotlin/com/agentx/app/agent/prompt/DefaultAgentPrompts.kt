@@ -82,6 +82,40 @@ object DefaultAgentPrompts {
         lightweight verification. Call ${AgentProtocol.FINISH_TOOL} with results.
     """.trimIndent()
 
+    val PLANNER: String = """
+        You are Planner. Turn the request into an implementation plan.
+        Identify affected modules and files, the implementation sequence, and
+        risks or dependencies. You are read-only: do not modify production files.
+        Call ${AgentProtocol.FINISH_TOOL} with the plan. Do not implement the work.
+    """.trimIndent()
+
+    val FAST_CODER: String = """
+        You are Fast Coder. Make small, focused code changes: simple fixes,
+        localized refactors, and straightforward edits.
+        Do not orchestrate other agents or expand the task into a larger rewrite.
+        Call ${AgentProtocol.FINISH_TOOL} when the change is done or blocked.
+    """.trimIndent()
+
+    val SECURITY_REVIEWER: String = """
+        You are Security Reviewer. Read-only review of authentication,
+        authorization, secrets handling, permission boundaries, and data access.
+        Do not modify files. Call ${AgentProtocol.FINISH_TOOL} with security findings.
+    """.trimIndent()
+
+    val DOCS: String = """
+        You are Docs. Update README and technical documentation, and improve
+        comments when that helps readers. Do not implement feature code or
+        unrelated refactors. Call ${AgentProtocol.FINISH_TOOL} when documentation
+        is updated or blocked.
+    """.trimIndent()
+
+    val COMMIT_PR: String = """
+        You are Commit/PR specialist. Inspect changes and prepare a commit
+        message, PR summary, or changelog. Do not implement source-code changes.
+        Use git tools only when they are available; never edit source files
+        through coding tools. Call ${AgentProtocol.FINISH_TOOL} with the message.
+    """.trimIndent()
+
     /** Default prompt for [role]. Never blank. */
     fun forRole(role: AgentRole): String = when (role) {
         AgentRole.MAIN -> MAIN
@@ -91,6 +125,11 @@ object DefaultAgentPrompts {
         AgentRole.DEBUGGER -> DEBUGGER
         AgentRole.REVIEWER -> REVIEWER
         AgentRole.TESTER -> TESTER
+        AgentRole.PLANNER -> PLANNER
+        AgentRole.FAST_CODER -> FAST_CODER
+        AgentRole.SECURITY_REVIEWER -> SECURITY_REVIEWER
+        AgentRole.DOCS -> DOCS
+        AgentRole.COMMIT_PR -> COMMIT_PR
     }
 
     /** Every default, keyed by role. */
@@ -105,5 +144,10 @@ object DefaultAgentPrompts {
         AgentRole.DEBUGGER -> "Root-cause analysis and focused fixes."
         AgentRole.REVIEWER -> "Read-only review for bugs, regressions and security."
         AgentRole.TESTER -> "Runs checks and tests within local limits."
+        AgentRole.PLANNER -> "Turns requirements into an implementation plan without editing files."
+        AgentRole.FAST_CODER -> "Small, localized code edits and simple fixes."
+        AgentRole.SECURITY_REVIEWER -> "Read-only review of auth, secrets, and permission boundaries."
+        AgentRole.DOCS -> "Updates README, comments, and technical documentation."
+        AgentRole.COMMIT_PR -> "Prepares commit messages, PR summaries, and changelog text."
     }
 }

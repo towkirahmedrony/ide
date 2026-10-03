@@ -112,7 +112,88 @@ object AgentCatalog {
         modelPreference = AgentModelIds.GROQ,
     )
 
-    fun all(): List<AgentDefinition> = listOf(MAIN, EXPLORER, RESEARCHER, CODER, DEBUGGER, REVIEWER, TESTER)
+    val PLANNER: AgentDefinition = AgentDefinition(
+        role = AgentRole.PLANNER,
+        name = "Planner",
+        systemInstructions = DefaultAgentPrompts.PLANNER,
+        allowedTools = listOf(
+            ListDirectoryTool.NAME,
+            SearchFilesTool.NAME,
+            ReadFileTool.NAME,
+        ),
+        permissionLevel = PermissionLevel.READ_ONLY,
+        isReadOnly = true,
+        maxSteps = DEFAULT_SUB_MAX_STEPS,
+    )
+
+    val FAST_CODER: AgentDefinition = AgentDefinition(
+        role = AgentRole.FAST_CODER,
+        name = "Fast Coder",
+        systemInstructions = DefaultAgentPrompts.FAST_CODER,
+        allowedTools = listOf(
+            ListDirectoryTool.NAME,
+            SearchFilesTool.NAME,
+            ReadFileTool.NAME,
+            WriteFileTool.NAME,
+        ),
+        permissionLevel = PermissionLevel.WORKSPACE_WRITE,
+        isReadOnly = false,
+        maxSteps = DEFAULT_SUB_MAX_STEPS,
+    )
+
+    val SECURITY_REVIEWER: AgentDefinition = AgentDefinition(
+        role = AgentRole.SECURITY_REVIEWER,
+        name = "Security Reviewer",
+        systemInstructions = DefaultAgentPrompts.SECURITY_REVIEWER,
+        allowedTools = listOf(
+            ListDirectoryTool.NAME,
+            SearchFilesTool.NAME,
+            ReadFileTool.NAME,
+        ),
+        permissionLevel = PermissionLevel.READ_ONLY,
+        isReadOnly = true,
+        maxSteps = DEFAULT_SUB_MAX_STEPS,
+    )
+
+    val DOCS: AgentDefinition = AgentDefinition(
+        role = AgentRole.DOCS,
+        name = "Docs",
+        systemInstructions = DefaultAgentPrompts.DOCS,
+        allowedTools = listOf(
+            ListDirectoryTool.NAME,
+            SearchFilesTool.NAME,
+            ReadFileTool.NAME,
+            WriteFileTool.NAME,
+        ),
+        permissionLevel = PermissionLevel.WORKSPACE_WRITE,
+        isReadOnly = false,
+        maxSteps = DEFAULT_SUB_MAX_STEPS,
+    )
+
+    val COMMIT_PR: AgentDefinition = AgentDefinition(
+        role = AgentRole.COMMIT_PR,
+        name = "Commit/PR",
+        systemInstructions = DefaultAgentPrompts.COMMIT_PR,
+        allowedTools = emptyList(),
+        permissionLevel = PermissionLevel.GIT_WRITE,
+        isReadOnly = false,
+        maxSteps = DEFAULT_SUB_MAX_STEPS,
+    )
+
+    fun all(): List<AgentDefinition> = listOf(
+        MAIN,
+        EXPLORER,
+        RESEARCHER,
+        CODER,
+        DEBUGGER,
+        REVIEWER,
+        TESTER,
+        PLANNER,
+        FAST_CODER,
+        SECURITY_REVIEWER,
+        DOCS,
+        COMMIT_PR,
+    )
 
     fun definition(role: AgentRole): AgentDefinition = when (role) {
         AgentRole.MAIN -> MAIN
@@ -122,5 +203,10 @@ object AgentCatalog {
         AgentRole.DEBUGGER -> DEBUGGER
         AgentRole.REVIEWER -> REVIEWER
         AgentRole.TESTER -> TESTER
+        AgentRole.PLANNER -> PLANNER
+        AgentRole.FAST_CODER -> FAST_CODER
+        AgentRole.SECURITY_REVIEWER -> SECURITY_REVIEWER
+        AgentRole.DOCS -> DOCS
+        AgentRole.COMMIT_PR -> COMMIT_PR
     }
 }

@@ -292,6 +292,11 @@ class AgentModelsViewModel(
             AgentRole.DEBUGGER -> "Diagnoses and fixes errors."
             AgentRole.REVIEWER -> "Reviews changes for correctness and regressions."
             AgentRole.TESTER -> "Analyzes tests, logs, and verification results."
+            AgentRole.PLANNER -> "Turns requirements into an implementation plan."
+            AgentRole.FAST_CODER -> "Makes small, localized code edits."
+            AgentRole.SECURITY_REVIEWER -> "Reviews auth, secrets, and permission boundaries."
+            AgentRole.DOCS -> "Updates README and technical documentation."
+            AgentRole.COMMIT_PR -> "Prepares commit messages and PR summaries."
         }
     }
 }

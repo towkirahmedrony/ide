@@ -11,6 +11,11 @@ enum class AgentRole {
     DEBUGGER,
     REVIEWER,
     TESTER,
+    PLANNER,
+    FAST_CODER,
+    SECURITY_REVIEWER,
+    DOCS,
+    COMMIT_PR,
 }
 
 enum class AgentStatus {

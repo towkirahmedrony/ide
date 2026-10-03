@@ -419,4 +419,9 @@ private fun displayName(role: AgentRole): String = when (role) {
     AgentRole.DEBUGGER -> "Debugger"
     AgentRole.REVIEWER -> "Reviewer"
     AgentRole.TESTER -> "Tester"
+    AgentRole.PLANNER -> "Planner"
+    AgentRole.FAST_CODER -> "Fast Coder"
+    AgentRole.SECURITY_REVIEWER -> "Security Reviewer"
+    AgentRole.DOCS -> "Docs"
+    AgentRole.COMMIT_PR -> "Commit/PR"
 }
