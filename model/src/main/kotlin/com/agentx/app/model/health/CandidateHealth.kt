@@ -243,9 +243,17 @@ class CandidateHealthTracker(
         val now = clock()
         return synchronized(lock) {
             records.remove(modelKey(providerId, modelId, accountId))
-            // A model succeeding does not erase a provider-wide credentials problem,
-            // and a provider-wide success does clear the model records an outage left.
-            records.remove(providerKey(providerId, accountId))
+            // A success clears the problem attributed to the scope that succeeded, and
+            // nothing wider. One model answering says nothing about a provider-wide
+            // credentials or configuration problem, so that record is kept; a
+            // provider-wide success does clear it, which is also what clears the
+            // per-model records an outage left behind.
+            val clearedScope = if (modelId == null) {
+                records.remove(providerKey(providerId, accountId))
+                CandidateHealthScope.PROVIDER
+            } else {
+                CandidateHealthScope.MODEL
+            }
             val record = CandidateHealthRecord(
                 providerId = providerId,
                 modelId = modelId,
