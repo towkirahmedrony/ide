@@ -91,8 +91,11 @@ class ScopedToolRouter(
             )
         }
 
-        // 4. The role's policy, re-decided here and not taken from the caller.
-        if (!AgentToolPolicy.isAuthorized(role, toolName)) {
+        // 4. The role's policy, re-decided here and not taken from the caller. Only a
+        // tool the policy names can be denied on role grounds: a runtime-contributed
+        // tool it does not name keeps its own declared requirements, but it still has
+        // to be visible below, which is what stops a hidden tool from being called.
+        if (AgentToolPolicy.governs(toolName) && !AgentToolPolicy.isAuthorized(role, toolName)) {
             return deny(
                 toolName = toolName,
                 toolId = toolName,

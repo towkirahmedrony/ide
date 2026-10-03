@@ -175,8 +175,26 @@ object AgentToolPolicy {
         ),
     )
 
+    /**
+     * Every tool id some role grant names — the set this policy is authoritative
+     * for, and therefore the set the router is allowed to deny on role grounds.
+     */
+    private val governedToolIds: Set<String> =
+        ROLE_GRANTS.values.flatten().flatMap { grant -> grant.toolIds }.toSet()
+
     /** The grants [role] holds. Deterministic for the lifetime of the build. */
     fun grants(role: AgentRole): Set<ToolGrant> = ROLE_GRANTS[role].orEmpty()
+
+    /**
+     * True when this policy names [toolId] at all.
+     *
+     * The policy owns the built-in catalog. A tool it does not name is one the
+     * runtime contributed (a provider or integration tool): it is not granted here,
+     * so it is judged by its own declared permission, connection and capability
+     * requirements instead — and it still had to be visible to the run that invoked
+     * it, because visibility is derived from this policy.
+     */
+    fun governs(toolId: String): Boolean = toolId in governedToolIds
 
     /**
      * The tools [role] may know about, in presentation order, before the registry
