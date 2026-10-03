@@ -30,7 +30,6 @@ import com.agentx.app.tools.filesystem.ListDirectoryTool
 import com.agentx.app.tools.filesystem.ReadFileTool
 import com.agentx.app.tools.filesystem.SearchFilesTool
 import com.agentx.app.tools.filesystem.WriteFileTool
-import com.agentx.app.tools.isAvailable
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -69,7 +68,9 @@ class AgentToolPolicyTest {
 
     /** Throws once it runs, so "did it reach the executor?" is observable. */
     private class ProbeTool(
-        name: String,
+        // A property, not a plain parameter: a non-property constructor parameter is
+        // not in scope inside a function body, and execute() needs the name.
+        private val name: String,
         capabilities: Set<ToolCapability>,
         required: Set<ToolPermissionLevel> = emptySet(),
         permission: ToolPermissionDecision = ToolPermissionDecision.ALLOW,
@@ -427,7 +428,7 @@ class AgentToolPolicyTest {
         val available = registry()
 
         assertTrue(ReadFileTool.NAME in AgentToolPolicy.toolIdsFor(AgentRole.EXPLORER))
-        assertTrue(ReadFileTool.NAME in AgentToolPolicy.isAuthorized(AgentRole.EXPLORER, ReadFileTool.NAME))
+        assertTrue(AgentToolPolicy.isAuthorized(AgentRole.EXPLORER, ReadFileTool.NAME))
         assertFalse(ReadFileTool.NAME in AgentToolPolicy.visibleToolIds(AgentRole.EXPLORER, definitions(unavailable)))
         assertTrue(ReadFileTool.NAME in AgentToolPolicy.visibleToolIds(AgentRole.EXPLORER, definitions(available)))
     }
