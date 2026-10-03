@@ -47,19 +47,35 @@ object DelegationPolicy {
         val text = (task + " " + objective.orEmpty()).lowercase()
         if (text.isBlank()) return null
 
-        // Order matters: the most specific intents win over generic ones.
+        // Order matters: the most specific intents win over generic ones. Single
+        // words match on word boundaries so a substring like "latest" never counts
+        // as "test"; multi-word intents match as phrases.
         return when {
-            matches(text, "commit", "git ", "pull request", "pr ", "push ", "branch", "stage ") -> AgentRole.COMMIT_PR
-            matches(text, "vulnerab", "security", "exploit", "injection", "secret", "credential leak", "cve") -> AgentRole.SECURITY_REVIEWER
-            matches(text, "test", "unit test", "assert", "coverage", "spec ") -> AgentRole.TESTER
-            matches(text, "debug", "stack trace", "crash", "exception", "why is", "failing", "reproduce") -> AgentRole.DEBUGGER
-            matches(text, "review", "code review", "critique", "feedback on", "lgtm") -> AgentRole.REVIEWER
-            matches(text, "document", "readme", "docs", "javadoc", "kdoc", "changelog") -> AgentRole.DOCS
-            matches(text, "research", "look up", "search the web", "find online", "latest version", "best practice") -> AgentRole.RESEARCHER
-            matches(text, "plan", "break down", "roadmap", "design a", "strategy", "approach for") -> AgentRole.PLANNER
-            matches(text, "explore", "map ", "understand the", "where is", "locate", "trace", "how does") -> AgentRole.EXPLORER
-            matches(text, "quick", "trivial", "rename", "typo", "small edit", "one-line", "tweak") -> AgentRole.FAST_CODER
-            matches(text, "implement", "write code", "add ", "fix ", "edit ", "refactor", "change ", "create ", "build ") -> AgentRole.CODER
+            phrase(text, "pull request") || word(text, "commit", "git", "pr", "push", "branch", "stage", "merge") ->
+                AgentRole.COMMIT_PR
+            word(text, "vulnerability", "vulnerabilities", "vulnerable", "security", "exploit", "injection", "secret", "cve") ||
+                phrase(text, "credential leak") ->
+                AgentRole.SECURITY_REVIEWER
+            word(text, "test", "tests", "testing", "assert", "coverage", "spec", "specs") ||
+                phrase(text, "unit test") ->
+                AgentRole.TESTER
+            word(text, "debug", "crash", "crashes", "exception", "failing", "failed", "reproduce", "repro") ||
+                phrase(text, "stack trace", "why is") ->
+                AgentRole.DEBUGGER
+            word(text, "review", "critique", "lgtm") || phrase(text, "code review", "feedback on") ->
+                AgentRole.REVIEWER
+            word(text, "document", "documentation", "readme", "docs", "javadoc", "kdoc", "changelog") ->
+                AgentRole.DOCS
+            word(text, "research", "latest") || phrase(text, "look up", "search the web", "find online", "best practice", "latest version") ->
+                AgentRole.RESEARCHER
+            word(text, "plan", "roadmap", "strategy") || phrase(text, "break down", "design a", "approach for") ->
+                AgentRole.PLANNER
+            word(text, "explore", "map", "locate", "trace", "understand") || phrase(text, "where is", "how does") ->
+                AgentRole.EXPLORER
+            word(text, "quick", "trivial", "rename", "typo", "tweak") || phrase(text, "small edit", "one-line") ->
+                AgentRole.FAST_CODER
+            word(text, "implement", "add", "fix", "edit", "refactor", "change", "create", "build", "write", "patch") ->
+                AgentRole.CODER
             else -> null
         }
     }
@@ -119,7 +135,14 @@ object DelegationPolicy {
         else -> null
     }
 
-    private fun matches(text: String, vararg needles: String): Boolean =
+    /** True when any [needle] appears in [text] as a whole word (boundary-aware). */
+    private fun word(text: String, vararg needles: String): Boolean =
+        needles.any { needle ->
+            Regex("(^|[^a-z0-9])" + Regex.escape(needle) + "([^a-z0-9]|$)").containsMatchIn(text)
+        }
+
+    /** True when any multi-word [needle] phrase appears in [text]. */
+    private fun phrase(text: String, vararg needles: String): Boolean =
         needles.any { text.contains(it) }
 }
 

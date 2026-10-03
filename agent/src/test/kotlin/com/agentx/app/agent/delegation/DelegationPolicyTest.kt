@@ -5,6 +5,7 @@ import com.agentx.app.context.ContextBudget
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -81,13 +82,20 @@ class DelegationPolicyTest {
         assertNull(DelegationPolicy.selectRole(""))
     }
 
+    @Test
+    fun `a keyword is not matched inside another word`() {
+        // "latest" contains the substring "test"; word-boundary matching must not
+        // misroute a research request to the TESTER role.
+        assertEquals(AgentRole.RESEARCHER, DelegationPolicy.selectRole("what is the latest version of kotlin"))
+    }
+
     // ───────────────────────── delegation limits ─────────────────────────
 
     @Test
     fun `delegating MAIN is rejected`() {
         val decision = DelegationPolicy.evaluate(AgentRole.MAIN, "x", DelegationState())
-        assertTrue(decision is DelegationDecision.Reject)
-        assertEquals(DelegationRejection.INVALID_ROLE, (decision as DelegationDecision.Reject).reason)
+        val reject = assertIs<DelegationDecision.Reject>(decision)
+        assertEquals(DelegationRejection.INVALID_ROLE, reject.reason)
     }
 
     @Test
