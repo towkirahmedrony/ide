@@ -1,6 +1,8 @@
 package com.agentx.app.ubuntu
 
 import android.system.Os
+import com.agentx.app.termux.DeveloperLogCategory
+import com.agentx.app.termux.DeveloperLogger
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -374,6 +376,10 @@ class UbuntuRootfsInstaller(
             "Refusing to extract ${entry.assetName}: no SHA-256 is recorded.",
         )
         val digest = sha256(archive)
+        DeveloperLogger.info(
+            DeveloperLogCategory.ROOTFS,
+            "Archive SHA-256 verified: archive=${archive.name} digest=${digest.take(16)}...",
+        )
         if (digest != expected) {
             archive.delete()
             throw UbuntuRootfsException(
@@ -392,6 +398,13 @@ class UbuntuRootfsInstaller(
         // emulated hard link pointing at the path the tree used to have. See
         // [NativeRuntimeLayout.l2s].
         val tree = layout.installing
+        DeveloperLogger.info(
+            DeveloperLogCategory.ROOTFS,
+            "Extraction started: archive=${archive.name} destination=$tree " +
+                "mechanism=PRoot-(-l) PROOT_L2S_DIR=${layout.forInstalling().l2s} " +
+                "storeInsideDestination=" +
+                layout.forInstalling().l2s.startsWith(tree.trimEnd('/') + "/"),
+        )
         if (!files.deleteRecursively(tree)) {
             throw UbuntuRootfsException(UbuntuInstallStage.EXTRACTION, "Could not clear $tree")
         }
@@ -417,19 +430,46 @@ class UbuntuRootfsInstaller(
         try {
             tar.extract(archive.absolutePath, tree)
         } catch (error: Exception) {
+            // Captured before the tree is cleaned, because it describes the tree.
+            val diagnostics = extractionDiagnostics(tree)
+            DeveloperLogger.warn(
+                DeveloperLogCategory.ROOTFS,
+                "Extraction failed: ${error.message}",
+            )
+            DeveloperLogger.warn(DeveloperLogCategory.ROOTFS, diagnostics)
+
             // Leave nothing half-unpacked behind: the next attempt starts from the archive.
             files.deleteRecursively(tree)
+            DeveloperLogger.warn(DeveloperLogCategory.ROOTFS, "Cleaning temporary rootfs: $tree")
+            DeveloperLogger.warn(DeveloperLogCategory.ROOTFS, "Runtime remains NOT_INSTALLED")
             throw UbuntuRootfsException(
                 UbuntuInstallStage.EXTRACTION,
-                "Could not extract ${entry.assetName}: ${error.message}",
+                "Could not extract ${entry.assetName}: ${error.message}\n$diagnostics",
             )
         }
+
+        DeveloperLogger.info(
+            DeveloperLogCategory.ROOTFS,
+            "Extraction completed: archive=${entry.assetName} entries=$entries destination=$tree",
+        )
 
         onStatus(RuntimeStatus(AgentxRuntimeState.INSTALLING))
         try {
             validate(tree)
+            DeveloperLogger.info(
+                DeveloperLogCategory.ROOTFS,
+                "Hard-link validation passed: " +
+                    UbuntuRootfsCatalog.REQUIRED_HARD_LINKS.joinToString {
+                        "${it.link} -> ${it.file}"
+                    },
+            )
             configure(tree)
             validateConfigured(tree)
+            DeveloperLogger.info(
+                DeveloperLogCategory.ROOTFS,
+                "Rootfs structure validation passed: ${UbuntuRootfsCatalog.REQUIRED_GUEST_FILES.size} " +
+                    "required entries present under $tree",
+            )
         } catch (invalid: UbuntuRootfsException) {
             // Nothing half-populated is left where a later attempt could mistake it for a
             // working rootfs; a retry starts from the verified archive.
@@ -526,6 +566,34 @@ class UbuntuRootfsInstaller(
         }
         files.deleteRecursively(previous)
         return true
+    }
+
+    /**
+     * Everything needed to tell the two extraction failures apart, captured while the tree is
+     * still on disk.
+     *
+     * They look similar in a log and have nothing in common:
+     *
+     * - `No such file or directory` from `tar: can't link` means the emulated link points at a
+     *   store the extraction cannot reach — the store is not inside the tree being unpacked, or
+     *   the tree moved. PRoot's `-l` writes the store's absolute path into every link it makes.
+     * - `Permission denied` means the platform refused a real `link(2)`, which is SELinux denying
+     *   it to an `untrusted_app`, and means the emulation did not run at all.
+     *
+     * The decisive fields are [storeInsideTree] and [storeEntries]: an empty or absent store with
+     * links that name somewhere else is the first case, not the second.
+     */
+    private fun extractionDiagnostics(tree: String): String {
+        val store = "$tree/${NativeRuntimeLayout.L2S_DIR}"
+        val storeInsideTree = store.startsWith(tree.trimEnd('/') + "/")
+        val storeEntries = File(store).list()?.size ?: -1
+        val links = UbuntuRootfsCatalog.REQUIRED_HARD_LINKS.joinToString(" ") { hardLink ->
+            val target = files.readLink("$tree/${hardLink.file}")
+            "${hardLink.file}->${target ?: "(no symlink: real file or missing)"}"
+        }
+        return "extraction diagnostics: destination=$tree treeExists=${files.entryExists(tree)} " +
+            "store=$store storeInsideTree=$storeInsideTree storeEntries=$storeEntries " +
+            "treeListing=${File(tree).list()?.take(12)?.joinToString()} $links"
     }
 
     /** Non-throwing form of [validateHardLinks], for the predicates above. */
@@ -949,6 +1017,13 @@ class ProotUbuntuTar(
             hostTar = hostTar,
             archivePath = archivePath,
             intoDir = intoDir,
+        )
+        DeveloperLogger.info(
+            DeveloperLogCategory.PROOT,
+            "extraction argv=${invocation.processCommand.joinToString(" ")} " +
+                "PROOT_LOADER=${invocation.environment["PROOT_LOADER"]} " +
+                "PROOT_L2S_DIR=${invocation.environment["PROOT_L2S_DIR"]} " +
+                "PROOT_TMP_DIR=${invocation.environment["PROOT_TMP_DIR"]}",
         )
         val builder = ProcessBuilder(invocation.processCommand).redirectErrorStream(true)
         for ((name, value) in invocation.environment) {

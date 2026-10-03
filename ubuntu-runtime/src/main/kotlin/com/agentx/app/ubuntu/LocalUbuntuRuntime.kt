@@ -305,6 +305,10 @@ class LocalUbuntuRuntime(
             }
 
             // 3. The developer toolchain, inside the same tree.
+            DeveloperLogger.info(
+                DeveloperLogCategory.PROOT,
+                "Toolchain installation started: tree=${tree.rootfs}",
+            )
             when (val outcome = toolchainFor(tree).provision()) {
                 is UbuntuToolchainOutcome.Ready -> {
                     // 4. Promote, then persist READY. In this order: a marker must never describe
@@ -325,10 +329,18 @@ class LocalUbuntuRuntime(
                         "Runtime READY: ${layout.rootfs} promoted and verified",
                     )
                     DeveloperLogger.info(
+                        DeveloperLogCategory.PROOT,
+                        "Toolchain validation passed: ${outcome.verified.joinToString()}",
+                    )
+                    DeveloperLogger.info(
                         DeveloperLogCategory.ENV,
                         "Developer toolchain verified: ${outcome.verified.joinToString()}",
                     )
                     Log.i(TAG, "Developer toolchain installed and verified with apt-get")
+                    DeveloperLogger.info(
+                        DeveloperLogCategory.ROOTFS,
+                        "Runtime READY: markers written (verification, install, toolchain)",
+                    )
                     val ready = RuntimeStatus.Ready
                     statusFlow.value = ready
                     return ready
@@ -381,6 +393,10 @@ class LocalUbuntuRuntime(
      */
     private fun verifyTree(tree: NativeRuntimeLayout): Boolean {
         statusFlow.value = RuntimeStatus(AgentxRuntimeState.VALIDATING)
+        DeveloperLogger.info(
+            DeveloperLogCategory.PROOT,
+            "PRoot guest validation started: root=${tree.rootfs} l2s=${tree.l2s}",
+        )
         val verification = verifierFor(tree).verify()
         TerminalDiagnostics.record(
             TAG,
@@ -390,7 +406,13 @@ class LocalUbuntuRuntime(
             DeveloperLogCategory.ROOTFS,
             "RootFS validation path=${tree.rootfs} ok=${verification.ok} summary=${verification.summary}",
         )
-        if (verification.ok) return true
+        if (verification.ok) {
+            DeveloperLogger.info(
+                DeveloperLogCategory.PROOT,
+                "PRoot guest validation passed: ${verification.summary}",
+            )
+            return true
+        }
         // Recorded verbatim: this is where an extracted-but-unrunnable rootfs is caught, and the
         // failure text names the probe (`/bin/sh`, `/bin/bash`, `/usr/bin/perl`, …) that failed.
         TerminalDiagnostics.record(TAG, "rootfs verification FAILED: ${verification.failure}")
