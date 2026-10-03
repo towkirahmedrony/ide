@@ -47,6 +47,20 @@ data class AgentxCommandResult(
     val stderr: String,
     val timedOut: Boolean = false,
 ) {
+    /**
+     * Both streams, joined.
+     *
+     * A guest command's diagnostics are not reliably on one of them: `ssh -V` answers on
+     * `stderr`, `dpkg --audit` reports on `stdout`, and a shell says "command not found" on
+     * `stderr`. Anything that decides from the *text* has to look at both.
+     */
+    val output: String
+        get() = when {
+            stderr.isEmpty() -> stdout
+            stdout.isEmpty() -> stderr
+            else -> stdout.trimEnd('\n') + "\n" + stderr
+        }
+
     val success: Boolean get() = exitCode == 0 && !timedOut
 }
 

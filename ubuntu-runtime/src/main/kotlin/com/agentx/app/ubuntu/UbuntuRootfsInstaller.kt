@@ -32,9 +32,18 @@ interface UbuntuFiles {
     fun entryExists(path: String): Boolean
     fun deleteRecursively(path: String): Boolean
     fun mkdirs(path: String): Boolean
-    fun rename(from: String, to: String): Boolean
     fun writeText(path: String, text: String)
     fun isDirectory(path: String): Boolean
+
+    /**
+     * The *contents* of the symbolic link at [path], or null when [path] is not a link.
+     *
+     * The final component is not followed. This is what makes the link-to-symlink store
+     * checkable from the host: a hard-link entry that `-l` emulated is a symlink naming an
+     * absolute path, and the one property that matters is whether that path is inside the guest
+     * root (see [NativeRuntimeLayout.l2s]).
+     */
+    fun readLink(path: String): String?
 
     /**
      * Whether [first] and [second] name the same file once symlinks are followed.
@@ -66,10 +75,15 @@ interface UbuntuTar {
  * Downloads, verifies, extracts and validates the Ubuntu ARM64 rootfs.
  *
  * The order is fixed and there is no way to skip a step:
- * download → SHA-256 → extract → validate required files → configure → activate.
+ * download → SHA-256 → extract → validate required files, hard links and the link store →
+ * configure.
  * Native PRoot in `nativeLibraryDir` is required before any download. A checksum mismatch
  * deletes the archive and aborts. The install marker is written by [LocalUbuntuRuntime]
  * only after PRoot has started `/bin/sh` and `/bin/bash` in the guest.
+ *
+ * The tree is unpacked directly into its final path, and the link-to-symlink store is created
+ * inside it before `tar` runs. Both are requirements rather than conveniences; see
+ * [NativeRuntimeLayout.l2s].
  */
 class UbuntuRootfsInstaller(
     private val layout: NativeRuntimeLayout,
@@ -107,30 +121,54 @@ class UbuntuRootfsInstaller(
      * Removes whatever an interrupted or failed install left behind so a retry starts from
      * verified bytes.
      *
-     * `staging` is scratch. A `rootfs` that is missing required guest files is a partial tree
-     * and is removed. A complete extracted tree without the install marker is waiting for PRoot
-     * guest probes, not a re-download. The downloaded archive is deliberately **kept**: [fetch]
-     * re-checks it against the pinned SHA-256 and reuses it when it still matches, so a retry
-     * after a transient extraction failure costs no download. The link-to-symlink store is
-     * never cleared here — an installed rootfs refers into it.
+     * `staging` is scratch left by a build that staged before activating; it is always cleared.
+     *
+     * A `rootfs` is removed when it is unusable, and also when [layout.recreateMarker] says the
+     * tree must not be trusted — that is what a `dpkg` database damaged by a failed unpack
+     * leaves behind, and it is the only honest response: the tree still passes the file checks
+     * that [isUsableRootfs] can make from the host, so without the marker it would be reused and
+     * every later `apt-get` would fail the same way.
+     *
+     * A complete extracted tree without the install marker is waiting for PRoot guest probes,
+     * not a re-download. The downloaded archive is deliberately **kept**: [fetch] re-checks it
+     * against the pinned SHA-256 and reuses it when it still matches, so a retry after a
+     * transient extraction failure costs no download. The link-to-symlink store is inside the
+     * rootfs and goes with it.
      */
     fun repairIncompleteInstallation(): Boolean {
         var removed = false
         if (files.entryExists(layout.staging)) {
             removed = files.deleteRecursively(layout.staging) || removed
         }
-        // A complete extracted tree without the install marker is waiting for PRoot guest
-        // probes, not a partial install. Only delete a tree that is actually unusable.
-        if (files.entryExists(layout.rootfs) && !isUsableRootfs(layout.rootfs)) {
+        val recreate = files.entryExists(layout.recreateMarker)
+        if (files.entryExists(layout.rootfs) && (recreate || !isUsableRootfs(layout.rootfs))) {
             val cleared = files.deleteRecursively(layout.rootfs)
             removed = cleared || removed
-            if (cleared) {
-                files.deleteRecursively(layout.verificationMarker)
-                files.deleteRecursively(layout.toolchainMarker)
-                files.deleteRecursively(layout.marker)
-            }
+            if (cleared) clearInstallMarkers()
         }
+        files.deleteRecursively(layout.recreateMarker)
         return removed
+    }
+
+    /**
+     * Throws the extracted tree away and says why, so the next attempt re-extracts it.
+     *
+     * Used when the guest reports a state this code cannot repair *in place* — a `dpkg` database
+     * with a package that never finished unpacking, most of all. Files on disk still look
+     * complete from the host at that point, so the decision has to be recorded explicitly
+     * rather than re-derived from the tree.
+     */
+    fun discardRootfs(reason: String) {
+        files.writeText(layout.recreateMarker, reason.trim().ifEmpty { "unspecified" } + "\n")
+        if (files.entryExists(layout.rootfs)) files.deleteRecursively(layout.rootfs)
+        clearInstallMarkers()
+    }
+
+    /** Removes every marker that says part of the runtime is usable. */
+    fun clearInstallMarkers() {
+        files.deleteRecursively(layout.marker)
+        files.deleteRecursively(layout.verificationMarker)
+        files.deleteRecursively(layout.toolchainMarker)
     }
 
     fun provision(onStatus: (RuntimeStatus) -> Unit = {}): UbuntuInstallResult {
@@ -148,15 +186,16 @@ class UbuntuRootfsInstaller(
             )
         }
 
+        // A tree from a previous attempt is not evidence of anything, and a tree this runtime has
+        // been told not to trust (`discardRootfs`) must be gone before anything is decided.
+        repairIncompleteInstallation()
+
         // No terminal `Ready` is published here: READY belongs to the runtime, and it is only
         // reached after the installed tree has been run through PRoot. See
         // `LocalUbuntuRuntime.verifyRootfs`.
         if (isInstalled() || isUsableRootfs(layout.rootfs)) {
             return UbuntuInstallResult.AlreadyInstalled
         }
-
-        // A rootfs or staging tree from a previous attempt is not evidence of anything.
-        repairIncompleteInstallation()
 
         val entry = resolveEntry(supportedAbis)
             ?: return fail(
@@ -259,12 +298,26 @@ class UbuntuRootfsInstaller(
             )
         }
 
-        val staging = File(layout.staging)
-        if (!files.deleteRecursively(layout.staging)) {
-            throw UbuntuRootfsException(UbuntuInstallStage.EXTRACTION, "Could not clear ${layout.staging}")
+        // The tree is unpacked straight into its final path and is never moved afterwards.
+        //
+        // That is a requirement, not a simplification. `-l` records the link-to-symlink store's
+        // *absolute host path* inside every symlink it leaves behind, and the store lives inside
+        // this tree (`<rootfs>/.l2s`); renaming the tree after the fact would point every
+        // emulated hard link at the path the tree used to have. See [NativeRuntimeLayout.l2s].
+        if (!files.deleteRecursively(layout.rootfs)) {
+            throw UbuntuRootfsException(UbuntuInstallStage.ACTIVATION, "Could not clear ${layout.rootfs}")
         }
-        if (!files.mkdirs(layout.staging)) {
-            throw UbuntuRootfsException(UbuntuInstallStage.EXTRACTION, "Could not create ${layout.staging}")
+        if (!files.mkdirs(layout.rootfs)) {
+            throw UbuntuRootfsException(UbuntuInstallStage.ACTIVATION, "Could not create ${layout.rootfs}")
+        }
+        // PRoot opens PROOT_L2S_DIR at the first link(2) the archive contains and answers ENOENT
+        // for that link when it cannot, so the store has to exist before tar runs. The archive
+        // has no `.l2s` entry of its own, so nothing here is overwritten.
+        if (!files.mkdirs(layout.l2s)) {
+            throw UbuntuRootfsException(
+                UbuntuInstallStage.EXTRACTION,
+                "Could not create the link-to-symlink store ${layout.l2s}",
+            )
         }
 
         // The extraction is the one step that has to run *through* the native PRoot.
@@ -273,10 +326,10 @@ class UbuntuRootfsInstaller(
         val entries = tar.countEntries(archive.absolutePath)
         onStatus(RuntimeStatus(AgentxRuntimeState.EXTRACTING, progressPercent = 0, totalBytes = entries.toLong()))
         try {
-            tar.extract(archive.absolutePath, layout.staging)
+            tar.extract(archive.absolutePath, layout.rootfs)
         } catch (error: Exception) {
             // Leave nothing half-unpacked behind: the next attempt starts from the archive.
-            files.deleteRecursively(layout.staging)
+            files.deleteRecursively(layout.rootfs)
             throw UbuntuRootfsException(
                 UbuntuInstallStage.EXTRACTION,
                 "Could not extract ${entry.assetName}: ${error.message}",
@@ -284,20 +337,15 @@ class UbuntuRootfsInstaller(
         }
 
         onStatus(RuntimeStatus(AgentxRuntimeState.INSTALLING))
-        validate(layout.staging)
-
-        configure(layout.staging)
-
-        // Activation is last: an interrupted install never leaves a half-populated tree that
-        // later code would mistake for a working rootfs.
-        if (files.entryExists(layout.rootfs) && !files.deleteRecursively(layout.rootfs)) {
-            throw UbuntuRootfsException(UbuntuInstallStage.ACTIVATION, "Could not clear ${layout.rootfs}")
-        }
-        if (!files.rename(layout.staging, layout.rootfs)) {
-            throw UbuntuRootfsException(
-                UbuntuInstallStage.ACTIVATION,
-                "Could not move ${layout.staging} to ${layout.rootfs}",
-            )
+        try {
+            validate(layout.rootfs)
+            configure(layout.rootfs)
+        } catch (invalid: UbuntuRootfsException) {
+            // Nothing half-populated is left where a later attempt could mistake it for a
+            // working rootfs; a retry starts from the verified archive.
+            files.deleteRecursively(layout.rootfs)
+            clearInstallMarkers()
+            throw invalid
         }
 
         // The install marker is written only after the guest has been run through PRoot
@@ -324,6 +372,53 @@ class UbuntuRootfsInstaller(
             )
         }
         validateHardLinks(tree)
+        validateLinkStore(tree)
+    }
+
+    /**
+     * Proves the emulated hard links point somewhere the *guest* can reach.
+     *
+     * [validateHardLinks] follows the links with the host's `stat`, which is the wrong vantage
+     * point for this: PRoot's `-l` writes the store's absolute **host** path into every symlink
+     * it creates, so a store that sits beside the rootfs still resolves perfectly on the host
+     * while being unreachable inside the guest. PRoot's `canonicalize()` strips the guest root
+     * prefix from a symlink target only when the target lies under the root, and re-reads
+     * anything else as a *guest* path that does not exist — which is exactly what made
+     * `dpkg --unpack perl-base` fail with
+     * `error setting ownership of '/usr/bin/perl5.38.2.dpkg-new': No such file or directory`.
+     *
+     * The guest-visible check is the prefix itself: every symlink that stands in for a hard link
+     * must name a path inside the tree that is about to become `/`. A real hard link (no symlink
+     * at all) is fine and is skipped — this rejects the wrong *store location*, not the mechanism.
+     */
+    private fun validateLinkStore(tree: String) {
+        val rootPrefix = tree.trimEnd('/') + "/"
+        val store = layout.l2s
+        if (!store.startsWith(rootPrefix)) {
+            throw UbuntuRootfsException(
+                UbuntuInstallStage.VALIDATION,
+                "PROOT_L2S_DIR is $store, outside the rootfs $rootPrefix. PRoot's link-to-symlink " +
+                    "store has to live inside the guest rootfs, otherwise the emulated hard " +
+                    "links resolve on the host but dangle inside the guest.",
+            )
+        }
+        for (hardLink in UbuntuRootfsCatalog.REQUIRED_HARD_LINKS) {
+            for (relative in listOf(hardLink.file, hardLink.link)) {
+                val path = "$tree/$relative"
+                // No symlink means a real hard link (a host filesystem that allows one); there is
+                // no store path involved and nothing to check.
+                val target = files.readLink(path) ?: continue
+                if (target.startsWith(rootPrefix)) continue
+                throw UbuntuRootfsException(
+                    UbuntuInstallStage.VALIDATION,
+                    "$path points at $target, which is outside the guest rootfs. PRoot's " +
+                        "link-to-symlink store must live inside the rootfs " +
+                        "(PROOT_L2S_DIR=$store); a store kept elsewhere produces hard links the " +
+                        "guest cannot open, and apt/dpkg then fail on the first package that " +
+                        "contains one.",
+                )
+            }
+        }
     }
 
     /**
@@ -388,6 +483,12 @@ class UbuntuRootfsInstaller(
                 append("Acquire::http::No-Cache \"true\";\n")
             },
         )
+        // Ubuntu Base ships the deb822 `/etc/apt/sources.list.d/ubuntu.sources`. Keeping it while
+        // also writing `/etc/apt/sources.list` makes apt report every single target as
+        // "configured multiple times" — dozens of warnings per command, and two sources lists to
+        // reason about when one of them is wrong. The shipped file is the duplicate here.
+        files.deleteRecursively("$tree/etc/apt/sources.list.d/ubuntu.sources")
+
         files.writeText(
             "$tree/etc/apt/sources.list",
             buildString {
@@ -432,6 +533,23 @@ class UbuntuRootfsInstaller(
 
     fun clearInstallMarker() {
         files.deleteRecursively(layout.marker)
+    }
+
+    /**
+     * Written only after every package in [UbuntuRootfsCatalog.TOOLCHAIN_PACKAGES] has been
+     * installed *and* every entry of [UbuntuRootfsCatalog.REQUIRED_TOOLCHAIN_COMMANDS] has
+     * answered inside the guest. A failed or skipped package installation leaves it absent, so
+     * the runtime stays not-READY instead of presenting a shell without git, python3 or node.
+     */
+    fun writeToolchainMarker(verified: List<String>) {
+        files.writeText(
+            layout.toolchainMarker,
+            buildString {
+                append("ok\n")
+                append("ubuntu=${UbuntuRootfsCatalog.UBUNTU_RELEASE}\n")
+                for (label in verified) append("verified=$label\n")
+            },
+        )
     }
 
     private fun fail(
@@ -524,7 +642,15 @@ object AndroidUbuntuFiles : UbuntuFiles {
         return file.isDirectory || file.mkdirs()
     }
 
-    override fun rename(from: String, to: String): Boolean = File(from).renameTo(File(to))
+    /**
+     * `Os.readlink` throws `ErrnoException(EINVAL)` on anything that is not a symlink, which is
+     * how "a real hard link, nothing to check" is told apart from "a link naming a path".
+     */
+    override fun readLink(path: String): String? = try {
+        Os.readlink(path)
+    } catch (notALink: Exception) {
+        null
+    }
 
     override fun writeText(path: String, text: String) {
         val file = File(path)

@@ -43,12 +43,20 @@ object UbuntuRootfsCatalog {
      * Nothing here is a Termux package: these come from Ubuntu's `ports.ubuntu.com/ubuntu-ports`
      * archive, which is what a real Ubuntu userland expects. `git`, `gh`, `python3`, `nodejs`
      * and `npm` are ordinary Ubuntu packages, not a re-created package ecosystem.
+     *
+     * `debconf` is here for `/usr/sbin/dpkg-preconfigure`, and only for that. Ubuntu Base ships
+     * the `70debconf` apt hook in `/etc/apt/apt.conf.d` but not the package that implements it,
+     * so a fresh guest printed `/bin/sh: 1: /usr/sbin/dpkg-preconfigure: not found` on every
+     * install. It is a consequence of the base image being minimal, not of anything apt does
+     * wrong, and one explicit dependency removes it instead of leaving a permanent error in the
+     * install log for the next person to chase.
      */
     val TOOLCHAIN_PACKAGES: List<String> = listOf(
         "bash",
         "apt",
         "apt-utils",
         "dpkg",
+        "debconf",
         "git",
         "gh",
         "python3",
@@ -60,6 +68,44 @@ object UbuntuRootfsCatalog {
         "ca-certificates",
         "openssh-client",
         "ripgrep",
+    )
+
+    /**
+     * One executable the developer toolchain has to provide, with the output that proves it ran.
+     *
+     * These are the brief's list, plus `apt` and `dpkg` themselves. They are checked *inside the
+     * guest* after the install, because a package that unpacked is not a binary that starts: the
+     * `perl-base` unpack failed outright, and a rootfs whose link-to-symlink store is unreachable
+     * fails on exactly the entries whose packages contain a hard link, nowhere else.
+     */
+    data class ToolchainCommand(
+        /** What the check is called in reports. */
+        val label: String,
+        /**
+         * The guest command. It is run by a shell with the guest `PATH`, and `stdout` and
+         * `stderr` are merged: `ssh -V` answers on `stderr`.
+         */
+        val command: String,
+        /**
+         * A substring the merged output must contain, or null when a zero exit status and
+         * non-empty output are the whole test (`npm --version` prints a bare version).
+         */
+        val expectOutput: String? = null,
+    )
+
+    val REQUIRED_TOOLCHAIN_COMMANDS: List<ToolchainCommand> = listOf(
+        ToolchainCommand(label = "git", command = "git --version", expectOutput = "git version"),
+        ToolchainCommand(label = "python3", command = "python3 --version", expectOutput = "Python 3"),
+        ToolchainCommand(label = "pip", command = "python3 -m pip --version", expectOutput = "pip"),
+        ToolchainCommand(label = "node", command = "node --version", expectOutput = "v"),
+        ToolchainCommand(label = "npm", command = "npm --version"),
+        ToolchainCommand(label = "gh", command = "gh --version", expectOutput = "gh version"),
+        ToolchainCommand(label = "rg", command = "rg --version", expectOutput = "ripgrep"),
+        ToolchainCommand(label = "curl", command = "curl --version", expectOutput = "curl"),
+        ToolchainCommand(label = "wget", command = "wget --version", expectOutput = "Wget"),
+        ToolchainCommand(label = "ssh", command = "ssh -V", expectOutput = "OpenSSH"),
+        ToolchainCommand(label = "apt", command = "apt --version", expectOutput = "apt"),
+        ToolchainCommand(label = "dpkg", command = "dpkg --version", expectOutput = "dpkg"),
     )
 
     /**

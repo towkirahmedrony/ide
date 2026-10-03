@@ -106,6 +106,24 @@ class UbuntuRuntimeVerifier(
             command = listOf("/usr/bin/dpkg", "--version"),
             expectOutput = "dpkg",
         ),
+        UbuntuGuestProbe(
+            label = "perl",
+            // One of the archive's two hard-link pairs, and the one that matters most: `-l`
+            // records the link-to-symlink store's *absolute host path* inside the symlink, so a
+            // store kept outside the guest rootfs resolves on the host and dangles inside the
+            // guest. Running the binary is the only check that reads the link the way the guest
+            // does — `stat` and `ls` both answer from the host and pass either way. This is the
+            // exact binary whose unpack died with
+            // `error setting ownership of '/usr/bin/perl5.38.2.dpkg-new': No such file or directory`.
+            command = listOf("/usr/bin/perl", "-e", "print 'AgentX perl OK'"),
+            expectOutput = "AgentX perl OK",
+        ),
+        UbuntuGuestProbe(
+            label = "uncompress",
+            // The other hard-link pair (`usr/bin/uncompress` -> `usr/bin/gunzip`).
+            command = listOf("/usr/bin/uncompress", "--version"),
+            expectOutput = "gzip",
+        ),
     )
 
     fun verify(): UbuntuRootfsVerification {

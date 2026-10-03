@@ -37,9 +37,10 @@ references `TermuxBootstrapCatalog`, `TermuxBootstrapInstaller`, `TermuxPrefixPo
 | `UbuntuRuntimeState.kt` | `AgentxRuntimeState` (NOT_INSTALLED … VALIDATING … ERROR) and `RuntimeStatus`, the single source of truth for the UI. |
 | `NativeRuntime.kt` | `NativeRuntimeLayout` (nativeLibraryDir + app-private runtime storage, the verification marker and the workspaces directory) and the native library probe. |
 | `ProotCommand.kt` | The `proot -0 -l -r <rootfs> -b … -w … <cmd>` builder, the extraction invocation, bind mounts and `PROOT_LOADER`/`PROOT_L2S_DIR`/`PROOT_TMP_DIR`. |
-| `UbuntuRootfsCatalog.kt` | The pinned Ubuntu Base arm64 entry (URL, SHA-256, size), the required guest files, the required **hard links**, the toolchain package list and the platform tar path. |
-| `UbuntuRootfsInstaller.kt` | Download → SHA-256 → PRoot extraction → validation (files **and** hard-link relationships) → apt/resolv configuration → activation. The install marker is written later by `LocalUbuntuRuntime` after guest probes pass. Also `repairIncompleteInstallation()`. |
-| `UbuntuRuntimeVerifier.kt` | Runs the installed rootfs *through PRoot* and only then lets it become READY. |
+| `UbuntuRootfsCatalog.kt` | The pinned Ubuntu Base arm64 entry (URL, SHA-256, size), the required guest files, the required **hard links**, the toolchain package list, the required toolchain executables and the platform tar path. |
+| `UbuntuRootfsInstaller.kt` | Download → SHA-256 → PRoot extraction into the final rootfs → validation (files, hard-link relationships **and link-store location**) → apt/resolv configuration. The installer writes no marker of its own; the install marker is written later by `LocalUbuntuRuntime` after guest probes pass. Also `repairIncompleteInstallation()`, `discardRootfs()` and the marker writers. |
+| `UbuntuRuntimeVerifier.kt` | Runs the installed rootfs *through PRoot* and only then lets it become READY — including the `perl`/`uncompress` hard-link probes. |
+| `UbuntuToolchain.kt` | The `apt`/`dpkg` sanity check, `apt-get update`, the package install, and the check that runs every required executable. It decides whether the tree can be retried or must be recreated. |
 | `UbuntuEnvironment.kt` | The guest `HOME`/`USER`/`PATH`/`TERM`/`TMPDIR`/`AGENTX_RUNTIME` environment, with credential filtering. |
 | `UbuntuWorkspaceBinding.kt` | How a project is bind-mounted (or why it is not). |
 | `UbuntuWorkspaceMaterializer.kt` | Copies a SAF `content://` project into app storage so it can be bind-mounted. |
@@ -69,14 +70,16 @@ tar: had errors
 and leaves a tree that is missing both entries. The fix is not to touch the archive: the
 extraction is executed by the runtime's own **PRoot** with `-l` (link-to-symlink), the same
 mechanism Termux's `proot --link2symlink tar` uses. Each `link(2)`/`linkat(2)` becomes a symlink
-to the same content, which PRoot keeps in `PROOT_L2S_DIR`; both names still lead to one file, and
-nothing is copied, dropped or duplicated. The archive's SHA-256 is checked immediately before the
-extraction and is not weakened by any of this.
+to the same content, which PRoot keeps in `PROOT_L2S_DIR` — **inside the rootfs**, at
+`<rootfs>/.l2s`; both names still lead to one file, and nothing is copied, dropped or duplicated.
+The archive's SHA-256 is checked immediately before the extraction and is not weakened by any of
+this. The store's location is not a detail: see
+[Why the link store must be inside the rootfs](#why-the-link-store-must-be-inside-the-rootfs).
 
-`ProotCommand.extraction` builds exactly:
+ `ProotCommand.extraction` builds exactly:
 
 ```
-libproot.so -l -w / /system/bin/tar -xzf <archive> -C <rootfs-staging>
+libproot.so -l -w / /system/bin/tar -xzf <archive> -C <rootfs>
 ```
 
 with `PROOT_LOADER`, `PROOT_TMP_DIR` and `PROOT_L2S_DIR` set. No `-r` is passed: PRoot is acting
@@ -91,24 +94,31 @@ download
   ↓
 SHA-256 verify
   ↓
-temporary extraction (rootfs-staging)
+extraction into the final rootfs, link store created first
   ↓
-rootfs validation (required files + hard-link relationships)
+rootfs validation (required files, hard-link relationships, link store location)
   ↓
 apt / resolv configuration
   ↓
-atomic activation (rename staging → rootfs)
-  ↓
 guest verification through PRoot
   ↓
-install marker
+apt/dpkg sanity check → apt-get update → install the developer packages
+  ↓
+every required executable runs
+  ↓
+install marker + verification marker + toolchain marker
   ↓
 READY
 ```
 
-Nothing is ever extracted into the final `rootfs` directory. A failure removes the incomplete
-staging tree, leaves the runtime in `ERROR`, and a retry starts again — the verified archive is
-kept, so retrying costs no download.
+The tree is unpacked **straight into its final path** and is never moved afterwards, and the link
+store is created **inside it**. Both are requirements, not conveniences — see
+[Why the link store must be inside the rootfs](#why-the-link-store-must-be-inside-the-rootfs).
+
+A failure removes the incomplete tree, clears every marker, leaves the runtime in `ERROR`, and a
+retry starts again — the verified archive is kept, so retrying costs no download. A tree the guest
+declares damaged (a `dpkg` database in a mess, a half-applied unpack, a toolchain that installs but
+does not verify) is discarded and rebuilt from that archive, once.
 
 ### Hard-link validation
 
@@ -118,13 +128,44 @@ that wrote each entry as an independent copy would pass that test while silently
 paths must resolve (symlinks followed) to the same file — which is true for a real hard link and
 for PRoot's emulation, and false for two copies, for a dangling link, or for a missing entry.
 
+That relationship check is necessary but **not sufficient**, and relying on it alone is what let
+the original defect ship: it follows the links with the *host's* `stat`, and the wrong link store
+resolves perfectly on the host while being unopenable in the guest. So validation also checks the
+**prefix**: every symlink standing in for a hard link must name a path inside the tree that is
+about to become `/`.
+
+## Why the link store must be inside the rootfs
+
+`-l` does not create a hard link. It moves the file into the store and leaves a symlink whose
+target is the store's **absolute path, spelled as the host sees it**
+(`extension/link2symlink/link2symlink.c`). When a guest opens one of those symlinks, PRoot's
+`canonicalize()` dereferences it and runs the target through `detranslate_path()`, which strips the
+guest root prefix **only when the target lies under the root**; anything else is returned unchanged
+and then re-canonicalized as a *guest* path. So a store at `<runtimeDir>/l2s` produces links that
+read `/data/user/0/…/l2s/…` and are looked up as `<rootfs>/data/user/0/…/l2s/…` — nothing there,
+`ENOENT`, for every hard-linked file.
+
+That is the reported failure. `/usr/bin/perl` and `/usr/bin/perl5.38.2` are one of Ubuntu Base's
+two hard-link pairs, so they were unopenable in the guest from the moment the tree was extracted;
+the moment `dpkg` created a hard link of its own while unpacking `perl-base`, the next `chown()`
+on that path died and took the `dpkg-deb` pipe with it:
+
+```
+dpkg: error processing archive /var/cache/apt/archives/perl-base_5.38.2-3.2ubuntu0.6_arm64.deb (--unpack):
+ error setting ownership of '/usr/bin/perl5.38.2.dpkg-new': No such file or directory
+```
+
+Keeping the store at `<rootfs>/.l2s` — which is also what upstream `proot-distro` pins
+(`proot_distro/l2s.py`) — makes the prefix strip yield `/.l2s/…`, which resolves. The guest
+verifier probes `perl` and `uncompress` by *running* them, because that is the only check that
+reads the link the way the guest does.
+
 ## PRoot + loader
 
 `PROOT_LOADER` is always set to `nativeLibraryDir/libproot_loader.so` — the actual interposer, not
-a copy, and never inside `filesDir`. `PROOT_L2S_DIR` points at `<runtimeDir>/l2s`, outside the
-rootfs subtree, created before any session and never replaced by an extraction, because a rootfs
-extracted with `-l` refers into it. `PROOT_LOADER32` is only set when a 32-bit guest process is
-started, which this runtime does not do.
+a copy, and never inside `filesDir`. `PROOT_L2S_DIR` is `<rootfs>/.l2s`: inside the guest rootfs,
+as explained above, created by the extraction before `tar` runs. `PROOT_LOADER32` is only set when
+a 32-bit guest process is started, which this runtime does not do.
 
 ## Rootfs
 
@@ -204,36 +245,54 @@ by a generated `resolv.conf`, built from the active network's DNS servers and bi
 ## Developer toolchain
 
 The base image already ships `bash`, `apt`/`apt-get`, `dpkg`, `coreutils`, `tar` and `gzip`. The
-rest of the toolchain is installed by the guest's **own** `apt-get` — `LocalUbuntuRuntime
-.installToolchain()` runs
+rest of the toolchain is installed by the guest's **own** `apt-get`. `UbuntuToolchain` runs the
+whole sequence in order, and every step is a gate rather than a log line:
 
 ```
-apt-get update && apt-get install -y --no-install-recommends \
-  bash apt apt-utils dpkg git gh python3 python3-pip nodejs npm \
+dpkg --audit / apt-get check / dpkg-query        (the apt/dpkg sanity check)
+  ↓
+apt-get update
+  ↓
+apt-get install -y --no-install-recommends \
+  bash apt apt-utils dpkg debconf git gh python3 python3-pip nodejs npm \
   curl wget ca-certificates openssh-client ripgrep
+  ↓
+run every required executable and check what it printed
 ```
 
 from `ports.ubuntu.com/ubuntu-ports`. There is no Termux package repository, no Termux package and
 no second package ecosystem: these are the Ubuntu packages the Ubuntu userland expects.
 
-The install runs automatically once, right after the runtime first reaches READY — and the
-caller is released *before* it starts, so the first shell is never delayed by apt. It is never
-fatal: the shell is already usable, a failure is logged, and a later provisioning attempt retries
-it. A completion marker means it is not repeated after it succeeds.
+This is **part of READY**, and it runs inside `provision()` before READY is published, so the
+terminal is opened against a runtime whose tools actually answer. Only the last step can promote a
+runtime: a package that unpacked is not a binary that runs, and the failure this area was fixed for
+left a `dpkg` database that answered `install ok installed` for every package — with an empty
+`dpkg --audit` and a clean `apt-get check` — while `/usr/bin/perl` could not be executed at all.
+Nothing short of running the tools detects that, so nothing short of running the tools is accepted.
+
+A failed install clears every marker, which keeps `isReady()` false and stops any terminal from
+claiming otherwise; there is no stale READY after a partial installation. `debconf` is in the list
+because it provides `/usr/sbin/dpkg-preconfigure`, which the base image's `70debconf` apt hook calls
+and the base image does not ship.
+
+`LocalUbuntuRuntime.installToolchain()` exposes the same sequence for a caller that wants to retry
+just the package step against a rootfs that has already passed its PRoot probes.
 
 ## Runtime states
 
 `NOT_INSTALLED → DOWNLOADING → VERIFYING → EXTRACTING → INSTALLING → VALIDATING → READY →
 STARTING → RUNNING`, with `ERROR` reachable from any step and carrying the stage that failed
 (`download`, `checksum`, `extraction`, `validation`, `configuration`, `activation`, `runtime`).
-`READY` is only entered after the complete rootfs has been extracted, validated and then verified
-through PRoot.
+`READY` is only entered after the complete rootfs has been extracted, validated, verified through
+PRoot, and then had its developer toolchain installed and run.
 
 ## Retry
 
-Because a device may hold a partially extracted rootfs from an earlier attempt,
-`UbuntuRootfsInstaller.repairIncompleteInstallation()` runs at the start of every provisioning: it
-deletes `rootfs-staging` and deletes a `rootfs` that is missing required guest files. A complete
+Because a device may hold a partially extracted or partially installed rootfs from an earlier
+attempt, `UbuntuRootfsInstaller.repairIncompleteInstallation()` runs at the start of every
+provisioning: it deletes `rootfs-staging` (scratch left by an older build), deletes a `rootfs` that
+is missing required guest files, and deletes a `rootfs` that was marked for recreation
+(`discardRootfs`). A complete
 extracted tree without the install marker is kept and re-verified through PRoot (the marker is
 written only after `/bin/sh` and `/bin/bash` answer). The downloaded archive and the
 link-to-symlink store are preserved. The user never has to delete app-internal files by hand.

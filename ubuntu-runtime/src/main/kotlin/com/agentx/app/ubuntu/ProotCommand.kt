@@ -56,7 +56,8 @@ data class ProotInvocation(
  * - `-l` enables link-to-symlink emulation. Ubuntu's coreutils, dpkg and `ln` create symlinks
  *   as well as hard links; on Android's app storage hard links across the guest tree are not
  *   available, so without `-l` dpkg unpacking and `install` fail. `-l` requires
- *   [NativeRuntimeLayout.l2s] to exist and be writable.
+ *   [NativeRuntimeLayout.l2s] to exist, be writable, and — the part that is easy to get wrong —
+ *   to live *inside* the rootfs, or the links it creates are unusable from the guest.
  * - `-b` mounts infrastructure (`/dev`, `/proc`, `/sys`, the generated `resolv.conf`, `/tmp`)
  *   and the project.
  * - `-w` sets the guest working directory, which is a guest path even though the pty's host
@@ -100,7 +101,8 @@ object ProotCommand {
      *
      * No `-r` is passed: PRoot is acting purely as the linker here, and the archive's own paths
      * are what is being written. `PROOT_L2S_DIR` must be set or the emulation has nowhere to keep
-     * the moved contents.
+     * the moved contents — and it must name a directory *inside* [intoDir], because the symlinks
+     * it leaves behind record that path verbatim. See [NativeRuntimeLayout.l2s].
      */
     fun extraction(
         layout: NativeRuntimeLayout,

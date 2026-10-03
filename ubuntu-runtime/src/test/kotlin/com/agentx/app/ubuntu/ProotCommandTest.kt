@@ -135,5 +135,8 @@ class ProotCommandTest {
         assertFalse(invocation.arguments.contains("-r"))
         assertEquals("${layout.nativeLibraryDir}/libproot_loader.so", invocation.environment["PROOT_LOADER"])
         assertEquals(layout.l2s, invocation.environment["PROOT_L2S_DIR"])
+        // The store is created inside the tree being unpacked, because -l writes its path into
+        // every symlink it leaves behind; a store anywhere else is unreachable from the guest.
+        assertTrue(invocation.environment["PROOT_L2S_DIR"]!!.startsWith("${layout.rootfs}/"))
     }
 }

@@ -27,8 +27,48 @@ class UbuntuRuntimeVerifierTest {
         }.verify()
 
         assertTrue(result.ok, result.failure)
-        assertEquals(8, result.results.size)
+        assertEquals(10, result.results.size)
         assertTrue(result.summary.contains("Guest verified through PRoot"))
+    }
+
+    /**
+     * The archive's hard-link pairs are probed by *running* them.
+     *
+     * `-l` records the link-to-symlink store's absolute host path in the symlink, so a store
+     * outside the guest root leaves `/usr/bin/perl` and `/usr/bin/uncompress` unopenable in the
+     * guest while `stat`, `ls` and `dpkg-query` all report a healthy system. Only executing the
+     * binary answers the question the guest actually asks, and this probe is what turns a broken
+     * runtime into a named failure at provisioning time instead of an `apt` error later.
+     */
+    @Test
+    fun `the emulated hard links are probed by running them`() {
+        val probes = verifier { probe ->
+            UbuntuProbeResult(probe.label, probe.command, 0, probe.expectOutput ?: "")
+        }.probes
+
+        val perl = probes.single { it.label == "perl" }
+        assertEquals("/usr/bin/perl", perl.command.first())
+        assertTrue(perl.expectOutput!!.isNotBlank())
+
+        val uncompress = probes.single { it.label == "uncompress" }
+        assertEquals("/usr/bin/uncompress", uncompress.command.first())
+        assertEquals("gzip", uncompress.expectOutput)
+    }
+
+    @Test
+    fun `a link-to-symlink store the guest cannot follow fails verification`() {
+        // What the guest answers when PROOT_L2S_DIR sits outside the rootfs: the executable is
+        // there for ls, and unopenable for exec.
+        val result = verifier { probe ->
+            when (probe.label) {
+                "perl", "uncompress" ->
+                    UbuntuProbeResult(probe.label, probe.command, 126, "No such file or directory")
+                else -> UbuntuProbeResult(probe.label, probe.command, 0, probe.expectOutput ?: "")
+            }
+        }.verify()
+
+        assertFalse(result.ok)
+        assertTrue(result.failure!!.contains("/usr/bin/perl"), result.failure!!)
     }
 
     @Test

@@ -43,7 +43,14 @@ data class NativeRuntimeLayout(
     /** Verified Ubuntu ARM64 rootfs after installation. */
     val rootfs: String get() = "$runtimeDir/$ROOTFS_DIR"
 
-    /** Where a rootfs is unpacked before it is validated and moved into [rootfs]. */
+    /**
+     * Scratch directory a rootfs was unpacked into before activation.
+     *
+     * The extraction now writes straight into [rootfs]: the tree may not be moved once it is
+     * unpacked, because `-l` records absolute host paths into [l2s] inside it (see there). The
+     * path is still cleared on every attempt so an install upgraded from a build that staged
+     * first cannot leave a stale tree behind.
+     */
     val staging: String get() = "$runtimeDir/$STAGING_DIR"
 
     /**
@@ -64,12 +71,31 @@ data class NativeRuntimeLayout(
     /**
      * PRoot's link-to-symlink store (`PROOT_L2S_DIR`).
      *
-     * It must exist, be writable, live on a filesystem that supports symlinks (the app's data
-     * directory does) and survive across sessions, so it sits *outside* the rootfs subtree and
-     * is never replaced by an extraction. Ubuntu's coreutils and dpkg rely on this: without it
-     * `ln`, `install` and dpkg's unpack step fail on the host filesystem.
+     * It is deliberately **inside** the guest rootfs, at `<rootfs>/.l2s`. That is not a
+     * preference, it is what makes the emulated hard links resolvable at all.
+     *
+     * `-l` replaces every hard link with a symlink whose target is the literal absolute path
+     * `<PROOT_L2S_DIR>/.l2s.<name><NNNN>`. When a guest opens such a link, PRoot's
+     * `canonicalize()` dereferences it and runs the target through `detranslate_path()`, which
+     * strips the guest root prefix *only* when the path lies under the root; a target outside
+     * the root is returned unchanged and is then re-canonicalized as a **guest** path
+     * (`<rootfs>/…/l2s/…`), which does not exist. The link dangles, `open()` answers `ENOENT`,
+     * and a store kept beside the rootfs is exactly the configuration that produced
+     * `dpkg: error setting ownership of '/usr/bin/perl5.38.2.dpkg-new': No such file or
+     * directory`. Keeping it under the root means the prefix strip yields `/.l2s/…`, which
+     * resolves.
+     *
+     * Upstream does the same: `proot-distro` pins `PROOT_L2S_DIR` to `<rootfs>/.l2s`
+     * (`proot_distro/l2s.py`, `commands/login/__init__.py`).
+     *
+     * Because the store moves with the tree, the rootfs is extracted straight into [rootfs];
+     * see [UbuntuRootfsInstaller]. It is created as part of that extraction, which is why it is
+     * absent from [requiredDirectories].
      */
-    val l2s: String get() = "$runtimeDir/$L2S_DIR"
+    val l2s: String get() = "$rootfs/$L2S_DIR"
+
+    /** The store as the guest sees it, for diagnostics. */
+    val guestL2sPath: String get() = "/$L2S_DIR"
 
     /** `PROOT_TMP_DIR`: PRoot's own scratch space. */
     val tmp: String get() = "$runtimeDir/$TMP_DIR"
@@ -98,17 +124,33 @@ data class NativeRuntimeLayout(
     val verificationMarker: String get() = "$runtimeDir/$VERIFICATION_MARKER"
 
     /**
-     * Written once the developer toolchain (git, gh, python3, node, npm, …) has been installed
-     * by the guest's own `apt-get`. It is not part of READY: the shell is usable before apt has
-     * finished, and the install is repeated on a later attempt if it failed.
+     * Written only once the developer toolchain (git, gh, python3, pip, node, npm, curl, wget,
+     * ssh, rg) has been installed by the guest's own `apt-get` **and** every one of those
+     * executables has answered inside the guest.
+     *
+     * It is part of READY. A rootfs whose `apt`/`dpkg` work but whose packages are missing is not
+     * a developer runtime, and it must not present one: a failed package installation leaves this
+     * marker absent, so [LocalUbuntuRuntime.isReady] is false and no terminal claims otherwise.
      */
     val toolchainMarker: String get() = "$runtimeDir/$TOOLCHAIN_MARKER"
 
+    /**
+     * Written when the extracted tree has to be thrown away — a damaged `dpkg` database, or a
+     * failed activation — so the next attempt re-extracts instead of trying to repair a tree it
+     * cannot trust. See [UbuntuRootfsInstaller.discardRootfs].
+     */
+    val recreateMarker: String get() = "$runtimeDir/$RECREATE_MARKER"
+
     /** The guest path of [runtimeDir] is not needed; only the pieces above are bound. */
 
-    /** All directories the runtime needs before it can start, in creation order. */
+    /**
+     * All directories the runtime needs before it can start, in creation order.
+     *
+     * [l2s] is not here on purpose: it lives inside the rootfs and only exists once the archive
+     * has been extracted, so it is created by the extraction rather than ahead of it.
+     */
     val requiredDirectories: List<String>
-        get() = listOf(runtimeDir, downloads, tmp, l2s, workspaces, "$runtimeDir/etc")
+        get() = listOf(runtimeDir, downloads, tmp, workspaces, "$runtimeDir/etc")
 
     companion object {
         const val PROOT_LIBRARY: String = "libproot.so"
@@ -119,7 +161,12 @@ data class NativeRuntimeLayout(
 
         const val ROOTFS_DIR: String = "rootfs"
         const val STAGING_DIR: String = "rootfs-staging"
-        const val L2S_DIR: String = "l2s"
+
+        /**
+         * The link-to-symlink store's name, as upstream spells it (`.l2s`, the `PREFIX` of
+         * PRoot's `extension/link2symlink/link2symlink.c`).
+         */
+        const val L2S_DIR: String = ".l2s"
         const val TMP_DIR: String = "tmp"
         const val DOWNLOADS_DIR: String = "downloads"
         const val WORKSPACES_DIR: String = "workspaces"
@@ -133,6 +180,7 @@ data class NativeRuntimeLayout(
         const val GUEST_OS_RELEASE_PATH: String = "etc/os-release"
         const val VERIFICATION_MARKER: String = "rootfs-verified.ok"
         const val TOOLCHAIN_MARKER: String = "toolchain.ok"
+        const val RECREATE_MARKER: String = "recreate-rootfs.ok"
 
         /**
          * Libraries that must be present in [nativeLibraryDir] before a guest process can be
