@@ -139,6 +139,20 @@ data class PersistedAgentMessage(
 )
 
 interface AgentSession {
+    /**
+     * Stops the run that is actually executing in this session.
+     *
+     * Deliberately not the same thing as cancelling the caller's coroutine: this
+     * must reach the runtime operation itself, so the model request, stream, tool
+     * call or delegated sub-agent in flight is stopped instead of being left to run
+     * on in the background. It is not suspending because the user's Stop has to take
+     * effect immediately, from a plain UI callback.
+     *
+     * Sessions that keep no runtime (scripted and mock sessions) keep this default
+     * no-op.
+     */
+    fun cancel(sessionId: String) = Unit
+
     suspend fun run(
         input: String,
         onEvent: (AgentStreamEvent) -> Unit,

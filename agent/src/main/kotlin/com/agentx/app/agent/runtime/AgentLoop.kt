@@ -8,6 +8,8 @@ import com.agentx.app.agent.domain.AgentEventSink
 import com.agentx.app.agent.domain.AgentResult
 import com.agentx.app.agent.domain.AgentRole
 import com.agentx.app.agent.domain.AgentStatus
+import com.agentx.app.agent.domain.AgentPlan
+import com.agentx.app.agent.domain.AgentStep
 import com.agentx.app.agent.domain.AgentStepStats
 import com.agentx.app.agent.domain.PermissionLevel
 import com.agentx.app.agent.domain.PendingPermission
@@ -302,6 +304,17 @@ class AgentLoop(
             }
 
             stepIndex += 1
+            // A real plan, emitted by the runtime rather than inferred by the UI: one
+            // step per loop iteration, the finished ones behind it and the current one
+            // active. Steps are concise task units for the operator — never model
+            // reasoning, and never one event per token.
+            sink.emit(
+                AgentEvent.PlanUpdated(
+                    request.sessionId,
+                    planFor(request.definition.role, stepIndex),
+                    clock(),
+                ),
+            )
             sink.emit(
                 AgentEvent.StatsUpdated(
                     request.sessionId,
@@ -905,6 +918,15 @@ class AgentLoop(
             sessionId = request.sessionId,
         )
         errors += error
+        // The plan's own terminal form, so a consumer never has to infer it: the step
+        // that was running is cancelled together with the run.
+        sink.emit(
+            AgentEvent.PlanUpdated(
+                request.sessionId,
+                planFor(request.definition.role, stepIndex, terminal = AgentStatus.CANCELLED),
+                clock(),
+            ),
+        )
         sink.emit(AgentEvent.Cancelled(request.sessionId, "Cancelled", clock()))
         return AgentResult(
             sessionId = request.sessionId,
@@ -918,6 +940,32 @@ class AgentLoop(
             role = request.definition.role,
             stepStats = stats(startedAt, stepIndex, request.maxSteps, modelCalls, toolCalls, subAgentCalls),
         )
+    }
+
+    /**
+     * The plan the runtime actually followed: one step per loop iteration.
+     *
+     * Steps are concise task units, not reasoning, and the plan is rebuilt once per
+     * iteration rather than per token so a consumer is not flooded. The state of a step
+     * reuses [AgentStatus], the project's existing run state, instead of a second enum.
+     * [terminal] marks the step that was running when the run ended, so a cancelled run
+     * carries its own closing plan.
+     */
+    private fun planFor(role: AgentRole, stepIndex: Int, terminal: AgentStatus? = null): AgentPlan {
+        val steps = (1..stepIndex.coerceAtLeast(1)).map { index ->
+            val running = index == stepIndex
+            AgentStep(
+                index = index,
+                title = if (index == 1) "Plan the task" else "Work step $index",
+                role = role,
+                status = when {
+                    running && terminal != null -> terminal
+                    running -> AgentStatus.RUNNING
+                    else -> AgentStatus.COMPLETED
+                },
+            )
+        }
+        return AgentPlan(steps = steps, revision = stepIndex.coerceAtLeast(1))
     }
 
     private fun modelTimeout(error: TimeoutCancellationException, request: AgentLoopRequest): AgentError =

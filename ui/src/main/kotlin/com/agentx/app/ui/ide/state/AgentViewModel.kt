@@ -123,6 +123,12 @@ class AgentViewModel(
     fun stop() {
         if (!uiState.running) return
         stoppedByUser = true
+        // Stop the run itself first, then the coroutine awaiting it. Cancelling only
+        // the coroutine left the runtime working in the background: the orchestrator
+        // marks the session cancelled, so the loop stops at its next observation point
+        // and the request in flight is cancelled. Done before touching `job` so the
+        // cancellation flag is set while the run is still alive to read it.
+        uiState.activeSessionId?.let { activeId -> session.cancel(activeId) }
         job?.cancel()
         job = null
         val elapsed = elapsedSinceStart()

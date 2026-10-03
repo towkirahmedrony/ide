@@ -758,6 +758,13 @@ class AgentViewModelTest {
         )
 
         val runs = mutableListOf<RunCall>()
+
+        /** Every session id the UI explicitly stopped, in order. */
+        val cancelled = mutableListOf<String>()
+
+        override fun cancel(sessionId: String) {
+            cancelled += sessionId
+        }
         val sessions = LinkedHashMap<String, MutableList<PersistedAgentMessage>>()
         private val titles = LinkedHashMap<String, String>()
         private val updated = LinkedHashMap<String, Long>()

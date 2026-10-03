@@ -67,6 +67,18 @@ class OrchestratorAgentSession(
     /** Same ceiling the Context Engine applies to conversation context. */
     private val conversationLimit = ContextBudget.DEFAULT.maxConversationMessages
 
+    /**
+     * Reaches the run itself rather than only the coroutine waiting on it.
+     *
+     * The orchestrator marks the session cancelled, flags it so the loop stops at its
+     * next observation point, and cancels the job the run is executing in — so a model
+     * request, stream, tool call or sub-agent in flight observes the stop and no
+     * queued work starts afterwards.
+     */
+    override fun cancel(sessionId: String) {
+        orchestrator.cancel(sessionId)
+    }
+
     override suspend fun run(
         input: String,
         onEvent: (AgentStreamEvent) -> Unit,
