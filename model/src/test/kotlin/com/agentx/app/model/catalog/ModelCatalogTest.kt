@@ -14,6 +14,7 @@ import com.agentx.app.model.capability.ModelCapability
 import com.agentx.app.model.connect.KnownModelProviders
 import com.agentx.app.model.connect.ModelSetupKind
 import com.agentx.app.model.connect.normalizeModelId
+import com.agentx.app.model.discovery.ModelDiscovery
 import com.agentx.app.model.http.HttpResponseSpec
 import com.agentx.app.model.manager.GatewayModelConnectionRegistry
 import com.agentx.app.model.preset.EndpointConfig
@@ -22,6 +23,7 @@ import com.agentx.app.model.preset.ModelApiProtocol
 import com.agentx.app.model.preset.ModelPreset
 import com.agentx.app.model.preset.ModelProviderIds
 import com.agentx.app.model.preset.ModelProviderType
+import com.agentx.app.model.provider.openai.OpenAiCompatibleProvider
 import com.agentx.app.model.runSuspend
 import com.agentx.app.model.runtime.EndpointSource
 import com.agentx.app.model.runtime.ModelEndpoint
@@ -288,7 +290,18 @@ class ModelCatalogTest {
                     ),
                 )
             },
-            factory = RemoteModelCatalogFactory(transport = transport, clock = { 0L }),
+            // The provider owns discovery for a local endpoint too: it is what reports
+            // a missing list route as "discovery unavailable" instead of a failure.
+            factory = RemoteModelCatalogFactory(
+                transport = transport,
+                clock = { 0L },
+                discoverySource = { providerId, connection ->
+                    ModelDiscovery {
+                        OpenAiCompatibleProvider(id = providerId, transport = transport)
+                            .discoverModels(connection)
+                    }
+                },
+            ),
             store = store,
         )
 

@@ -185,9 +185,12 @@ class GeminiModelProvider(
             servedWith = response.statusCode
             reported += parsed.reportedCount
             rejected += parsed.rejected
-            // Duplicate ids across pages collapse to one entry: identity is the
-            // model id, and a later page may repeat a model already seen.
-            parsed.models.forEach { model -> collected[model.modelId] = model }
+            // Duplicate ids across pages collapse to one entry: identity is the model
+            // id. A repeated entry *merges*, because a later page often carries less
+            // detail than the first and must not erase what was already read.
+            parsed.models.forEach { model ->
+                collected[model.modelId] = collected[model.modelId]?.mergeWith(model) ?: model
+            }
             trace.stage(
                 "PAGE",
                 "page" to page,

@@ -333,11 +333,15 @@ class ProviderModelDiscoveryTest {
         connections: Map<String, ModelConfig>,
         transport: FakeHttpTransport,
         capabilities: InMemoryModelCapabilityRegistry,
+        // One store for the factory and the registry: the registry persists through
+        // the factory's catalogs, so two stores would silently lose persistence.
+        store: InMemoryModelCatalogStore = InMemoryModelCatalogStore(),
     ) = DefaultModelCatalogRegistry(
         connections = { connections },
         factory = RemoteModelCatalogFactory(
             transport = transport,
             clock = { 0L },
+            store = store,
             capabilityRegistry = capabilities,
             discoverySource = { providerId, connection ->
                 when (providerId) {
@@ -353,7 +357,7 @@ class ProviderModelDiscoveryTest {
                 }
             },
         ),
-        store = InMemoryModelCatalogStore(),
+        store = store,
         capabilityRegistry = capabilities,
     )
 
@@ -427,6 +431,7 @@ class ProviderModelDiscoveryTest {
             factory = RemoteModelCatalogFactory(
                 transport = transport,
                 clock = { 0L },
+                store = store,
                 capabilityRegistry = capabilities,
                 discoverySource = { providerId, config ->
                     ModelDiscovery {
@@ -479,6 +484,7 @@ class ProviderModelDiscoveryTest {
         fun factory() = RemoteModelCatalogFactory(
             transport = transport,
             clock = { 0L },
+            store = store,
             capabilityRegistry = capabilities,
             discoverySource = { providerId, config ->
                 ModelDiscovery {

@@ -53,6 +53,28 @@ data class DiscoveredModel(
         require(modelId.isNotBlank()) { "modelId must not be blank" }
     }
 
+    /**
+     * Combines two reports of the same model, keeping every field either of them
+     * knew.
+     *
+     * A paginated list can repeat a model — the second page often carries less
+     * detail than the first — so the later entry must fill gaps rather than erase
+     * what was already read. Nothing is invented: a field neither entry reported
+     * stays null.
+     */
+    fun mergeWith(other: DiscoveredModel): DiscoveredModel = DiscoveredModel(
+        modelId = modelId,
+        displayName = displayName ?: other.displayName,
+        contextWindowTokens = contextWindowTokens ?: other.contextWindowTokens,
+        maxOutputTokens = maxOutputTokens ?: other.maxOutputTokens,
+        deprecated = deprecated ?: other.deprecated,
+        available = available ?: other.available,
+        local = local || other.local,
+        providerOwnedBy = providerOwnedBy ?: other.providerOwnedBy,
+        createdAtMillis = createdAtMillis ?: other.createdAtMillis,
+        providerMetadata = other.providerMetadata + providerMetadata,
+    )
+
     /** The canonical descriptor shape `ModelProvider.listModels` reports. */
     fun toModelDescriptor(providerId: String): ModelDescriptor = ModelDescriptor(
         id = modelId,
