@@ -178,7 +178,8 @@ fun ModelConfig.isLocalRuntime(registry: ModelCapabilityRegistry = InMemoryModel
 private const val LOCAL_PROVIDER_TYPE_METADATA: String = "providerType"
 private const val LOCAL_PHONE_TYPE: String = "LOCAL_PHONE"
 
-private fun isLoopbackEndpoint(baseUrl: String): Boolean {
+/** True when [baseUrl] points at this device or the local network. */
+internal fun isLoopbackEndpoint(baseUrl: String): Boolean {
     val host = runCatching { java.net.URI(baseUrl.trim()).host?.lowercase() }.getOrNull() ?: return false
     return host == "localhost" || host == "127.0.0.1" || host == "::1" || host.endsWith(".local")
 }

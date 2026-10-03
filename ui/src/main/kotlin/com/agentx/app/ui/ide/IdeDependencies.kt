@@ -10,6 +10,7 @@ import com.agentx.app.integrations.ConnectionManagers
 import com.agentx.app.integrations.connection.ConnectionManager
 import com.agentx.app.integrations.setup.InMemoryIntegrationSetupStore
 import com.agentx.app.integrations.setup.IntegrationSetupManager
+import com.agentx.app.model.capability.ModelCapabilityRegistry
 import com.agentx.app.model.catalog.ModelCatalogRegistry
 import com.agentx.app.model.manager.ModelManager
 import com.agentx.app.model.manager.ModelManagers
@@ -73,6 +74,11 @@ data class IdeDependencies(
     val rateLimits: RateLimitManager? = null,
     /** Dynamic per-provider model catalogs (for example Groq's model list). */
     val modelCatalog: ModelCatalogRegistry? = null,
+    /**
+     * The authoritative capability registry, so Settings can say when an assigned
+     * model is ineligible for its role instead of only that it is unavailable.
+     */
+    val modelCapabilities: ModelCapabilityRegistry? = null,
     val connectionManager: ConnectionManager,
     /** Personal Client ID / callback setup for this IDE. Optional in previews. */
     val integrationSetup: IntegrationSetupManager? = null,

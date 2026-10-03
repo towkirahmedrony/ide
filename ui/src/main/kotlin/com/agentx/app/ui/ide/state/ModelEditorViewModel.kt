@@ -9,6 +9,7 @@ import com.agentx.app.core.ForgeError
 import com.agentx.app.core.errorOrNull
 import com.agentx.app.core.valueOrNull
 import com.agentx.app.model.catalog.ModelCatalogRegistry
+import com.agentx.app.model.catalog.ModelCatalogState
 import com.agentx.app.model.connect.KnownModelProviders
 import com.agentx.app.model.connect.ModelConnectOutcome
 import com.agentx.app.model.connect.ModelConnectPhase
@@ -39,6 +40,12 @@ data class ModelEditorState(
     val catalogLoading: Boolean = false,
     /** Set only when a connected provider's catalog could not be read. */
     val catalogError: String? = null,
+    /**
+     * What the last discovery attempt for this provider did, when the catalog
+     * reports it. It is what separates "this provider publishes no model list"
+     * from "the list could not be read" — two different fixes for the user.
+     */
+    val catalogState: ModelCatalogState? = null,
     /** Model ids a connect attempt discovered and wants the user to choose from. */
     val discoveredModels: List<String> = emptyList(),
     val saving: Boolean = false,
@@ -276,6 +283,8 @@ class ModelEditorViewModel(
         }
         val fromCatalog = ModelChoices.catalogChoices(registry, providerId)
         val connected = registry?.catalog(providerId) != null
+        // Read after the refresh, so the state describes the attempt that just ran.
+        val discoveryState = registry?.lastDiscovery(providerId)
         // A live catalog replaces the built-in compatibility list outright; the
         // compatibility list only fills the gap when discovery cannot answer at all,
         // so a fallback id is never presented as one the provider offers.
@@ -291,6 +300,7 @@ class ModelEditorViewModel(
             // Only a connected provider that failed to answer is worth a retry; an
             // unconnected one simply has no model list yet.
             catalogError = failure?.message?.takeIf { connected || fromCatalog.isNotEmpty() },
+            catalogState = discoveryState,
             form = resolveStaleSavedModel(state.form, fromCatalog, providerId),
         )
     }

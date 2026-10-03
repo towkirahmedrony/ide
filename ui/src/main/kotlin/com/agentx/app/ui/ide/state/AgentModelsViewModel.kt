@@ -8,10 +8,15 @@ import androidx.lifecycle.viewModelScope
 import com.agentx.app.agent.catalog.AgentCatalog
 import com.agentx.app.agent.domain.AgentRole
 import com.agentx.app.agent.model.AgentRoleModelRegistry
+import com.agentx.app.agent.model.AgentRoleRequirements
 import com.agentx.app.agent.model.ProviderModelOption
 import com.agentx.app.agent.model.RoleModelEvaluation
 import com.agentx.app.agent.model.RoleModelState
+import com.agentx.app.agent.model.RoleModelStatus
+import com.agentx.app.model.capability.CapabilitySupport
+import com.agentx.app.model.capability.ModelCapabilityRegistry
 import com.agentx.app.model.catalog.ModelCatalogRegistry
+import com.agentx.app.model.catalog.ModelCatalogState
 import com.agentx.app.model.connect.KnownModelProviders
 import com.agentx.app.model.connect.ModelSetupKind
 import com.agentx.app.model.manager.ModelManager
@@ -34,6 +39,12 @@ data class AgentModelRow(
     val message: String,
     /** True when the user explicitly assigned this, false for the built-in default. */
     val explicit: Boolean,
+    /**
+     * Set when the assigned model cannot serve the role's required capabilities
+     * (tool calling, streaming). Null when nothing is known to be missing, so an
+     * unverified model is not reported as broken.
+     */
+    val capabilityNote: String? = null,
 )
 
 /**
@@ -52,6 +63,13 @@ class AgentModelsViewModel(
     private val modelManager: ModelManager,
     private val catalog: ModelCatalogRegistry? = null,
     private val rateLimits: RateLimitManager? = null,
+    /**
+     * The authoritative capability registry. When supplied, a role whose assigned
+     * model cannot serve the role's required capabilities is reported as
+     * capability-ineligible, which is a different problem from an unavailable
+     * model and is deliberately not the same message.
+     */
+    private val capabilities: ModelCapabilityRegistry? = null,
 ) : ViewModel() {
 
     var rows by mutableStateOf<List<AgentModelRow>>(emptyList())
@@ -179,9 +197,29 @@ class AgentModelsViewModel(
                 state = status.state,
                 message = status.message,
                 explicit = status.explicit,
+                capabilityNote = capabilityNote(role, status),
             )
         }
         providerSummaries = current.associate { it.providerId to summaryFor(it) }
+    }
+
+    /**
+     * Whether the assigned model can serve the role's required capabilities.
+     *
+     * Only an authoritative "unsupported" or "disabled" answer is reported: an
+     * unknown capability is not a failure here, exactly as the eligibility checker
+     * treats it, so a model nobody has described yet is never labelled broken.
+     */
+    private fun capabilityNote(role: AgentRole, status: RoleModelStatus): String? {
+        val registry = capabilities ?: return null
+        val providerId = status.providerId ?: return null
+        val model = status.model ?: return null
+        val profile = registry.get(providerId, model) ?: return null
+        if (!profile.enabled) return "This model is disabled and cannot be run."
+        val missing = AgentRoleRequirements.required(role)
+            .filter { profile.support(it) == CapabilitySupport.UNSUPPORTED }
+        if (missing.isEmpty()) return null
+        return "This model does not support ${missing.joinToString(", ") { it.id }} required by this agent."
     }
 
     /**
@@ -230,9 +268,23 @@ class AgentModelsViewModel(
                 connectionId = origin.id,
                 connectionLabel = origin.displayName,
                 endpoint = usable?.let { state.status(it.id).endpoint?.url },
+                // Why the list is what it is: a provider that publishes no list, or
+                // one whose refresh failed, must not look like a provider that simply
+                // has no models — that is what a built-in fallback list used to hide.
+                discoveryNote = discoveryNoteFor(providerId),
             )
         }
     }
+
+    /** The catalog's own report of its last discovery, in one buyer-facing line. */
+    private fun discoveryNoteFor(providerId: String): String? =
+        when (val state = catalog?.lastDiscovery(providerId)) {
+            is ModelCatalogState.Unavailable -> state.message
+            is ModelCatalogState.Failed -> "Model list refresh failed: ${state.message}"
+            is ModelCatalogState.NotConnected -> null
+            ModelCatalogState.Idle, is ModelCatalogState.Discovered -> null
+            null -> null
+        }
 
     /** A one-line, honest summary: where limits came from and what has been used. */
     private fun summaryFor(option: ProviderModelOption): String {

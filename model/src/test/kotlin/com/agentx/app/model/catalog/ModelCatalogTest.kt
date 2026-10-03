@@ -254,14 +254,52 @@ class ModelCatalogTest {
     fun `the registry reports no catalog for an unsupported provider`() = runSuspend {
         val registry = DefaultModelCatalogRegistry(
             connections = {
-                mapOf("openai-compatible" to ModelConfig("openai-compatible", "http://localhost:11434/v1", "local-model"))
+                mapOf(
+                    ModelProviderIds.CEREBRAS to ModelConfig(
+                        ModelProviderIds.CEREBRAS,
+                        "https://api.cerebras.ai/v1",
+                        "llama3.1-8b",
+                    ),
+                )
             },
             factory = RemoteModelCatalogFactory(),
         )
 
-        val result = registry.refresh("openai-compatible", force = true)
+        val result = registry.refresh(ModelProviderIds.CEREBRAS, force = true)
 
         assertTrue(result is ForgeResult.Failure)
+        assertNull(registry.lastDiscovery(ModelProviderIds.CEREBRAS).let { it as? ModelCatalogState.Discovered })
+    }
+
+    @Test
+    fun `a local endpoint without a list route reports discovery unavailable and invents nothing`() = runSuspend {
+        // A local runtime that answers 404 has published no model list. That is not a
+        // failure and not an empty catalog: the saved models stay, and the state says
+        // why nothing was discovered.
+        val transport = FakeHttpTransport(response = HttpResponseSpec(statusCode = 404, body = "not found"))
+        val store = InMemoryModelCatalogStore()
+        val registry = DefaultModelCatalogRegistry(
+            connections = {
+                mapOf(
+                    ModelProviderIds.OPENAI_COMPATIBLE to ModelConfig(
+                        ModelProviderIds.OPENAI_COMPATIBLE,
+                        "http://localhost:11434/v1",
+                        "qwen2.5-coder:14b",
+                    ),
+                )
+            },
+            factory = RemoteModelCatalogFactory(transport = transport, clock = { 0L }),
+            store = store,
+        )
+
+        val result = registry.refresh(ModelProviderIds.OPENAI_COMPATIBLE, force = true)
+
+        assertTrue(result is ForgeResult.Failure)
+        val state = registry.lastDiscovery(ModelProviderIds.OPENAI_COMPATIBLE)
+        assertTrue(state is ModelCatalogState.Unavailable, "expected an unavailable state, got $state")
+        assertTrue(registry.availableModels(ModelProviderIds.OPENAI_COMPATIBLE).isEmpty())
+        // Manual configuration is untouched: nothing was written and nothing erased.
+        assertNull(store.load(ModelProviderIds.OPENAI_COMPATIBLE))
     }
 
     // --- Gemini ---------------------------------------------------------------
@@ -650,15 +688,22 @@ class ModelCatalogTest {
     }
 
     @Test
-    fun `adding gemini does not change groq or local catalogs`() {
+    fun `groq, gemini and a local endpoint each keep their own model list`() {
         val factory = RemoteModelCatalogFactory()
 
         assertTrue(factory.supports(ModelProviderIds.GROQ))
         assertTrue(factory.supports(ModelProviderIds.GEMINI))
-        assertFalse(factory.supports(ModelProviderIds.OPENAI_COMPATIBLE))
+        // A local OpenAI-compatible runtime serves the same `/models` route as a
+        // hosted compatible API, so it can be listed too. A runtime that answers 404
+        // is reported as having no list rather than being given an invented catalog.
+        assertTrue(factory.supports(ModelProviderIds.OPENAI_COMPATIBLE))
         assertEquals(
             "https://api.groq.com/openai/v1/models",
             factory.modelsUrlFor(ModelProviderIds.GROQ, "https://api.groq.com/openai/v1"),
+        )
+        assertEquals(
+            "http://localhost:11434/v1/models",
+            factory.modelsUrlFor(ModelProviderIds.OPENAI_COMPATIBLE, "http://localhost:11434/v1"),
         )
         // Gemini keeps its own list; /models is never appended to the chat surface.
         assertEquals(

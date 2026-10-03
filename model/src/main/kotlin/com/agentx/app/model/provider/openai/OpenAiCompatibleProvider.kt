@@ -3,7 +3,11 @@ package com.agentx.app.model.provider.openai
 import com.agentx.app.core.logging.ForgeLogger
 import com.agentx.app.core.timeout.AgentTimeouts
 import com.agentx.app.model.*
+import com.agentx.app.model.capability.isLoopbackEndpoint
+import com.agentx.app.model.connect.DiscoveryFailureKind
 import com.agentx.app.model.connect.diagnosticPath
+import com.agentx.app.model.discovery.ModelDiscoveryOutcome
+import com.agentx.app.model.discovery.ModelListParsing
 import com.agentx.app.model.diagnostics.ApiOperation
 import com.agentx.app.model.diagnostics.ApiTrace
 import com.agentx.app.model.diagnostics.configuredFlag
@@ -49,6 +53,155 @@ class OpenAiCompatibleProvider(
 ) : ModelProvider {
 
     override fun capabilities(modelId: String): ModelCapabilities = defaultCapabilities
+
+    /**
+     * Enumerates the models the endpoint exposes for [config].
+     *
+     * `GET <baseUrl>/models` is the OpenAI-compatible list route, which every
+     * compatible runtime that offers discovery serves (Groq documents it as
+     * `<host>/openai/v1/models`, which is exactly the configured base URL plus
+     * `/models`). The credential, when there is one, is the same bearer token the
+     * chat call uses; a local runtime that needs none is asked without one.
+     *
+     * A runtime that has no list route answers 404/405. That is reported as
+     * [ModelDiscoveryOutcome.Unavailable] rather than as a failure or an empty
+     * list, so a caller keeps the manually configured models and never invents a
+     * catalog for an endpoint that published none.
+     *
+     * Capabilities are not inferred from a name or an id: the list is normalized
+     * into identity and whatever metadata the endpoint actually reported.
+     */
+    override suspend fun discoverModels(config: ModelConfig): ModelDiscoveryOutcome {
+        val trace = ApiTrace.create(logger, id, ApiOperation.DISCOVERY)
+        val base = config.baseUrl.trim()
+        if (base.isBlank()) {
+            return ModelDiscoveryOutcome.Unavailable(
+                reason = ModelDiscoveryOutcome.REASON_NOT_CONNECTED,
+                message = "The endpoint has no base URL to list models from.",
+            )
+        }
+        val url = modelsUrl(base)
+        val headers = LinkedHashMap<String, String>()
+        headers["Accept"] = "application/json"
+        config.apiKey?.takeIf { it.isNotBlank() }?.let { key -> headers["Authorization"] = "Bearer $key" }
+        config.headers.forEach { (name, value) -> headers[name] = value }
+
+        trace.stage(
+            "START",
+            "operation" to "model-discovery",
+            "provider" to id,
+            "path" to diagnosticPath(url),
+            "hasApiKey" to configuredFlag(!config.apiKey.isNullOrBlank()),
+        )
+        val started = System.nanoTime()
+        val response = try {
+            transport.execute(
+                HttpRequestSpec(
+                    method = "GET",
+                    url = url,
+                    headers = headers,
+                    connectTimeoutMillis = CONNECT_TIMEOUT_MILLIS,
+                    readTimeoutMillis = READ_TIMEOUT_MILLIS,
+                ),
+            )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            val kind = discoveryKind(error)
+            trace.failure(
+                "ERROR",
+                "stage" to "transport",
+                "path" to diagnosticPath(url),
+                "kind" to kind.name,
+                "exception" to error.javaClass.name,
+                "message" to sanitizeForLog(error.message ?: error.javaClass.name),
+            )
+            return ModelDiscoveryOutcome.Failed(kind = kind, message = discoveryMessage(error))
+        }
+        trace.stage(
+            "RESPONSE",
+            "status" to response.statusCode,
+            "elapsedMs" to elapsedMillis(started),
+            "bodyBytes" to response.body.length,
+            "success" to response.isSuccess,
+        )
+
+        if (response.statusCode == 404 || response.statusCode == 405) {
+            trace.warn("UNAVAILABLE", "reason" to "no-model-list-route", "status" to response.statusCode)
+            return ModelDiscoveryOutcome.Unavailable(
+                reason = ModelDiscoveryOutcome.REASON_NO_MODEL_LIST,
+                message = "The endpoint does not expose a model list at ${diagnosticPath(url)}.",
+            )
+        }
+        if (!response.isSuccess) {
+            val kind = discoveryHttpKind(response.statusCode)
+            trace.failure(
+                "ERROR",
+                "stage" to "http",
+                "status" to response.statusCode,
+                "kind" to kind.name,
+                "path" to diagnosticPath(url),
+            )
+            return ModelDiscoveryOutcome.Failed(
+                kind = kind,
+                message = "The model list endpoint returned HTTP ${response.statusCode}.",
+                httpStatus = response.statusCode,
+            )
+        }
+
+        val parsed = ModelListParsing.parse(response.body, id)
+        if (parsed == null) {
+            trace.failure("PARSE_FAIL", "reason" to "not-a-model-list", "path" to diagnosticPath(url))
+            return ModelDiscoveryOutcome.Failed(
+                kind = DiscoveryFailureKind.MALFORMED,
+                message = "The model list response could not be parsed.",
+            )
+        }
+        trace.stage(
+            "COMPLETE",
+            "outcome" to "discovered",
+            "received" to parsed.reportedCount,
+            "accepted" to parsed.models.size,
+            "rejected" to parsed.rejected.size,
+        )
+        // A loopback endpoint is this device or the local network, so every model it
+        // lists runs locally: the flag travels with the descriptor instead of being
+        // guessed from a model name later.
+        val local = isLoopbackEndpoint(base)
+        return ModelDiscoveryOutcome.Discovered(
+            models = if (local) parsed.models.map { it.copy(local = true) } else parsed.models,
+            reportedCount = parsed.reportedCount,
+            rejected = parsed.rejected,
+            httpStatus = response.statusCode,
+        )
+    }
+
+    /** The OpenAI-compatible model-list route, relative to the configured base URL. */
+    private fun modelsUrl(baseUrl: String): String = baseUrl.trimEnd('/') + MODELS_PATH
+
+    private fun discoveryHttpKind(status: Int): DiscoveryFailureKind = when (status) {
+        401, 403 -> DiscoveryFailureKind.AUTHENTICATION_REQUIRED
+        408 -> DiscoveryFailureKind.TIMEOUT
+        429 -> DiscoveryFailureKind.RATE_LIMITED
+        in 500..599 -> DiscoveryFailureKind.SERVER_ERROR
+        else -> DiscoveryFailureKind.UNSUPPORTED
+    }
+
+    private fun discoveryKind(error: Throwable): DiscoveryFailureKind = when (val root = unwrap(error)) {
+        is SocketTimeoutException, is java.io.InterruptedIOException -> DiscoveryFailureKind.TIMEOUT
+        is UnknownHostException, is ConnectException, is NoRouteToHostException,
+        is PortUnreachableException, is SSLException,
+        -> DiscoveryFailureKind.UNREACHABLE
+        is IOException -> DiscoveryFailureKind.UNREACHABLE
+        else -> DiscoveryFailureKind.UNKNOWN
+    }
+
+    private fun discoveryMessage(error: Throwable): String = when (unwrap(error)) {
+        is SocketTimeoutException, is java.io.InterruptedIOException ->
+            "The model list endpoint did not respond in time."
+        is UnknownHostException -> "The model endpoint host could not be resolved."
+        else -> "Could not reach the model list: ${sanitizeForLog(unwrap(error).message ?: "network error")}"
+    }
 
     override suspend fun complete(request: ModelRequest): ModelResponse {
         val trace = ApiTrace.create(logger, id, ApiOperation.COMPLETION)
@@ -786,6 +939,13 @@ class OpenAiCompatibleProvider(
         const val DEFAULT_ID: String = "openai-compatible"
         const val DEFAULT_CHAT_PATH: String = "/chat/completions"
         const val CONNECT_TIMEOUT_MILLIS: Int = 15_000
+
+        /**
+         * The OpenAI-compatible model-list route, relative to the configured base
+         * URL. Groq's documented `GET /openai/v1/models` is exactly this path on a
+         * base URL that already ends in `/openai/v1`.
+         */
+        const val MODELS_PATH: String = "/models"
 
         private const val EMPTY_BODY_MESSAGE: String = "Model endpoint returned an empty response"
 

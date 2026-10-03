@@ -3,6 +3,7 @@ package com.agentx.app.model.catalog
 import com.agentx.app.core.ForgeError
 import com.agentx.app.core.ForgeResult
 import com.agentx.app.model.ModelCapabilities
+import com.agentx.app.model.connect.DiscoveryFailureKind
 import com.agentx.app.model.connect.normalizeModelId
 import com.agentx.app.model.json.Json
 import com.agentx.app.model.json.JsonCodec
@@ -47,9 +48,54 @@ data class CatalogModel(
      * assignment can be reported as unavailable instead of being replaced.
      */
     val available: Boolean = true,
+    /**
+     * True when the provider is a local / on-device runtime, so a restart keeps
+     * knowing that this model runs outside remote quotas.
+     */
+    val local: Boolean = false,
     val providerOwnedBy: String? = null,
     val createdAtMillis: Long? = null,
 )
+
+/**
+ * What the last discovery attempt for a provider did.
+ *
+ * The states are kept apart so the UI can tell a provider that publishes no model
+ * list from one whose list could not be read, and both from a provider that has
+ * simply not been asked yet. Collapsing them is how "discovery is unavailable"
+ * gets presented as "this provider has no models", which is what a built-in
+ * fallback list then fills in — the confusion this catalog exists to remove.
+ */
+sealed interface ModelCatalogState {
+
+    /** Nothing has been requested from this provider yet in this process. */
+    data object Idle : ModelCatalogState
+
+    /** The provider answered; [modelCount] models are known for it. */
+    data class Discovered(
+        val modelCount: Int,
+        val fetchedAtMillis: Long,
+    ) : ModelCatalogState
+
+    /**
+     * The provider publishes no model list. Its manually configured models are
+     * unaffected and remain selectable.
+     */
+    data class Unavailable(val message: String) : ModelCatalogState
+
+    /**
+     * Discovery was attempted and failed. The last known catalog is preserved:
+     * nothing is erased and no other provider's models are substituted.
+     */
+    data class Failed(
+        val message: String,
+        val kind: DiscoveryFailureKind? = null,
+        val httpStatus: Int? = null,
+    ) : ModelCatalogState
+
+    /** The provider is not connected, so there is nothing to ask. */
+    data class NotConnected(val message: String) : ModelCatalogState
+}
 
 /** A provider's model catalog at a point in time. */
 data class ModelCatalogSnapshot(
@@ -101,6 +147,12 @@ interface ModelCatalogStore {
     suspend fun load(providerId: String): ModelCatalogSnapshot?
 
     suspend fun save(snapshot: ModelCatalogSnapshot)
+
+    /**
+     * Provider identities a snapshot was persisted for, so a restart can restore
+     * what a previous run discovered even before any provider is asked again.
+     */
+    suspend fun providers(): List<String> = emptyList()
 }
 
 /** Store used by previews, tests and the platform default. */
@@ -116,6 +168,8 @@ class InMemoryModelCatalogStore(initial: List<ModelCatalogSnapshot> = emptyList(
     override suspend fun save(snapshot: ModelCatalogSnapshot) {
         values[snapshot.providerId] = snapshot
     }
+
+    override suspend fun providers(): List<String> = values.keys.toList()
 }
 
 /**
@@ -153,6 +207,7 @@ object ModelCatalogCodec {
         "maxOutputTokens" to (model.maxOutputTokens?.let { Json.of(it) } ?: JsonValue.Null),
         "deprecated" to (model.deprecated?.let { Json.of(it) } ?: JsonValue.Null),
         "available" to Json.of(model.available),
+        "local" to Json.of(model.local),
         "streaming" to Json.of(model.capabilities.streaming),
         "toolCalling" to Json.of(model.capabilities.toolCalling),
         "providerOwnedBy" to (model.providerOwnedBy?.let { Json.of(it) } ?: JsonValue.Null),
@@ -172,6 +227,7 @@ object ModelCatalogCodec {
                 toolCalling = json.booleanOrNull("toolCalling") ?: false,
             ),
             available = json.booleanOrNull("available") ?: true,
+            local = json.booleanOrNull("local") ?: false,
             providerOwnedBy = json.stringOrNull("providerOwnedBy")?.takeIf { it.isNotBlank() },
             createdAtMillis = json.numberOrNull("createdAtMillis")?.toLong(),
         )

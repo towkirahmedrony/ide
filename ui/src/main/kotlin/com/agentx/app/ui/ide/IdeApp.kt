@@ -216,6 +216,7 @@ fun ForgeIdeApp(
                         modelManager = dependencies.modelManager,
                         catalog = dependencies.modelCatalog,
                         rateLimits = dependencies.rateLimits,
+                        capabilities = dependencies.modelCapabilities,
                     )
                 },
             )

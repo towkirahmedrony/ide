@@ -201,6 +201,16 @@ private fun AgentModelCard(row: AgentModelRow, onClick: () -> Unit) {
                 color = color,
             )
         }
+        // A model can be present and still be the wrong model for this agent. That
+        // is reported separately from availability so the two fixes stay distinct.
+        row.capabilityNote?.let { note ->
+            IdeSpacer(4)
+            Text(
+                text = note,
+                style = MaterialTheme.typography.bodyMedium,
+                color = ForgeDanger,
+            )
+        }
         IdeSpacer(4)
         Text(
             text = if (row.explicit) "Custom assignment" else "Built-in default",
@@ -277,6 +287,14 @@ private fun AgentModelEditorDialog(
                             onClick = { selectedModel = model },
                         )
                     }
+                }
+                currentProvider?.discoveryNote?.takeIf { it.isNotBlank() }?.let { note ->
+                    IdeSpacer(10)
+                    Text(
+                        text = note,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = ForgeAmber,
+                    )
                 }
                 currentProvider?.unavailableModels?.takeIf { it.isNotEmpty() }?.let { models ->
                     IdeSpacer(10)

@@ -47,6 +47,7 @@ import com.agentx.app.integrations.android.KeystoreConnectionSecretStore
 import com.agentx.app.integrations.android.SharedPreferencesConnectionStore
 import com.agentx.app.integrations.connection.ConnectionManager
 import com.agentx.app.model.android.KeystoreModelSecretStore
+import com.agentx.app.model.android.SharedPreferencesModelCatalogStore
 import com.agentx.app.model.android.SharedPreferencesModelPresetStore
 import com.agentx.app.model.runtime.RuntimeOutputBuffer
 import com.agentx.app.tools.DelegatingToolConnectionAuthorizer
@@ -124,6 +125,10 @@ class MainActivity : ComponentActivity() {
             integrationSetup = built.setup,
             agentPromptStore = SharedPreferencesAgentPromptStore(applicationContext),
             agentRoleModelStore = SharedPreferencesAgentRoleModelStore(applicationContext),
+            // Provider model catalogs persist beside the presets, so a restart keeps
+            // the models a previous run discovered instead of falling back to a
+            // built-in list. No credential is written here; a snapshot holds none.
+            modelCatalogStore = SharedPreferencesModelCatalogStore(applicationContext),
             // Agent sessions persist as one JSON file each, so a session can be
             // reopened (or deleted) without touching another session's history.
             conversationStore = FilesystemConversationStore(
@@ -147,6 +152,16 @@ class MainActivity : ComponentActivity() {
         // until this completes the registry serves the built-in default mapping.
         backgroundScope.launch {
             runCatching { foundation.agentRoleModels.load() }
+        }
+
+        // The persisted model catalog is restored off the main thread, so the
+        // models a previous run discovered are back in the capability registry and
+        // the picker before any provider is asked. A failed read never blocks
+        // startup: the next refresh simply fetches a fresh list.
+        backgroundScope.launch {
+            runCatching {
+                foundation.services.get<ModelCatalogRegistry>(ServiceKeys.MODEL_CATALOG)?.restore()
+            }
         }
 
         // Skills are discovered from the filesystem off the main thread; until
@@ -262,6 +277,10 @@ class MainActivity : ComponentActivity() {
                         modelManager = checkNotNull(modelManager) { "Model manager is not registered" },
                         rateLimits = foundation.services.get<RateLimitManager>(ServiceKeys.RATE_LIMIT_MANAGER),
                         modelCatalog = foundation.services.get<ModelCatalogRegistry>(ServiceKeys.MODEL_CATALOG),
+                        // The same capability registry the gateway and the role eligibility
+                        // checker read, so Settings reports a capability-ineligible model
+                        // with the answer the runtime would give.
+                        modelCapabilities = foundation.services.get(ServiceKeys.MODEL_CAPABILITY_REGISTRY),
                         connectionManager = checkNotNull(connectionManager) { "Connection manager is not registered" },
                         integrationSetup = integrationSetup,
                         agentPrompts = foundation.promptManager,

@@ -51,8 +51,11 @@ import com.agentx.app.model.ModelModule
 import com.agentx.app.model.capability.InMemoryModelCapabilityRegistry
 import com.agentx.app.model.capability.ModelCapabilityRegistry
 import com.agentx.app.model.catalog.DefaultModelCatalogRegistry
+import com.agentx.app.model.catalog.InMemoryModelCatalogStore
 import com.agentx.app.model.catalog.ModelCatalogRegistry
+import com.agentx.app.model.catalog.ModelCatalogStore
 import com.agentx.app.model.catalog.RemoteModelCatalogFactory
+import com.agentx.app.model.manager.DefaultModelDiscoverySource
 import com.agentx.app.model.manager.ModelManager
 import com.agentx.app.model.manager.ModelRuntimeModule
 import com.agentx.app.model.ratelimit.DefaultRateLimitManager
@@ -123,6 +126,12 @@ object Foundation {
         connectionProviders: ConnectionProviderRegistry = ConnectionProviderRegistry.EMPTY,
         integrationSetup: IntegrationSetupManager? = null,
         agentPromptStore: AgentPromptStore = InMemoryAgentPromptStore(),
+        /**
+         * Where discovered provider models are kept between runs. The app passes a
+         * `SharedPreferences`-backed store so a restart restores the catalog a
+         * previous run discovered instead of falling back to a built-in list.
+         */
+        modelCatalogStore: ModelCatalogStore = InMemoryModelCatalogStore(),
         /** Persisted per-role model assignments; defaults when none are stored. */
         agentRoleModelStore: AgentRoleModelStore = InMemoryAgentRoleModelStore(),
         conversationStore: ConversationStore = InMemoryConversationStore(),
@@ -192,11 +201,23 @@ object Foundation {
         // that is not the active connection still exposes its live model list to
         // Settings, which is what keeps a built-in fallback list out of the picker.
         // The agent resolver keeps reading connections, so routing is unchanged.
+        //
+        // Discovery belongs to the provider: each connection is listed through the
+        // same provider the runtime chats through, and the catalog layer owns only
+        // normalization, registration and persistence. The store is the same
+        // instance the registry restores from, so a restart keeps the catalog.
+        val modelCatalogFactory = RemoteModelCatalogFactory(
+            store = modelCatalogStore,
+            capabilityRegistry = capabilityRegistry,
+            discoverySource = DefaultModelDiscoverySource(logger = logger)::create,
+        )
         val modelCatalog: ModelCatalogRegistry = DefaultModelCatalogRegistry(
             connections = {
                 services.get<ModelManager>(ServiceKeys.MODEL_MANAGER)?.catalogConnections().orEmpty()
             },
-            factory = RemoteModelCatalogFactory(capabilityRegistry = capabilityRegistry),
+            factory = modelCatalogFactory,
+            store = modelCatalogStore,
+            capabilityRegistry = capabilityRegistry,
         )
         services.register(ServiceKeys.MODEL_CATALOG, modelCatalog)
 

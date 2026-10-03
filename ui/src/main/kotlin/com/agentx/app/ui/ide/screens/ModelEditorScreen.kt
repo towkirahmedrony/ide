@@ -36,6 +36,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import com.agentx.app.model.catalog.ModelCatalogState
 import com.agentx.app.model.connect.ModelSetupKind
 import com.agentx.app.ui.ide.components.IdeSectionLabel
 import com.agentx.app.ui.ide.components.IdeSettingRow
@@ -358,6 +359,12 @@ private fun ModelField(
 /** Where the offered models came from, so a fallback list is never mistaken for a live one. */
 private fun sourceLabel(state: ModelEditorState): String = when {
     state.modelsFromCatalog -> "From ${state.form.apiProvider.displayName}'s model list"
+    // The two reasons a live list is absent are different problems for the user, so
+    // they are not collapsed into one caption.
+    state.catalogState is ModelCatalogState.Unavailable ->
+        "${state.form.apiProvider.displayName} publishes no model list — showing built-in defaults"
+    state.catalogState is ModelCatalogState.Failed ->
+        "${state.form.apiProvider.displayName} model list refresh failed — showing built-in defaults"
     state.catalogError != null -> "${state.form.apiProvider.displayName} models unavailable"
     else -> "Built-in ${state.form.apiProvider.displayName} list"
 }

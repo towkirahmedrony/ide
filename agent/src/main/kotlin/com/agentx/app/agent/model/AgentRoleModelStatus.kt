@@ -25,6 +25,12 @@ data class ProviderModelOption(
     val connectionId: String? = null,
     val connectionLabel: String? = null,
     val endpoint: String? = null,
+    /**
+     * Why [models] is what it is, when discovery did not simply succeed:
+     * "no model list", "refresh failed", "not connected". Null when the provider
+     * answered normally, so a live list is never captioned as a problem.
+     */
+    val discoveryNote: String? = null,
 )
 
 /** Whether a role's assignment can actually run right now. */

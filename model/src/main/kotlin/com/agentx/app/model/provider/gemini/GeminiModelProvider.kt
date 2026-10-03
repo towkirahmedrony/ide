@@ -19,7 +19,12 @@ import com.agentx.app.model.ModelToolChoice
 import com.agentx.app.model.ModelToolParameterType
 import com.agentx.app.model.ModelToolSpec
 import com.agentx.app.model.ModelUsage
+import com.agentx.app.model.connect.DiscoveryFailureKind
 import com.agentx.app.model.connect.diagnosticPath
+import com.agentx.app.model.connect.originOf
+import com.agentx.app.model.discovery.DiscoveredModel
+import com.agentx.app.model.discovery.ModelDiscoveryOutcome
+import com.agentx.app.model.discovery.ModelListParsing
 import com.agentx.app.model.diagnostics.ApiOperation
 import com.agentx.app.model.diagnostics.ApiTrace
 import com.agentx.app.model.diagnostics.configuredFlag
@@ -69,6 +74,201 @@ class GeminiModelProvider(
 ) : ModelProvider {
 
     override fun capabilities(modelId: String): ModelCapabilities = defaultCapabilities
+
+    /**
+     * Enumerates the models the Gemini API offers for [config]'s key.
+     *
+     * `GET <host>/v1beta/models` is the documented `models.list` endpoint, so the
+     * request is built from the connection's own host: a preset pointed at a proxy
+     * lists through that proxy. The list is paginated (`pageToken` /
+     * `nextPageToken`), and every page is read within a bounded number of calls so
+     * a runaway server cannot hold a refresh open forever.
+     *
+     * Filtering is done on the API's own `supportedGenerationMethods`: a model that
+     * reports `generateContent` is a text-chat model, and an embedding, image,
+     * video, speech or transcription model is not. Only the entries this runtime
+     * can drive are reported, so a specialized model is never exposed as a normal
+     * AgentX agent model. Deprecation and availability are reported only when the
+     * provider states them; nothing is inferred from an identifier.
+     *
+     * The credential travels in the documented `x-goog-api-key` header, never in
+     * the URL, so it cannot leak through a logged or displayed address.
+     */
+    override suspend fun discoverModels(config: ModelConfig): ModelDiscoveryOutcome {
+        val trace = ApiTrace.create(logger, id, ApiOperation.DISCOVERY)
+        val base = config.baseUrl.trim()
+        if (base.isBlank()) {
+            return ModelDiscoveryOutcome.Failed(
+                kind = DiscoveryFailureKind.UNREACHABLE,
+                message = "The Gemini connection has no endpoint to list models from.",
+            )
+        }
+        val collected = LinkedHashMap<String, DiscoveredModel>()
+        val rejected = mutableListOf<String>()
+        var reported = 0
+        var pageToken: String? = null
+        var page = 0
+        var servedWith: Int? = null
+
+        trace.stage(
+            "START",
+            "operation" to "model-discovery",
+            "provider" to id,
+            "path" to diagnosticPath(modelsUrl(base, null)),
+            "authScheme" to "api-key-header",
+            "hasApiKey" to configuredFlag(!config.apiKey.isNullOrBlank()),
+        )
+
+        while (page < MAX_PAGES) {
+            val url = modelsUrl(base, pageToken)
+            val started = System.nanoTime()
+            val response = try {
+                transport.execute(
+                    HttpRequestSpec(
+                        method = "GET",
+                        url = url,
+                        headers = discoveryHeaders(config),
+                        connectTimeoutMillis = CONNECT_TIMEOUT_MILLIS,
+                        readTimeoutMillis = READ_TIMEOUT_MILLIS,
+                    ),
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                // A later page that fails leaves the pages already read usable; the
+                // very first page is a real failure so the caller keeps its catalog.
+                if (page > 0) break
+                val kind = transportKind(error)
+                trace.failure(
+                    "ERROR",
+                    "stage" to "transport",
+                    "path" to diagnosticPath(url),
+                    "kind" to kind.name,
+                    "message" to sanitizeForLog(error.message ?: error.javaClass.name),
+                )
+                return ModelDiscoveryOutcome.Failed(kind = kind, message = transportMessage(error))
+            }
+            trace.stage(
+                "RESPONSE",
+                "status" to response.statusCode,
+                "elapsedMs" to elapsedMillis(started),
+                "bodyBytes" to response.body.length,
+                "page" to page,
+                "success" to response.isSuccess,
+            )
+            if (!response.isSuccess) {
+                if (page > 0) break
+                val kind = httpFailureKind(response.statusCode)
+                trace.failure(
+                    "ERROR",
+                    "stage" to "http",
+                    "status" to response.statusCode,
+                    "kind" to kind.name,
+                    "path" to diagnosticPath(url),
+                )
+                return ModelDiscoveryOutcome.Failed(
+                    kind = kind,
+                    message = "Gemini returned HTTP ${response.statusCode} for its model list.",
+                    httpStatus = response.statusCode,
+                )
+            }
+
+            val parsed = ModelListParsing.parse(response.body, id)
+            if (parsed == null) {
+                if (page > 0) break
+                trace.failure("PARSE_FAIL", "reason" to "not-a-model-list", "path" to diagnosticPath(url))
+                return ModelDiscoveryOutcome.Failed(
+                    kind = DiscoveryFailureKind.MALFORMED,
+                    message = "Gemini's model list response could not be parsed.",
+                )
+            }
+            servedWith = response.statusCode
+            reported += parsed.reportedCount
+            rejected += parsed.rejected
+            // Duplicate ids across pages collapse to one entry: identity is the
+            // model id, and a later page may repeat a model already seen.
+            parsed.models.forEach { model -> collected[model.modelId] = model }
+            trace.stage(
+                "PAGE",
+                "page" to page,
+                "received" to parsed.reportedCount,
+                "accepted" to parsed.models.size,
+                "unique" to collected.size,
+            )
+            pageToken = ModelListParsing.nextPageToken(response.body)
+            if (pageToken == null) break
+            page++
+        }
+
+        trace.stage(
+            "COMPLETE",
+            "outcome" to "discovered",
+            "received" to reported,
+            "accepted" to collected.size,
+            "rejected" to rejected.size,
+            "truncated" to (pageToken != null),
+        )
+        return ModelDiscoveryOutcome.Discovered(
+            models = collected.values.toList(),
+            reportedCount = reported,
+            rejected = rejected,
+            truncated = pageToken != null,
+            httpStatus = servedWith,
+        )
+    }
+
+    /**
+     * The documented model-list URL.
+     *
+     * No `pageSize` is requested: the API applies its own documented default page
+     * size, and following `nextPageToken` is what makes the read complete. Keeping
+     * the first request free of a query string also means the endpoint the app
+     * reports is exactly the documented one.
+     */
+    private fun modelsUrl(baseUrl: String, pageToken: String?): String {
+        val root = originOf(baseUrl) + MODELS_PATH_FROM_HOST
+        val token = pageToken?.takeIf { it.isNotBlank() } ?: return root
+        // A page token is opaque; it is passed through encoded and never displayed.
+        return "$root?pageToken=${java.net.URLEncoder.encode(token, "UTF-8")}"
+    }
+
+    private fun discoveryHeaders(config: ModelConfig): Map<String, String> {
+        val headers = LinkedHashMap<String, String>()
+        headers["Accept"] = "application/json"
+        // The documented API-key header. The key never enters the URL, so it cannot
+        // leak through a logged or displayed address.
+        config.apiKey?.takeIf { it.isNotBlank() }?.let { key -> headers[API_KEY_HEADER] = key }
+        config.headers.forEach { (name, value) -> headers[name] = value }
+        return headers
+    }
+
+    private fun httpFailureKind(status: Int): DiscoveryFailureKind = when (status) {
+        401, 403 -> DiscoveryFailureKind.AUTHENTICATION_REQUIRED
+        404 -> DiscoveryFailureKind.NOT_FOUND
+        408 -> DiscoveryFailureKind.TIMEOUT
+        429 -> DiscoveryFailureKind.RATE_LIMITED
+        in 500..599 -> DiscoveryFailureKind.SERVER_ERROR
+        else -> DiscoveryFailureKind.UNSUPPORTED
+    }
+
+    private fun transportKind(error: Throwable): DiscoveryFailureKind {
+        val root = unwrap(error)
+        return when (root) {
+            is SocketTimeoutException, is java.io.InterruptedIOException -> DiscoveryFailureKind.TIMEOUT
+            is UnknownHostException, is ConnectException, is NoRouteToHostException,
+            is PortUnreachableException, is SSLException,
+            -> DiscoveryFailureKind.UNREACHABLE
+            is IOException -> DiscoveryFailureKind.UNREACHABLE
+            else -> DiscoveryFailureKind.UNKNOWN
+        }
+    }
+
+    private fun transportMessage(error: Throwable): String = when (val root = unwrap(error)) {
+        is SocketTimeoutException, is java.io.InterruptedIOException ->
+            "Gemini's model list did not respond in time."
+        is UnknownHostException -> "The Gemini API host could not be resolved."
+        else -> "Gemini's model list could not be reached: ${sanitizeForLog(root.message ?: "network error")}"
+    }
 
     override suspend fun complete(request: ModelRequest): ModelResponse {
         val trace = ApiTrace.create(logger, id, ApiOperation.COMPLETION)
@@ -567,6 +767,12 @@ class GeminiModelProvider(
 
         /** Gemini's model list and chat paths both sit under this API version. */
         const val API_VERSION_PATH: String = "/v1beta"
+
+        /** The documented `models.list` path, relative to the API host. */
+        const val MODELS_PATH_FROM_HOST: String = "$API_VERSION_PATH/models"
+
+        /** Page cap, so a server that never stops paginating cannot hang a refresh. */
+        const val MAX_PAGES: Int = 10
 
         /** The documented header for a Gemini API key. */
         const val API_KEY_HEADER: String = "x-goog-api-key"
