@@ -42,6 +42,10 @@ import com.agentx.app.model.ModelToolSpec
 import com.agentx.app.model.json.JsonObject
 import com.agentx.app.model.json.JsonValue
 import com.agentx.app.agent.domain.toToolGrants
+import com.agentx.app.agent.delegation.DelegationDecision
+import com.agentx.app.agent.delegation.DelegationPolicy
+import com.agentx.app.agent.delegation.DelegationRecord
+import com.agentx.app.agent.delegation.DelegationState
 import com.agentx.app.core.logging.ForgeLogger
 import com.agentx.app.core.logging.ForgeLoggers
 import com.agentx.app.core.logging.LogLevel
@@ -92,6 +96,13 @@ data class AgentLoopRequest(
      * the user did not ask for. It never widens or narrows tool permissions.
      */
     val requiresWorkspace: Boolean = true,
+    /**
+     * Delegation accounting inherited from the parent. The Main Agent starts a
+     * run at depth 0; a specialist is handed depth+1 so the authoritative
+     * [com.agentx.app.agent.delegation.DelegationPolicy] limits apply across the
+     * whole run, not just one level.
+     */
+    val delegationState: DelegationState = DelegationState(),
 )
 
 /**
@@ -205,6 +216,9 @@ class AgentLoop(
         var toolCalls = 0
         var subAgentCalls = 0
         var finished: AgentResult? = null
+        // The delegation history for this run, updated after every delegation so
+        // the authoritative policy sees depth, counts and redundancy as they grow.
+        var delegationState = request.delegationState
 
         // The role and its policy are handed to the router, so it re-decides every
         // call instead of trusting the list this loop passed in.
@@ -300,6 +314,7 @@ class AgentLoop(
                     toolActions = toolActions,
                     errors = errors,
                     sink = sink,
+                    delegations = delegationState.records,
                 )
             }
 
@@ -311,7 +326,7 @@ class AgentLoop(
             sink.emit(
                 AgentEvent.PlanUpdated(
                     request.sessionId,
-                    planFor(request.definition.role, stepIndex),
+                    planFor(request.definition.role, stepIndex, delegations = delegationState.records),
                     clock(),
                 ),
             )
@@ -411,6 +426,7 @@ class AgentLoop(
                         toolActions = toolActions,
                         errors = errors,
                         sink = sink,
+                        delegations = delegationState.records,
                     )
                 }
                 sink.emit(
@@ -450,7 +466,9 @@ class AgentLoop(
                             filesChanged = filesChanged,
                             toolActions = toolActions,
                             errors = errors,
+                            state = delegationState,
                         )
+                        delegationState = delegated.state
                         context.addToolResult(
                             callId = call.id,
                             toolName = call.name,
@@ -732,6 +750,18 @@ class AgentLoop(
         return ToolOutcome.Completed(resultText, path = record.path, success = record.success)
     }
 
+    /**
+     * A delegation outcome plus the delegation accounting after it. The loop
+     * threads [state] forward so [DelegationPolicy] limits apply across the whole
+     * run.
+     */
+    private data class DelegateOutcome(
+        val resultText: String,
+        val path: String?,
+        val success: Boolean,
+        val state: DelegationState,
+    )
+
     private suspend fun handleDelegate(
         request: AgentLoopRequest,
         call: ModelToolCall,
@@ -742,7 +772,8 @@ class AgentLoop(
         filesChanged: MutableList<String>,
         toolActions: MutableList<ToolActionRecord>,
         errors: MutableList<AgentError>,
-    ): ToolOutcome.Completed {
+        state: DelegationState,
+    ): DelegateOutcome {
         if (request.definition.role != AgentRole.MAIN) {
             val message = "Only the Main Agent may delegate"
             errors += AgentError(
@@ -751,10 +782,10 @@ class AgentLoop(
                 role = request.definition.role,
                 sessionId = request.sessionId,
             )
-            return ToolOutcome.Completed("ERROR: $message", success = false)
+            return DelegateOutcome("ERROR: $message", null, success = false, state = state)
         }
         if (invoker == null) {
-            return ToolOutcome.Completed("ERROR: No sub-agent invoker is configured", success = false)
+            return DelegateOutcome("ERROR: No sub-agent invoker is configured", null, success = false, state = state)
         }
         val role = AgentProtocol.parseRole(call.arguments.stringOrNull(AgentProtocol.ARG_ROLE))
         if (role == null || role == AgentRole.MAIN) {
@@ -765,28 +796,55 @@ class AgentLoop(
                 role = request.definition.role,
                 sessionId = request.sessionId,
             )
-            return ToolOutcome.Completed("ERROR: $message", success = false)
+            return DelegateOutcome("ERROR: $message", null, success = false, state = state)
         }
         val task = call.arguments.stringOrNull(AgentProtocol.ARG_TASK).orEmpty()
         val objective = call.arguments.stringOrNull(AgentProtocol.ARG_OBJECTIVE).orEmpty()
         if (task.isBlank() || objective.isBlank()) {
-            return ToolOutcome.Completed(
+            return DelegateOutcome(
                 "ERROR: Delegation requires task and objective",
+                null,
                 success = false,
+                state = state,
             )
         }
+
+        // The authoritative, deterministic gate: depth, total count, per-role
+        // repeats and redundant re-delegation are all decided here, before any
+        // child is created. A rejection is reported back to the Main Agent as a
+        // tool result so it can adapt — it is never a silent no-op.
+        val decision = DelegationPolicy.evaluate(role, task, state)
+        if (decision is DelegationDecision.Reject) {
+            errors += AgentError(
+                code = AgentErrorCode.INVALID_DELEGATION,
+                message = decision.message,
+                role = request.definition.role,
+                sessionId = request.sessionId,
+                details = mapOf("delegationRejection" to decision.reason.name),
+            )
+            toolActions += ToolActionRecord(AgentProtocol.DELEGATE_TOOL, false, decision.message)
+            return DelegateOutcome("ERROR: ${decision.message}", null, success = false, state = state)
+        }
+
+        // Scoped context is capped so one delegation can never hand a specialist
+        // more than a bounded slice; the whole repo/conversation is never passed.
+        val scopedContext = call.arguments.stringOrNull(AgentProtocol.ARG_CONTEXT).orEmpty()
+            .let { if (it.length > DelegationPolicy.MAX_SCOPED_CONTEXT_CHARS) it.take(DelegationPolicy.MAX_SCOPED_CONTEXT_CHARS) else it }
+
         val childId = com.agentx.app.agent.runtime.AgentIds.newId()
         val childRequest = SubAgentRequest(
             role = role,
             task = task,
             objective = objective,
-            scopedContext = call.arguments.stringOrNull(AgentProtocol.ARG_CONTEXT).orEmpty(),
+            scopedContext = scopedContext,
             permissionLevel = AgentProtocol.parsePermission(call.arguments.stringOrNull(AgentProtocol.ARG_PERMISSION)),
             maxSteps = call.arguments.intOrNull(AgentProtocol.ARG_MAX_STEPS),
             parentSessionId = request.sessionId,
             workspaceId = request.workspaceId,
             sessionId = childId,
             promptVariables = request.promptVariables,
+            delegationState = state.copy(depth = state.depth + 1),
+            contextBudget = com.agentx.app.agent.delegation.SpecialistContextBudgets.forRole(role, request.contextBudget),
         )
         sink.emit(
             AgentEvent.SubAgentStarted(
@@ -810,9 +868,11 @@ class AgentLoop(
                 cause = error,
             )
             toolActions += ToolActionRecord(AgentProtocol.DELEGATE_TOOL, false, "sub-agent failed")
-            return ToolOutcome.Completed(
+            return DelegateOutcome(
                 "ERROR: Sub-agent '${role.name}' failed: ${error.message}",
+                null,
                 success = false,
+                state = state.record(role, task, succeeded = false),
             )
         }
         findings += result.findings
@@ -820,9 +880,22 @@ class AgentLoop(
         filesChanged += result.filesChanged
         toolActions += result.toolActions
         errors += result.errors
+        val succeeded = result.status == AgentStatus.COMPLETED
+        // Preserve a non-completed specialist as structured runtime state even when it
+        // reported no error of its own: the Main Agent still needs to see the failure
+        // and decide whether to retry, fall back, continue or stop.
+        if (!succeeded && result.errors.isEmpty()) {
+            errors += AgentError(
+                code = AgentErrorCode.SUB_AGENT_FAILURE,
+                message = "Sub-agent '${role.name}' ended with status ${result.status}",
+                role = role,
+                sessionId = childId,
+                details = mapOf("subAgentStatus" to result.status.name),
+            )
+        }
         toolActions += ToolActionRecord(
             toolName = AgentProtocol.DELEGATE_TOOL,
-            success = result.status == AgentStatus.COMPLETED,
+            success = succeeded,
             summary = "${role.name}: ${result.summary}",
         )
         sink.emit(
@@ -843,10 +916,17 @@ class AgentLoop(
             if (result.filesChanged.isNotEmpty()) append("filesChanged=").append(result.filesChanged.joinToString(",")).append('\n')
             if (result.errors.isNotEmpty()) append("errors=").append(result.errors.joinToString { it.message }).append('\n')
         }
-        return ToolOutcome.Completed(
+        return DelegateOutcome(
             resultText = rendered,
             path = result.filesChanged.firstOrNull() ?: result.filesInspected.firstOrNull(),
-            success = result.status == AgentStatus.COMPLETED,
+            success = succeeded,
+            state = state.record(
+                role = role,
+                task = task,
+                succeeded = succeeded,
+                changedFiles = result.filesChanged,
+                inspectedFiles = result.filesInspected,
+            ),
         )
     }
 
@@ -910,6 +990,7 @@ class AgentLoop(
         toolActions: List<ToolActionRecord>,
         errors: MutableList<AgentError>,
         sink: AgentEventSink,
+        delegations: List<DelegationRecord> = emptyList(),
     ): AgentResult {
         val error = AgentError(
             code = AgentErrorCode.CANCELLED,
@@ -923,7 +1004,7 @@ class AgentLoop(
         sink.emit(
             AgentEvent.PlanUpdated(
                 request.sessionId,
-                planFor(request.definition.role, stepIndex, terminal = AgentStatus.CANCELLED),
+                planFor(request.definition.role, stepIndex, terminal = AgentStatus.CANCELLED, delegations = delegations),
                 clock(),
             ),
         )
@@ -943,29 +1024,48 @@ class AgentLoop(
     }
 
     /**
-     * The plan the runtime actually followed: one step per loop iteration.
+     * The plan the runtime actually followed: one step per loop iteration, plus a
+     * named step for every specialist this run delegated to.
      *
      * Steps are concise task units, not reasoning, and the plan is rebuilt once per
      * iteration rather than per token so a consumer is not flooded. The state of a step
      * reuses [AgentStatus], the project's existing run state, instead of a second enum.
      * [terminal] marks the step that was running when the run ended, so a cancelled run
-     * carries its own closing plan.
+     * carries its own closing plan. Delegated specialist work appears as its own step
+     * (role-labelled, with the specialist's status) so the plan reflects *delegated*
+     * work rather than hiding it behind an opaque "work step".
      */
-    private fun planFor(role: AgentRole, stepIndex: Int, terminal: AgentStatus? = null): AgentPlan {
-        val steps = (1..stepIndex.coerceAtLeast(1)).map { index ->
-            val running = index == stepIndex
-            AgentStep(
-                index = index,
-                title = if (index == 1) "Plan the task" else "Work step $index",
-                role = role,
-                status = when {
-                    running && terminal != null -> terminal
-                    running -> AgentStatus.RUNNING
-                    else -> AgentStatus.COMPLETED
-                },
+    private fun planFor(
+        role: AgentRole,
+        stepIndex: Int,
+        terminal: AgentStatus? = null,
+        delegations: List<DelegationRecord> = emptyList(),
+    ): AgentPlan {
+        val steps = mutableListOf<AgentStep>()
+        // Delegated specialist runs, in order, each its own step.
+        delegations.forEach { record ->
+            steps += AgentStep(
+                index = steps.size + 1,
+                title = "${record.role.name}: ${record.task.lineSequence().first().take(72)}",
+                role = record.role,
+                status = if (record.succeeded) AgentStatus.COMPLETED else AgentStatus.FAILED,
+                detail = if (record.succeeded) null else "Specialist did not complete",
             )
         }
-        return AgentPlan(steps = steps, revision = stepIndex.coerceAtLeast(1))
+        val running = steps.size + 1
+        steps += AgentStep(
+            index = running,
+            title = when {
+                running == 1 -> "Plan the task"
+                delegations.isNotEmpty() -> "Integrate results"
+                else -> "Work step $running"
+            },
+            role = role,
+            // A closing plan marks its current step with the terminal state; a
+            // mid-run plan shows the current step as running.
+            status = terminal ?: AgentStatus.RUNNING,
+        )
+        return AgentPlan(steps = steps, revision = maxOf(running, stepIndex))
     }
 
     private fun modelTimeout(error: TimeoutCancellationException, request: AgentLoopRequest): AgentError =
@@ -1226,6 +1326,18 @@ class AgentLoop(
         append("\nUse the tool-calling interface. Never write tool-call JSON as assistant text.")
         if (request.definition.role == AgentRole.MAIN) {
             append("\nDelegate at most one sub-agent per turn and wait for its result.")
+            // A deterministic guidance line derived from the task itself, so the Main
+            // Agent is nudged to handle simple work directly instead of delegating by
+            // reflex. This is advisory only: it never widens or narrows tool access,
+            // and the hard limits are still enforced by DelegationPolicy.
+            when (com.agentx.app.agent.delegation.TaskComplexityClassifier.classify(request.userPrompt, request.objective)) {
+                com.agentx.app.agent.delegation.TaskComplexity.SIMPLE ->
+                    append("\nThis task looks simple: handle it yourself with your own tools. Delegate only if a specialist is clearly required.")
+                com.agentx.app.agent.delegation.TaskComplexity.MODERATE ->
+                    append("\nThis task looks moderate: delegate at most one specialist if it clearly fits its role; otherwise handle it directly.")
+                com.agentx.app.agent.delegation.TaskComplexity.COMPLEX ->
+                    append("\nThis task looks complex: decompose it and delegate focused specialists one at a time in a sensible order (understand, then implement, test, review).")
+            }
         }
         if (skillBlock.isNotBlank()) {
             append("\n\n# Skills\n")

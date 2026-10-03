@@ -129,6 +129,18 @@ data class SubAgentRequest(
     val sessionId: String,
     /** Template variables used to resolve this sub-agent's system prompt. */
     val promptVariables: PromptVariables = PromptVariables.EMPTY,
+    /**
+     * Delegation accounting inherited from the parent, with depth already
+     * incremented. The specialist carries it so a nested delegation (should the
+     * role ever gain the tool) still sees the whole-run limits.
+     */
+    val delegationState: com.agentx.app.agent.delegation.DelegationState = com.agentx.app.agent.delegation.DelegationState(),
+    /**
+     * The context budget this specialist should run with, derived from the base
+     * budget by [com.agentx.app.agent.delegation.SpecialistContextBudgets]. The
+     * default keeps the previous behaviour for callers that do not scope it.
+     */
+    val contextBudget: ContextBudget = ContextBudget.DEFAULT,
 )
 
 data class SubAgentResult(

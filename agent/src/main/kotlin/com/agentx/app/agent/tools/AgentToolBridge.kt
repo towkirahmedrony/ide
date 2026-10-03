@@ -132,7 +132,13 @@ class AgentToolBridge(private val registry: ToolRegistry) {
 
     private fun delegateSpec(): ModelToolSpec = ModelToolSpec(
         name = AgentProtocol.DELEGATE_TOOL,
-        description = "Delegate a focused sub-task to a specialized agent. Sequential only; wait for the result before continuing.",
+        description = "Delegate a focused sub-task to a specialized agent. Sequential only: wait for " +
+            "the result before continuing. Handle simple, single-step tasks yourself instead of " +
+            "delegating. Pass only the scoped context the specialist needs — never the whole " +
+            "repository or conversation. Delegations are bounded (max depth ${com.agentx.app.agent.delegation.DelegationPolicy.MAX_DEPTH}, " +
+            "max ${com.agentx.app.agent.delegation.DelegationPolicy.MAX_TOTAL_SPECIALISTS} total, " +
+            "max ${com.agentx.app.agent.delegation.DelegationPolicy.MAX_REPEATS_PER_ROLE} per role); " +
+            "re-delegating a task a role already completed is rejected.",
         parameters = listOf(
             ModelToolParameter(
                 name = AgentProtocol.ARG_ROLE,
