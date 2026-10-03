@@ -71,6 +71,22 @@ enum class ModelApiProtocol(
      * the body at [chatPath].
      */
     val chatPathTemplate: String? = null,
+    /**
+     * Header this API's own endpoints read a credential from.
+     *
+     * Part of the wire contract, like [defaultHealthPath]: discovery, the chat
+     * probe, the runtime health check and normal completions all address the same
+     * API, so they must all authenticate the same way. Hardcoding one header in
+     * one layer is what made a working Gemini connection look unreachable — the
+     * list request sent `x-goog-api-key` while the health check sent
+     * `Authorization: Bearer`, which Gemini's API does not accept.
+     */
+    val credentialHeader: String = DEFAULT_CREDENTIAL_HEADER,
+    /**
+     * Prefix placed before the credential value. Empty when the header carries the
+     * key on its own (`x-goog-api-key`), `"Bearer "` for an `Authorization` header.
+     */
+    val credentialScheme: String = DEFAULT_CREDENTIAL_SCHEME,
 ) {
     OPENAI_COMPATIBLE(
         displayName = "OpenAI compatible",
@@ -108,17 +124,59 @@ enum class ModelApiProtocol(
         defaultHealthPath = "/models",
         healthIsRelativeToApiBase = true,
         chatPathTemplate = "/models/{model}:generateContent",
+        // Google's documented API-key header for the Gemini API. An
+        // `Authorization: Bearer` header is for OAuth access tokens, not an API
+        // key, and is rejected.
+        credentialHeader = GEMINI_API_KEY_HEADER,
+        credentialScheme = "",
     ),
     ;
 
+    /** The header/value pair that authenticates a request with [credential]. */
+    fun credentialHeaders(credential: String?): Map<String, String> {
+        val value = credential?.takeIf { it.isNotBlank() } ?: return emptyMap()
+        return mapOf(credentialHeader to credentialScheme + value)
+    }
+
     /** Chat path for [modelId], for protocols that address the model in the path. */
     fun chatPathFor(modelId: String): String =
-        chatPathTemplate?.replace(MODEL_TOKEN, modelId.trim().removePrefix("models/")) ?: chatPath
+        chatPathTemplate?.replace(MODEL_TOKEN, normalizeModelId(modelId)) ?: chatPath
 
     companion object {
         const val MODEL_TOKEN: String = "{model}"
     }
 }
+
+/**
+ * The single form of a model id.
+ *
+ * A provider may report a model as `models/<id>` (Gemini's model list does) while a
+ * preset, a catalog entry and the UI all use the bare `<id>` that is sent to chat.
+ * Normalizing both sides keeps the two forms resolving to one model — which is what
+ * lets a health check confirm that the configured model is really offered, and what
+ * keeps discovery, the catalog and the runtime agreeing about one model.
+ */
+fun normalizeModelId(raw: String): String =
+    raw.trim().removePrefix(MODELS_PREFIX).trim().trimStart('/').trim()
+
+/**
+ * Credential headers and schemes, declared at file level on purpose.
+ *
+ * An enum entry's constructor arguments cannot read the enum's own companion
+ * object, so the constants a protocol declares have to live outside it.
+ */
+
+/** Prefix a model id carries in the model list of a provider like Gemini. */
+const val MODELS_PREFIX: String = "models/"
+
+/** Default credential header: an OpenAI-compatible bearer token. */
+const val DEFAULT_CREDENTIAL_HEADER: String = "Authorization"
+
+/** Prefix placed before the credential value in [DEFAULT_CREDENTIAL_HEADER]. */
+const val DEFAULT_CREDENTIAL_SCHEME: String = "Bearer "
+
+/** The API-key header Google documents for the Gemini API. */
+const val GEMINI_API_KEY_HEADER: String = "x-goog-api-key"
 
 /** How the runner is expected to find the model endpoint. */
 enum class EndpointDiscoveryMode(val displayName: String) {

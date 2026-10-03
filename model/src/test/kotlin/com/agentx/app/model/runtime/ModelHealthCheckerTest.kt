@@ -34,6 +34,7 @@ class ModelHealthCheckerTest {
         body: String,
         status: Int = 200,
         preset: com.agentx.app.model.preset.ModelPreset = colabPreset(),
+        endpoint: ModelEndpoint = this.endpoint,
         transport: FakeHttpTransport = FakeHttpTransport(
             response = HttpResponseSpec(statusCode = status, body = body),
         ),
@@ -69,6 +70,51 @@ class ModelHealthCheckerTest {
         assertEquals(ModelHealthStatus.HEALTHY, health.status)
         assertEquals("Bearer test-secret-value", transport.lastRequest?.headers?.get("Authorization"))
         assertTrue(transport.lastRequest!!.url.contains("tunnel-host"), "the secret is not in the URL")
+    }
+
+    /**
+     * The regression this file exists for now: Gemini's API reads the key from
+     * `x-goog-api-key` and rejects a bearer token, so a health check that hardcoded
+     * `Authorization: Bearer` turned a working, verified Gemini connection into
+     * "the model endpoint is not reachable".
+     */
+    @Test
+    fun `a gemini model list is authenticated with its own api key header`() {
+        val gemini = geminiPreset()
+        val geminiEndpoint = ModelEndpoint("https://generativelanguage.googleapis.com", EndpointSource.CONFIGURED)
+
+        val (health, transport) = run(
+            body = """{"models":[{"name":"models/gemini-3.5-flash"},{"name":"models/gemini-3.5-flash-lite"}]}""",
+            preset = gemini,
+            endpoint = geminiEndpoint,
+            credential = "AIza-test-key",
+        )
+
+        assertEquals(ModelHealthStatus.HEALTHY, health.status)
+        assertEquals("https://generativelanguage.googleapis.com/v1beta/models", transport.lastRequest?.url)
+        assertEquals("AIza-test-key", transport.lastRequest?.headers?.get("x-goog-api-key"))
+        assertNull(
+            transport.lastRequest?.headers?.get("Authorization"),
+            "a Gemini API key is not an OAuth token and must never be sent as a bearer token",
+        )
+        assertTrue(transport.lastRequest!!.url.contains("generativelanguage"), "the key is not in the URL")
+    }
+
+    /**
+     * Gemini lists a model as `models/<id>` while the preset stores the bare id that
+     * is sent to chat. Comparing the two raw would report a live model as missing.
+     */
+    @Test
+    fun `a gemini model list entry is matched after normalizing its prefix`() {
+        val gemini = geminiPreset(model = "gemini-3.5-flash-lite")
+
+        val (health, _) = run(
+            body = """{"models":[{"name":"models/gemini-3.5-flash-lite"}]}""",
+            preset = gemini,
+        )
+
+        assertEquals(ModelHealthStatus.HEALTHY, health.status)
+        assertEquals(listOf("gemini-3.5-flash-lite"), health.models)
     }
 
     @Test

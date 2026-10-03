@@ -123,8 +123,33 @@ class ModelRunnerLifecycleTest {
 
         assertEquals(2, health.checked.size, "each attempt re-checks the model API")
         assertEquals(ModelLifecycleState.FAILED, result.status.state)
-        assertEquals(ModelRuntimeFailure.RUNTIME_NOT_DETECTED, result.status.failure)
+        // The endpoint *was* reached: reporting this as "nothing was detected" hid the
+        // real reason (a rejected credential, a path that is not a model list) behind a
+        // network-sounding message.
+        assertEquals(ModelRuntimeFailure.MODEL_API_UNREACHABLE, result.status.failure)
         assertTrue(result.status.detail!!.contains("JSON model list"))
+        assertEquals(
+            result.status.detail,
+            result.status.message,
+            "the model API's own reason is what the user is shown",
+        )
+    }
+
+    @Test
+    fun `a rejected credential is reported as such instead of as an unreachable endpoint`() {
+        val preset = colabPreset()
+        val discovery = FakeEndpointDiscovery { found() }
+        val health = FakeHealthChecker { _, _ ->
+            unhealthy("The model endpoint rejected the credential (HTTP 401)")
+        }
+        val runner = colabRunner(discovery, health, policy(startAttempts = 2))
+
+        val result = runBlocking { runner.start(preset) }
+
+        assertEquals(ModelRuntimeFailure.MODEL_API_UNREACHABLE, result.status.failure)
+        assertTrue(result.status.message.contains("credential"))
+        assertTrue(result.status.message.contains("401"))
+        assertTrue(!result.status.message.contains("is not reachable"))
     }
 
     @Test

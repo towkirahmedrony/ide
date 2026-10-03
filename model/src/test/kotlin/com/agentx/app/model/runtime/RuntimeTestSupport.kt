@@ -38,6 +38,34 @@ internal fun colabPreset(
     colab = ColabRuntimeConfig(notebookUrl = "https://colab.research.google.com/drive/test-notebook"),
 )
 
+/**
+ * A saved Gemini preset shaped exactly like one the connect flow persists: the
+ * provider root as the endpoint, the API version as the base path, the bare model
+ * id and a credential reference.
+ *
+ * The display name is deliberately unrelated to every other field, so a test can
+ * prove that "geminj" is never read back as an endpoint, a model id or an API path.
+ */
+internal fun geminiPreset(
+    id: String = "gemini-preset",
+    name: String = "geminj",
+    model: String = "gemini-3.5-flash-lite",
+    endpoint: String? = "https://generativelanguage.googleapis.com",
+    credentialRef: String? = "model-credential-7",
+    requireModelInList: Boolean = true,
+): ModelPreset = ModelPreset(
+    id = id,
+    displayName = name,
+    providerType = ModelProviderType.REMOTE_OPENAI_COMPATIBLE,
+    modelIdentifier = model,
+    apiProtocol = ModelApiProtocol.GEMINI_NATIVE,
+    apiBasePath = ModelApiProtocol.GEMINI_NATIVE.defaultApiBasePath,
+    credentialRef = credentialRef,
+    endpoint = EndpointConfig(EndpointDiscoveryMode.CONFIGURED_ENDPOINT, endpoint),
+    tunnel = TunnelConfig(type = TunnelType.NONE),
+    health = HealthCheckConfig(requireModelInList = requireModelInList),
+)
+
 /** Discovery stub with a scripted outcome and a call count. */
 internal class FakeEndpointDiscovery(
     var outcome: (ModelPreset) -> DiscoveryOutcome = { DiscoveryOutcome.NotFound("nothing published yet") },

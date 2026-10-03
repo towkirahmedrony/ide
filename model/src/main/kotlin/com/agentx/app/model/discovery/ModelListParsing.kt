@@ -1,6 +1,6 @@
 package com.agentx.app.model.discovery
 
-import com.agentx.app.model.connect.normalizeModelId
+import com.agentx.app.model.preset.normalizeModelId
 import com.agentx.app.model.json.JsonCodec
 import com.agentx.app.model.json.JsonObject
 import com.agentx.app.model.json.arrayOrNull

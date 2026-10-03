@@ -13,7 +13,7 @@ import com.agentx.app.model.capability.InMemoryModelCapabilityRegistry
 import com.agentx.app.model.capability.ModelCapability
 import com.agentx.app.model.connect.KnownModelProviders
 import com.agentx.app.model.connect.ModelSetupKind
-import com.agentx.app.model.connect.normalizeModelId
+import com.agentx.app.model.preset.normalizeModelId
 import com.agentx.app.model.discovery.ModelDiscovery
 import com.agentx.app.model.http.HttpResponseSpec
 import com.agentx.app.model.manager.GatewayModelConnectionRegistry

@@ -4,7 +4,7 @@ import com.agentx.app.core.ForgeError
 import com.agentx.app.core.ForgeResult
 import com.agentx.app.model.ModelCapabilities
 import com.agentx.app.model.connect.DiscoveryFailureKind
-import com.agentx.app.model.connect.normalizeModelId
+import com.agentx.app.model.preset.normalizeModelId
 import com.agentx.app.model.json.Json
 import com.agentx.app.model.json.JsonCodec
 import com.agentx.app.model.json.JsonObject

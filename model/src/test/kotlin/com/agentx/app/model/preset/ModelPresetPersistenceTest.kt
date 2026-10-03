@@ -4,6 +4,7 @@ import com.agentx.app.core.ForgeErrorCode
 import com.agentx.app.core.errorOrNull
 import com.agentx.app.core.valueOrNull
 import com.agentx.app.model.runtime.colabPreset
+import com.agentx.app.model.runtime.geminiPreset
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -181,6 +182,65 @@ class ModelPresetPersistenceTest {
         assertNull(ModelPresetCodec.decode("""{"id":"x","providerType":"TELEPATHY","displayName":"Nope"}"""))
         assertNull(ModelPresetCodec.decode("not json"))
         assertTrue(ModelPresetCodec.decodeAll("""[{"broken":true}]""").isEmpty())
+    }
+
+    // --- gemini identity separation ----------------------------------------
+
+    @Test
+    fun `a saved gemini preset round trips with every identity kept apart`() = runBlocking {
+        val repository = repository()
+        val created = assertNotNull(repository.create(geminiPreset()).valueOrNull())
+
+        // A brand new repository over the same store, standing in for a restart.
+        val reloaded = assertNotNull(repository().find(created.id))
+
+        assertEquals("gemini", reloaded.providerId)
+        assertEquals("geminj", reloaded.displayName)
+        assertEquals("gemini-3.5-flash-lite", reloaded.modelIdentifier)
+        assertEquals(ModelApiProtocol.GEMINI_NATIVE, reloaded.apiProtocol)
+        assertEquals("/v1beta", reloaded.apiBasePath)
+        assertEquals("https://generativelanguage.googleapis.com", reloaded.endpoint.explicitUrl)
+        assertEquals(EndpointDiscoveryMode.CONFIGURED_ENDPOINT, reloaded.endpoint.mode)
+        assertEquals("model-credential-7", reloaded.credentialRef)
+        assertTrue(reloaded.isConfigured)
+    }
+
+    @Test
+    fun `a display name can never be read back as an endpoint, model id or path`() = runBlocking {
+        val reloaded = assertNotNull(
+            ModelPresetCodec.decode(ModelPresetCodec.encode(geminiPreset(name = "geminj"))),
+        )
+
+        val identityValues = listOf(
+            reloaded.endpoint.explicitUrl.orEmpty(),
+            reloaded.modelIdentifier,
+            reloaded.apiBasePath,
+            reloaded.apiProtocol.providerId,
+            reloaded.providerId,
+            reloaded.credentialRef.orEmpty(),
+        )
+
+        assertTrue(
+            identityValues.none { it.contains(reloaded.displayName) },
+            "the display name must never appear in a persisted endpoint, model id or path",
+        )
+        assertEquals("geminj", reloaded.displayName)
+    }
+
+    @Test
+    fun `a configured endpoint that is missing is refused with the field that is wrong`() = runBlocking {
+        val preset = geminiPreset().copy(
+            endpoint = EndpointConfig(EndpointDiscoveryMode.CONFIGURED_ENDPOINT, explicitUrl = null),
+        )
+
+        val error = assertNotNull(repository().create(preset).errorOrNull())
+
+        assertEquals(ForgeErrorCode.MODEL_PRESET_INVALID, error.code)
+        val errors = assertNotNull(error.details["errors"] as? List<*>)
+        assertTrue(
+            errors.any { it.toString().contains("endpoint", ignoreCase = true) },
+            "the error names the missing endpoint instead of reporting an unreachable model",
+        )
     }
 
     @Test

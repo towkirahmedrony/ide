@@ -1,7 +1,11 @@
 package com.agentx.app.model.connect
 
+import com.agentx.app.model.preset.DEFAULT_CREDENTIAL_HEADER
+import com.agentx.app.model.preset.DEFAULT_CREDENTIAL_SCHEME
+import com.agentx.app.model.preset.GEMINI_API_KEY_HEADER
 import com.agentx.app.model.preset.ModelApiProtocol
 import com.agentx.app.model.preset.ModelProviderType
+import com.agentx.app.model.preset.normalizeModelId
 
 /**
  * Catalog of well-known remote APIs that speak OpenAI-compatible chat.
@@ -54,8 +58,31 @@ enum class ModelSetupKind(
  * the app reports or logs.
  */
 enum class ModelListAuth(val headerName: String, val scheme: String) {
-    BEARER(headerName = "Authorization", scheme = "Bearer "),
-    API_KEY_HEADER(headerName = "x-goog-api-key", scheme = ""),
+    BEARER(
+        headerName = DEFAULT_CREDENTIAL_HEADER,
+        scheme = DEFAULT_CREDENTIAL_SCHEME,
+    ),
+    API_KEY_HEADER(
+        headerName = GEMINI_API_KEY_HEADER,
+        scheme = "",
+    ),
+    ;
+
+    companion object {
+        /**
+         * The auth a protocol's own endpoints use.
+         *
+         * Derived rather than declared per provider, so the model list, the chat
+         * probe and the runtime health check can never disagree about which header
+         * carries the credential.
+         */
+        fun forProtocol(protocol: ModelApiProtocol): ModelListAuth =
+            if (protocol.credentialHeader.equals(BEARER.headerName, ignoreCase = true)) {
+                BEARER
+            } else {
+                API_KEY_HEADER
+            }
+    }
 }
 
 data class KnownProviderSpec(
@@ -75,8 +102,13 @@ data class KnownProviderSpec(
      * lists models through that proxy.
      */
     val modelListPath: String? = null,
-    /** How the model list is authenticated; chat authentication is unchanged. */
-    val modelListAuth: ModelListAuth = ModelListAuth.BEARER,
+    /**
+     * How the model list is authenticated; chat authentication is unchanged.
+     *
+     * Defaults to the auth the provider's own [protocol] documents, so a provider
+     * declares its wire contract once instead of repeating its key header here.
+     */
+    val modelListAuth: ModelListAuth = ModelListAuth.forProtocol(protocol),
     /** Models offered when /models cannot be listed. Never an API secret. */
     val suggestedModels: List<String> = emptyList(),
     val preferredModel: String? = null,
@@ -127,7 +159,6 @@ object KnownModelProviders {
         apiBasePath = "/v1beta",
         protocol = ModelApiProtocol.GEMINI_NATIVE,
         modelListPath = "/v1beta/models",
-        modelListAuth = ModelListAuth.API_KEY_HEADER,
         /**
          * Compatibility list only. It is used when the account's own model list
          * cannot be read (no key yet, offline, rate limited) so the app stays
@@ -201,16 +232,6 @@ fun selectDiscoveredModel(
     }
     return null
 }
-
-/**
- * The single form of a model id.
- *
- * A provider may report a model as `models/<id>` (Gemini's model list does) while
- * a preset, a catalog entry and the UI all use the bare `<id>` that is sent to
- * chat. Normalizing both sides keeps the two forms resolving to one model.
- */
-fun normalizeModelId(raw: String): String =
-    raw.trim().removePrefix("models/").trim().trimStart('/').trim()
 
 internal fun isUtilityModel(id: String): Boolean {
     val lower = id.lowercase()

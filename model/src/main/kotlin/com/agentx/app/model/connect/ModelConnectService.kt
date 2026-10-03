@@ -19,6 +19,7 @@ import com.agentx.app.model.http.HttpTransport
 import com.agentx.app.model.http.UrlConnectionHttpTransport
 import com.agentx.app.model.manager.ModelManager
 import com.agentx.app.model.preset.ModelProviderIds
+import com.agentx.app.model.preset.normalizeModelId
 import com.agentx.app.model.preset.EndpointConfig
 import com.agentx.app.model.preset.EndpointDiscoveryMode
 import com.agentx.app.model.preset.HealthCheckConfig

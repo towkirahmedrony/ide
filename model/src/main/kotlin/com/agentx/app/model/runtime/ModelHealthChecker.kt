@@ -9,6 +9,7 @@ import com.agentx.app.model.json.objectOrNull
 import com.agentx.app.model.json.stringOrNull
 import com.agentx.app.model.preset.ModelApiProtocol
 import com.agentx.app.model.preset.ModelPreset
+import com.agentx.app.model.preset.normalizeModelId
 import java.io.IOException
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -55,8 +56,10 @@ class HttpModelHealthChecker(
         val url = healthUrl(preset, endpoint)
         val headers = LinkedHashMap<String, String>()
         headers["Accept"] = "application/json"
-        // The credential is only ever placed in the header; it is never logged.
-        credential?.takeIf { it.isNotBlank() }?.let { headers["Authorization"] = "Bearer $it" }
+        // The credential is placed in the header the preset's own protocol documents
+        // — Gemini's API reads `x-goog-api-key`, an OpenAI-compatible surface reads
+        // `Authorization: Bearer`. It is never logged and never placed in the URL.
+        headers += preset.apiProtocol.credentialHeaders(credential)
 
         val started = clock()
         val response = try {
@@ -100,7 +103,12 @@ class HttpModelHealthChecker(
                 latencyMillis = latency,
             )
 
+        // The ids are normalized the same way discovery and the preset normalize
+        // them, so `models/gemini-3.5-flash-lite` in the list matches the
+        // `gemini-3.5-flash-lite` the preset stores and chats with.
         val models = extractModels(preset.apiProtocol, root)
+            ?.map(::normalizeModelId)
+            ?.filter { it.isNotBlank() }
             ?: return ModelHealth(
                 status = ModelHealthStatus.UNHEALTHY,
                 detail = "The endpoint answered with JSON but no model list, so the model API " +
@@ -116,7 +124,9 @@ class HttpModelHealthChecker(
             )
         }
 
-        if (preset.health.requireModelInList && models.none { it == preset.modelIdentifier }) {
+        if (preset.health.requireModelInList &&
+            models.none { it == normalizeModelId(preset.modelIdentifier) }
+        ) {
             return ModelHealth(
                 status = ModelHealthStatus.DEGRADED,
                 detail = "The endpoint is reachable but does not offer '${preset.modelIdentifier}' " +

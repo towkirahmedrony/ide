@@ -239,10 +239,16 @@ abstract class AbstractModelRunner(
         val attempts = runWithOperationTimeout(preset) {
             var lastReason: String? = null
             var invalidEndpoint = false
+            // Whether an endpoint was detected at all. It is what separates
+            // "nothing was published" (a runtime is not running) from "the endpoint
+            // answered but its model API did not" — two different problems that must
+            // not be reported with the same message.
+            var sawEndpoint = false
 
             for (attempt in 1..maxAttempts) {
                 when (val outcome = discover(preset)) {
                     is DiscoveryOutcome.Found -> {
+                        sawEndpoint = true
                         setStatus(
                             status(preset.id).copy(
                                 state = ModelLifecycleState.CONNECTING,
@@ -314,16 +320,26 @@ abstract class AbstractModelRunner(
 
             val reason = lastReason.orEmpty()
             val invalid = invalidEndpoint
-            val failure = if (invalid) ModelRuntimeFailure.ENDPOINT_INVALID else ModelRuntimeFailure.RUNTIME_NOT_DETECTED
+            val failure = when {
+                invalid -> ModelRuntimeFailure.ENDPOINT_INVALID
+                sawEndpoint -> ModelRuntimeFailure.MODEL_API_UNREACHABLE
+                else -> ModelRuntimeFailure.RUNTIME_NOT_DETECTED
+            }
+            // The reason the endpoint itself gave is what identifies the actual
+            // problem (a rejected credential, a path that is not a model list). It is
+            // reported whenever one exists and the endpoint was reached — falling
+            // back to "not reachable" hid a 401 behind a network-sounding message.
+            val specificReason = (invalid || sawEndpoint) && reason.isNotBlank()
             RunnerOperationResult(
                 status = status(preset.id).copy(
                     state = ModelLifecycleState.FAILED,
-                    message = if (invalid && reason.isNotBlank()) reason else notDetectedMessage(preset),
+                    message = if (specificReason) reason else notDetectedMessage(preset),
                     detail = reason.ifBlank { null },
                     failure = failure,
                     attempt = maxAttempts,
                     updatedAtMillis = clock(),
-                    awaitingRuntime = true,
+                    // Nothing was detected, so the user has to act on the runtime.
+                    awaitingRuntime = !sawEndpoint,
                 ),
                 health = null,
             )

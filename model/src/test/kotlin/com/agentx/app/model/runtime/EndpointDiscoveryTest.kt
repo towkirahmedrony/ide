@@ -91,6 +91,19 @@ class EndpointDiscoveryTest {
     }
 
     @Test
+    fun `a configured endpoint that is missing is a configuration problem, not a quiet wait`() {
+        val preset = geminiPreset().copy(
+            endpoint = EndpointConfig(EndpointDiscoveryMode.CONFIGURED_ENDPOINT),
+        )
+
+        val outcome = runBlocking { discovery().discover(preset) }
+
+        val notFound = assertIs<DiscoveryOutcome.NotFound>(outcome)
+        assertTrue(notFound.invalidEndpoint, "a missing configured endpoint is not a runtime that is late")
+        assertTrue(notFound.reason.contains("endpoint", ignoreCase = true))
+    }
+
+    @Test
     fun `a plain http endpoint is refused for a remote provider`() {
         val preset = colabPreset(
             endpointMode = EndpointDiscoveryMode.CONFIGURED_ENDPOINT,

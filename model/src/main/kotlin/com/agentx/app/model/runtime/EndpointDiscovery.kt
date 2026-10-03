@@ -83,8 +83,15 @@ class DefaultModelEndpointDiscovery(
     }
 
     private fun configured(preset: ModelPreset): DiscoveryOutcome {
+        // A preset that says its endpoint is configured, but carries none, is a
+        // configuration problem rather than a runtime that has not published yet:
+        // reporting it as invalid surfaces the missing field instead of sending the
+        // user looking for a server that was never involved.
         val raw = preset.endpoint.explicitUrl
-            ?: return DiscoveryOutcome.NotFound("No endpoint is configured for this model")
+            ?: return DiscoveryOutcome.NotFound(
+                "No endpoint is configured for this model",
+                invalidEndpoint = true,
+            )
         return validate(raw, preset, EndpointSource.CONFIGURED)
     }
 

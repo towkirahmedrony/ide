@@ -5,7 +5,7 @@ import com.agentx.app.model.ModelConfig
 import com.agentx.app.model.ModelProviderError
 import com.agentx.app.model.ModelProviderErrorCode
 import com.agentx.app.model.ModelRequest
-import com.agentx.app.model.connect.normalizeModelId
+import com.agentx.app.model.preset.normalizeModelId
 import com.agentx.app.model.preset.ModelProviderIds
 
 /**

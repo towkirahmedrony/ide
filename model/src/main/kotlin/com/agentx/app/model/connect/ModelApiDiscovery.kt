@@ -18,6 +18,7 @@ import com.agentx.app.model.json.objectOrNull
 import com.agentx.app.model.json.stringOrNull
 import com.agentx.app.model.preset.ModelApiProtocol
 import com.agentx.app.model.preset.ModelProviderIds
+import com.agentx.app.model.preset.normalizeModelId
 import java.io.IOException
 import java.net.ConnectException
 import java.net.SocketTimeoutException
