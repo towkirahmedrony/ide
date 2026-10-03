@@ -478,7 +478,7 @@ class UbuntuRootfsInstaller(
             validate(tree)
             DeveloperLogger.info(
                 DeveloperLogCategory.ROOTFS,
-                "Hard-link validation passed: " +
+                "Hard-link validation passed (perl->${files.readLink("$tree/usr/bin/perl")} canonicalRoot=${File(tree).canonicalPath}): " +
                     UbuntuRootfsCatalog.REQUIRED_HARD_LINKS.joinToString {
                         "${it.link} -> ${it.file}"
                     },
@@ -626,7 +626,7 @@ class UbuntuRootfsInstaller(
 
     /** Non-throwing form of [validateLinkStore], for the predicates above. */
     private fun linkStoreIsInside(tree: String): Boolean {
-        val rootPrefix = tree.trimEnd('/') + "/"
+        val rootPrefix = File(tree).canonicalPath.trimEnd('/') + "/"
         val store = ProotCommand.extractionStore(tree)
         if (!store.startsWith(rootPrefix)) return false
         return UbuntuRootfsCatalog.REQUIRED_HARD_LINKS.all { hardLink ->
@@ -654,7 +654,7 @@ class UbuntuRootfsInstaller(
      * at all) is fine and is skipped — this rejects the wrong *store location*, not the mechanism.
      */
     private fun validateLinkStore(tree: String) {
-        val rootPrefix = tree.trimEnd('/') + "/"
+        val rootPrefix = File(tree).canonicalPath.trimEnd('/') + "/"
         // Derived from the tree being validated, not from the live layout: during an installation
         // the tree is rootfs.installing and its store is inside *it*. Asking layout.l2s here was
         // wrong the moment extraction stopped writing to the live rootfs.

@@ -50,7 +50,7 @@ class LocalUbuntuRuntime(
     /** Native library directory and app-private runtime storage. */
     val layout: NativeRuntimeLayout = NativeRuntimeLayout.forContext(
         nativeLibraryDir = appContext.applicationInfo.nativeLibraryDir,
-        filesDir = appContext.filesDir.absolutePath,
+        filesDir = appContext.filesDir.canonicalPath,
     )
 
     /** Whether the native PRoot components are actually present in `nativeLibraryDir`. */
