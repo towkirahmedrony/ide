@@ -52,6 +52,34 @@ interface RateLimitManager {
         local: Boolean = false,
     ): RateLimitDecision
 
+    /**
+     * The structured, read-only quota picture for a prospective request.
+     *
+     * This exists so candidate selection and observability can ask "may this
+     * provider/model take this request, and why not?" without reserving anything
+     * and without a second decision path: the answer comes from the same
+     * [canRequest] the gateway enforces, so a preflight decision and the
+     * enforcement can never disagree.
+     *
+     * The default builds a decision-only view, which is enough for a manager that
+     * has no per-dimension accounting to expose.
+     */
+    suspend fun headroom(
+        providerId: String,
+        modelId: String,
+        estimatedInputTokens: Int,
+        estimatedOutputTokens: Int,
+        accountId: String? = null,
+        local: Boolean = false,
+    ): RateLimitHeadroom = RateLimitHeadroom(
+        providerId = providerId,
+        modelId = modelId,
+        accountId = accountId,
+        local = local,
+        estimatedRequestTokens = estimatedInputTokens.toLong() + estimatedOutputTokens.toLong(),
+        decision = canRequest(providerId, modelId, estimatedInputTokens, estimatedOutputTokens, accountId, local),
+    )
+
     suspend fun reserve(
         providerId: String,
         modelId: String,
@@ -199,6 +227,88 @@ class DefaultRateLimitManager(
                 is Inspect.Blocked -> outcome.decision
             }
         }
+    }
+
+    override suspend fun headroom(
+        providerId: String,
+        modelId: String,
+        estimatedInputTokens: Int,
+        estimatedOutputTokens: Int,
+        accountId: String?,
+        local: Boolean,
+    ): RateLimitHeadroom {
+        val request = packed(providerId, modelId, estimatedInputTokens, estimatedOutputTokens, accountId, local)
+        val decision = canRequest(
+            providerId = providerId,
+            modelId = modelId,
+            estimatedInputTokens = estimatedInputTokens,
+            estimatedOutputTokens = estimatedOutputTokens,
+            accountId = accountId,
+            local = local,
+        )
+        // A local endpoint does not consume remote quota, so there is no remote
+        // headroom to report and no dimension to be near a limit on.
+        if (!request.rateLimited) {
+            return RateLimitHeadroom(
+                providerId = providerId,
+                modelId = modelId,
+                accountId = accountId,
+                decision = decision,
+                local = true,
+                estimatedRequestTokens = request.reservedTokens,
+            )
+        }
+
+        val totals = usage.totals(providerId, modelId).firstOrNull()
+        val dimensions = plan(request).flatMap { planned ->
+            listOf(
+                dimensionState(planned.key, QuotaDimension.REQUESTS_PER_MINUTE, planned.limits.requestsPerMinute, totals?.requestCount),
+                dimensionState(planned.key, QuotaDimension.TOKENS_PER_MINUTE, planned.limits.tokensPerMinute, totals?.totalTokens),
+                dimensionState(planned.key, QuotaDimension.REQUESTS_PER_DAY, planned.limits.requestsPerDay, totals?.requestCount),
+                dimensionState(planned.key, QuotaDimension.TOKENS_PER_DAY, planned.limits.tokensPerDay, totals?.totalTokens),
+                dimensionState(planned.key, QuotaDimension.CONCURRENT_REQUESTS, planned.limits.maxConcurrentRequests, null),
+            ).filter { it.limit != null }
+        }
+
+        return RateLimitHeadroom(
+            providerId = providerId,
+            modelId = modelId,
+            accountId = accountId,
+            decision = decision,
+            local = false,
+            estimatedRequestTokens = request.reservedTokens,
+            dimensions = dimensions,
+        )
+    }
+
+    /**
+     * One dimension's known state.
+     *
+     * `remaining` is only reported when the ceiling itself is known: a number that
+     * was never observed must not be shown as if the provider had confirmed it, and
+     * an unknown limit stays UNKNOWN rather than becoming a guessed allowance.
+     */
+    private fun dimensionState(
+        key: RateLimitKey,
+        dimension: QuotaDimension,
+        quota: Quota,
+        used: Long?,
+    ): QuotaDimensionState {
+        val limit = quota.knownValue
+        val profile = profileMap[key]
+        return QuotaDimensionState(
+            dimension = dimension,
+            limit = limit,
+            used = used,
+            remaining = limit?.let { ceiling -> used?.let { consumed -> (ceiling - consumed).coerceAtLeast(0L) } },
+            safetyMargin = profile?.safetyMargin,
+            knowledge = when {
+                limit == null -> QuotaKnowledge.UNKNOWN
+                used == null -> QuotaKnowledge.KNOWN
+                else -> QuotaKnowledge.ESTIMATED
+            },
+            source = profile?.source,
+        )
     }
 
     override suspend fun reserve(

@@ -137,6 +137,20 @@ class ModelFallback(
     ): T {
         val active = policy()
         if (!active.enabledFor(role)) return call(primary)
+
+        // Preemptive headroom protection, before anything is sent.
+        //
+        // A primary that AgentX already knows has no safe quota headroom is never
+        // asked. Waiting for its 429 would mean knowingly spending the last usable
+        // capacity on a request the runtime knew was over the line, and that
+        // response would be the *mechanism* for discovering exhaustion rather than a
+        // last-resort signal.
+        when (val preflight = preflight(role, sessionId, primary, default, sink, requirements, active)) {
+            Preflight.Primary -> Unit
+            is Preflight.Switch -> return call(preflight.config)
+            is Preflight.NoHeadroom -> throw preflight.error
+        }
+
         return try {
             call(primary)
         } catch (cancelled: CancellationException) {
@@ -145,6 +159,111 @@ class ModelFallback(
             val reason = ModelFallbackErrors.triggerFor(error) ?: throw error
             runChain(role, sessionId, primary, default, sink, requirements, outputProduced, active, reason, error, call)
         }
+    }
+
+    /** What the preflight decided about the primary attempt. */
+    private sealed interface Preflight {
+        /** Headroom is fine (or the block is not a quota block): use the primary. */
+        data object Primary : Preflight
+
+        /** A configured candidate can take the request safely. */
+        data class Switch(val config: ModelConfig) : Preflight
+
+        /** Nothing can take it safely, so nothing is sent. */
+        data class NoHeadroom(val error: Throwable) : Preflight
+    }
+
+    /**
+     * Decides whether the primary may be used, using the same eligibility system
+     * the rest of the runtime uses — capabilities, enabled state and quota
+     * admission — so no quota rule is duplicated here.
+     *
+     * Only a quota block ([ModelEligibilityState.RATE_LIMITED]) triggers a switch.
+     * A capability, disabled or unknown state is never papered over by a model that
+     * merely happens to have quota available: the primary is attempted and reports
+     * its own structured error, which is what keeps a request from being silently
+     * answered by an incompatible model.
+     *
+     * Candidates come only from the explicitly configured chain. Attempts are
+     * bounded by the policy, a provider/model pair is never revisited, and every
+     * candidate must be eligible in its own right — so there is no circular
+     * fallback and no candidate inside its own protected zone is chosen.
+     */
+    private suspend fun preflight(
+        role: AgentRole,
+        sessionId: String,
+        primary: ModelConfig,
+        default: ModelConfig,
+        sink: AgentEventSink,
+        requirements: ModelRequestRequirements,
+        policy: ModelFallbackPolicy,
+    ): Preflight {
+        val eligibility = resolver.eligibilityFor(role, primary, requirements)
+        if (eligibility.state != ModelEligibilityState.RATE_LIMITED) return Preflight.Primary
+
+        val visited = LinkedHashSet<String>()
+        visited += key(primary)
+        var attempts = 0
+
+        for (preference in policy.candidates(role)) {
+            if (attempts >= policy.maxFallbackAttempts) break
+
+            val candidate = resolver.configFor(preference, default)
+            if (candidate == null) {
+                logSkip(role, preference, "provider-not-connected")
+                continue
+            }
+            val candidateKey = key(candidate)
+            if (candidateKey in visited) {
+                logSkip(role, preference, "duplicate-candidate")
+                continue
+            }
+            visited += candidateKey
+
+            val candidateEligibility = resolver.eligibilityFor(role, candidate, requirements)
+            if (!candidateEligibility.eligible) {
+                logSkip(role, preference, "ineligible:${candidateEligibility.state.name}")
+                continue
+            }
+
+            attempts += 1
+            emitStarted(sink, sessionId, role, primary, candidate, ModelFallbackReason.RATE_LIMITED, attempts)
+            // Structured, credential-free record that the switch happened *before*
+            // the primary was asked, so an observer can tell a preemptive switch
+            // from a reactive recovery.
+            logger.info(
+                "Preemptive model switch before send",
+                mapOf(
+                    "sessionId" to sessionId,
+                    "role" to role.name,
+                    "preemptive" to true,
+                    "reason" to ModelFallbackReason.RATE_LIMITED.name,
+                    "fromProvider" to primary.providerId,
+                    "fromModel" to primary.model,
+                    "toProvider" to candidate.providerId,
+                    "toModel" to candidate.model,
+                    "attempts" to attempts,
+                ),
+            )
+            return Preflight.Switch(candidate)
+        }
+
+        // Nothing has safe headroom. The primary is still not sent: the caller gets
+        // its structured quota error instead of a request that was known in advance
+        // to be over the usable limit, and no provider is retried in a loop.
+        logger.info(
+            "No configured candidate has safe quota headroom",
+            mapOf(
+                "sessionId" to sessionId,
+                "role" to role.name,
+                "preemptive" to true,
+                "providerId" to primary.providerId,
+                "modelId" to primary.model,
+                "state" to eligibility.state.name,
+                "candidates" to policy.candidates(role).size,
+            ),
+        )
+        return Preflight.NoHeadroom(AgentModelResolutionException(error = eligibility.rejectionError()))
     }
 
     private suspend fun <T> runChain(
