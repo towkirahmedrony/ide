@@ -406,4 +406,155 @@ class TermuxSessionManagerTest {
         assertEquals(1, manager.sessions().size)
         assertEquals(TerminalSessionState.RUNNING, manager.sessions().single().state)
     }
+
+    // --- the project half of the session lifecycle -------------------------------------------
+    //
+    // Every shell is bound to its project's directory at `/workspace`, so a session that outlives
+    // the project the user left is a shell still operating on a `/workspace` that is no longer the
+    // active project. Entering a project closes the shells of the project that was left.
+
+    /**
+     * A project shell spec: PRoot, started at `/workspace`, with the project bound there.
+     *
+     * The real [TermuxShellSpec] a project produces, so the tests below can assert what the manager
+     * kept as well as which key it kept it under.
+     */
+    private fun projectSpec(
+        workspaceId: String,
+        secondary: Boolean = false,
+        projectPath: String = "/data/user/0/com.agentx.app/files/projects/$workspaceId",
+    ) = TermuxShellSpec(
+        workspaceKey = TerminalProjectKeys.forSession(workspaceId, secondary),
+        executable = "/native/libproot.so",
+        processName = "proot",
+        arguments = listOf(
+            "proot", "-0", "-l", "-w", "/workspace",
+            "-b", "$projectPath:/workspace",
+            "/bin/bash", "--login",
+        ),
+        workingDirectory = "/data/user/0/com.agentx.app/files/developer-runtime",
+        environment = arrayOf("HOME=/root", "SHELL=/bin/bash", "AGENTX_PROJECT=/workspace"),
+        transcriptRows = 2000,
+        temporarySystemShell = false,
+        fullTermux = false,
+    )
+
+    @Test
+    fun `switching projects closes every terminal of the project that was left`() {
+        val recorder = Recorder()
+        val manager = TermuxSessionManager(recorder.factory())
+
+        // Project A: both of its terminals are running.
+        manager.open(projectSpec("proj-a"))
+        manager.open(projectSpec("proj-a", secondary = true))
+        assertEquals(2, manager.sessions().size)
+
+        // Project B becomes active.
+        val closed = manager.closeOtherProjects("proj-b")
+
+        assertEquals(2, closed)
+        assertEquals(listOf(1, 1), recorder.sessions.map { it.finishCount })
+        // The mapping goes with the session: nothing is left under A's key to be reused.
+        assertTrue(manager.sessions().isEmpty())
+        assertTrue(manager.snapshots.value.isEmpty())
+        assertNull(manager.activeHandle.value)
+    }
+
+    @Test
+    fun `a project keeps all of its own terminals when it becomes active`() {
+        val recorder = Recorder()
+        val manager = TermuxSessionManager(recorder.factory())
+
+        val first = manager.open(projectSpec("proj-a"))!!
+        val extra = manager.open(projectSpec("proj-a", secondary = true))!!
+
+        // Re-entering the same project — reopening it, rotating, returning to the tab — closes
+        // nothing: a second terminal is part of the project, not a leftover of another one.
+        assertEquals(0, manager.closeOtherProjects("proj-a"))
+        assertEquals(2, manager.sessions().size)
+        assertEquals(listOf(0, 0), recorder.sessions.map { it.finishCount })
+        assertSame(first, manager.find(first.handle))
+        assertSame(extra, manager.find(extra.handle))
+    }
+
+    @Test
+    fun `after a switch only the new project's terminals remain`() {
+        val recorder = Recorder()
+        val manager = TermuxSessionManager(recorder.factory())
+
+        manager.open(projectSpec("proj-a"))
+        manager.closeOtherProjects("proj-b")
+        val current = manager.open(projectSpec("proj-b"))!!
+        manager.open(projectSpec("proj-b", secondary = true))
+
+        assertEquals(2, manager.sessions().size)
+        assertEquals(
+            setOf(
+                TerminalProjectKeys.primary("proj-b"),
+                TerminalProjectKeys.secondary("proj-b"),
+            ),
+            manager.snapshots.value.map { it.workspaceKey }.toSet(),
+        )
+        // The project that is open now is untouched by its own switch.
+        assertEquals(0, manager.closeOtherProjects("proj-b"))
+        assertEquals(2, manager.sessions().size)
+        assertSame(current, manager.find(current.handle))
+    }
+
+    @Test
+    fun `every terminal of a project is bound to that project at workspace`() {
+        val recorder = Recorder()
+        val manager = TermuxSessionManager(recorder.factory())
+
+        manager.open(projectSpec("proj-a", projectPath = "/storage/emulated/0/Projects/a"))
+        manager.open(
+            projectSpec("proj-a", secondary = true, projectPath = "/storage/emulated/0/Projects/a"),
+        )
+
+        // Both terminals are the same project, and neither can be rooted anywhere else: one shell
+        // each, both with `/workspace` as the cwd and this project's own directory as the only
+        // workspace bind.
+        assertEquals(
+            listOf("/workspace" to "/storage/emulated/0/Projects/a:/workspace"),
+            recorder.specs.map { spec -> flagValue(spec, "-w") to flagValue(spec, "-b") }.distinct(),
+        )
+        assertEquals(2, recorder.specs.size)
+    }
+
+    @Test
+    fun `restarting a terminal after a switch rebuilds it from the project that is open now`() {
+        val recorder = Recorder()
+        val manager = TermuxSessionManager(recorder.factory())
+
+        val left = manager.open(projectSpec("proj-a"))!!
+        // A switch closes A's shell, so its handle is only a memory by the time restart is pressed.
+        manager.closeOtherProjects("proj-b")
+
+        val restarted = manager.restart(left.handle, projectSpec("proj-b"))!!
+
+        // What comes back is the active project's shell, not a resurrected mapping of A's: B's key,
+        // started in `/workspace`, with B's directory as the only thing bound there.
+        val snapshot = manager.snapshots.value.single()
+        assertSame(restarted, manager.find(snapshot.handle))
+        assertEquals(TerminalProjectKeys.primary("proj-b"), snapshot.workspaceKey)
+        assertEquals("/workspace", flagValue(recorder.specs.last(), "-w"))
+        assertEquals(
+            "/data/user/0/com.agentx.app/files/projects/proj-b:/workspace",
+            flagValue(recorder.specs.last(), "-b"),
+        )
+        assertEquals(1, manager.sessions().size)
+    }
+
+    @Test
+    fun `closing other projects is a no-op when there is nothing to close`() {
+        val manager = TermuxSessionManager(Recorder().factory())
+
+        assertEquals(0, manager.closeOtherProjects("proj-a"))
+        assertTrue(manager.sessions().isEmpty())
+        assertNull(manager.activeHandle.value)
+    }
+
+    /** The argv element that follows [flag] in a session's command. */
+    private fun flagValue(spec: TermuxShellSpec, flag: String): String =
+        spec.arguments[spec.arguments.indexOf(flag) + 1]
 }

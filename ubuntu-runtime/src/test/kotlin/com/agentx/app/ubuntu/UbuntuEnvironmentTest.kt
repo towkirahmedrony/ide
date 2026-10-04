@@ -20,6 +20,7 @@ class UbuntuEnvironmentTest {
         assertTrue(environment.contains("USER=root"))
         assertTrue(environment.contains("LOGNAME=root"))
         assertTrue(environment.contains("SHELL=/bin/bash"))
+        assertTrue(environment.contains("TERM=${UbuntuEnvironment.TERM}"))
         assertTrue(environment.contains("TMPDIR=/tmp"))
         assertTrue(environment.contains("LANG=C.UTF-8"))
         assertTrue(environment.contains("PATH=${UbuntuEnvironment.GUEST_PATH}"))

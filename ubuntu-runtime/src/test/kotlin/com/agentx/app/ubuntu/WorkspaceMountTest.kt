@@ -122,6 +122,58 @@ class WorkspaceMountTest {
     }
 
     @Test
+    fun `no project at all mounts nothing and says to open a project`() {
+        // Requirement, stated as a test: no project must not become a shell that looks like one.
+        // Nothing is mounted at `/workspace` and no convenient directory is chosen in its place;
+        // the shell stays in the guest home and the reason names what to do about it.
+        val binding = UbuntuProjectBindings.resolve(
+            handle = null,
+            displayLocation = null,
+            isDirectory = { true },
+        )
+        val home = assertIs<UbuntuProjectBinding.Home>(binding)
+        assertEquals(ProotCommand.GUEST_HOME, home.guestPath)
+        assertNull(home.hostPath)
+        assertEquals(UbuntuProjectBindings.NO_PROJECT_REASON, home.reason)
+        assertTrue(home.reason.contains("open a project", ignoreCase = true))
+        // The terminal header shows the first sentence of a note, so this one is a single sentence:
+        // nothing the header truncates away. Otherwise the advice would sit in the half never shown.
+        assertFalse(home.reason.contains(". "))
+
+        // Even with a filesystem probe that would say yes to anything, there is nothing to bind:
+        // the mapping is derived from the open project, never from a directory that happens to
+        // exist.
+        val invocation = sessionFor(binding)
+        assertEquals(0, bindsFor(binding).count { it.guest == ProotCommand.GUEST_PROJECT_ROOT })
+        assertFalse(invocation.arguments.any { it.endsWith(":${ProotCommand.GUEST_PROJECT_ROOT}") })
+        assertEquals(
+            ProotCommand.GUEST_HOME,
+            invocation.arguments[invocation.arguments.indexOf("-w") + 1],
+        )
+    }
+
+    @Test
+    fun `a project path with special characters is bound and entered verbatim`() {
+        // Valid on Android's shared storage, and easy to get wrong: a path is one argv element,
+        // never something a shell re-splits.
+        val hostPath = "/storage/emulated/0/Projects/weird (v2)+draft & more/ünïcode-демо"
+        val binding = UbuntuProjectBindings.resolve(
+            handle = hostPath,
+            displayLocation = null,
+            isDirectory = { it == hostPath },
+        )
+        assertEquals(hostPath, assertIs<UbuntuProjectBinding.Direct>(binding).hostPath)
+
+        val invocation = sessionFor(binding)
+        val projectToken = "$hostPath:/workspace"
+        assertEquals(1, invocation.arguments.count { it == projectToken })
+        assertEquals("-b", invocation.arguments[invocation.arguments.indexOf(projectToken) - 1])
+        // The bind token is a whole absolute path, so it can never be read as an option.
+        assertTrue(projectToken.startsWith("/"))
+        assertEquals("/workspace", invocation.arguments[invocation.arguments.indexOf("-w") + 1])
+    }
+
+    @Test
     fun `project paths with spaces survive bind and cwd construction`() {
         // A SAF tree whose folder name contains spaces and percent-escapes.
         val handle = "content://com.android.externalstorage.documents/tree/primary%3AMy%20Projects%2Fdemo%20app"
