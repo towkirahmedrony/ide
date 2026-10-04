@@ -40,6 +40,8 @@ dependencies {
     api(project(":integrations"))
     // The editor shows file structure through the code intelligence contract.
     api(project(":codeintel"))
+    // The Git screen talks to the project-aware Git service directly.
+    api(project(":git"))
     // The Terminal tab renders the vendored Termux terminal; the runtime owns the pty sessions.
     api(project(":termux-runtime"))
     // The primary embedded developer runtime, which supplies the terminal spec when ready.

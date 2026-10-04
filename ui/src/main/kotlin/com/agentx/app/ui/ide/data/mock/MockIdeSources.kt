@@ -3,12 +3,10 @@ package com.agentx.app.ui.ide.data.mock
 import android.webkit.WebView
 import com.agentx.app.ui.ide.data.AgentSession
 import com.agentx.app.ui.ide.data.AgentStreamEvent
-import com.agentx.app.ui.ide.data.GitRepository
 import com.agentx.app.ui.ide.data.ModelRunnerBrowserHost
 import com.agentx.app.ui.ide.data.WorkspacePicker
 import com.agentx.app.ui.ide.model.AgentActivity
 import com.agentx.app.ui.ide.model.AgentActivityStatus
-import com.agentx.app.ui.ide.model.GitSnapshot
 import com.agentx.app.workspace.DefaultWorkspaceManager
 import com.agentx.app.workspace.WorkspaceManager
 import com.agentx.app.workspace.memory.InMemoryWorkspaceBackend
@@ -82,12 +80,6 @@ class MockAgentSession : AgentSession {
         onEvent(AgentStreamEvent.Activity(AgentActivity(AgentActivityStatus.COMPLETED, "Completed")))
         onEvent(AgentStreamEvent.Completed(reply))
     }
-}
-
-/** Repository status is unavailable until the Git layer is implemented. */
-class MockGitRepository : GitRepository {
-
-    override suspend fun snapshot(workspaceId: String): GitSnapshot = GitSnapshot(available = false)
 }
 
 /**

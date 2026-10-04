@@ -25,7 +25,10 @@ import com.agentx.app.core.config.OAuthConfig
 import com.agentx.app.core.config.OAuthProviderConfig
 import com.agentx.app.core.foundation.ServiceKeys
 import com.agentx.app.foundation.ConnectionManagerToolAuthorizer
+import com.agentx.app.app.git.ActiveGitProjectProvider
+import com.agentx.app.app.git.UbuntuGitCommandRunner
 import com.agentx.app.foundation.Foundation
+import com.agentx.app.git.CliGitService
 import com.agentx.app.foundation.IntegrationToolSynchronizer
 import com.agentx.app.logging.DeveloperLogSink
 import com.agentx.app.integrations.android.SharedPreferencesIntegrationSetupStore
@@ -57,7 +60,6 @@ import com.agentx.app.model.catalog.ModelCatalogRegistry
 import com.agentx.app.model.ratelimit.RateLimitManager
 import com.agentx.app.ui.ide.ForgeIdeApp
 import com.agentx.app.ui.ide.IdeDependencies
-import com.agentx.app.ui.ide.data.mock.MockGitRepository
 import com.agentx.app.termux.TermuxRuntime
 import com.agentx.app.termux.TermuxRuntimeHolder
 import com.agentx.app.ubuntu.LocalUbuntuRuntime
@@ -243,6 +245,14 @@ class MainActivity : ComponentActivity() {
             ),
             store = SharedPreferencesWorkspaceMetadataStore(applicationContext),
         )
+
+        // Git runs against the active workspace through the embedded runtime, so it sees the
+        // same files the IDE and the terminal do. The project is resolved live, never cached.
+        val gitService = CliGitService(
+            projects = ActiveGitProjectProvider(workspaceManager),
+            runner = UbuntuGitCommandRunner(developerRuntime),
+        )
+
         val workspaceSelection = WorkspaceSelectionState()
         when (val resolver = foundation.services.get<Any>(ServiceKeys.TOOL_WORKSPACE_RESOLVER)) {
             is DelegatingWorkspaceFileSystemResolver ->
@@ -280,7 +290,7 @@ class MainActivity : ComponentActivity() {
                         ),
                         terminalRuntime = termuxRuntime,
                         developerRuntime = developerRuntime,
-                        git = MockGitRepository(),
+                        git = gitService,
                         modelManager = checkNotNull(modelManager) { "Model manager is not registered" },
                         rateLimits = foundation.services.get<RateLimitManager>(ServiceKeys.RATE_LIMIT_MANAGER),
                         modelCatalog = foundation.services.get<ModelCatalogRegistry>(ServiceKeys.MODEL_CATALOG),

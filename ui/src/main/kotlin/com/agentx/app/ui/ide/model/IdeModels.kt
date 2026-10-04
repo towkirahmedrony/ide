@@ -79,15 +79,30 @@ data class AgentActivity(
 // The line-based terminal models that used to live here are gone with the custom terminal:
 // the Terminal tab renders the vendored Termux emulator, which owns its screen buffer.
 
-/** A single changed file reported by the (future) Git layer. */
+/** A single changed file reported by Git. */
 data class GitChange(
     val path: String,
     val status: String,
+    val staged: Boolean = false,
+    val unstaged: Boolean = false,
+    val originalPath: String? = null,
 )
 
-data class GitSnapshot(
-    val available: Boolean,
-    val branch: String? = null,
-    val changes: List<GitChange> = emptyList(),
-    val diff: String? = null,
+/** A local or remote branch. */
+data class GitBranchInfo(
+    val name: String,
+    val current: Boolean = false,
+    val remote: Boolean = false,
+    val upstream: String? = null,
+)
+
+/** A configured remote. */
+data class GitRemoteInfo(val name: String, val url: String)
+
+/** One commit in the log. */
+data class GitLogInfo(
+    val shortHash: String,
+    val author: String,
+    val date: String,
+    val subject: String,
 )

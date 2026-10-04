@@ -17,19 +17,19 @@ import com.agentx.app.model.manager.ModelManagers
 import com.agentx.app.model.ratelimit.RateLimitManager
 import com.agentx.app.model.runtime.RuntimeOutputBuffer
 import com.agentx.app.ui.ide.data.AgentSession
-import com.agentx.app.ui.ide.data.GitRepository
 import com.agentx.app.ui.ide.data.ModelRunnerBrowserHost
 import com.agentx.app.ui.ide.data.NoOpOAuthBrowserLauncher
 import com.agentx.app.ui.ide.data.OAuthBrowserLauncher
 import com.agentx.app.ui.ide.data.OAuthCallbackInbox
 import com.agentx.app.ui.ide.data.WorkspacePicker
 import com.agentx.app.ui.ide.data.mock.MockAgentSession
-import com.agentx.app.ui.ide.data.mock.MockGitRepository
 import com.agentx.app.ui.ide.data.mock.MockModelRunnerBrowser
 import com.agentx.app.ui.ide.data.mock.mockWorkspaceManager
 import com.agentx.app.ui.ide.data.mock.mockWorkspacePicker
 import com.agentx.app.skills.DefaultSkillManager
 import com.agentx.app.skills.SkillManager
+import com.agentx.app.git.GitService
+import com.agentx.app.git.UnavailableGitService
 import com.agentx.app.termux.TermuxRuntime
 import com.agentx.app.ubuntu.LocalUbuntuRuntime
 import com.agentx.app.workspace.WorkspaceManager
@@ -68,7 +68,8 @@ data class IdeDependencies(
      * [terminalRuntime] remains the backend, so the terminal is never without a shell.
      */
     val developerRuntime: LocalUbuntuRuntime? = null,
-    val git: GitRepository,
+    /** Project-aware Git for the active workspace; [UnavailableGitService] in previews. */
+    val git: GitService,
     val modelManager: ModelManager,
     /** Central admission control + usage, surfaced in Settings → Agent Models. */
     val rateLimits: RateLimitManager? = null,
@@ -116,7 +117,7 @@ data class IdeDependencies(
                 agent = MockAgentSession(),
                 // No pty in a preview: the terminal reports that instead of pretending.
                 terminalRuntime = null,
-                git = MockGitRepository(),
+                git = UnavailableGitService,
                 modelManager = ModelManagers.create(
                     runtimeOutput = runtimeOutput,
                     monitorEnabled = false,

@@ -141,9 +141,12 @@ fun WorkspaceShell(
 
     // Entering the browser or the editor re-reads the open folders, so a change made while the
     // user was in the terminal — `touch`, `rm`, `git checkout` — is on screen when they return.
+    // Entering Git re-queries the repository, so it always reflects the active project.
     LaunchedEffect(currentTab) {
-        if (currentTab == WorkspaceTab.FILES || currentTab == WorkspaceTab.EDITOR) {
-            workspaceViewModel.reload()
+        when (currentTab) {
+            WorkspaceTab.FILES, WorkspaceTab.EDITOR -> workspaceViewModel.reload()
+            WorkspaceTab.GIT -> gitViewModel.refresh()
+            else -> Unit
         }
     }
 

@@ -1,16 +1,16 @@
 package com.agentx.app.ui.ide.data
 
 import com.agentx.app.ui.ide.model.AgentActivity
-import com.agentx.app.ui.ide.model.GitSnapshot
 
 /**
  * Presentation-facing ports for the IDE shell.
  *
- * Workspace access is no longer mocked: the UI talks to the
+ * Workspace access is real: the UI talks to the
  * `com.agentx.app.workspace.WorkspaceManager` domain contract, which is backed by
- * the Android Storage Access Framework. The remaining ports (agent, git)
- * are still stand-ins for layers that land in later tasks. The terminal talks to the embedded
- * Termux runtime (`com.agentx.app.termux.TermuxRuntime`), which owns its own pty sessions.
+ * the Android Storage Access Framework and the filesystem. Git talks directly to
+ * `com.agentx.app.git.GitService`. The agent port is still a stand-in for a layer that lands in a
+ * later task. The terminal talks to the embedded Termux runtime
+ * (`com.agentx.app.termux.TermuxRuntime`), which owns its own pty sessions.
  */
 
 /**
@@ -204,9 +204,4 @@ interface AgentSession {
 
     /** Deletes a persisted session and its transcript. */
     suspend fun deleteSession(sessionId: String): Boolean = false
-}
-
-/** Reads repository state for a workspace. No real Git access yet. */
-interface GitRepository {
-    suspend fun snapshot(workspaceId: String): GitSnapshot
 }
