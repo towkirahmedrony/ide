@@ -106,9 +106,13 @@ Everything else follows from those four, applied at the seams in §1:
 
 Not split, because splitting them would duplicate working systems for no reason:
 
-- `ModelConnectionRegistry` — one registry, keyed by provider identity.
+- `ModelConnectionRegistry` — one registry, but keyed by **connection identity**
+  (the persisted preset id), not by provider family. Two connections of one family
+  stay independent; the gateway is routed per request from
+  `ModelConfig.connectionId`.
 - `ModelCredentialResolver` / `ModelSecretStore` — one credential system.
-- `ModelConfig` — one normalized descriptor, produced identically by both kinds.
+- `ModelConfig` — one normalized descriptor, produced identically by both kinds. It
+  carries `providerId` (family) and `connectionId` (identity) separately.
 - `ModelCapabilityRegistry` / declared capabilities.
 - `ModelGateway`, `HttpTransport`, JSON, logging, `ModelHealthChecker`.
 - `AbstractModelRunner` — still the whole lifecycle for the Local / Custom kind.

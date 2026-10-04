@@ -50,6 +50,19 @@ data class ModelConfig(
      */
     val declaredCapabilities: ModelCapabilityDeclaration? = null,
     val metadata: Map<String, String> = emptyMap(),
+    /**
+     * Identity of the persisted connection this configuration belongs to.
+     *
+     * Deliberately separate from [providerId], which names a provider
+     * *family/protocol* (`gemini`, `groq`, `openai-compatible`, …). Several
+     * independent connections can share one family — two custom OpenAI-compatible
+     * endpoints, or a custom endpoint and an Ollama server — so the family alone
+     * cannot address a connection. This is the stable, persisted connection (model
+     * preset) id, and it is what the gateway routes on. It defaults to
+     * [providerId] so a configuration built without a saved preset (tests, a
+     * preview, an ad-hoc request) keeps working unchanged.
+     */
+    val connectionId: String = providerId,
 ) {
     /** Returns every configuration problem found; an empty list means valid. */
     fun validate(): List<String> {

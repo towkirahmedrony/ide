@@ -132,6 +132,21 @@ descriptor and `ModelGateway`. Both kinds produce an ordinary `ModelConfig` and 
 routed identically; only the rules for when a connection may exist and what losing
 reachability means differ.
 
+### Connection identity
+
+A connection is identified by its **persisted preset id**
+(`ModelPreset.connectionId`), never by its **provider family**
+(`ModelPreset.providerId`: `gemini`, `groq`, `openai-compatible`, …). Several
+independent connections can share one family — two custom OpenAI-compatible
+endpoints, or a custom endpoint and an Ollama server — so the family alone cannot
+address one. `ModelConfig` carries both: `providerId` for capability, eligibility
+and rate-limit lookups, and `connectionId` for gateway routing
+(`ModelGateway.registerConnection` / `DefaultModelGateway.resolve`). `connections()`
+is keyed by `connectionId`; `catalogConnections()` stays keyed by provider family
+because a model list is owned by the provider identity the catalog and capability
+registry already use. A role resolves by its saved `connectionId` when it names one,
+and by provider family otherwise.
+
 For an API provider this means the connection, its credential, its model selection and
 its gateway registration survive a failed probe, a local endpoint going away, an app
 restart, and a background/foreground cycle. Editing it re-points the connection at the

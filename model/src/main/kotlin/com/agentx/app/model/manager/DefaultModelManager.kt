@@ -403,7 +403,12 @@ class DefaultModelManager(
      * semantics do not change.
      */
     override fun catalogConnections(): Map<String, ModelConfig> {
-        val result = LinkedHashMap<String, ModelConfig>(registry.connections())
+        // Unlike [connections], the catalog set is keyed by provider family: a
+        // provider's model list is owned by the provider identity the catalog and
+        // the capability registry already use, and a family that is connected is
+        // listed once. This is catalog plumbing, not connection routing.
+        val result = LinkedHashMap<String, ModelConfig>()
+        registry.connections().values.forEach { config -> result[config.providerId] = config }
         mutableState.value.presets.forEach { preset ->
             if (!preset.enabled) return@forEach
             val providerId = preset.providerId

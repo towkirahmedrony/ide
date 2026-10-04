@@ -172,7 +172,7 @@ class ApiLocalConnectionSeparationTest {
 
         // The local model is gone.
         assertEquals(ModelLifecycleState.STOPPED, status.state)
-        assertNull(manager.connections()[ModelProviderIds.OPENAI_COMPATIBLE])
+        assertNull(manager.connections()["devstral"])
 
         // The API provider is untouched: same endpoint, model, provider identity and
         // credential, still registered with the gateway.
@@ -208,7 +208,7 @@ class ApiLocalConnectionSeparationTest {
         manager.refresh()
 
         assertEquals(ModelLifecycleState.DISCONNECTED, manager.state.value.status(local.id).state)
-        assertNull(manager.connections()[ModelProviderIds.OPENAI_COMPATIBLE])
+        assertNull(manager.connections()["devstral"])
 
         val after = assertNotNull(apiConnection(manager), "a local endpoint failure must not drop an API provider")
         assertEquals(before.baseUrl, after.baseUrl)
@@ -245,7 +245,7 @@ class ApiLocalConnectionSeparationTest {
         val active = assertNotNull(restarted.activeConfig())
         assertEquals(ModelProviderIds.GEMINI, active.providerId)
         assertEquals(apiModel, active.model)
-        assertFalse(restarted.connections().containsKey(ModelProviderIds.OPENAI_COMPATIBLE))
+        assertFalse(restarted.connections().containsKey("devstral"))
 
         val reloaded = assertNotNull(restarted.preset(api.id))
         assertEquals(apiModel, reloaded.modelIdentifier)
@@ -275,7 +275,7 @@ class ApiLocalConnectionSeparationTest {
         // A reachable endpoint is reconnected, exactly as before this change.
         assertEquals(local.id, restarted.state.value.activePresetId)
         assertNotNull(restarted.activeConfig())
-        assertNotNull(restarted.connections()[ModelProviderIds.OPENAI_COMPATIBLE])
+        assertNotNull(restarted.connections()[local.id])
     }
 
     // --- Test 5 ------------------------------------------------------------
@@ -295,7 +295,7 @@ class ApiLocalConnectionSeparationTest {
         val error = assertNotNull(manager.reconnectModel(local.id).errorOrNull())
 
         assertEquals(local.id, error.details["presetId"])
-        assertNull(manager.connections()[ModelProviderIds.OPENAI_COMPATIBLE])
+        assertNull(manager.connections()["devstral"])
 
         // No API credential, model selection or connection was reset by it.
         val after = assertNotNull(apiConnection(manager))
@@ -360,7 +360,7 @@ class ApiLocalConnectionSeparationTest {
         val manager = manager()
         val local = localPreset(manager)
         assertNotNull(manager.selectModel(local.id).valueOrNull())
-        assertNotNull(manager.connections()[ModelProviderIds.OPENAI_COMPATIBLE])
+        assertNotNull(manager.connections()["devstral"])
 
         runner.onHealth = { unhealthy("the local server stopped") }
         manager.checkModelHealth(local.id)
@@ -368,7 +368,7 @@ class ApiLocalConnectionSeparationTest {
         // The local/custom lifecycle is unchanged: an endpoint that stopped answering
         // is a lost connection, and a bounded reconnect is what recovers it.
         assertEquals(ModelLifecycleState.DISCONNECTED, manager.state.value.status(local.id).state)
-        assertNull(manager.connections()[ModelProviderIds.OPENAI_COMPATIBLE])
+        assertNull(manager.connections()["devstral"])
         assertNull(manager.activeConfig())
     }
 
@@ -419,7 +419,7 @@ class ApiLocalConnectionSeparationTest {
         // Both connections are ordinary ModelConfigs the gateway routes on; only the
         // lifecycle that produced them differs.
         val gemini = assertNotNull(apiConnection(manager))
-        val custom = assertNotNull(manager.connections()[ModelProviderIds.OPENAI_COMPATIBLE])
+        val custom = assertNotNull(manager.connections()[local.id])
         // The API provider is addressed at its configured endpoint; the local/custom
         // connection is addressed at the endpoint its runtime published.
         assertEquals("$GEMINI_ROOT/v1beta", gemini.baseUrl)
@@ -430,8 +430,8 @@ class ApiLocalConnectionSeparationTest {
         assertEquals(local.id, custom.metadata["modelPresetId"])
         assertTrue(gemini.validate().isEmpty(), gemini.validate().toString())
         assertTrue(custom.validate().isEmpty(), custom.validate().toString())
-        assertTrue(assertNotNull(gateway.provider(ModelProviderIds.GEMINI)) is RecordingModelProvider)
-        assertTrue(assertNotNull(gateway.provider(ModelProviderIds.OPENAI_COMPATIBLE)) is RecordingModelProvider)
+        assertTrue(assertNotNull(gateway.provider(api.id)) is RecordingModelProvider)
+        assertTrue(assertNotNull(gateway.provider(local.id)) is RecordingModelProvider)
     }
 
     private companion object {

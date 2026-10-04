@@ -69,6 +69,9 @@ class ChatCapabilityProbe(
         // OpenAI-compatible endpoint. It is what makes the verification log line
         // addressable next to the discovery it follows.
         val providerId = preset.providerId
+        // The provider instance, registered under the preset's connection identity
+        // by the default factory, so two connections of one family never collide.
+        val provider = providerFactory(preset)
         val baseUrl = EndpointResolver.join(rootUrl, apiBasePath)
         val trace = ApiTrace.create(logger, providerId, ApiOperation.CONNECTION)
         trace.stage(
@@ -93,6 +96,11 @@ class ChatCapabilityProbe(
             // The provider identity the runtime connection uses, so the probe and a
             // real request resolve the same provider instance.
             providerId = preset.providerId,
+            // The connection identity the provider is registered under (the preset's
+            // connection id from the default factory), so the probe resolves the
+            // exact connection it just registered — and never another connection
+            // that shares the provider family.
+            connectionId = provider.id,
             baseUrl = baseUrl,
             model = modelId,
             apiKey = credential,
@@ -121,7 +129,6 @@ class ChatCapabilityProbe(
             )
         }
 
-        val provider = providerFactory(preset)
         val previous = gateway.provider(provider.id)
         gateway.registerOrReplace(provider)
         return try {

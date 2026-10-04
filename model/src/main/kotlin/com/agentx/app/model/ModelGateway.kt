@@ -8,9 +8,15 @@ import com.agentx.app.model.capability.capabilityProfile
 import com.agentx.app.model.capability.toCapabilityProfile
 
 /**
- * Single entry point for model traffic. It resolves the provider named by
- * [ModelConfig.providerId], validates the request, and delegates. The agent
+ * Single entry point for model traffic. It resolves the connection named by
+ * [ModelConfig.connectionId], validates the request, and delegates. The agent
  * core depends only on this interface, never on a concrete provider.
+ *
+ * Routing on the connection identity (not the provider family) is what lets two
+ * independent connections of the same family — two custom OpenAI-compatible
+ * endpoints, or a custom endpoint and Ollama — be registered and addressed at the
+ * same time. [ModelConfig.providerId] still identifies the provider family and is
+ * what capability, rate-limit and eligibility lookups use.
  */
 interface ModelGateway {
     fun register(provider: ModelProvider)
@@ -24,6 +30,20 @@ interface ModelGateway {
      */
     fun registerOrReplace(provider: ModelProvider) {
         unregister(provider.id)
+        register(provider)
+    }
+
+    /**
+     * Registers [provider] under an explicit connection identity [connectionId].
+     *
+     * This is the registration the model connection registry uses: two
+     * independent connections can share one provider family (`openai-compatible`),
+     * so the family id is not a usable registration key. Replacing an existing
+     * entry for [connectionId] is expected — a connection is re-pointed when its
+     * preset changes — and never touches another connection.
+     */
+    fun registerConnection(connectionId: String, provider: ModelProvider) {
+        unregister(connectionId)
         register(provider)
     }
 
@@ -64,6 +84,14 @@ class DefaultModelGateway(
     }
 
     @Synchronized
+    override fun registerConnection(connectionId: String, provider: ModelProvider) {
+        require(connectionId.isNotBlank()) { "connectionId must not be blank" }
+        // Keyed by the connection identity, and replaced in place: a re-pointed
+        // connection updates its own entry and leaves every other one alone.
+        providers[connectionId] = provider
+    }
+
+    @Synchronized
     override fun unregister(id: String): Boolean = providers.remove(id) != null
 
     @Synchronized
@@ -73,7 +101,7 @@ class DefaultModelGateway(
     override fun provider(id: String): ModelProvider? = providers[id]
 
     @Synchronized
-    override fun resolve(request: ModelRequest): ModelProvider? = providers[request.config.providerId]
+    override fun resolve(request: ModelRequest): ModelProvider? = providers[request.config.connectionId]
 
     override fun capabilities(request: ModelRequest): ModelCapabilities {
         val provider = resolve(request) ?: throw providerNotFound(request)
@@ -161,7 +189,8 @@ class DefaultModelGateway(
 
     private fun providerNotFound(request: ModelRequest): ModelProviderError = ModelProviderError(
         code = ModelProviderErrorCode.PROVIDER_NOT_FOUND,
-        message = "No model provider registered with id '${request.config.providerId}'",
+        message = "No model connection registered with id '${request.config.connectionId}'",
         providerId = request.config.providerId,
+        details = mapOf("connectionId" to request.config.connectionId),
     )
 }

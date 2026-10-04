@@ -344,6 +344,23 @@ data class ModelPreset(
      */
     val providerId: String get() = ModelProviderIds.forPreset(setupKind, apiProtocol)
 
+    /**
+     * Stable, unique identity of this saved connection.
+     *
+     * The persisted preset id, so it is stable across restart, refresh,
+     * foreground/background, health checks, reconnect, model selection and
+     * credential reload, and it never changes when the display name, model or
+     * endpoint is edited. It is deliberately *not* [providerId]: that names the
+     * provider family/protocol and is shared by every connection of that family
+     * (every custom OpenAI-compatible endpoint, or a custom endpoint and Ollama),
+     * which is exactly what used to collapse several connections into one.
+     *
+     * Falls back to [providerId] only for a preset that has not been persisted yet
+     * (a connect-flow draft), so probing a not-yet-saved connection still has a
+     * usable identity.
+     */
+    val connectionId: String get() = id.takeIf { it.isNotBlank() } ?: providerId
+
     /** Normalized API base path (may be empty when the endpoint already has one). */
     val normalizedApiBasePath: String get() = normalizePath(apiBasePath)
 

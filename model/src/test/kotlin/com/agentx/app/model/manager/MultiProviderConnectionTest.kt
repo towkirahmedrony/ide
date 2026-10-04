@@ -74,13 +74,17 @@ class MultiProviderConnectionTest {
         assertEquals(ModelProviderIds.GEMINI, gemini.providerId)
         assertEquals(ModelProviderIds.GROQ, groq.providerId)
         assertEquals(ModelProviderIds.OPENAI_COMPATIBLE, local.providerId)
+        // Connections are keyed by their persisted identity, not the provider family.
+        assertEquals("gemini-preset", gemini.connectionId)
+        assertEquals("groq-preset", groq.connectionId)
+        assertEquals("local-qwen", local.connectionId)
         assertEquals(
-            setOf(ModelProviderIds.GEMINI, ModelProviderIds.GROQ, ModelProviderIds.OPENAI_COMPATIBLE),
+            setOf("gemini-preset", "groq-preset", "local-qwen"),
             registry.connections().keys,
         )
-        assertNotNull(gateway.provider(ModelProviderIds.GEMINI))
-        assertNotNull(gateway.provider(ModelProviderIds.GROQ))
-        assertNotNull(gateway.provider(ModelProviderIds.OPENAI_COMPATIBLE))
+        assertNotNull(gateway.provider("gemini-preset"))
+        assertNotNull(gateway.provider("groq-preset"))
+        assertNotNull(gateway.provider("local-qwen"))
         assertEquals(3, gateway.providers().size)
     }
 
@@ -90,10 +94,10 @@ class MultiProviderConnectionTest {
         connect(groq(), "https://api.groq.example")
 
         assertSame(
-            gateway.provider(ModelProviderIds.GEMINI),
-            gateway.provider(gemini.providerId),
+            gateway.provider("gemini-preset"),
+            gateway.provider(gemini.connectionId),
         )
-        assertEquals(gemini.baseUrl, registry.connections()[ModelProviderIds.GEMINI]?.baseUrl)
+        assertEquals(gemini.baseUrl, registry.connections()["gemini-preset"]?.baseUrl)
     }
 
     @Test
@@ -106,16 +110,16 @@ class MultiProviderConnectionTest {
 
         assertEquals("https://second.groq.example/v1", replaced.baseUrl)
         assertEquals(
-            setOf(ModelProviderIds.GEMINI, ModelProviderIds.GROQ, ModelProviderIds.OPENAI_COMPATIBLE),
+            setOf("gemini-preset", "groq-preset", "local-qwen"),
             registry.connections().keys,
         )
         assertEquals(
             "https://generativelanguage.example/v1",
-            registry.connections()[ModelProviderIds.GEMINI]?.baseUrl,
+            registry.connections()["gemini-preset"]?.baseUrl,
         )
         assertEquals(
             "http://127.0.0.1:11434/v1",
-            registry.connections()[ModelProviderIds.OPENAI_COMPATIBLE]?.baseUrl,
+            registry.connections()["local-qwen"]?.baseUrl,
         )
     }
 
@@ -127,9 +131,9 @@ class MultiProviderConnectionTest {
         val groqConfig = connect(groq(), "https://api.groq.example")
         val localConfig = connect(localQwen(), "http://127.0.0.1:11434")
 
-        val geminiProvider = assertNotNull(gateway.provider(geminiConfig.providerId)) as RecordingModelProvider
-        val groqProvider = assertNotNull(gateway.provider(groqConfig.providerId)) as RecordingModelProvider
-        val localProvider = assertNotNull(gateway.provider(localConfig.providerId)) as RecordingModelProvider
+        val geminiProvider = assertNotNull(gateway.provider(geminiConfig.connectionId)) as RecordingModelProvider
+        val groqProvider = assertNotNull(gateway.provider(groqConfig.connectionId)) as RecordingModelProvider
+        val localProvider = assertNotNull(gateway.provider(localConfig.connectionId)) as RecordingModelProvider
 
         assertSame(geminiProvider, gateway.resolve(request(geminiConfig, ModelMessage.user("hi"))))
         assertSame(groqProvider, gateway.resolve(request(groqConfig, ModelMessage.user("hi"))))
@@ -171,12 +175,12 @@ class MultiProviderConnectionTest {
         assertTrue(registry.disconnect("groq-preset"))
 
         assertEquals(
-            setOf(ModelProviderIds.GEMINI, ModelProviderIds.OPENAI_COMPATIBLE),
+            setOf("gemini-preset", "local-qwen"),
             registry.connections().keys,
         )
-        assertNull(gateway.provider(ModelProviderIds.GROQ))
-        assertNotNull(gateway.provider(ModelProviderIds.GEMINI))
-        assertNotNull(gateway.provider(ModelProviderIds.OPENAI_COMPATIBLE))
+        assertNull(gateway.provider("groq-preset"))
+        assertNotNull(gateway.provider("gemini-preset"))
+        assertNotNull(gateway.provider("local-qwen"))
         assertFalse(registry.isConnected("groq-preset"))
         assertFalse(registry.disconnect("groq-preset"), "a second disconnect is a no-op")
     }
@@ -206,7 +210,7 @@ class MultiProviderConnectionTest {
 
         assertTrue(registry.disconnect("local-qwen"))
         assertNull(registry.activeConfig())
-        assertNull(gateway.provider(ModelProviderIds.OPENAI_COMPATIBLE))
+        assertNull(gateway.provider("local-qwen"))
     }
 
     @Test
@@ -227,9 +231,9 @@ class MultiProviderConnectionTest {
         connect(gemini(), "https://generativelanguage.example")
         connect(groq(), "https://api.groq.example")
 
-        val geminiProvider = assertNotNull(gateway.provider(ModelProviderIds.GEMINI)) as RecordingModelProvider
+        val geminiProvider = assertNotNull(gateway.provider("gemini-preset")) as RecordingModelProvider
         val events = mutableListOf<ModelStreamEvent>()
-        val config = assertNotNull(registry.connection(ModelProviderIds.GEMINI)).copy(stream = true)
+        val config = assertNotNull(registry.connection("gemini-preset")).copy(stream = true)
 
         val response = runSuspend {
             gateway.stream(request(config, ModelMessage.user("hi"))) { events += it }

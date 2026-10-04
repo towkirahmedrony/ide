@@ -41,6 +41,9 @@ class RateLimitedModelGateway(
 
     override fun registerOrReplace(provider: ModelProvider) = delegate.registerOrReplace(provider)
 
+    override fun registerConnection(connectionId: String, provider: ModelProvider) =
+        delegate.registerConnection(connectionId, provider)
+
     override fun unregister(id: String): Boolean = delegate.unregister(id)
 
     override fun providers(): List<ModelProvider> = delegate.providers()

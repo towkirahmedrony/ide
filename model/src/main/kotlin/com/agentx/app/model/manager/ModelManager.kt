@@ -89,15 +89,18 @@ interface ModelManager {
     fun activeConfig(): ModelConfig?
 
     /**
-     * Every connected provider's configuration, keyed by provider identity, so a
-     * role can resolve a provider that is simultaneously connected beside the
-     * active one. Empty when nothing is online.
+     * Every connected configuration, keyed by connection identity (the saved
+     * preset id — not the provider family), so a role can resolve a connection
+     * that is simultaneously connected beside the active one, and two connections
+     * that share a provider family stay independently addressable. Empty when
+     * nothing is online.
      */
     fun connections(): Map<String, ModelConfig> = emptyMap()
 
     /**
      * Provider configurations the model catalog may list, keyed by provider
-     * identity.
+     * family identity (the catalog's own key — deliberately not the connection
+     * identity [connections] uses).
      *
      * This is catalog plumbing, not routing: it starts from [connections] and adds
      * a saved provider that is not online right now, using its configured endpoint

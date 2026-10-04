@@ -22,14 +22,20 @@ fun interface ModelProviderFactory {
 
 /**
  * Default factory: the preset's protocol decides which provider speaks to it, and
- * [ModelPreset.providerId] decides the provider identity, so Gemini, Groq and a
- * local OpenAI-compatible endpoint stay distinct provider instances that never
- * overwrite one another.
+ * the preset's connection identity ([ModelPreset.connectionId]) becomes the
+ * provider instance id, so Gemini, Groq and every independent custom/local
+ * endpoint stay distinct provider instances that never overwrite one another —
+ * including two connections that share one protocol.
  *
  * Gemini's own API is not the OpenAI-compatible protocol: it addresses
  * `models/<model>:generateContent` with Gemini's key header, so it gets its own
  * provider. Groq, a local server and every other compatible endpoint keep the
  * OpenAI-compatible provider and its `<base>/chat/completions` path, unchanged.
+ *
+ * The registry registers whatever this returns under the connection identity
+ * (never under the provider's own id), so an injected factory that reports a
+ * shared provider-family id (`openai-compatible`) cannot collapse two
+ * connections onto one registration.
  */
 class DefaultModelProviderFactory(
     private val transport: HttpTransport = UrlConnectionHttpTransport(),
@@ -45,7 +51,9 @@ class DefaultModelProviderFactory(
         // Gemini's own API: the model travels in the path and the key in Gemini's
         // header, so it is a different protocol rather than a compatible endpoint.
         ModelApiProtocol.GEMINI_NATIVE -> GeminiModelProvider(
-            id = preset.providerId,
+            // The connection identity, not the provider family: two Gemini presets
+            // are two independently addressable connections.
+            id = preset.connectionId,
             transport = transport,
             logger = logger,
         )
@@ -53,7 +61,7 @@ class DefaultModelProviderFactory(
         ModelApiProtocol.OPENAI_COMPATIBLE,
         ModelApiProtocol.OLLAMA,
         -> OpenAiCompatibleProvider(
-            id = preset.providerId,
+            id = preset.connectionId,
             transport = transport,
             chatPath = preset.apiProtocol.chatPath,
             logger = logger,
@@ -65,9 +73,11 @@ class DefaultModelProviderFactory(
  * Turns healthy preset endpoints into Model Gateway connections.
  *
  * This is the only place that knows how a preset maps onto [ModelConfig]. It
- * keeps *every* connected provider at once, keyed by provider identity, so a
- * role can resolve Gemini while another resolves Groq and another resolves a
- * local OpenAI-compatible model. Connecting one provider never removes another.
+ * keeps *every* connected connection at once, keyed by the persisted connection
+ * identity ([ModelPreset.connectionId]) — not by provider family — so a role can
+ * resolve Gemini while another resolves Groq, a third resolves a local
+ * OpenAI-compatible endpoint and a fourth resolves an Ollama server, even when two
+ * of them share one protocol. Connecting one connection never removes another.
  */
 interface ModelConnectionRegistry {
     /** Registers the preset's provider and makes that connection the active one. */
@@ -75,8 +85,8 @@ interface ModelConnectionRegistry {
 
     /**
      * Removes the connection that belongs to [presetId], whether or not it is the
-     * active one, and unregisters only that provider. Returns false when nothing
-     * was connected for the preset.
+     * active one, and unregisters only that connection. Returns false when nothing
+     * was connected for the preset. Only that preset's connection is touched.
      */
     fun disconnect(presetId: String): Boolean
 
@@ -86,11 +96,15 @@ interface ModelConnectionRegistry {
 
     fun activeEndpoint(): ModelEndpoint?
 
-    /** Every connected provider configuration, keyed by its provider identity. */
+    /**
+     * Every connected configuration, keyed by its connection identity
+     * ([ModelPreset.connectionId]), so two connections of the same provider family
+     * keep separate entries.
+     */
     fun connections(): Map<String, ModelConfig>
 
-    /** The configuration of one connected provider, or null when it is not connected. */
-    fun connection(providerId: String): ModelConfig?
+    /** The configuration of one connection, or null when it is not connected. */
+    fun connection(connectionId: String): ModelConfig?
 
     /** Whether [presetId] currently holds a connection. */
     fun isConnected(presetId: String): Boolean
@@ -112,22 +126,30 @@ class GatewayModelConnectionRegistry(
     )
 
     /**
-     * One entry per provider identity. Two presets that share an identity (for
-     * example two plain OpenAI-compatible servers) replace each other, while a
-     * different identity is untouched. There is no global "current provider":
-     * traffic is routed per request from [ModelConfig.providerId].
+     * One entry per persisted connection identity ([ModelPreset.connectionId]).
+     * Two presets are independent connections, even when they share a provider
+     * family (two plain OpenAI-compatible servers, or a custom endpoint and
+     * Ollama), so neither replaces the other. There is no global "current
+     * provider": traffic is routed per request from [ModelConfig.connectionId].
      */
     private val connected = LinkedHashMap<String, Active>()
 
-    /** Identity of the most recently connected provider; the manager's active one. */
-    private var activeProviderId: String? = null
+    /** Connection identity of the most recently connected entry; the manager's active one. */
+    private var activeConnectionId: String? = null
 
     @Synchronized
     override fun connect(preset: ModelPreset, endpoint: ModelEndpoint, credential: String?): ModelConfig {
+        val connectionId = preset.connectionId
+        // The gateway registration is keyed by this connection id, so a factory
+        // that reports a shared provider-family id (openai-compatible) can never
+        // overwrite an unrelated connection of the same family.
         val provider = providerFactory.create(preset)
         val baseUrl = endpoint.url.trimEnd('/') + preset.normalizedApiBasePath
         val config = ModelConfig(
-            providerId = provider.id,
+            // The provider family stays on providerId (capability/eligibility/
+            // rate-limit lookups), while connectionId addresses this instance.
+            providerId = preset.providerId,
+            connectionId = connectionId,
             baseUrl = baseUrl,
             model = preset.modelIdentifier,
             apiKey = credential,
@@ -147,13 +169,16 @@ class GatewayModelConnectionRegistry(
                 "providerType" to preset.providerType.name,
             ),
         )
-        gateway.registerOrReplace(provider)
-        connected[provider.id] = Active(preset.id, config, endpoint)
-        activeProviderId = provider.id
+        gateway.registerConnection(connectionId, provider)
+        connected[connectionId] = Active(preset.id, config, endpoint)
+        activeConnectionId = connectionId
         logger.info(
             "Active model connection updated",
             mapOf(
                 "preset" to preset.id,
+                // Safe identifiers only: the internal connection id, the provider
+                // family and the non-secret model id. Never the endpoint or key.
+                "connection" to connectionId,
                 "provider" to config.providerId,
                 "model" to config.model,
                 "endpointSource" to endpoint.source.name,
@@ -166,31 +191,36 @@ class GatewayModelConnectionRegistry(
 
     @Synchronized
     override fun disconnect(presetId: String): Boolean {
-        val key = connected.entries.firstOrNull { it.value.presetId == presetId }?.key ?: return false
+        // The connection identity is the preset id, so this removes exactly that
+        // preset's connection and nothing else. The lookup also tolerates an entry
+        // whose key is its preset id, which is how the registry always stores it.
+        val key = connected.entries
+            .firstOrNull { it.key == presetId || it.value.presetId == presetId }
+            ?.key ?: return false
         connected.remove(key)
-        if (activeProviderId == key) activeProviderId = null
+        if (activeConnectionId == key) activeConnectionId = null
         gateway.unregister(key)
         logger.info(
             "Model connection cleared",
-            mapOf("preset" to presetId, "provider" to key, "connections" to connected.size),
+            mapOf("preset" to presetId, "connection" to key, "connections" to connected.size),
         )
         return true
     }
 
     @Synchronized
-    override fun activeConfig(): ModelConfig? = activeProviderId?.let { connected[it]?.config }
+    override fun activeConfig(): ModelConfig? = activeConnectionId?.let { connected[it]?.config }
 
     @Synchronized
-    override fun activePresetId(): String? = activeProviderId?.let { connected[it]?.presetId }
+    override fun activePresetId(): String? = activeConnectionId?.let { connected[it]?.presetId }
 
     @Synchronized
-    override fun activeEndpoint(): ModelEndpoint? = activeProviderId?.let { connected[it]?.endpoint }
+    override fun activeEndpoint(): ModelEndpoint? = activeConnectionId?.let { connected[it]?.endpoint }
 
     @Synchronized
     override fun connections(): Map<String, ModelConfig> = connected.mapValues { (_, active) -> active.config }
 
     @Synchronized
-    override fun connection(providerId: String): ModelConfig? = connected[providerId]?.config
+    override fun connection(connectionId: String): ModelConfig? = connected[connectionId]?.config
 
     @Synchronized
     override fun isConnected(presetId: String): Boolean =

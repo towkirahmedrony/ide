@@ -25,8 +25,12 @@ data class RoleModelConfig(
         require(providerId.isNotBlank()) { "providerId must not be blank" }
     }
 
-    /** The resolver-facing preference: provider and model, never an endpoint. */
-    fun toPreference(): RoleModelPreference = RoleModelPreference(providerId, model)
+    /**
+     * The resolver-facing preference: provider family, optional model, and the
+     * saved connection the role was assigned from — never an endpoint or key. The
+     * connection id is what lets two connections of one family stay distinct.
+     */
+    fun toPreference(): RoleModelPreference = RoleModelPreference(providerId, model, connectionId)
 }
 
 /**

@@ -177,7 +177,7 @@ class ModelManagerTest {
         assertEquals("https://unit-test-runner.trycloudflare.com/v1", config.baseUrl)
         assertEquals(created.modelIdentifier, config.model)
         assertEquals("qwen", config.metadata["modelPresetId"])
-        assertNotNull(gateway.provider(config.providerId), "the gateway received the connection")
+        assertNotNull(gateway.provider(config.connectionId), "the gateway received the connection")
     }
 
     @Test
@@ -196,7 +196,7 @@ class ModelManagerTest {
         assertEquals("llama-3.1-8b", second.model)
 
         // The same provider-agnostic call path the agent uses now reaches llama.
-        val provider = assertNotNull(gateway.provider(second.providerId)) as RecordingModelProvider
+        val provider = assertNotNull(gateway.provider(second.connectionId)) as RecordingModelProvider
         gateway.complete(ModelRequest(second, listOf(ModelMessage.user("hi"))))
         assertEquals("llama-3.1-8b", provider.requests.last().model)
     }
@@ -315,7 +315,7 @@ class ModelManagerTest {
         assertEquals(statusesBefore, manager.state.value.statuses)
         assertEquals(true, manager.state.value.runnerSessions["qwen"])
 
-        val provider = assertNotNull(gateway.provider("openai-compatible")) as RecordingModelProvider
+        val provider = assertNotNull(gateway.provider("qwen")) as RecordingModelProvider
         val config = assertNotNull(manager.activeConfig())
         gateway.complete(ModelRequest(config, listOf(ModelMessage.user("still works"))))
         assertEquals(1, provider.requests.size, "the agent path is independent of the browser")

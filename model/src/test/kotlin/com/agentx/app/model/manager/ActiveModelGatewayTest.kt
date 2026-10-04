@@ -130,8 +130,9 @@ class ActiveModelGatewayTest {
         assertNotNull(manager.selectModel("local").valueOrNull())
         val config = assertNotNull(manager.activeConfig())
 
-        assertEquals("openai-compatible", config.providerId, "the protocol decides the provider id")
-        assertNotNull(gateway.provider(config.providerId))
+        assertEquals("openai-compatible", config.providerId, "the protocol decides the provider family")
+        assertEquals("local", config.connectionId)
+        assertNotNull(gateway.provider(config.connectionId), "the gateway holds the connection identity")
         assertEquals("https://ollama-runner.trycloudflare.com/v1", config.baseUrl)
     }
 }

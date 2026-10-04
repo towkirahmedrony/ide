@@ -64,6 +64,16 @@ data class RoleModelPreference(
     val providerId: String,
     /** Optional model within [providerId]; a definition's own preference takes precedence. */
     val model: String? = null,
+    /**
+     * Optional saved connection (preset) identity this role was assigned from.
+     *
+     * When present it wins over [providerId], because several independent
+     * connections can share one provider family (two custom OpenAI-compatible
+     * endpoints, or a custom endpoint and an Ollama server). Null means "resolve
+     * by provider family", which is what the built-in defaults use and what a
+     * role configured before connections had identities keeps doing.
+     */
+    val connectionId: String? = null,
 ) {
     init {
         require(providerId.isNotBlank()) { "providerId must not be blank" }
@@ -134,16 +144,20 @@ data class AgentModelPreferences(
  * 1. No role preference → the [default] configuration.
  * 2. The preferred provider is [default]'s provider → [default] with the role's
  *    model when one is known.
- * 3. The preferred provider has a supplied [connections] entry → that
- *    configuration, with the role's model when one is known.
+ * 3. The preferred connection has a supplied [connections] entry (by
+ *    [RoleModelPreference.connectionId] when named, else by provider family) →
+ *    that configuration, with the role's model when one is known.
  * 4. Otherwise → the [default] configuration, so an unconnected provider never
  *    breaks a run that works today.
  */
 class AgentModelResolver(
     private val preferences: AgentModelPreferences = AgentModelPreferences.EMPTY,
     /**
-     * The provider configurations the caller already has, keyed by
-     * [RoleModelPreference.providerId]. Empty means "only the active model".
+     * The configurations the caller already has, keyed by connection identity
+     * ([ModelConfig.connectionId]). A preference that names a connection is
+     * resolved by that key; one that names only a provider family is resolved
+     * against the configurations' [ModelConfig.providerId]. Empty means "only the
+     * active model".
      */
     private val connections: () -> Map<String, ModelConfig> = { emptyMap() },
     /**
@@ -214,10 +228,28 @@ class AgentModelResolver(
         val model = preference.model?.takeIf { it.isNotBlank() }
             ?: preferredModel?.takeIf { it.isNotBlank() }
 
+        // A specific saved connection is addressed by its own identity, so a role
+        // assigned to one custom endpoint never resolves to another endpoint of the
+        // same provider family.
+        val explicitConnection = preference.connectionId?.takeIf { it.isNotBlank() }
+        if (explicitConnection != null) {
+            val connection = connections()[explicitConnection]
+                ?: return Selection(default, fromRoleMapping = false)
+            return Selection(withModel(connection, model), fromRoleMapping = true)
+        }
+
         if (providerId == default.providerId) return Selection(withModel(default, model), fromRoleMapping = true)
-        val connection = connections()[providerId] ?: return Selection(default, fromRoleMapping = false)
+        val connection = connectionForProvider(providerId) ?: return Selection(default, fromRoleMapping = false)
         return Selection(withModel(connection, model), fromRoleMapping = true)
     }
+
+    /**
+     * The connection a preference with no explicit identity resolves to: any
+     * connected configuration of that provider family. Scans the values because
+     * the connection set is keyed by connection identity, not provider family.
+     */
+    private fun connectionForProvider(providerId: String): ModelConfig? =
+        connections().values.firstOrNull { it.providerId == providerId }
 
     private data class Selection(val config: ModelConfig, val fromRoleMapping: Boolean)
 
@@ -237,8 +269,12 @@ class AgentModelResolver(
      */
     fun configFor(preference: RoleModelPreference, default: ModelConfig): ModelConfig? {
         val model = preference.model?.takeIf { it.isNotBlank() }
+        preference.connectionId?.takeIf { it.isNotBlank() }?.let { connectionId ->
+            val connection = connections()[connectionId] ?: return null
+            return withModel(connection, model)
+        }
         if (preference.providerId == default.providerId) return withModel(default, model)
-        val connection = connections()[preference.providerId] ?: return null
+        val connection = connectionForProvider(preference.providerId) ?: return null
         return withModel(connection, model)
     }
 
