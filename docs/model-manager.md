@@ -106,7 +106,42 @@ runtime-specific:
 | `HostedEndpointRunner` | `LOCAL_PHONE`, `REMOTE_OPENAI_COMPATIBLE`, `CUSTOM` | Nothing to start; discovery + health + connect |
 
 Adding a fourth runner does not require any change to the manager, the gateway
-or the agent.
+or the agent. Runners serve **Local / Custom** connections only; an API provider is
+connected from its saved configuration instead — see the next section.
+
+### Connection lifecycles (API vs Local / Custom)
+
+There are two kinds of model connection, and they follow two different lifecycles.
+`ModelConnectionKind` decides which one a preset gets, from its persisted
+`setupKind`: a provider the catalogue knows (`gemini`, `groq`, …) is **API**; anything
+else, including the generic `custom` kind, is **Local / Custom**.
+
+`ModelConnectionManager` owns the lifecycle *rules*, one implementation per kind:
+
+| | `ApiModelConnectionManager` | `LocalModelConnectionManager` |
+| --- | --- | --- |
+| The connection *is* | the saved configuration | the live endpoint |
+| `connectsFromConfiguration` | `true` | `false` |
+| `recoversLapsedRuntime` | `false` | `true` |
+| Endpoint comes from | the preset's configured endpoint | what the runtime published |
+| Model API unreachable → | health: `DEGRADED`, connection kept | `DISCONNECTED`, connection released |
+
+What is deliberately **not** split: `ModelConnectionRegistry`,
+`ModelCredentialResolver` / `ModelSecretStore`, `ModelConfig`, the capability
+descriptor and `ModelGateway`. Both kinds produce an ordinary `ModelConfig` and are
+routed identically; only the rules for when a connection may exist and what losing
+reachability means differ.
+
+For an API provider this means the connection, its credential, its model selection and
+its gateway registration survive a failed probe, a local endpoint going away, an app
+restart, and a background/foreground cycle. Editing it re-points the connection at the
+new configuration; only an explicit disconnect or delete releases it. Its runtime
+health is tracked by the request-time health layer (`model` →
+`com.agentx.app.model.health`), not by a polling loop.
+
+The full audit that motivated this split — the exact coupling points, and the rules
+each kind owns — is in
+[api-local-connection-separation.md](api-local-connection-separation.md).
 
 ### Tunnel discovery
 
@@ -168,9 +203,16 @@ The credential is sent only as an `Authorization` header and is never logged.
 - A failure carries a `ModelRuntimeFailure` reason (`RUNTIME_NOT_DETECTED`,
   `ENDPOINT_INVALID`, `MODEL_API_UNREACHABLE`, `INVALID_PRESET`, `TIMEOUT`,
   `CANCELLED`, `DISABLED`, `NO_RUNNER`) and the UI renders copy for it.
-- `DEGRADED` means "reachable, but something is off"; it is still usable.
+- `DEGRADED` means "usable, but something is off": for a runtime-backed connection
+  the endpoint answered but is incomplete; for an API provider it is the state
+  reported while the provider cannot be reached, because the saved configuration —
+  not reachability — is what makes that connection exist.
 
 ### Reconnection
+
+Everything in this subsection is the **Local / Custom** lifecycle. An API provider is
+never monitored or reconnected: it is re-registered from its saved configuration, and a
+failed probe is reported as `DEGRADED` without touching the connection.
 
 - Monitoring runs only while the app is in the foreground, at the preset's
   interval. Android cannot promise background network continuity, so the model is
@@ -211,6 +253,17 @@ Select a model that is ONLINE and healthy
 
 ### Restart of the app
 
+An API provider:
+
+```text
+Load saved presets
+  → restore the selected provider from its saved configuration
+  → Model Gateway connection registered unconditionally
+  → one health probe, reported as health (ONLINE / DEGRADED)
+```
+
+A Local / Custom connection:
+
 ```text
 Load saved presets
   → restore the selected model
@@ -219,7 +272,8 @@ Load saved presets
 ```
 
 Nothing is started automatically: an endpoint is only ever *contacted*.
-Connecting a model is always an explicit user action.
+Connecting a model is always an explicit user action. A restore never releases an API
+provider's connection, whatever the probe finds.
 
 ### Switching models
 
@@ -305,10 +359,12 @@ Unit tests run on the JVM and need no Google account, Colab runtime, Cloudflare
 account, API key or network. Fakes replace the runner, the tunnel provider and
 the gateway where appropriate.
 
-`./gradlew test` (all platform-independent modules, 171 tests).
+`./gradlew test` runs every platform-independent module's unit tests; `:model` holds
+the bulk of them (412).
 
 | Area | Test class | Covers |
 | --- | --- | --- |
+| API / Local separation | `ApiLocalConnectionSeparationTest` | the two kinds and their rules; a local disconnect, a local endpoint failure, a failed local reconnect or an API health failure never resets the other kind's configuration or credential; both kinds survive a reload; API is never polled or reconnected; the gateway still receives an ordinary descriptor for both |
 | Presets | `ModelPresetPersistenceTest` | create, validate, survive a restart, update, delete, selection, last status, JSON round trip, tolerant decoding, no secrets serialized |
 | Lifecycle | `ModelRunnerLifecycleTest` | STARTING→CONNECTING→ONLINE, bounded attempts, growing backoff, unhealthy API, degraded, healthy model not restarted, bounded reconnect, recovery, stop semantics, invalid preset, disabled preset, cancellation, timeout, health without endpoint |
 | Discovery | `EndpointDiscoveryTest` | tunnel URL detected, marker and plain output, newest wins, foreign URL refused, no output, configured endpoint, http refused for remote, malformed URLs, embedded credentials refused, device-local port, manual tunnel, no fake tunnel creation |

@@ -28,6 +28,7 @@ import com.agentx.app.model.preset.ModelSecretStore
 import com.agentx.app.model.preset.normalizeModelId
 import com.agentx.app.model.runtime.ModelEndpoint
 import com.agentx.app.model.runtime.ModelHealth
+import com.agentx.app.model.runtime.ModelHealthStatus
 import com.agentx.app.model.runtime.ModelLifecycleState
 import com.agentx.app.model.runtime.ModelRunner
 import com.agentx.app.model.runtime.ModelRuntimeFailure
@@ -86,6 +87,17 @@ class DefaultModelManager(
      * visible to every checkpoint that decides eligibility.
      */
     private val capabilityRegistry: ModelCapabilityRegistry = InMemoryModelCapabilityRegistry(),
+    /**
+     * The connection lifecycle rules, one per [ModelConnectionKind]. The registry, the
+     * credential store and the gateway above are shared; only the rules for when a
+     * connection may exist and what losing reachability means are split, so an API
+     * provider's saved configuration cannot be disturbed by local/custom runtime
+     * behaviour. Overridable so a host (or a test) can supply its own rules.
+     */
+    private val connectionManagers: List<ModelConnectionManager> = listOf(
+        ApiModelConnectionManager(),
+        LocalModelConnectionManager(),
+    ),
 ) : ModelManager {
 
     private val connectService: ModelConnectService =
@@ -176,6 +188,15 @@ class DefaultModelManager(
             return
         }
 
+        // An API provider's connection is its saved configuration, so it is restored
+        // unconditionally: nothing about it depends on a runtime answering right now,
+        // and a provider that happens to be unreachable at start-up must not lose the
+        // connection, the credential or the model selection the user already saved.
+        if (connectionManager(active).connectsFromConfiguration) {
+            connectFromConfiguration(active)
+            return
+        }
+
         val runner = runnerFor(active) ?: return
         val health = io { runner.healthCheck(active) }
         if (health.isReachable) {
@@ -223,19 +244,29 @@ class DefaultModelManager(
 
         val result = io { repository.update(preset.copy(credentialRef = ref)) }
         result.valueOrNull()?.let { stored ->
-            // Connection-relevant edits invalidate an existing connection; say so
-            // instead of silently keeping a stale endpoint. Only this preset's
-            // connection is dropped — a different provider stays connected.
+            // A connection-relevant edit must leave the connection matching the saved
+            // configuration. What that means depends on which lifecycle owns it.
             if (registry.isConnected(stored.id)) {
-                val wasActive = registry.activePresetId() == stored.id
-                registry.disconnect(stored.id)
-                if (wasActive) stopMonitor()
-                runnerFor(stored)?.markStale(
-                    stored.id,
-                    "Configuration changed — start the model again to reconnect",
-                    ModelLifecycleState.STOPPED,
-                )
-                mutableState.update { it.copy(activeConfig = registry.activeConfig()) }
+                if (connectionManager(stored).connectsFromConfiguration) {
+                    // An API provider is simply re-pointed at the new configuration.
+                    // Editing it is not a disconnection, and it has no runtime state
+                    // that could go stale.
+                    connectFromConfiguration(stored)
+                } else {
+                    // A local/custom endpoint may have changed address, so the old
+                    // connection is invalidated; say so instead of silently keeping a
+                    // stale endpoint. Only this preset's connection is dropped — a
+                    // different provider stays connected.
+                    val wasActive = registry.activePresetId() == stored.id
+                    registry.disconnect(stored.id)
+                    if (wasActive) stopMonitor()
+                    runnerFor(stored)?.markStale(
+                        stored.id,
+                        "Configuration changed — start the model again to reconnect",
+                        ModelLifecycleState.STOPPED,
+                    )
+                    mutableState.update { it.copy(activeConfig = registry.activeConfig()) }
+                }
             }
             reloadPresets()
         }
@@ -268,6 +299,12 @@ class DefaultModelManager(
             io { repository.setActiveId(preset.id) }
             mutableState.update { it.copy(activePresetId = preset.id) }
 
+            // An API provider has no runtime to start: selecting it means connecting
+            // from the configuration it was already given, which is always possible.
+            if (connectionManager(preset).connectsFromConfiguration) {
+                return@withPreset connectFromConfiguration(preset)
+            }
+
             val runner = runnerFor(preset)
             val current = runner?.status(preset.id)
             // Already connected and healthy: re-point the gateway, never restart.
@@ -281,23 +318,49 @@ class DefaultModelManager(
 
     override suspend fun startModel(id: String): ForgeResult<ModelRuntimeStatus, ForgeError> =
         withPreset(id) { preset ->
-            val runner = runnerFor(preset)
-                ?: return@withPreset failure(noRunner(preset))
-
             io { repository.setActiveId(preset.id) }
             mutableState.update { it.copy(activePresetId = preset.id) }
+
+            if (connectionManager(preset).connectsFromConfiguration) {
+                return@withPreset connectFromConfiguration(preset)
+            }
+
+            val runner = runnerFor(preset)
+                ?: return@withPreset failure(noRunner(preset))
 
             applyConnection(preset, io { runner.start(preset) })
         }
 
     override suspend fun reconnectModel(id: String): ForgeResult<ModelRuntimeStatus, ForgeError> =
         withPreset(id) { preset ->
+            // There is no lapsed runtime to reconnect for an API provider: it is
+            // simply re-registered from its saved configuration.
+            if (connectionManager(preset).connectsFromConfiguration) {
+                return@withPreset connectFromConfiguration(preset)
+            }
             val runner = runnerFor(preset) ?: return@withPreset failure(noRunner(preset))
             applyConnection(preset, io { runner.reconnect(preset) })
         }
 
     override suspend fun stopModel(id: String): ForgeResult<ModelRuntimeStatus, ForgeError> =
         withPreset(id) { preset ->
+            if (connectionManager(preset).connectsFromConfiguration) {
+                // Disconnecting an API provider is the user's decision. Only the live
+                // connection is released; the saved configuration, its credential and
+                // its model selection stay exactly as they were, so it can be brought
+                // back without being configured again.
+                releaseConnection(preset)
+                val status = statusFor(
+                    preset = preset,
+                    state = ModelLifecycleState.STOPPED,
+                    message = "Disconnected",
+                    now = clock(),
+                    previous = mutableState.value.statuses[preset.id],
+                )
+                publishStatus(preset, status)
+                return@withPreset success(status)
+            }
+
             val runner = runnerFor(preset) ?: return@withPreset failure(noRunner(preset))
             val result = io { runner.stop(preset) }
             releaseConnection(preset)
@@ -306,6 +369,18 @@ class DefaultModelManager(
 
     override suspend fun checkModelHealth(id: String): ForgeResult<ModelHealth, ForgeError> =
         withPreset(id) { preset ->
+            if (connectionManager(preset).connectsFromConfiguration) {
+                // Verifying an API provider may only ever report health. It cannot
+                // disconnect it, and a failed request cannot delete or reset the
+                // configuration that already worked.
+                val observation = if (runnerFor(preset) == null) {
+                    configuredObservation(preset)
+                } else {
+                    observeProviderHealth(preset)
+                }
+                return@withPreset success(observation.health)
+            }
+
             val runner = runnerFor(preset) ?: return@withPreset failure(noRunner(preset))
             val health = io { runner.healthCheck(preset) }
             if (health.isReachable) bind(preset, runner.status(preset.id).endpoint) else releaseConnection(preset)
@@ -369,6 +444,10 @@ class DefaultModelManager(
         foreground = false
         val id = mutableState.value.activePresetId ?: return
         val preset = mutableState.value.presets.firstOrNull { it.id == id } ?: return
+        // Only a runtime-backed connection goes unverified in the background: there is
+        // a runtime that may have stopped. An API provider's connection does not
+        // depend on the app's monitoring, so it is not marked stale.
+        if (!connectionManager(preset).recoversLapsedRuntime) return
         val runner = runnerFor(preset) ?: return
         if (!runner.status(id).isUsable) return
         runner.markStale(
@@ -382,9 +461,18 @@ class DefaultModelManager(
         val snapshot = mutableState.value
         val id = snapshot.activePresetId ?: return
         val preset = snapshot.presets.firstOrNull { it.id == id } ?: return
-        val runner = runnerFor(preset) ?: return
+        val connection = connectionManager(preset)
 
         scope.launch {
+            // Returning to the app restores an API provider from its configuration and
+            // only its health is re-checked: a provider that is unreachable at this
+            // instant is never disconnected.
+            if (connection.connectsFromConfiguration) {
+                connectFromConfiguration(preset)
+                return@launch
+            }
+
+            val runner = runnerFor(preset) ?: return@launch
             val health = io { runner.healthCheck(preset) }
             if (health.isReachable) {
                 bind(preset, runner.status(preset.id).endpoint)
@@ -425,12 +513,13 @@ class DefaultModelManager(
         )
     }
 
-    private suspend fun bind(preset: ModelPreset, endpoint: ModelEndpoint?) {
-        if (endpoint == null) return
+    private suspend fun bind(preset: ModelPreset, runtimeEndpoint: ModelEndpoint?): ModelConfig? {
+        val endpoint = connectionManager(preset).endpointFor(preset, runtimeEndpoint) ?: return null
         val credential = io { credentials.resolve(preset) }
         val config = registry.connect(preset, endpoint, credential)
         mutableState.update { it.copy(activeConfig = config, activePresetId = preset.id) }
         startMonitor(preset)
+        return config
     }
 
     private fun releaseConnection(preset: ModelPreset) {
@@ -441,8 +530,119 @@ class DefaultModelManager(
         mutableState.update { it.copy(activeConfig = registry.activeConfig()) }
     }
 
+    // --- API provider connections ------------------------------------------
+    //
+    // Everything below is the *only* way an API provider is connected, probed or
+    // disconnected. There is no runtime start, no discovery and no reconnect loop in
+    // this path, which is what keeps a local/custom endpoint going away from being
+    // able to disturb an API provider's saved configuration.
+    //
+    // The shared pieces are unchanged: one ModelConnectionRegistry, one credential
+    // store, one ModelConfig descriptor, one Model Gateway.
+
+    /** The rules that own [preset]'s connection lifecycle. Always exactly one applies. */
+    private fun connectionManager(preset: ModelPreset): ModelConnectionManager =
+        connectionManagers.firstOrNull { it.handles(preset) } ?: LocalModelConnectionManager()
+
+    /** A health probe result together with the status it was reported as. */
+    private data class ProviderObservation(val health: ModelHealth, val status: ModelRuntimeStatus)
+
+    /**
+     * Brings a configuration-backed (API) connection online from what was saved.
+     *
+     * The provider identity, endpoint, credential reference and model are already
+     * persisted, so registering the connection cannot fail for a runtime reason. The
+     * probe that follows only says how healthy the provider is right now.
+     */
+    private suspend fun connectFromConfiguration(preset: ModelPreset): ForgeResult<ModelRuntimeStatus, ForgeError> {
+        val connection = connectionManager(preset)
+        val endpoint = connection.endpointFor(preset, runnerFor(preset)?.status(preset.id)?.endpoint)
+            ?: return failure(noEndpoint(preset))
+        if (bind(preset, endpoint) == null) return failure(noEndpoint(preset))
+        return success(observeProviderHealth(preset).status)
+    }
+
+    /**
+     * Reports a configuration-backed connection's current health.
+     *
+     * Only the reported status changes. The saved configuration, its credential, the
+     * model selection and the gateway registration are all left exactly as they are,
+     * so a temporary provider failure is represented as health rather than as a lost
+     * connection.
+     */
+    private suspend fun observeProviderHealth(preset: ModelPreset): ProviderObservation {
+        val runner = runnerFor(preset) ?: return configuredObservation(preset)
+        val base = runner.status(preset.id)
+        val health = io { runner.healthCheck(preset) }
+        return ProviderObservation(health, publishProviderStatus(preset, base, health))
+    }
+
+    /** The observation reported when a provider has no runner to probe with. */
+    private fun configuredObservation(preset: ModelPreset): ProviderObservation {
+        val connection = connectionManager(preset)
+        val reachable = ModelHealth(ModelHealthStatus.HEALTHY, "Configured from the saved provider settings")
+        val status = statusFor(
+            preset = preset,
+            state = ModelLifecycleState.ONLINE,
+            message = reachable.detail,
+            now = clock(),
+            previous = mutableState.value.statuses[preset.id],
+        ).copy(endpoint = connection.endpointFor(preset, null), awaitingRuntime = false)
+        publishStatus(preset, status)
+        return ProviderObservation(reachable, status)
+    }
+
+    /**
+     * Publishes [health] as the provider's status.
+     *
+     * An unreachable provider is reported as the lifecycle's own health state
+     * ([ModelConnectionManager.unreachableState]) — never as a disconnection, because
+     * nothing about the saved configuration has changed.
+     */
+    private fun publishProviderStatus(
+        preset: ModelPreset,
+        base: ModelRuntimeStatus,
+        health: ModelHealth,
+    ): ModelRuntimeStatus {
+        val connection = connectionManager(preset)
+        val reachable = health.isReachable
+        val status = statusFor(
+            preset = preset,
+            state = if (reachable) ModelLifecycleState.ONLINE else connection.unreachableState(),
+            message = health.detail,
+            now = clock(),
+            previous = base,
+        ).copy(
+            endpoint = connection.endpointFor(preset, base.endpoint),
+            failure = if (reachable) ModelRuntimeFailure.NONE else ModelRuntimeFailure.MODEL_API_UNREACHABLE,
+            awaitingRuntime = false,
+        )
+        publishStatus(preset, status)
+        return status
+    }
+
+    private fun publishStatus(preset: ModelPreset, status: ModelRuntimeStatus) {
+        mutableState.update { it.copy(statuses = it.statuses + (preset.id to status)) }
+    }
+
+    /**
+     * Reports a configuration-backed connection as having no runtime to start.
+     *
+     * It is a configuration problem, so it is reported as one — an API provider whose
+     * endpoint is missing is incomplete, not unreachable.
+     */
+    private fun noEndpoint(preset: ModelPreset): ForgeError = modelFailure(
+        code = ForgeErrorCode.MODEL_PRESET_INVALID,
+        message = "No endpoint is configured for ${preset.displayName}",
+        details = mapOf("presetId" to preset.id),
+    )
+
     private fun startMonitor(preset: ModelPreset) {
         if (!monitorEnabled) return
+        // Only a runtime-backed connection is monitored. An API provider's connection
+        // is its saved configuration, so a periodic poll would only ever be able to
+        // report health — and must never be able to release the connection.
+        if (!connectionManager(preset).recoversLapsedRuntime) return
         monitorJob?.cancel()
         monitorJob = scope.launch {
             while (isActive) {
@@ -548,16 +748,34 @@ class DefaultModelManager(
 
     private suspend fun onRunnerStatuses(snapshot: Map<String, ModelRuntimeStatus>) {
         if (snapshot.isEmpty()) return
-        mutableState.update { it.copy(statuses = it.statuses + snapshot) }
+
+        // A runner owns the connection state only for a runtime-backed connection.
+        // For an API provider its status describes a runtime that is not the
+        // connection, so it is never published over the provider's own status and
+        // never persisted as the provider's lifecycle state.
+        val owned = snapshot.filterKeys(::isRuntimeBacked)
+        if (owned.isEmpty()) return
+        mutableState.update { it.copy(statuses = it.statuses + owned) }
 
         // Remember only the state name — an endpoint URL is a capability and is
         // never persisted.
-        snapshot.forEach { (presetId, status) ->
+        owned.forEach { (presetId, status) ->
             val name = status.state.name
             if (persistedStatuses[presetId] == name) return@forEach
             persistedStatuses[presetId] = name
             runCatching { io { repository.setLastStatus(presetId, name) } }
         }
+    }
+
+    /**
+     * Whether a runner's status is this preset's connection state.
+     *
+     * An unloaded preset is treated as runtime-backed so a status that arrives while
+     * the preset list is still being read is never dropped.
+     */
+    private fun isRuntimeBacked(presetId: String): Boolean {
+        val preset = mutableState.value.presets.firstOrNull { it.id == presetId } ?: return true
+        return !connectionManager(preset).connectsFromConfiguration
     }
 
     /** Builds the status shown before anything has been checked in this process. */
