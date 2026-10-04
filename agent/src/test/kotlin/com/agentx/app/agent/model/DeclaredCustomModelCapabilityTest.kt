@@ -204,6 +204,54 @@ class DeclaredCustomModelCapabilityTest {
         )
     }
 
+    /**
+     * The regression for the exact string the app reported. The runtime path is
+     * pinned end to end here: the same model id, the same provider, the same role
+     * the failure named, and the requirement that the rejection the user saw is
+     * not produced any more.
+     */
+    @Test
+    fun `the reported reason UNKNOWN rejection is not produced for the configured model`() = runBlocking {
+        val result = resolver(devstral).resolveForRole(AgentRole.MAIN, active)
+
+        assertNull(result.errorOrNull(), result.errorOrNull()?.message.orEmpty())
+        assertTrue(result.eligible)
+        assertEquals(ModelEligibilityState.AVAILABLE, result.eligibility.state)
+        // The three values the reported line carried are all resolved, not guessed:
+        // provider, model id and the capability that used to come back UNKNOWN.
+        assertEquals(providerId, result.eligibility.providerId)
+        assertEquals(devstral, result.eligibility.modelId)
+        assertEquals(CapabilitySupport.SUPPORTED, result.eligibility.profile.toolCalling)
+        assertEquals(CapabilityProvenance.HARDCODED, result.eligibility.profile.provenance)
+        assertTrue(result.eligibility.profile.known)
+    }
+
+    /**
+     * The other half of the guarantee: the definition that makes the Devstral id
+     * resolve is scoped to that one model. The result above must not have been
+     * bought by making the openai-compatible provider tool capable as a whole.
+     */
+    @Test
+    fun `the built in definition covers this model and no other of the provider`() = runBlocking {
+        val registry = InMemoryModelCapabilityRegistry()
+
+        assertEquals(
+            CapabilitySupport.SUPPORTED,
+            registry.support(providerId, devstral, ModelCapability.TOOL_CALLING),
+        )
+        // The same provider serves an unrelated model; nothing about the provider
+        // confers the capability on it.
+        assertEquals(
+            CapabilitySupport.UNKNOWN,
+            registry.support(providerId, unrelated, ModelCapability.TOOL_CALLING),
+        )
+
+        val other = resolver(unrelated, registry).resolveForRole(AgentRole.MAIN, active)
+        assertFalse(other.eligible, other.eligibility.profile.toolCalling.name)
+        assertEquals(ModelEligibilityState.UNKNOWN, other.eligibility.state)
+        assertEquals(CapabilitySupport.UNKNOWN, other.eligibility.profile.toolCalling)
+    }
+
     // --- persistence ----------------------------------------------------------
 
     @Test
