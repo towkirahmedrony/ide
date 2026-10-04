@@ -265,6 +265,59 @@ class TermuxSessionManager(
         return doomed.size
     }
 
+    /**
+     * Closes every session that does not belong to [activeWorkspaceId], and returns how many were
+     * closed.
+     *
+     * This is the project-switch step. A project's shells are bound to its own directory at
+     * `/workspace`, so a session left over from the project the user just left is a shell that is
+     * still operating on a project that is no longer active — the one thing a project-aware terminal
+     * must never do. Keys are compared through [TerminalProjectKeys], so the active project keeps
+     * *all* of its terminals (its first one and its extra one) and nothing else survives.
+     *
+     * Safe to call for the project that is already active, and safe with no sessions at all: it is
+     * then a no-op. Idempotent, so it can run on every entry into a project without the cost of a
+     * switch.
+     */
+    fun closeOtherProjects(activeWorkspaceId: String): Int {
+        val doomed = ArrayList<TermuxSession>(2)
+        val closed = ArrayList<String>(2)
+        synchronized(lock) {
+            for (session in ordered.toList()) {
+                val key = byWorkspaceKey.entries.firstOrNull { it.value == session.handle }?.key
+                    ?: session.handle
+                if (TerminalProjectKeys.belongsTo(key, activeWorkspaceId)) continue
+                closed += key
+                detachLocked(session.handle)?.let(doomed::add)
+            }
+        }
+        if (doomed.isEmpty()) return 0
+
+        // Finished outside the lock: this kills a process.
+        doomed.forEach { session ->
+            Log.i(TAG, "closing session of a project that is no longer active handle=${session.handle}")
+            runCatching { session.finish() }
+        }
+        // Keep the active handle pointing at something that exists, so a caller reading it next does
+        // not try to drive a session that is already gone.
+        synchronized(lock) {
+            val active = activeFlow.value
+            if (active != null && ordered.none { it.handle == active }) {
+                activeFlow.value = ordered.firstOrNull()?.handle
+            }
+        }
+        publish()
+        TerminalDiagnostics.record(
+            TAG,
+            "project switch to=$activeWorkspaceId closed=${closed.joinToString()}",
+        )
+        DeveloperLogger.info(
+            DeveloperLogCategory.SESSION,
+            "Project switch active=$activeWorkspaceId closed=${closed.size} session(s)",
+        )
+        return doomed.size
+    }
+
     /** Kills the process and forgets the session. */
     fun terminate(handle: String) {
         val removed = synchronized(lock) { detachLocked(handle) }

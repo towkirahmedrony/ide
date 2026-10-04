@@ -24,6 +24,14 @@ sealed interface UbuntuProjectBinding {
         override val guestPath: String get() = ProotCommand.GUEST_PROJECT_ROOT
     }
 
+    /**
+     * Nothing is bound, so the shell runs in the guest home instead of not at all.
+     *
+     * Two situations reach this: no project is open, and a project whose directory cannot be reached
+     * as a filesystem path. Both keep a usable shell and carry [reason], which the terminal shows —
+     * an unreadable or absent project must not cost the user the terminal, and it must not be
+     * presented as a directory it is not.
+     */
     data class Home(val reason: String) : UbuntuProjectBinding {
         override val guestPath: String get() = ProotCommand.GUEST_HOME
     }
@@ -43,6 +51,11 @@ object UbuntuProjectBindings {
      * ever copied into app storage here — when the original folder cannot be read as a path, the
      * shell falls back to the guest home with the reason instead.
      *
+     * With no project at all there is nothing to bind and the binding says so in those words. It is
+     * deliberately not an empty bind of some convenient directory: a terminal that mounts an
+     * arbitrary folder under `/workspace` looks like a working project shell while being about
+     * something the user never opened.
+     *
      * @param handle a filesystem path or `content://` URI, if known.
      * @param displayLocation what the workspace runtime shows the user.
      * @param isDirectory probes whether a host path is a readable directory.
@@ -52,6 +65,9 @@ object UbuntuProjectBindings {
         displayLocation: String?,
         isDirectory: (String) -> Boolean,
     ): UbuntuProjectBinding {
+        val named = listOfNotNull(handle, displayLocation).any { it.isNotBlank() }
+        if (!named) return UbuntuProjectBinding.Home(NO_PROJECT_REASON)
+
         val rawHandles = listOfNotNull(handle, displayLocation)
         // Direct paths win over SAF-derived ones: a plain path is what the workspace was opened
         // with, while the derived path is how a `content://` tree is translated.
@@ -163,6 +179,19 @@ object UbuntuProjectBindings {
     }
 
     private const val CONTENT_PREFIX = "content://"
+
+    /**
+     * The reason a terminal reports when there is no project to work on.
+     *
+     * A terminal with no project is not an error — it is a shell in the guest home, and the runtime
+     * is installed and working — but it is not the project shell either, so it says which of the two
+     * the user is looking at instead of quietly mounting something. It is one sentence on purpose:
+     * the terminal header shows the first sentence of a note, and what to do next is the most useful
+     * thing that sentence can carry.
+     */
+    const val NO_PROJECT_REASON: String =
+        "No project is open, so the shell is running in the guest home with nothing mounted at " +
+            "${ProotCommand.GUEST_PROJECT_ROOT} — open a project to work in it from the terminal"
 
     /** The provider `ACTION_OPEN_DOCUMENT_TREE` answers with for local storage. */
     private const val EXTERNAL_STORAGE_AUTHORITY = "com.android.externalstorage.documents"

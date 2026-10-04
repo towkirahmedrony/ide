@@ -648,13 +648,28 @@ class LocalUbuntuRuntime(
         extraEnvironment: Map<String, String> = emptyMap(),
     ): TermuxShellSpec? {
         if (!isReady()) return null
-        val binding = UbuntuProjectBindings.resolve(
+        return specForBinding(
+            workspaceKey = workspaceKey,
+            binding = projectBinding(projectHandle, displayLocation),
+            extraEnvironment = extraEnvironment,
+        )
+    }
+
+    /**
+     * How the current project maps into the guest, resolved from its handle.
+     *
+     * Exposed so a caller can say what the terminal is rooted at without building a session first:
+     * a project is bound at [ProotCommand.GUEST_PROJECT_ROOT], and when it cannot be bound the reason
+     * travels with the binding instead of being invented by the caller. This is the same decision
+     * [specFor] and [specForBinding] make, from the same function, so the shell and the note that
+     * describes it cannot disagree.
+     */
+    fun projectBinding(projectHandle: String?, displayLocation: String?): UbuntuProjectBinding =
+        UbuntuProjectBindings.resolve(
             handle = projectHandle,
             displayLocation = displayLocation ?: projectHandle,
             isDirectory = { path -> File(path).let { it.isDirectory && it.canRead() } },
         )
-        return specForBinding(workspaceKey, binding, extraEnvironment)
-    }
 
     /** The terminal spec for an already-resolved project binding. */
     fun specForBinding(

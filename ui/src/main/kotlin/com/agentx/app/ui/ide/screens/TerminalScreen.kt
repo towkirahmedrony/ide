@@ -313,7 +313,7 @@ private fun TerminalHeader(
             IconButton(onClick = viewModel::zoomOut) { Icon(Icons.Filled.Remove, contentDescription = "Smaller text") }
             IconButton(onClick = viewModel::zoomIn) { Icon(Icons.Filled.Add, contentDescription = "Larger text") }
             IconButton(
-                onClick = viewModel::openScratchShell,
+                onClick = viewModel::openSecondaryShell,
                 enabled = !state.unavailable,
             ) { Icon(Icons.Filled.Add, contentDescription = "New") }
             // Deliberately not gated on an active handle: after a failed start there may be no

@@ -9,6 +9,7 @@ import androidx.lifecycle.viewModelScope
 import com.agentx.app.termux.DeveloperLogCategory
 import com.agentx.app.termux.DeveloperLogger
 import com.agentx.app.termux.TerminalDiagnostics
+import com.agentx.app.termux.TerminalProjectKeys
 import com.agentx.app.termux.TerminalSessionAdapter
 import com.agentx.app.termux.TerminalSessionState
 import com.agentx.app.termux.TermuxProvisioning
@@ -23,6 +24,7 @@ import com.agentx.app.ubuntu.AgentxRuntimeState
 import com.agentx.app.ubuntu.LocalUbuntuRuntime
 import com.agentx.app.ubuntu.NativeRuntimeLayout
 import com.agentx.app.ubuntu.RuntimeStatus
+import com.agentx.app.ubuntu.UbuntuProjectBinding
 import com.termux.terminal.TerminalSession
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -62,7 +64,13 @@ data class TerminalUiState(
     val failure: String? = null,
     val fontSizePx: Int = DEFAULT_FONT_SIZE_PX,
     val provisioning: TermuxProvisioningState = TermuxProvisioningState.Idle,
-    /** Why the workspace could not be used as-is, if it could not. */
+    /**
+     * Why the shell is not rooted in the project, when it is not.
+     *
+     * Set when nothing is mounted at `/workspace`: no project is open, or the open project's folder
+     * cannot be reached as a filesystem path. A terminal that is bound to its project has nothing to
+     * say, so this is null in the normal case.
+     */
     val workspaceNote: String? = null,
     /** Set when the prefix cannot host the official Termux packages. */
     val prefixNote: String? = null,
@@ -186,6 +194,22 @@ data class TerminalUiState(
  * leaving the tab, rotating the device or a Compose recomposition cannot start a second shell
  * or kill the one that is running `npm run dev`.
  *
+ * ## The project contract
+ *
+ * A terminal belongs to the project this screen was opened for. Every shell is built from the active
+ * project — it starts in `/workspace`, that directory is bind-mounted there, and the environment
+ * names it — so the user never has to `cd` to a real Android path to work on their own project.
+ * Three consequences are enforced here rather than left to whoever happens to call:
+ *
+ * - entering a project closes the sessions of the project the user left
+ *   ([TermuxSessionManager.closeOtherProjects]), before this project's shell is opened;
+ * - a restart rebuilds the spec from the project that is open *now*, so restarting cannot resurrect
+ *   an older mapping;
+ * - with no project open nothing is mounted at `/workspace`, and the shell says so instead.
+ *
+ * Nothing here touches PRoot, the PTY or the terminal emulator: this class decides *what* command is
+ * run and *where* it is rooted, and hands it to the existing runtime unchanged.
+ *
  * The runtime forwards emulator callbacks to whichever [TermuxTerminalHost] the screen has
  * bound, so the same session can be displayed, hidden and displayed again.
  */
@@ -225,8 +249,14 @@ class TerminalViewModel(
     private var collectors: Job? = null
     private var boundHost: TermuxTerminalHost? = null
 
-    /** Whether the user asked for a shell rooted at `$HOME` rather than at the workspace. */
-    private var scratch = false
+    /**
+     * Which of this project's terminals the screen is on: its first one, or the extra one opened
+     * beside it.
+     *
+     * Both are the same project — the extra terminal exposes the same `/workspace` — so this only
+     * selects the session key, and therefore which running shell the screen is attached to.
+     */
+    private var secondary = false
 
     init {
         val current = runtime
@@ -246,7 +276,12 @@ class TerminalViewModel(
                 ),
             )
             observe(current)
-            open(scratch = false)
+            // Becoming the active project is the moment the terminal changes hands. The project the
+            // user left has its shells closed here, before this project's shell is opened, so no
+            // session is ever left running against a `/workspace` that is no longer the active
+            // project. Nothing else in this class has to know that a switch happened.
+            current.sessions.closeOtherProjects(workspaceId)
+            open(secondary = false)
         }
         uiState = uiState.copy(
             developerRuntimeAvailable = developerRuntime != null,
@@ -326,7 +361,7 @@ class TerminalViewModel(
         // Read from disk through the same isReady() the terminal spec is gated on, so the state
         // shown and the decision to open a shell come from one source of truth.
         developer.refresh()
-        current.sessions.discardUnusable(workspaceKey(scratch))
+        current.sessions.discardUnusable(workspaceKey(secondary))
         uiState = uiState.copy(usingDeveloperRuntime = true, workspaceNote = null)
         // restart is what actually creates the new session; it needs no handle, so a workspace whose
         // session was just discarded still gets a completely fresh one.
@@ -338,8 +373,8 @@ class TerminalViewModel(
      * recomposition or a tab switch never spawns a duplicate process.
      */
     fun openWorkspaceShell() {
-        scratch = false
-        open(scratch = false)
+        secondary = false
+        open(secondary = false)
     }
 
     /**
@@ -352,13 +387,19 @@ class TerminalViewModel(
      */
     fun ensureSession() {
         val current = runtime ?: return
-        if (current.sessions.sessions().isEmpty()) open(scratch = false)
+        if (current.sessions.sessions().isEmpty()) open(secondary = secondary)
     }
 
-    /** Opens an extra shell rooted at `$HOME`, for commands that are not about the project. */
-    fun openScratchShell() {
-        scratch = true
-        open(scratch = true)
+    /**
+     * Opens the project's second terminal.
+     *
+     * Deliberately another shell for the *same* project: it exposes the active project at
+     * `/workspace` exactly as the first one does, so a second terminal cannot become a way to end up
+     * working somewhere other than the project the user has open.
+     */
+    fun openSecondaryShell() {
+        secondary = true
+        open(secondary = true)
     }
 
     /**
@@ -377,14 +418,24 @@ class TerminalViewModel(
         DeveloperLogger.info(DeveloperLogCategory.RESTART, "Requested")
         val handle = current.sessions.activeHandle.value
         // A handle that is already gone means the shell this screen was on has been removed; fall
-        // back to the workspace shell rather than restarting one that no longer exists.
-        val background = scratch || (handle != null && current.sessions.find(handle) == null)
+        // back to the project's first terminal rather than restarting one that no longer exists.
+        val extra = secondary || (handle != null && current.sessions.find(handle) == null)
+        // Resolved before the launch so the outcome of a successful restart can say where the new
+        // shell is rooted, from the same runtime the spec was built from.
+        val developer = developerRuntime
         viewModelScope.launch {
             // Never on the UI thread: resolving the developer spec probes the filesystem, and
             // starting a process must not block a frame either.
-            val resolved = withContext(Dispatchers.IO) { runCatching { spec(background) } }
+            val resolved = withContext(Dispatchers.IO) { runCatching { spec(extra) } }
             val spec = resolved.getOrNull()
             if (spec != null) {
+                // The mapping was rebuilt from the project that is open now, so the note that
+                // describes where the shell is rooted is re-derived with it rather than kept from
+                // a session that no longer exists. The legacy backend has no project binding to
+                // derive one from, so its own note stands.
+                val note =
+                    if (developer != null) projectNote(developer, current) else uiState.workspaceNote
+                uiState = uiState.copy(usingDeveloperRuntime = developer != null, workspaceNote = note)
                 current.sessions.restart(handle, spec)?.let { restarted ->
                     current.sessions.setActive(restarted.handle)
                 }
@@ -392,7 +443,6 @@ class TerminalViewModel(
             }
             // Same rule as opening: retry the real path and report why it could not be taken,
             // rather than restarting into an Android shell.
-            val developer = developerRuntime
             val reason = withContext(Dispatchers.IO) {
                 if (developer != null) {
                     developerUnavailableReason(developer, resolved)
@@ -407,7 +457,7 @@ class TerminalViewModel(
             uiState = uiState.copy(usingDeveloperRuntime = developer != null, workspaceNote = reason)
             current.sessions.restartUnstartable(
                 handle = handle,
-                workspaceKey = workspaceKey(background),
+                workspaceKey = workspaceKey(extra),
                 executable = developer?.layout?.proot,
                 reason = reason,
             )
@@ -501,27 +551,31 @@ class TerminalViewModel(
         )
     }
 
-    private fun open(scratch: Boolean) {
+    private fun open(secondary: Boolean) {
         DeveloperLogger.info(DeveloperLogCategory.TERMINAL, "Open requested")
         val current = runtime ?: return
         val developer = developerRuntime
         if (developer == null) {
-            openLegacy(current, scratch)
+            openLegacy(current, secondary)
             return
         }
         // The project handle has to be matched against real directories before the guest can
         // bind it, which is disk I/O; the session is opened on the main dispatcher once that is
         // done.
-        val key = workspaceKey(scratch)
+        val key = workspaceKey(secondary)
         viewModelScope.launch {
             val resolved = withContext(Dispatchers.IO) {
-                runCatching { developerSpec(current, developer, key, scratch) }
+                runCatching { developerSpec(current, developer, key, secondary) }
             }
             val spec = resolved.getOrNull()
             if (spec != null) {
-                // The primary backend: a real Ubuntu guest shell. The workspace note is cleared
-                // because the project is bind-mounted, not copied.
-                uiState = uiState.copy(usingDeveloperRuntime = true, workspaceNote = null)
+                // The primary backend: a real Ubuntu guest shell. Any previous note goes with it:
+                // what the shell is rooted at is re-derived from the project that is open now, so a
+                // stale reason from an earlier attempt cannot outlive the state it described.
+                uiState = uiState.copy(
+                    usingDeveloperRuntime = true,
+                    workspaceNote = projectNote(developer, current),
+                )
                 current.openSession(spec)
                 return@launch
             }
@@ -569,14 +623,14 @@ class TerminalViewModel(
         return developer.notReadyReason()
     }
 
-    private fun openLegacy(current: TermuxRuntime, scratch: Boolean) {
-        val key = workspaceKey(scratch)
-        val binding = binding(current, scratch)
+    private fun openLegacy(current: TermuxRuntime, secondary: Boolean) {
+        val key = workspaceKey(secondary)
+        val binding = binding(current)
         uiState = uiState.copy(
             usingDeveloperRuntime = false,
             workspaceNote = workspaceNoteFor(binding)?.let(::trimNote),
         )
-        current.openSession(current.specFor(key, binding, extraEnvironment(scratch)))
+        current.openSession(current.specFor(key, binding, extraEnvironment(secondary)))
     }
 
     /**
@@ -587,7 +641,7 @@ class TerminalViewModel(
      * "use something else". The callers report it; none of them substitutes another shell, because
      * the terminal's contract in the developer runtime is a Ubuntu guest or a visible failure.
      */
-    private fun spec(scratch: Boolean): TermuxShellSpec? {
+    private fun spec(secondary: Boolean): TermuxShellSpec? {
         val current = checkNotNull(runtime) { "Termux runtime is not available" }
         val developer = developerRuntime
         if (developer != null) {
@@ -595,17 +649,17 @@ class TerminalViewModel(
             // real directories, including the path a SAF tree names). A failure there propagates:
             // the caller turns it into a visible failure with the real error rather than quietly
             // opening a different shell.
-            return developerSpecNow(current, developer, workspaceKey(scratch), scratch)
+            return developerSpecNow(current, developer, workspaceKey(secondary), secondary)
         }
         return current.specFor(
-            workspaceKey = workspaceKey(scratch),
-            binding = binding(current, scratch),
-            extraEnvironment = extraEnvironment(scratch),
+            workspaceKey = workspaceKey(secondary),
+            binding = binding(current),
+            extraEnvironment = extraEnvironment(secondary),
         )
     }
 
-    private fun workspaceKey(scratch: Boolean): String =
-        if (scratch) "$workspaceId::scratch" else workspaceId
+    private fun workspaceKey(secondary: Boolean): String =
+        TerminalProjectKeys.forSession(workspaceId, secondary)
 
     /**
      * Reports the native runtime as it is on disk right now.
@@ -641,12 +695,17 @@ class TerminalViewModel(
      *
      * Null means the runtime is missing, not installed, or its native components are absent; the
      * caller then falls back to the legacy backend so the terminal is never left without a shell.
+     *
+     * Every terminal of a project is built from the project that is open *now*, and only from it:
+     * the working directory, the `/workspace` bind and the environment are all derived from the
+     * active project on each call, so a restart — or a second terminal — cannot inherit the mapping
+     * of a project the user has left.
      */
     private suspend fun developerSpec(
         current: TermuxRuntime,
         developer: LocalUbuntuRuntime,
         key: String,
-        scratch: Boolean,
+        secondary: Boolean,
     ): TermuxShellSpec? {
         DeveloperLogger.info(DeveloperLogCategory.ROOTFS, "RootFS resolution started")
         DeveloperLogger.info(DeveloperLogCategory.ROOTFS, "RootFS path = ${developer.layout.rootfs}")
@@ -659,13 +718,11 @@ class TerminalViewModel(
             DeveloperLogger.warn(DeveloperLogCategory.ROOTFS, developer.notReadyReason())
             return null
         }
-        val handle = if (scratch) null else projectHandle(current)
-
         return developer.specFor(
             workspaceKey = key,
-            projectHandle = handle,
+            projectHandle = projectHandle(current),
             displayLocation = workspaceLocation(),
-            extraEnvironment = extraEnvironment(scratch),
+            extraEnvironment = extraEnvironment(secondary),
         )
     }
 
@@ -680,7 +737,7 @@ class TerminalViewModel(
         current: TermuxRuntime,
         developer: LocalUbuntuRuntime,
         key: String,
-        scratch: Boolean,
+        secondary: Boolean,
     ): TermuxShellSpec? {
         DeveloperLogger.info(DeveloperLogCategory.ROOTFS, "RootFS resolution started")
         DeveloperLogger.info(DeveloperLogCategory.ROOTFS, "RootFS path = ${developer.layout.rootfs}")
@@ -690,12 +747,11 @@ class TerminalViewModel(
             DeveloperLogger.warn(DeveloperLogCategory.ROOTFS, developer.notReadyReason())
             return null
         }
-        val handle = if (scratch) null else projectHandle(current)
         return developer.specFor(
             workspaceKey = key,
-            projectHandle = handle,
+            projectHandle = projectHandle(current),
             displayLocation = workspaceLocation(),
-            extraEnvironment = extraEnvironment(scratch),
+            extraEnvironment = extraEnvironment(secondary),
         )
     }
 
@@ -717,31 +773,45 @@ class TerminalViewModel(
      * instead of binding a directory that does not exist.
      */
     private fun legacyHostPath(current: TermuxRuntime): String? =
-        when (val resolved = binding(current, scratch = false)) {
+        when (val resolved = binding(current)) {
             is TermuxWorkspaceBinding.Direct -> resolved.path
             is TermuxWorkspaceBinding.Mirrored -> resolved.termuxPath
             else -> null
         }
 
-    private fun binding(current: TermuxRuntime, scratch: Boolean): TermuxWorkspaceBinding =
-        if (scratch) {
-            TermuxWorkspaceBinding.Direct(path = current.paths.home, displayLocation = "home")
-        } else {
-            current.bindingFor(
-                workspaceId = workspaceId,
-                handle = null,
-                displayLocation = workspaceLocation(),
-            )
+    /** The active project's binding for the legacy backend, resolved from the same workspace. */
+    private fun binding(current: TermuxRuntime): TermuxWorkspaceBinding =
+        current.bindingFor(
+            workspaceId = workspaceId,
+            handle = null,
+            displayLocation = workspaceLocation(),
+        )
+
+    /**
+     * What the user has to know about where the developer shell is rooted, from the binding the
+     * shell was actually built with.
+     *
+     * Only a project that could not be bound has something to say. Bound at
+     * [com.agentx.app.ubuntu.ProotCommand.GUEST_PROJECT_ROOT] is the norm and gets no note; a shell
+     * that is in the guest home because no project is open — or because this app cannot reach the
+     * project's folder as a path — says so, so the screen never implies it is the project when it is
+     * not. The reason comes from the binding, not from the caller, so the note and the shell cannot
+     * describe different states.
+     */
+    private fun projectNote(developer: LocalUbuntuRuntime, current: TermuxRuntime): String? =
+        when (val resolved = developer.projectBinding(projectHandle(current), workspaceLocation())) {
+            is UbuntuProjectBinding.Direct -> null
+            is UbuntuProjectBinding.Home -> trimNote(resolved.reason)
         }
 
     /**
      * Context for the shell. Deliberately only identifiers: no credentials, no tokens, nothing
      * that came from a connection or a model preset.
      */
-    private fun extraEnvironment(scratch: Boolean): Map<String, String> = mapOf(
+    private fun extraEnvironment(secondary: Boolean): Map<String, String> = mapOf(
         "CODER_WORKSPACE_ID" to workspaceId,
         "CODER_WORKSPACE_NAME" to workspaceName,
-        "CODER_SHELL_KIND" to if (scratch) "scratch" else "workspace",
+        "CODER_SHELL_KIND" to if (secondary) "workspace-2" else "workspace",
         "CODER_TERMUX_PREFIX" to (runtime?.paths?.prefix ?: ""),
     )
 
