@@ -249,7 +249,42 @@ no derivable filesystem path (a cloud provider, say), or the app cannot read the
 access" not granted), no bind is made: the shell runs in the guest home with the reason, and the
 terminal stays usable.
 
-With no project selected or in a scratch shell, the terminal starts in `/root` (the guest home).
+With no project selected the terminal starts in `/root` (the guest home) and mounts nothing at
+`/workspace`: no convenient directory is chosen instead, and the shell says in the note above it that
+no project is open. A terminal that mounted an arbitrary folder under `/workspace` would look like a
+working project shell while being about something the user never opened.
+
+### The terminal follows the active project
+
+A terminal belongs to the project it was opened for, for the life of the session:
+
+```
+Active project  →  /workspace  →  terminal
+```
+
+- **A new session starts in `/workspace`.** The project's directory is bind-mounted there and the
+  guest login shell is started with `-w /workspace`, so `pwd` answers `/workspace` and no command
+  needs the project's real Android path. The environment is the stable Ubuntu one
+  (`HOME=/root`, `SHELL=/bin/bash`, `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
+  `TERM=xterm-256color`, `TMPDIR=/tmp`), with `AGENTX_PROJECT=/workspace` naming the mount.
+- **Switching projects closes the shells of the project that was left**, before the new project's
+  shell is opened. Sessions are keyed by the project they belong to
+  (`TerminalProjectKeys`), so the switch is a membership test: the active project keeps all of its
+  terminals and the previous project keeps none, and its `/workspace` entry goes with it. A shell
+  left over from project A would be a shell still operating on a `/workspace` that is no longer the
+  active project.
+- **A restart rebuilds the spec from the project that is open now** — working directory, bind and
+  environment alike — so restarting a terminal cannot resurrect an older mapping, and the open
+  project does not have to be reopened.
+- **The extra terminal is a second terminal for the same project.** It exposes the same active
+  project at `/workspace` exactly as the first one does, so a second shell can never become a way to
+  end up working somewhere other than the project the user has open.
+- **At most one `/workspace` bind is generated** (`ProotCommand.withProject` appends one only when
+  none is present), so a session cannot end up with a duplicate `-b project:/workspace`.
+
+Nothing about this touches PRoot, the PTY, the emulator or the rootfs. The lifecycle decides *what*
+command is run and *where* it is rooted, and hands it to the existing terminal implementation
+unchanged.
 
 ## Networking
 
