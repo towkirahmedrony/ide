@@ -3,6 +3,7 @@ package com.agentx.app.agent.model
 import com.agentx.app.agent.domain.AgentErrorCode
 import com.agentx.app.agent.domain.AgentRole
 import com.agentx.app.model.ModelConfig
+import com.agentx.app.model.capability.CapabilityProvenance
 import com.agentx.app.model.capability.CapabilitySupport
 import com.agentx.app.model.capability.InMemoryModelCapabilityRegistry
 import com.agentx.app.model.capability.ModelCapability
@@ -21,14 +22,14 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * The reported failure and its fix, end to end at the eligibility boundary.
+ * The reported runtime failure and its fix, at the eligibility boundary.
  *
- * A user-supplied model that AgentX cannot identify stays
- * [CapabilitySupport.UNKNOWN], and MAIN requires tool calling, so it is correctly
- * rejected. What was wrong is that there was no way for the user to say that
- * their model *does* call tools. These cases cover both halves: an undeclared
- * custom model is still refused (unknown is not support), and a model the user
- * declared resolves as supported — for that model alone.
+ * A custom model reaches the MAIN check as `toolCalling = UNKNOWN` unless
+ * something establishes the capability for it: nothing is inferred from the
+ * provider, and `UNKNOWN` is not support. These cases pin down both halves of
+ * the contract — the configured Devstral model resolves `SUPPORTED`, and an
+ * OpenAI-compatible model with no capability information stays `UNKNOWN` and
+ * stays ineligible.
  */
 class DeclaredCustomModelCapabilityTest {
 
@@ -37,7 +38,8 @@ class DeclaredCustomModelCapabilityTest {
     /** Exactly the id the endpoint reports; it is opaque and must survive unchanged. */
     private val devstral = "hf.co/unsloth/Devstral-Small-2-24B-Instruct-2512-GGUF:Q3_K_M"
 
-    private val otherModel = "some-other-local-model"
+    /** Another model on the same provider, with no capability information anywhere. */
+    private val unrelated = "hf.co/someone/undefined-local-model-GGUF:Q4_K_M"
 
     private val active = config(model = "active-model", provider = "active")
 
@@ -51,12 +53,17 @@ class DeclaredCustomModelCapabilityTest {
     private fun preferencesFor(model: String) = AgentModelPreferences()
         .with(AgentRole.MAIN, RoleModelPreference(providerId, model))
 
+    /**
+     * The whole point: the configuration the resolver is handed is the one the
+     * connection flow builds, so a capability stated for the model travels on it.
+     */
     private fun resolver(
         model: String,
         registry: ModelCapabilityRegistry = InMemoryModelCapabilityRegistry(),
+        declared: ModelCapabilityDeclaration? = null,
     ) = AgentModelResolver(
         preferences = preferencesFor(model),
-        connections = { mapOf(providerId to config(model)) },
+        connections = { mapOf(providerId to config(model).copy(declaredCapabilities = declared)) },
         capabilityRegistry = registry,
     )
 
@@ -68,127 +75,176 @@ class DeclaredCustomModelCapabilityTest {
         registerOrUpdate(declaration.applyTo(profile(providerId, model)))
     }
 
+    // --- the reported failure -------------------------------------------------
+
     @Test
-    fun `an undeclared custom model is still refused for MAIN`() = runBlocking {
-        val result = resolver(devstral).resolveForRole(AgentRole.MAIN, active)
+    fun `the reported failure - a configured Devstral model resolves tool calling and passes MAIN`() =
+        runBlocking {
+            val result = resolver(devstral).resolveForRole(AgentRole.MAIN, active)
+
+            assertTrue(result.eligible, result.eligibility.reason.orEmpty())
+            assertEquals(ModelEligibilityState.AVAILABLE, result.eligibility.state)
+            assertEquals(CapabilitySupport.SUPPORTED, result.eligibility.profile.toolCalling)
+            assertEquals(CapabilitySupport.SUPPORTED, result.eligibility.profile.streaming)
+            assertEquals(CapabilityProvenance.HARDCODED, result.eligibility.profile.provenance)
+            assertNull(result.errorOrNull())
+            // The id is never rewritten on the way to the check.
+            assertEquals(devstral, result.config.model)
+            assertEquals(devstral, result.eligibility.modelId)
+            assertEquals(providerId, result.config.providerId)
+        }
+
+    @Test
+    fun `a configuration that explicitly states tool calling passes MAIN`() = runBlocking {
+        val registry = InMemoryModelCapabilityRegistry(initial = emptyList())
+
+        val result = resolver(
+            model = unrelated,
+            registry = registry,
+            declared = ModelCapabilityDeclaration.toolEnabledEndpoint(),
+        ).resolveForRole(AgentRole.MAIN, active)
+
+        assertTrue(result.eligible)
+        assertEquals(CapabilitySupport.SUPPORTED, result.eligibility.profile.toolCalling)
+        assertEquals(CapabilityProvenance.HARDCODED, result.eligibility.profile.provenance)
+        assertEquals(unrelated, result.config.model)
+    }
+
+    // --- the guarantee that nothing was weakened -------------------------------
+
+    @Test
+    fun `an unrelated OpenAI-compatible model with no information stays UNKNOWN and ineligible`() =
+        runBlocking {
+            val result = resolver(unrelated).resolveForRole(AgentRole.MAIN, active)
+
+            assertFalse(result.eligible)
+            assertEquals(ModelEligibilityState.UNKNOWN, result.eligibility.state)
+            assertEquals(CapabilitySupport.UNKNOWN, result.eligibility.profile.toolCalling)
+            assertFalse(result.eligibility.profile.known)
+
+            // The rejection carries the resolved values, so this is diagnosable
+            // without guessing and without logging anything secret.
+            val error = assertNotNull(result.errorOrNull())
+            assertEquals(AgentErrorCode.MODEL_NOT_ELIGIBLE, error.code)
+            assertEquals("UNKNOWN", error.details["support"])
+            assertEquals("false", error.details["known"])
+            assertEquals("toolCalling", error.details["capability"])
+            assertEquals(unrelated, error.details["model"])
+            assertTrue(error.message.contains("reason=UNKNOWN"), error.message)
+            assertTrue(error.message.contains("capability=toolCalling"), error.message)
+            assertTrue(error.message.contains("support=UNKNOWN"), error.message)
+            assertTrue(error.message.contains("model=$unrelated"), error.message)
+        }
+
+    @Test
+    fun `an undeclared model does not inherit an OpenAI-compatible provider default`() = runBlocking {
+        // The provider's own default advertises tool calling; an undeclared model
+        // must not inherit it. Only the capability profile decides.
+        val result = resolver(unrelated, registry = InMemoryModelCapabilityRegistry(initial = emptyList()))
+            .resolveForRole(AgentRole.MAIN, active)
 
         assertFalse(result.eligible)
         assertEquals(ModelEligibilityState.UNKNOWN, result.eligibility.state)
-        assertEquals(CapabilitySupport.UNKNOWN, result.eligibility.profile.toolCalling)
-        val error = assertNotNull(result.errorOrNull())
-        assertEquals(AgentErrorCode.MODEL_NOT_ELIGIBLE, error.code)
-        assertTrue(error.message.contains("reason=UNKNOWN"), error.message)
-        assertTrue(error.message.contains("capability=toolCalling"), error.message)
-        // The reported failure, verbatim: the model id is never rewritten.
-        assertTrue(error.message.contains("model=$devstral"), error.message)
+        assertFalse(result.eligibility.profile.supports(ModelCapability.TOOL_CALLING))
     }
 
     @Test
-    fun `a declared custom model satisfies MAIN`() = runBlocking {
-        val registry = InMemoryModelCapabilityRegistry()
+    fun `a statement about one model never becomes a provider wide default`() = runBlocking {
+        val registry = InMemoryModelCapabilityRegistry(initial = emptyList())
         registry.publish(ModelCapabilityDeclaration.toolEnabledEndpoint())
 
-        val result = resolver(devstral, registry).resolveForRole(AgentRole.MAIN, active)
-
-        assertTrue(result.eligible)
-        assertEquals(ModelEligibilityState.AVAILABLE, result.eligibility.state)
-        assertEquals(CapabilitySupport.SUPPORTED, result.eligibility.profile.toolCalling)
-        assertTrue(result.eligibility.profile.supports(ModelCapability.TOOL_CALLING))
-        assertTrue(result.eligibility.profile.supports(ModelCapability.STREAMING))
-        assertNull(result.errorOrNull())
-        assertEquals(result.config, result.eligibleConfigOrThrow())
-    }
-
-    @Test
-    fun `a resolved declared model keeps its exact model id`() = runBlocking {
-        val registry = InMemoryModelCapabilityRegistry()
-        registry.publish(ModelCapabilityDeclaration.toolEnabledEndpoint())
-
-        val result = resolver(devstral, registry).resolveForRole(AgentRole.MAIN, active)
-
-        assertEquals(devstral, result.config.model)
-        assertEquals(devstral, result.eligibility.modelId)
-        assertEquals(devstral, result.eligibility.profile.modelId)
-        assertEquals(providerId, result.config.providerId)
-    }
-
-    @Test
-    fun `a declaration never becomes a provider wide default`() = runBlocking {
-        val registry = InMemoryModelCapabilityRegistry()
-        registry.publish(ModelCapabilityDeclaration.toolEnabledEndpoint())
-
-        // Another model on the same OpenAI-compatible provider was not declared, so
-        // it stays unknown and MAIN still refuses it.
-        val other = resolver(otherModel, registry).resolveForRole(AgentRole.MAIN, active)
-
+        val other = resolver(unrelated, registry).resolveForRole(AgentRole.MAIN, active)
         assertFalse(other.eligible)
         assertEquals(ModelEligibilityState.UNKNOWN, other.eligibility.state)
         assertEquals(CapabilitySupport.UNKNOWN, other.eligibility.profile.toolCalling)
         assertEquals(providerId, other.config.providerId)
 
-        // ...while the declared model on the very same provider is eligible.
         val declared = resolver(devstral, registry).resolveForRole(AgentRole.MAIN, active)
         assertTrue(declared.eligible)
     }
 
     @Test
-    fun `unknown still outranks a provider that advertises tools`() = runBlocking {
-        // The OpenAI-compatible provider's own default advertises tool calling; an
-        // undeclared model must not inherit it. Only the registry profile counts.
-        val result = resolver(otherModel).resolveForRole(AgentRole.MAIN, active)
+    fun `a capability is not carried across a model change`() = runBlocking {
+        // The connection states tool calling for the Devstral model; the role is
+        // pointed at a different model on the same provider.
+        val result = AgentModelResolver(
+            preferences = preferencesFor(unrelated),
+            connections = {
+                mapOf(
+                    providerId to config(devstral).copy(
+                        declaredCapabilities = ModelCapabilityDeclaration.toolEnabledEndpoint(),
+                    ),
+                )
+            },
+            capabilityRegistry = InMemoryModelCapabilityRegistry(initial = emptyList()),
+        ).resolveForRole(AgentRole.MAIN, active)
 
-        assertEquals(ModelEligibilityState.UNKNOWN, result.eligibility.state)
-        assertFalse(result.eligibility.profile.supports(ModelCapability.TOOL_CALLING))
         assertFalse(result.eligible)
+        assertEquals(unrelated, result.config.model)
+        assertNull(result.config.declaredCapabilities)
+        assertEquals(ModelEligibilityState.UNKNOWN, result.eligibility.state)
     }
 
     @Test
-    fun `a declared unsupported capability is reported as unsupported`() = runBlocking {
-        val registry = InMemoryModelCapabilityRegistry()
-        registry.publish(
-            ModelCapabilityDeclaration
+    fun `a statement of no tool calling is reported as unsupported`() = runBlocking {
+        val result = resolver(
+            model = devstral,
+            registry = InMemoryModelCapabilityRegistry(initial = emptyList()),
+            declared = ModelCapabilityDeclaration
                 .of(ModelCapability.TOOL_CALLING, CapabilitySupport.UNSUPPORTED)
                 .with(ModelCapability.STREAMING, CapabilitySupport.SUPPORTED),
-        )
-
-        val result = resolver(devstral, registry).resolveForRole(AgentRole.MAIN, active)
+        ).resolveForRole(AgentRole.MAIN, active)
 
         assertFalse(result.eligible)
         assertEquals(ModelEligibilityState.CAPABILITY_UNSUPPORTED, result.eligibility.state)
         assertEquals(listOf(ModelCapability.TOOL_CALLING), result.eligibility.missingCapabilities)
+        assertEquals(
+            "UNSUPPORTED",
+            assertNotNull(result.errorOrNull()).details["support"],
+        )
     }
 
-    @Test
-    fun `a declaration saved with the preset still resolves after a reload`() = runBlocking {
-        // Persist exactly what the Add/Edit form and the connect flow would save.
-        val saved = preset(declared = ModelCapabilityDeclaration.toolEnabledEndpoint())
-        val stored = ModelPresetCodec.encode(saved)
+    // --- persistence ----------------------------------------------------------
 
-        // A fresh process: the preset is decoded and its declaration published.
-        val reloaded = assertNotNull(ModelPresetCodec.decode(stored))
+    @Test
+    fun `a configuration saved and reloaded still resolves its capability`() = runBlocking {
+        // What the Add/Edit form and the connect flow save, then a fresh process.
+        val reloaded = assertNotNull(
+            ModelPresetCodec.decode(
+                ModelPresetCodec.encode(preset(declared = ModelCapabilityDeclaration.toolEnabledEndpoint())),
+            ),
+        )
+
         assertEquals(devstral, reloaded.modelIdentifier)
         assertEquals(CapabilitySupport.SUPPORTED, reloaded.declaredCapabilities.toolCalling)
 
-        val registry = InMemoryModelCapabilityRegistry()
-        registry.publish(reloaded.declaredCapabilities, model = reloaded.modelIdentifier)
+        val result = resolver(
+            model = reloaded.modelIdentifier,
+            registry = InMemoryModelCapabilityRegistry(initial = emptyList()),
+            declared = reloaded.declaredCapabilities,
+        ).resolveForRole(AgentRole.MAIN, active)
 
-        val result = resolver(devstral, registry).resolveForRole(AgentRole.MAIN, active)
         assertTrue(result.eligible)
         assertEquals(devstral, result.config.model)
     }
 
     @Test
-    fun `a preset that declares nothing reloads as unknown`() = runBlocking {
+    fun `reloading a configuration that states nothing leaves the definition in effect`() = runBlocking {
         val reloaded = assertNotNull(ModelPresetCodec.decode(ModelPresetCodec.encode(preset())))
 
         assertTrue(reloaded.declaredCapabilities.isEmpty)
 
-        val registry = InMemoryModelCapabilityRegistry()
-        registry.publish(reloaded.declaredCapabilities, model = reloaded.modelIdentifier)
+        // Withdrawing a statement must not erase what the built-in definition says
+        // about this model: the definition is authoritative, the statement is an
+        // addition on top of it.
+        val result = resolver(
+            model = reloaded.modelIdentifier,
+            registry = InMemoryModelCapabilityRegistry(initial = emptyList()),
+            declared = reloaded.declaredCapabilities,
+        ).resolveForRole(AgentRole.MAIN, active)
 
-        val result = resolver(devstral, registry).resolveForRole(AgentRole.MAIN, active)
-        assertFalse(result.eligible)
-        assertEquals(ModelEligibilityState.UNKNOWN, result.eligibility.state)
+        assertTrue(result.eligible)
+        assertEquals(CapabilitySupport.SUPPORTED, result.eligibility.profile.toolCalling)
     }
 
     private fun preset(declared: ModelCapabilityDeclaration = ModelCapabilityDeclaration.EMPTY) = ModelPreset(

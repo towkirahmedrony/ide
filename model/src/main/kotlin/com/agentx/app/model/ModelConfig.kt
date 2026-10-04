@@ -1,5 +1,6 @@
 package com.agentx.app.model
 
+import com.agentx.app.model.capability.ModelCapabilityDeclaration
 import com.agentx.app.model.json.JsonObject
 
 /**
@@ -38,6 +39,16 @@ data class ModelConfig(
     val headers: Map<String, String> = emptyMap(),
     /** Explicit capability override; when set it wins over the provider's. */
     val capabilities: ModelCapabilities? = null,
+    /**
+     * What the saved configuration of *this* model states it can do.
+     *
+     * Null means "nothing stated", which leaves resolution to the registry exactly
+     * as before. It is carried on the configuration so the selected model reaches
+     * the eligibility check with its own capability instead of being reconstructed
+     * from `providerId` + `model` alone and losing it. It is scoped to the model
+     * named above and must not be carried across a model change.
+     */
+    val declaredCapabilities: ModelCapabilityDeclaration? = null,
     val metadata: Map<String, String> = emptyMap(),
 ) {
     /** Returns every configuration problem found; an empty list means valid. */

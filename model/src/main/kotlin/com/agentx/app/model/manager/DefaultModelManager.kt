@@ -344,6 +344,10 @@ class DefaultModelManager(
                 // A saved connection's own headers travel with it here too, so asking
                 // a custom endpoint for its model list cannot 403 where chat succeeds.
                 headers = preset.requestHeaders,
+                // Same reason as the connected config: a capability stated for this
+                // model travels with it, so the catalog sees the same value the
+                // eligibility check and the gateway see.
+                declaredCapabilities = preset.declaredCapabilities.takeUnless { it.isEmpty },
                 metadata = mapOf(
                     "modelPresetId" to preset.id,
                     "modelPresetName" to preset.displayName,

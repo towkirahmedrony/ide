@@ -12,7 +12,7 @@ import com.agentx.app.model.capability.ModelCapability
 import com.agentx.app.model.capability.ModelCapabilityErrors
 import com.agentx.app.model.capability.ModelCapabilityProfile
 import com.agentx.app.model.capability.ModelCapabilityRegistry
-import com.agentx.app.model.capability.toCapabilityProfile
+import com.agentx.app.model.capability.capabilityProfile
 import com.agentx.app.model.preset.ModelProviderIds
 import com.agentx.app.model.ratelimit.RateLimitManager
 
@@ -329,12 +329,14 @@ class AgentModelResolver(
 
     fun canSatisfy(role: AgentRole, config: ModelConfig): Boolean = validate(role, config).isSuccess
 
-    private fun profileFor(config: ModelConfig): ModelCapabilityProfile {
-        config.capabilities?.let { override ->
-            return override.toCapabilityProfile(config.providerId, config.model)
-        }
-        return capabilityRegistry.profile(config.providerId, config.model)
-    }
+    /**
+     * The capability profile in effect for [config], through the one shared
+     * precedence rule — so a capability that travels on the configuration (a
+     * saved per-model declaration) is honored here exactly as the eligibility
+     * checker and the gateway honor it.
+     */
+    private fun profileFor(config: ModelConfig): ModelCapabilityProfile =
+        config.capabilityProfile(capabilityRegistry)
 
     private fun capabilityError(
         role: AgentRole,
@@ -352,12 +354,27 @@ class AgentModelResolver(
             "capability" to capability.id,
             "known" to profile.known.toString(),
             "support" to profile.support(capability).name,
+            // Where the resolved value came from, so a rejection can be traced to a
+            // built-in definition, a saved declaration or the absence of both.
+            "provenance" to profile.provenance.name,
             "local" to profile.local.toString(),
         ),
     )
 
+    /**
+     * [config] pointed at [model].
+     *
+     * A change of model drops the configuration's capability declaration: a
+     * statement made about one model must never be inherited by another of the
+     * same provider, or a role that overrides the model would borrow a capability
+     * that was never stated for it.
+     */
     private fun withModel(config: ModelConfig, model: String?): ModelConfig =
-        if (model == null || model == config.model) config else config.copy(model = model)
+        if (model == null || model == config.model) {
+            config
+        } else {
+            config.copy(model = model, declaredCapabilities = null)
+        }
 }
 
 /** Thrown by [AgentModelResolver.resolveChecked] when a role's model cannot satisfy the role. */

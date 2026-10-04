@@ -13,8 +13,8 @@ import com.agentx.app.model.capability.InMemoryModelCapabilityRegistry
 import com.agentx.app.model.capability.ModelCapability
 import com.agentx.app.model.capability.ModelCapabilityProfile
 import com.agentx.app.model.capability.ModelCapabilityRegistry
+import com.agentx.app.model.capability.capabilityProfile
 import com.agentx.app.model.capability.isLocalRuntime
-import com.agentx.app.model.capability.toCapabilityProfile
 import com.agentx.app.model.ratelimit.RateLimitDecision
 import com.agentx.app.model.ratelimit.RateLimitKind
 import com.agentx.app.model.ratelimit.RateLimitManager
@@ -107,6 +107,12 @@ data class ModelEligibility(
         details["model"] = modelId
         details["reason"] = state.name
         first?.let { details["capability"] = it.id }
+        // The runtime values behind the verdict, so a rejection can be traced
+        // without guessing. Nothing here is a secret: it is the resolved support
+        // state and where that resolution came from.
+        first?.let { details["support"] = profile.support(it).name }
+        details["provenance"] = profile.provenance.name
+        details["known"] = profile.known.toString()
         retryAfterMs?.let { details["retryAfterMs"] = it.toString() }
         rateLimitKind?.let { details["rateLimitKind"] = it.name }
         healthState?.let { details["healthState"] = it.name }
@@ -115,7 +121,11 @@ data class ModelEligibility(
         val message = buildString {
             append("MODEL_NOT_ELIGIBLE role=${role.name} provider=$providerId model=$modelId")
             append(" reason=${state.name}")
-            first?.let { append(" capability=${it.id}") }
+            first?.let {
+                append(" capability=${it.id}")
+                append(" support=${profile.support(it).name}")
+            }
+            append(" provenance=${profile.provenance.name}")
             retryAfterMs?.let { append(" retryAfterMs=$it") }
         }
         return AgentError(
@@ -164,13 +174,16 @@ class ModelEligibilityChecker(
     private val healthTracker: CandidateHealthTracker? = null,
 ) {
 
-    /** The capability profile in effect for [config], honoring an explicit override. */
-    fun profile(config: ModelConfig): ModelCapabilityProfile {
-        config.capabilities?.let { override ->
-            return override.toCapabilityProfile(config.providerId, config.model)
-        }
-        return capabilityRegistry.profile(config.providerId, config.model)
-    }
+    /**
+     * The capability profile in effect for [config].
+     *
+     * Resolved through the one shared precedence rule, so a capability declared
+     * for this configuration is seen here without weakening what an undeclared
+     * model resolves to: nothing stated and nothing registered stays
+     * [CapabilitySupport.UNKNOWN], which is not support.
+     */
+    fun profile(config: ModelConfig): ModelCapabilityProfile =
+        config.capabilityProfile(capabilityRegistry)
 
     /** True when [config] runs locally, so it shares no remote rate-limit bucket. */
     fun isLocal(config: ModelConfig): Boolean = config.isLocalRuntime(capabilityRegistry)

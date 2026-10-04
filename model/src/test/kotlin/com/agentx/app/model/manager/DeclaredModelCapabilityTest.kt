@@ -36,6 +36,9 @@ class DeclaredModelCapabilityTest {
     /** The opaque id the connect flow persists for the user's own endpoint. */
     private val devstral = "hf.co/unsloth/Devstral-Small-2-24B-Instruct-2512-GGUF:Q3_K_M"
 
+    /** A custom id no built-in definition covers. */
+    private val undefined = "hf.co/someone/undefined-local-model-GGUF:Q4_K_M"
+
     private val store = InMemoryModelPresetStore()
     private val secrets = InMemoryModelSecretStore()
     private val logs = RecordingLogSink()
@@ -105,16 +108,18 @@ class DeclaredModelCapabilityTest {
     }
 
     @Test
-    fun `a preset that declares nothing leaves every model unknown`() = runBlocking {
+    fun `a preset that declares nothing leaves an undefined model unknown`() = runBlocking {
+        // An id no built-in definition covers, so only a declaration could give it
+        // a capability — and this preset makes none.
         val manager = manager()
 
-        assertNotNull(manager.createPreset(customPreset(model = devstral), credential = null).valueOrNull())
+        assertNotNull(manager.createPreset(customPreset(model = undefined), credential = null).valueOrNull())
 
         assertEquals(
             CapabilitySupport.UNKNOWN,
-            capabilities.support(providerId, devstral, ModelCapability.TOOL_CALLING),
+            capabilities.support(providerId, undefined, ModelCapability.TOOL_CALLING),
         )
-        assertNull(capabilities.get(providerId, devstral))
+        assertNull(capabilities.get(providerId, undefined))
         manager.close()
     }
 

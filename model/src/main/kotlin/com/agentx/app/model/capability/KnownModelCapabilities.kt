@@ -57,6 +57,33 @@ object KnownModelCapabilities {
             local = true,
             enabled = true,
         ),
+        // Devstral Small 2 is an agentic coding model, and its own model card states
+        // that it supports tool calling (mistralai/Devstral-Small-2-24B-Instruct-2512).
+        // That is a *model* capability, defined per model id rather than per provider:
+        // a custom OpenAI-compatible endpoint serving some other model is untouched by
+        // this entry. The serving runtime still has to expose it — the model card's own
+        // instructions require it (vLLM needs `--tool-call-parser mistral
+        // --enable-auto-tool-choice`, and a llama.cpp build needs the tool-call template
+        // changes) — so a backend that does not is corrected per configuration with the
+        // explicit declaration in Settings rather than by this definition.
+        ModelCapabilityProfile(
+            providerId = ModelProviderIds.OPENAI_COMPATIBLE,
+            modelId = "hf.co/unsloth/Devstral-Small-2-24B-Instruct-2512-GGUF:Q3_K_M",
+            displayName = "Devstral Small 2 24B Instruct (Q3_K_M)",
+            toolCalling = CapabilitySupport.SUPPORTED,
+            streaming = CapabilitySupport.SUPPORTED,
+            // Nothing is claimed beyond what the role requires and the model card
+            // documents. Local GGUF serving of a vision projector is configuration
+            // dependent, so it stays unknown rather than being guessed either way.
+            vision = CapabilitySupport.UNKNOWN,
+            structuredOutput = CapabilitySupport.UNKNOWN,
+            reasoning = CapabilitySupport.UNKNOWN,
+            // The endpoint a custom model is served from decides locality, not this
+            // definition: `local = false` keeps the existing rate-limit and endpoint
+            // classification untouched.
+            local = false,
+            enabled = true,
+        ),
     )
 
     /**

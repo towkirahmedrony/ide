@@ -4,6 +4,7 @@ import com.agentx.app.model.capability.InMemoryModelCapabilityRegistry
 import com.agentx.app.model.capability.ModelCapability
 import com.agentx.app.model.capability.ModelCapabilityErrors
 import com.agentx.app.model.capability.ModelCapabilityRegistry
+import com.agentx.app.model.capability.capabilityProfile
 import com.agentx.app.model.capability.toCapabilityProfile
 
 /**
@@ -77,8 +78,12 @@ class DefaultModelGateway(
     override fun capabilities(request: ModelRequest): ModelCapabilities {
         val provider = resolve(request) ?: throw providerNotFound(request)
         request.config.capabilities?.let { return it }
-        val known = capabilityRegistry.get(request.config.providerId, request.config.model)
-        if (known != null && known.known && known.enabled) return known.toModelCapabilities()
+        // The same precedence the eligibility checker uses, so a capability stated
+        // for this configuration is honored when the request is actually made and
+        // not only when it is admitted. An unstated, unregistered model still has
+        // known = false and falls through to the conservative default below.
+        val profile = request.config.capabilityProfile(capabilityRegistry)
+        if (profile.known && profile.enabled) return profile.toModelCapabilities()
         // Unknown discovered models stay usable for chat. They never inherit a
         // provider-wide "tools are supported" default.
         return provider.capabilities(request.config.model).copy(toolCalling = false)

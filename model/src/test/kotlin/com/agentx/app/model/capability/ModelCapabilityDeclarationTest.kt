@@ -17,7 +17,13 @@ class ModelCapabilityDeclarationTest {
     /** The opaque model id a local server reports; it must never be rewritten. */
     private val devstral = "hf.co/unsloth/Devstral-Small-2-24B-Instruct-2512-GGUF:Q3_K_M"
 
-    private fun registry(): InMemoryModelCapabilityRegistry = InMemoryModelCapabilityRegistry()
+    /**
+     * A registry with no definitions at all, so these cases isolate the
+     * declaration mechanism from whatever the built-in catalog happens to know
+     * about the ids used here.
+     */
+    private fun registry(): InMemoryModelCapabilityRegistry =
+        InMemoryModelCapabilityRegistry(initial = emptyList())
 
     private fun InMemoryModelCapabilityRegistry.declare(
         modelId: String,

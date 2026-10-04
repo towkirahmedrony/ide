@@ -51,8 +51,12 @@ interface ModelCapabilityRegistry {
     /**
      * Runtime flags for a request. Order of precedence:
      * 1. [ModelConfig.capabilities] override on the request
-     * 2. A known registry definition
-     * 3. Conservative unknown defaults (tool calling off)
+     * 2. [ModelConfig.declaredCapabilities] stated for this model's configuration
+     * 3. A known registry definition
+     * 4. Conservative unknown defaults (tool calling off)
+     *
+     * The same precedence the eligibility checker and the role resolver apply, so
+     * admission and execution cannot disagree.
      */
     fun capabilitiesFor(config: ModelConfig): ModelCapabilities
 }
@@ -104,7 +108,7 @@ class InMemoryModelCapabilityRegistry(
 
     override fun capabilitiesFor(config: ModelConfig): ModelCapabilities {
         config.capabilities?.let { return it }
-        return profile(config.providerId, config.model).toModelCapabilities()
+        return config.capabilityProfile(this).toModelCapabilities()
     }
 
     private fun registerUnlocked(profile: ModelCapabilityProfile) {

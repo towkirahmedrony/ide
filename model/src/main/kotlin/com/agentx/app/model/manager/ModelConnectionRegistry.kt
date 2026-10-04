@@ -135,6 +135,11 @@ class GatewayModelConnectionRegistry(
             // Carried by the connection, not by each call: normal completions and
             // the catalog's model list go through this same config.
             headers = preset.requestHeaders,
+            // What the saved configuration states about this model travels with the
+            // model it was stated for, so the runtime config is not reconstructed
+            // from providerId + model alone and does not lose the capability on the
+            // way to the eligibility check.
+            declaredCapabilities = preset.declaredCapabilities.takeUnless { it.isEmpty },
             // Only non-secret bookkeeping travels in metadata: never the URL or key.
             metadata = mapOf(
                 "modelPresetId" to preset.id,
