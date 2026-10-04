@@ -6,6 +6,7 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.agentx.app.core.ForgeResult
+import com.agentx.app.core.valueOrNull
 import com.agentx.app.git.GitBranch
 import com.agentx.app.git.GitChangeType
 import com.agentx.app.git.GitFileChange
