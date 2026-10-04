@@ -69,9 +69,13 @@ data class RoleModelPreference(
      *
      * When present it wins over [providerId], because several independent
      * connections can share one provider family (two custom OpenAI-compatible
-     * endpoints, or a custom endpoint and an Ollama server). Null means "resolve
-     * by provider family", which is what the built-in defaults use and what a
-     * role configured before connections had identities keeps doing.
+     * endpoints, or a custom endpoint and an Ollama server). When the named
+     * connection is not among the supplied connections (disconnected or
+     * deleted), resolution degrades to the provider-family rules rather than
+     * dropping the preference, so a saved assignment survives a restart.
+     * Null means "resolve by provider family", which is what the built-in
+     * defaults use and what a role configured before connections had identities
+     * keeps doing.
      */
     val connectionId: String? = null,
 ) {
@@ -230,13 +234,14 @@ class AgentModelResolver(
 
         // A specific saved connection is addressed by its own identity, so a role
         // assigned to one custom endpoint never resolves to another endpoint of the
-        // same provider family.
-        val explicitConnection = preference.connectionId?.takeIf { it.isNotBlank() }
-        if (explicitConnection != null) {
-            val connection = connections()[explicitConnection]
-                ?: return Selection(default, fromRoleMapping = false)
-            return Selection(withModel(connection, model), fromRoleMapping = true)
-        }
+        // same provider family. A named connection that is not connected right now
+        // (disconnected or deleted, or a map keyed differently) degrades to the
+        // provider-family rules below — exactly what a preference without an
+        // identity gets — so a saved assignment keeps resolving instead of being
+        // silently dropped to the default.
+        val named = preference.connectionId?.takeIf { it.isNotBlank() }
+            ?.let { connectionId -> connections()[connectionId] }
+        if (named != null) return Selection(withModel(named, model), fromRoleMapping = true)
 
         if (providerId == default.providerId) return Selection(withModel(default, model), fromRoleMapping = true)
         val connection = connectionForProvider(providerId) ?: return Selection(default, fromRoleMapping = false)
@@ -269,10 +274,11 @@ class AgentModelResolver(
      */
     fun configFor(preference: RoleModelPreference, default: ModelConfig): ModelConfig? {
         val model = preference.model?.takeIf { it.isNotBlank() }
-        preference.connectionId?.takeIf { it.isNotBlank() }?.let { connectionId ->
-            val connection = connections()[connectionId] ?: return null
-            return withModel(connection, model)
-        }
+        // Same rule as [select]: the named connection wins when it is connected;
+        // when it is not, the preference degrades to the provider-family rules.
+        val named = preference.connectionId?.takeIf { it.isNotBlank() }
+            ?.let { connectionId -> connections()[connectionId] }
+        if (named != null) return withModel(named, model)
         if (preference.providerId == default.providerId) return withModel(default, model)
         val connection = connectionForProvider(preference.providerId) ?: return null
         return withModel(connection, model)

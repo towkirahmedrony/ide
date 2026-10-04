@@ -119,6 +119,10 @@ class MultiConnectionRoleRoutingTest {
         assertTrue(resolved.metadata.isEmpty() || resolved.model == "llama-3.3-70b-versatile")
     }
 
-    /** A role whose connection is gone falls back to the active configuration. */
-    private fun debuggerConnectionFallback(): ModelConfig = main
+    /**
+     * A role whose connection is gone degrades to the provider-family rules:
+     * the active configuration is default's provider, so the documented
+     * resolution order applies the role's model to it.
+     */
+    private fun debuggerConnectionFallback(): ModelConfig = main.copy(model = "qwen2.5-coder-14b")
 }
