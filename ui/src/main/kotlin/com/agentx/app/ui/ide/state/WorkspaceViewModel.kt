@@ -25,6 +25,8 @@ import com.agentx.app.ui.ide.model.OpenFile
 import com.agentx.app.ui.ide.model.ProjectSummary
 import com.agentx.app.ui.ide.model.toFileNode
 import com.agentx.app.ui.ide.model.toSummary
+import com.agentx.app.workspace.WorkspaceError
+import com.agentx.app.workspace.WorkspaceErrorCode
 import com.agentx.app.workspace.WorkspaceFileOpener
 import com.agentx.app.workspace.WorkspaceId
 import com.agentx.app.workspace.WorkspaceManager
@@ -60,6 +62,9 @@ data class FilesUiState(
     /** Directory the user last worked in; drives the breadcrumb and "up". */
     val focusedPath: String = WorkspacePath.ROOT,
     val selectedPath: String? = null,
+    /** Result of the last create/rename/delete, shown as a dismissible banner. */
+    val message: String? = null,
+    val messageIsError: Boolean = false,
 ) {
     val rootState: DirectoryLoadState get() = root.loadState
     val rootError: String? get() = root.errorMessage
@@ -81,6 +86,13 @@ data class EditorUiState(
     val draft: String = "",
     val saving: Boolean = false,
     val statusMessage: String? = null,
+    /**
+     * The file changed on disk (a terminal command, an agent, an external tool) while the editor
+     * held unsaved edits. The user's draft is never replaced in this case — only reported.
+     */
+    val externallyModified: Boolean = false,
+    /** A save was stopped because the file changed on disk; the user must choose to overwrite. */
+    val saveConflict: Boolean = false,
 ) {
     val isDirty: Boolean get() = file != null && draft != file.content
     val lineCount: Int get() = if (draft.isEmpty()) 1 else draft.count { it == '\n' } + 1
@@ -301,15 +313,42 @@ class WorkspaceViewModel(
         refreshStructure(debounceMillis = STRUCTURE_DEBOUNCE_MILLIS)
     }
 
-    fun save() {
+    /**
+     * Writes the draft back to the file the editor opened.
+     *
+     * Before writing, the file is re-read and compared with the content the editor loaded. When
+     * they differ, the file changed on disk since it was opened, so the save is stopped and
+     * [EditorUiState.saveConflict] is raised instead of silently overwriting the newer content.
+     * [overwrite] is the user's explicit choice to proceed anyway.
+     */
+    fun save(overwrite: Boolean = false) {
         val active = session ?: return
         val file = editorState.file ?: return
         viewModelScope.launch {
             editorState = editorState.copy(saving = true, statusMessage = null)
+            if (!overwrite) {
+                when (val disk = active.fileSystem.readFile(file.path)) {
+                    is ForgeResult.Success -> if (disk.value != file.content) {
+                        editorState = editorState.copy(saving = false, saveConflict = true)
+                        return@launch
+                    }
+
+                    is ForgeResult.Failure -> if (disk.error.code == WorkspaceErrorCode.NOT_FOUND) {
+                        editorState = editorState.copy(
+                            saving = false,
+                            saveConflict = true,
+                            statusMessage = "“${file.name}” no longer exists on disk.",
+                        )
+                        return@launch
+                    }
+                }
+            }
             when (val result = active.fileSystem.writeFile(file.path, editorState.draft)) {
                 is ForgeResult.Success -> editorState = editorState.copy(
                     file = file.copy(content = editorState.draft),
                     saving = false,
+                    saveConflict = false,
+                    externallyModified = false,
                     statusMessage = "Saved ${file.name}",
                 )
 
@@ -321,8 +360,132 @@ class WorkspaceViewModel(
         }
     }
 
+    fun dismissSaveConflict() {
+        editorState = editorState.copy(saveConflict = false)
+    }
+
+    /** Discards the editor's unsaved changes and shows what is on disk right now. */
+    fun reloadOpenFile() {
+        val active = session ?: return
+        val file = editorState.file ?: return
+        viewModelScope.launch {
+            when (val result = active.fileSystem.readFile(file.path)) {
+                is ForgeResult.Success -> {
+                    editorState = editorState.copy(
+                        file = file.copy(content = result.value),
+                        draft = result.value,
+                        externallyModified = false,
+                        saveConflict = false,
+                        statusMessage = "Reloaded ${file.name} from disk",
+                    )
+                    cursorPosition = null
+                    refreshStructure(debounceMillis = 0L)
+                }
+
+                is ForgeResult.Failure -> editorState = editorState.copy(statusMessage = result.error.userMessage)
+            }
+        }
+    }
+
     fun dismissEditorStatus() {
         editorState = editorState.copy(statusMessage = null)
+    }
+
+    // --- file operations -----------------------------------------------------
+
+    /**
+     * Re-reads the folders the user has open and reconciles the editor with disk.
+     *
+     * This is how a change made anywhere else — a command in the terminal, an agent, another
+     * tool — reaches the browser. It re-reads only the folders that were actually opened, so it
+     * costs one directory read per folder on screen and never walks the whole project.
+     */
+    fun reload() {
+        val active = session ?: return
+        val loader = tree ?: return
+        val paths = filesState.expanded + WorkspacePath.ROOT
+        viewModelScope.launch {
+            paths.forEach { path -> reloadDirectory(loader, path) }
+            publish(loader)
+            reconcileOpenFile(active)
+        }
+    }
+
+    /** Creates an empty file named [name] inside [parentPath]. */
+    fun createFile(parentPath: String, name: String) {
+        val active = session ?: return
+        viewModelScope.launch {
+            val target = childPath(parentPath, name) ?: return@launch
+            when (val result = active.fileSystem.createFile(target)) {
+                is ForgeResult.Success -> {
+                    filesState = filesState.copy(selectedPath = target)
+                    report("Created ${result.value.name}")
+                    refreshDirectory(parentPath)
+                }
+
+                is ForgeResult.Failure -> reportError(result.error)
+            }
+        }
+    }
+
+    /** Creates a directory named [name] inside [parentPath]. */
+    fun createDirectory(parentPath: String, name: String) {
+        val active = session ?: return
+        viewModelScope.launch {
+            val target = childPath(parentPath, name) ?: return@launch
+            when (val result = active.fileSystem.createDirectory(target)) {
+                is ForgeResult.Success -> {
+                    filesState = filesState.copy(expanded = filesState.expanded + parentPath)
+                    report("Created folder ${result.value.name}")
+                    refreshDirectory(parentPath)
+                }
+
+                is ForgeResult.Failure -> reportError(result.error)
+            }
+        }
+    }
+
+    /** Renames [path] within its current folder, retargeting the editor when it held the file. */
+    fun rename(path: String, newName: String) {
+        val active = session ?: return
+        viewModelScope.launch {
+            val parent = WorkspacePath.parent(path)
+            val target = childPath(parent, newName) ?: return@launch
+            when (val result = active.fileSystem.rename(path, newName)) {
+                is ForgeResult.Success -> {
+                    retargetEditorAfterRename(path, target)
+                    prunePaths(path)
+                    report("Renamed to ${result.value.name}")
+                    refreshDirectory(parent)
+                }
+
+                is ForgeResult.Failure -> reportError(result.error)
+            }
+        }
+    }
+
+    /** Deletes [path] and everything under it, closing the editor when it held the file. */
+    fun delete(path: String) {
+        val active = session ?: return
+        viewModelScope.launch {
+            when (val result = active.fileSystem.delete(path)) {
+                is ForgeResult.Success -> {
+                    val open = editorState.file
+                    if (open != null && (open.path == path || open.path.startsWith("$path/"))) {
+                        editorState = EditorUiState(statusMessage = "“${open.name}” was deleted.")
+                    }
+                    prunePaths(path)
+                    report("Deleted ${WorkspacePath.name(path)}")
+                    refreshDirectory(WorkspacePath.parent(path))
+                }
+
+                is ForgeResult.Failure -> reportError(result.error)
+            }
+        }
+    }
+
+    fun dismissFilesMessage() {
+        filesState = filesState.copy(message = null, messageIsError = false)
     }
 
     // --- unsaved-changes guard --------------------------------------------
@@ -439,6 +602,100 @@ class WorkspaceViewModel(
             error = null,
             root = loader.snapshot(rootName).toFileNode(),
         )
+    }
+
+    /** Force re-reads [path] after a mutation so the browser shows the real project at once. */
+    private fun refreshDirectory(path: String) {
+        readDirectory(path, force = true)
+    }
+
+    /** Re-reads one already-open folder during [reload]; cancellation always propagates. */
+    private suspend fun reloadDirectory(loader: WorkspaceTreeLoader, path: String) {
+        if (!loader.beginLoad(path, force = true)) return
+        try {
+            loader.read(path)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (cause: Throwable) {
+            logger.error("Refreshing a folder failed", cause, mapOf("path" to path))
+        }
+    }
+
+    /**
+     * Brings the editor back in step with the file on disk.
+     *
+     * A clean editor is reloaded transparently. An editor with unsaved edits is never
+     * overwritten: it is only flagged as [EditorUiState.externallyModified], so the user keeps
+     * their draft and decides what to do.
+     */
+    private suspend fun reconcileOpenFile(active: WorkspaceSession) {
+        val file = editorState.file ?: return
+        when (val result = active.fileSystem.readFile(file.path)) {
+            is ForgeResult.Success -> {
+                val disk = result.value
+                when {
+                    disk == file.content -> Unit
+                    editorState.isDirty -> editorState = editorState.copy(externallyModified = true)
+                    else -> {
+                        editorState = editorState.copy(
+                            file = file.copy(content = disk),
+                            draft = disk,
+                            externallyModified = false,
+                            saveConflict = false,
+                            statusMessage = "Reloaded ${file.name} from disk",
+                        )
+                        cursorPosition = null
+                        refreshStructure(debounceMillis = 0L)
+                    }
+                }
+            }
+
+            is ForgeResult.Failure -> if (result.error.code == WorkspaceErrorCode.NOT_FOUND) {
+                editorState = editorState.copy(
+                    externallyModified = true,
+                    statusMessage = "“${file.name}” was changed on disk.",
+                )
+            }
+        }
+    }
+
+    /** Validates a single-segment [name] under [parent]; reports and returns null when invalid. */
+    private fun childPath(parent: String, name: String): String? =
+        when (val child = WorkspacePath.child(parent, name.trim())) {
+            is ForgeResult.Success -> child.value
+            is ForgeResult.Failure -> {
+                reportError(child.error)
+                null
+            }
+        }
+
+    /** Retargets the open editor when the file it holds was renamed or moved. */
+    private fun retargetEditorAfterRename(oldPath: String, newPath: String) {
+        val open = editorState.file ?: return
+        val moved = when {
+            open.path == oldPath -> newPath
+            open.path.startsWith("$oldPath/") -> newPath + open.path.removePrefix(oldPath)
+            else -> return
+        }
+        editorState = editorState.copy(file = open.copy(path = moved, name = WorkspacePath.name(moved)))
+    }
+
+    /** Drops expanded/selected/focused paths that sat inside a renamed or deleted subtree. */
+    private fun prunePaths(prefix: String) {
+        val inside = { path: String -> path == prefix || path.startsWith("$prefix/") }
+        filesState = filesState.copy(
+            expanded = filesState.expanded.filterNot(inside).toSet(),
+            selectedPath = filesState.selectedPath?.takeIf { !inside(it) },
+            focusedPath = if (inside(filesState.focusedPath)) WorkspacePath.parent(prefix) else filesState.focusedPath,
+        )
+    }
+
+    private fun report(message: String) {
+        filesState = filesState.copy(message = message, messageIsError = false)
+    }
+
+    private fun reportError(error: WorkspaceError) {
+        filesState = filesState.copy(message = error.userMessage, messageIsError = true)
     }
 
     private suspend fun resolveSession(): WorkspaceResult<WorkspaceSession> {

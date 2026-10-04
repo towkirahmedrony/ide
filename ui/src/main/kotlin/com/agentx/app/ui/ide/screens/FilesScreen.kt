@@ -15,22 +15,35 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.CreateNewFolder
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.FolderOff
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -67,6 +80,14 @@ private fun flattenVisible(
     }
 }
 
+/** A pending create/rename dialog: its title, the name it starts from, and what it does. */
+private data class NameDialogSpec(
+    val title: String,
+    val initial: String,
+    val confirmLabel: String,
+    val onConfirm: (String) -> Unit,
+)
+
 @Composable
 fun FilesScreen(
     state: FilesUiState,
@@ -75,8 +96,17 @@ fun FilesScreen(
     onRetry: () -> Unit,
     onRetryDirectory: (String) -> Unit,
     onNavigateUp: () -> Unit,
+    onRefresh: () -> Unit,
+    onCreateFile: (String, String) -> Unit,
+    onCreateDirectory: (String, String) -> Unit,
+    onRename: (String, String) -> Unit,
+    onDelete: (String) -> Unit,
+    onDismissMessage: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var nameDialog by remember { mutableStateOf<NameDialogSpec?>(null) }
+    var deleteTarget by remember { mutableStateOf<FileNode?>(null) }
+
     Box(modifier = modifier.fillMaxSize().background(ForgeCanvas)) {
         when {
             // The workspace itself is still being opened.
@@ -111,6 +141,12 @@ fun FilesScreen(
                 icon = Icons.Outlined.FolderOff,
                 title = "This folder is empty",
                 message = "There are no files in this workspace yet.",
+                actionLabel = "New file",
+                onAction = {
+                    nameDialog = NameDialogSpec("New file", "", "Create") { name ->
+                        onCreateFile(state.focusedPath, name)
+                    }
+                },
                 modifier = Modifier.align(Alignment.Center),
             )
 
@@ -119,7 +155,25 @@ fun FilesScreen(
                     label = state.breadcrumb(),
                     canNavigateUp = state.focusedPath.isNotEmpty(),
                     onNavigateUp = onNavigateUp,
+                    onNewFile = {
+                        nameDialog = NameDialogSpec("New file", "", "Create") { name ->
+                            onCreateFile(state.focusedPath, name)
+                        }
+                    },
+                    onNewFolder = {
+                        nameDialog = NameDialogSpec("New folder", "", "Create") { name ->
+                            onCreateDirectory(state.focusedPath, name)
+                        }
+                    },
+                    onRefresh = onRefresh,
                 )
+                state.message?.let { message ->
+                    OperationMessageStrip(
+                        message = message,
+                        isError = state.messageIsError,
+                        onDismiss = onDismissMessage,
+                    )
+                }
                 val rows = flattenVisible(state.root.children, state.expanded)
                 LazyColumn(
                     modifier = Modifier.fillMaxSize().padding(vertical = 8.dp),
@@ -134,6 +188,12 @@ fun FilesScreen(
                                 selected = state.selectedPath == node.path,
                                 onToggle = { onToggle(node.path) },
                                 onOpenFile = { onOpenFile(node.path) },
+                                onRename = {
+                                    nameDialog = NameDialogSpec("Rename", node.name, "Rename") { newName ->
+                                        onRename(node.path, newName)
+                                    }
+                                },
+                                onDelete = { deleteTarget = node },
                             )
                             // A folder reports its own state instead of spinning forever.
                             if (node.isDirectory && node.path in state.expanded) {
@@ -149,15 +209,113 @@ fun FilesScreen(
             }
         }
     }
+
+    nameDialog?.let { spec ->
+        NameEntryDialog(
+            spec = spec,
+            onDismiss = { nameDialog = null },
+            onConfirm = { name ->
+                nameDialog = null
+                spec.onConfirm(name)
+            },
+        )
+    }
+
+    deleteTarget?.let { node ->
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = { Text("Delete ${if (node.isDirectory) "folder" else "file"}?") },
+            text = {
+                Text(
+                    if (node.isDirectory) {
+                        "\"${node.name}\" and everything inside it will be deleted from the project."
+                    } else {
+                        "\"${node.name}\" will be deleted from the project."
+                    },
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        deleteTarget = null
+                        onDelete(node.path)
+                    },
+                ) { Text("Delete", color = ForgeDanger) }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteTarget = null }) { Text("Cancel") }
+            },
+        )
+    }
 }
 
-/** Breadcrumb for the folder the user is working in, with an "up" affordance. */
+/** The name prompt shared by create and rename. */
+@Composable
+private fun NameEntryDialog(
+    spec: NameDialogSpec,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit,
+) {
+    var name by remember(spec) { mutableStateOf(spec.initial) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(spec.title) },
+        text = {
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                singleLine = true,
+                label = { Text("Name") },
+                isError = name.isBlank(),
+            )
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onConfirm(name.trim()) },
+                enabled = name.isNotBlank(),
+            ) { Text(spec.confirmLabel) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+/** Dismissible result of the last create/rename/delete. */
+@Composable
+private fun OperationMessageStrip(
+    message: String,
+    isError: Boolean,
+    onDismiss: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(if (isError) ForgeDanger.copy(alpha = 0.12f) else ForgeMint.copy(alpha = 0.10f))
+            .padding(start = 14.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = message,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (isError) ForgeDanger else ForgeMint,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        TextButton(onClick = onDismiss) { Text("Dismiss") }
+    }
+}
+
+/** Breadcrumb for the folder the user is working in, with the folder actions. */
 @Composable
 private fun FolderPathBar(
     label: String,
     canNavigateUp: Boolean,
     onNavigateUp: () -> Unit,
+    onNewFile: () -> Unit,
+    onNewFolder: () -> Unit,
+    onRefresh: () -> Unit,
 ) {
+    var menuOpen by remember { mutableStateOf(false) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -180,6 +338,42 @@ private fun FolderPathBar(
                 tint = if (canNavigateUp) ForgeInk else ForgeMuted,
                 modifier = Modifier.size(18.dp),
             )
+        }
+        Box {
+            IconButton(onClick = { menuOpen = true }) {
+                Icon(
+                    imageVector = Icons.Filled.MoreVert,
+                    contentDescription = "Folder actions",
+                    tint = ForgeInk,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                DropdownMenuItem(
+                    text = { Text("New file") },
+                    leadingIcon = { Icon(Icons.Filled.Add, contentDescription = null) },
+                    onClick = {
+                        menuOpen = false
+                        onNewFile()
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text("New folder") },
+                    leadingIcon = { Icon(Icons.Filled.CreateNewFolder, contentDescription = null) },
+                    onClick = {
+                        menuOpen = false
+                        onNewFolder()
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text("Refresh") },
+                    leadingIcon = { Icon(Icons.Filled.Refresh, contentDescription = null) },
+                    onClick = {
+                        menuOpen = false
+                        onRefresh()
+                    },
+                )
+            }
         }
     }
 }
@@ -245,14 +439,17 @@ private fun FileRow(
     selected: Boolean,
     onToggle: () -> Unit,
     onOpenFile: () -> Unit,
+    onRename: () -> Unit,
+    onDelete: () -> Unit,
 ) {
+    var menuOpen by remember { mutableStateOf(false) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp)
             .background(if (selected) ForgeSurfaceVariant else Color.Transparent)
             .clickable { if (node.isDirectory) onToggle() else onOpenFile() }
-            .padding(start = (depth * 16).dp, top = 12.dp, bottom = 12.dp, end = 10.dp),
+            .padding(start = (depth * 16).dp, top = 12.dp, bottom = 12.dp, end = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         val icon = when {
@@ -286,6 +483,34 @@ private fun FileRow(
                 tint = ForgeMuted,
                 modifier = Modifier.size(18.dp),
             )
+        }
+        Box {
+            IconButton(onClick = { menuOpen = true }) {
+                Icon(
+                    imageVector = Icons.Filled.MoreVert,
+                    contentDescription = "Actions for ${node.name}",
+                    tint = ForgeMuted,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                DropdownMenuItem(
+                    text = { Text("Rename") },
+                    leadingIcon = { Icon(Icons.Filled.Edit, contentDescription = null) },
+                    onClick = {
+                        menuOpen = false
+                        onRename()
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text("Delete") },
+                    leadingIcon = { Icon(Icons.Filled.Delete, contentDescription = null) },
+                    onClick = {
+                        menuOpen = false
+                        onDelete()
+                    },
+                )
+            }
         }
     }
 }

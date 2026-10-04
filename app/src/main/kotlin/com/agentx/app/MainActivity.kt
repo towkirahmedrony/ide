@@ -63,6 +63,8 @@ import com.agentx.app.termux.TermuxRuntimeHolder
 import com.agentx.app.ubuntu.LocalUbuntuRuntime
 import com.agentx.app.ui.theme.ForgeTheme
 import com.agentx.app.workspace.DefaultWorkspaceManager
+import com.agentx.app.workspace.FileWorkspaceBackend
+import com.agentx.app.workspace.RoutingWorkspaceBackend
 import com.agentx.app.workspace.android.SafWorkspaceBackend
 import com.agentx.app.workspace.android.SharedPreferencesWorkspaceMetadataStore
 import kotlinx.coroutines.CoroutineScope
@@ -233,7 +235,12 @@ class MainActivity : ComponentActivity() {
         // must share this instance. Recreating it from Compose remember would
         // drop the open session and make the agent look at an empty project.
         val workspaceManager = DefaultWorkspaceManager(
-            backend = SafWorkspaceBackend(applicationContext),
+            // One backend per project source behind one port: a SAF tree is opened through the
+            // document provider, a real path (an AgentX-managed Git clone) through the filesystem.
+            backend = RoutingWorkspaceBackend.contentAndPath(
+                saf = SafWorkspaceBackend(applicationContext),
+                files = FileWorkspaceBackend(),
+            ),
             store = SharedPreferencesWorkspaceMetadataStore(applicationContext),
         )
         val workspaceSelection = WorkspaceSelectionState()

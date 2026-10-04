@@ -76,6 +76,8 @@ fun EditorScreen(
     structure: EditorStructureUiState = EditorStructureUiState(),
     /** Reports the caret to the state holder, 1-based like the gutter. */
     onCursorMoved: (Int, Int) -> Unit = { _, _ -> },
+    /** Discards the draft and shows what the file holds on disk right now. */
+    onReloadFromDisk: () -> Unit = {},
 ) {
     val file = state.file
     if (file == null) {
@@ -127,6 +129,32 @@ fun EditorScreen(
                 Icon(Icons.Filled.Save, contentDescription = null)
                 Spacer(Modifier.width(6.dp))
                 Text(if (state.saving) "Saving" else "Save")
+            }
+        }
+
+        // The file changed on disk while the editor held it. When the draft is dirty it is kept
+        // untouched — the user decides — and this strip is the notice that something happened.
+        if (state.externallyModified) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(ForgeAmber.copy(alpha = 0.16f))
+                    .padding(horizontal = 12.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = if (state.isDirty) {
+                        "This file changed on disk. Your unsaved edits were kept."
+                    } else {
+                        "This file changed on disk since it was opened."
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ForgeAmber,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = onReloadFromDisk) {
+                    Text(if (state.isDirty) "Discard & reload" else "Reload")
+                }
             }
         }
 

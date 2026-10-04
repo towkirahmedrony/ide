@@ -139,12 +139,41 @@ fun WorkspaceShell(
     val currentTab = WorkspaceTab.entries.firstOrNull { it.route == backStackEntry?.destination?.route }
         ?: WorkspaceTab.FILES
 
+    // Entering the browser or the editor re-reads the open folders, so a change made while the
+    // user was in the terminal — `touch`, `rm`, `git checkout` — is on screen when they return.
+    LaunchedEffect(currentTab) {
+        if (currentTab == WorkspaceTab.FILES || currentTab == WorkspaceTab.EDITOR) {
+            workspaceViewModel.reload()
+        }
+    }
+
     BackHandler {
         if (currentTab != WorkspaceTab.FILES) {
             innerNavController.navigateToTab(WorkspaceTab.FILES)
         } else {
             onExit()
         }
+    }
+
+    // A save that would overwrite a file changed on disk is stopped and asked about here
+    // instead, so the newer content is never silently clobbered.
+    if (workspaceViewModel.editorState.saveConflict) {
+        AlertDialog(
+            onDismissRequest = workspaceViewModel::dismissSaveConflict,
+            title = { Text("File changed on disk") },
+            text = {
+                Text(
+                    "\"${workspaceViewModel.editorState.file?.name ?: "This file"}\" was modified " +
+                        "outside the editor since you opened it. Saving now will overwrite those changes.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { workspaceViewModel.save(overwrite = true) }) { Text("Overwrite") }
+            },
+            dismissButton = {
+                TextButton(onClick = workspaceViewModel::dismissSaveConflict) { Text("Keep editing") }
+            },
+        )
     }
 
     workspaceViewModel.pendingOpenPath?.let { path ->
@@ -222,17 +251,24 @@ fun WorkspaceShell(
                     onRetry = workspaceViewModel::loadWorkspace,
                     onRetryDirectory = workspaceViewModel::retryDirectory,
                     onNavigateUp = workspaceViewModel::navigateUp,
+                    onRefresh = workspaceViewModel::reload,
+                    onCreateFile = workspaceViewModel::createFile,
+                    onCreateDirectory = workspaceViewModel::createDirectory,
+                    onRename = workspaceViewModel::rename,
+                    onDelete = workspaceViewModel::delete,
+                    onDismissMessage = workspaceViewModel::dismissFilesMessage,
                 )
             }
             composable(WorkspaceTab.EDITOR.route) {
                 EditorScreen(
                     state = workspaceViewModel.editorState,
                     onEdit = workspaceViewModel::editDraft,
-                    onSave = workspaceViewModel::save,
+                    onSave = { workspaceViewModel.save() },
                     onBrowseFiles = { innerNavController.navigateToTab(WorkspaceTab.FILES) },
                     dismissStatus = workspaceViewModel::dismissEditorStatus,
                     structure = workspaceViewModel.structureState,
                     onCursorMoved = workspaceViewModel::onCursorMoved,
+                    onReloadFromDisk = workspaceViewModel::reloadOpenFile,
                 )
             }
             composable(WorkspaceTab.AGENT.route) {
