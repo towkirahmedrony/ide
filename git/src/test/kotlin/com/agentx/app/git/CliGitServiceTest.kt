@@ -118,8 +118,12 @@ class CliGitServiceTest {
     @Test
     fun `a call for a project that is no longer active is refused`() = runBlocking {
         val projects = Projects(project("a"))
-        val runner = FakeRunner { _, command ->
-            if (command.startsWith("git status")) completed(0, "## main$NUL") else completed(0, "true\n")
+        val runner = FakeRunner { project, command ->
+            if (command.startsWith("git status")) {
+                completed(0, "## ${project.workspaceId}$NUL")
+            } else {
+                completed(0, "true\n")
+            }
         }
         val service = CliGitService(projects, runner)
 
