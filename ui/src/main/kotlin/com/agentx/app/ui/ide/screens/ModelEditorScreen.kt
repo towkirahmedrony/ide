@@ -23,6 +23,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -52,6 +53,7 @@ import com.agentx.app.ui.ide.state.ModelSetupForm
 import com.agentx.app.ui.theme.ForgeAmber
 import com.agentx.app.ui.theme.ForgeCanvas
 import com.agentx.app.ui.theme.ForgeDanger
+import com.agentx.app.ui.theme.ForgeInk
 import com.agentx.app.ui.theme.ForgeMint
 import com.agentx.app.ui.theme.ForgeMuted
 
@@ -158,6 +160,7 @@ fun ModelEditorScreen(
                         "Stored encrypted on this device",
                 )
                 ProtocolSelector(state, onEdit)
+                ToolCallingDeclaration(state, onEdit)
             } else {
                 ModelField(state, onEdit, onSelectModel, onToggleManualModel, onRetryCatalog)
                 CredentialField(
@@ -355,6 +358,45 @@ private fun ProtocolSelector(
         style = MaterialTheme.typography.bodySmall,
         color = ForgeMuted,
     )
+}
+
+/**
+ * The user's statement that this Custom/Local model can serve a tool-enabled
+ * agent role.
+ *
+ * A server listing a model says nothing about whether it calls tools, so AgentX
+ * leaves it unknown and a role that needs tools cannot use it. Only the user
+ * knows what their own endpoint can do, and this switch is where they say it —
+ * for this one model, never for `openai-compatible` as a whole.
+ */
+@Composable
+private fun ToolCallingDeclaration(
+    state: ModelEditorState,
+    onEdit: ((ModelSetupForm) -> ModelSetupForm) -> Unit,
+) {
+    IdeSpacer(10)
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "Supports tool calling",
+                style = MaterialTheme.typography.bodyMedium,
+                color = ForgeInk,
+            )
+            Text(
+                text = if (state.form.declaresToolCalling) {
+                    "Stated for this model only: it calls tools and streams completions"
+                } else {
+                    "Leave off unless this model really calls tools — it stays unknown until stated"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = ForgeMuted,
+            )
+        }
+        Switch(
+            checked = state.form.declaresToolCalling,
+            onCheckedChange = { enabled -> onEdit { form -> form.copy(declaresToolCalling = enabled) } },
+        )
+    }
 }
 
 /** The model id: a picker when a list is available, a field otherwise. */

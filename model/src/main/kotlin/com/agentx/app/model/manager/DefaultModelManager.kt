@@ -25,6 +25,7 @@ import com.agentx.app.model.preset.ModelCredentialResolver
 import com.agentx.app.model.preset.ModelPreset
 import com.agentx.app.model.preset.ModelPresetRepository
 import com.agentx.app.model.preset.ModelSecretStore
+import com.agentx.app.model.preset.normalizeModelId
 import com.agentx.app.model.runtime.ModelEndpoint
 import com.agentx.app.model.runtime.ModelHealth
 import com.agentx.app.model.runtime.ModelLifecycleState
@@ -78,7 +79,13 @@ class DefaultModelManager(
     private val monitorEnabled: Boolean = true,
     transport: HttpTransport = UrlConnectionHttpTransport(),
     connectServiceFactory: ((ModelManager) -> ModelConnectService)? = null,
-    capabilityRegistry: ModelCapabilityRegistry = InMemoryModelCapabilityRegistry(),
+    /**
+     * The capability store a saved [ModelPreset.declaredCapabilities] declaration
+     * is published to. One shared instance backs this manager, the connect
+     * service, the gateway and the role resolver, so a declaration stated once is
+     * visible to every checkpoint that decides eligibility.
+     */
+    private val capabilityRegistry: ModelCapabilityRegistry = InMemoryModelCapabilityRegistry(),
 ) : ModelManager {
 
     private val connectService: ModelConnectService =
@@ -140,6 +147,10 @@ class DefaultModelManager(
         val presets = io { repository.list() }
         val activeId = io { repository.activeId() }
         cacheCatalogCredentials(presets)
+        // A saved declaration is knowledge that outlives the process, so it is
+        // re-published to the shared registry on every load. Nothing is registered
+        // for a preset that declares nothing.
+        registerPresetCapabilities(presets)
         val active = presets.firstOrNull { it.id == activeId }
 
         // Restore what was last known, but never claim a live connection that has
@@ -461,7 +472,33 @@ class DefaultModelManager(
         val presets = io { repository.list() }
         val activeId = io { repository.activeId() }
         cacheCatalogCredentials(presets)
+        registerPresetCapabilities(presets)
         mutableState.update { it.copy(presets = presets, activePresetId = activeId) }
+    }
+
+    /**
+     * Publishes every saved capability declaration to the shared
+     * [ModelCapabilityRegistry], so the model a role resolves sees what the user
+     * stated for it.
+     *
+     * This is the only place a declaration becomes authoritative, which is what
+     * keeps it scoped: the registry entry is keyed by this preset's own
+     * `providerId` + `modelId`, so one declared custom model never confers a
+     * capability on any other model — not even another model of the same
+     * `openai-compatible` provider. An undeclared model is untouched and stays
+     * unknown.
+     */
+    private fun registerPresetCapabilities(presets: List<ModelPreset>) {
+        presets.forEach { preset ->
+            val declaration = preset.declaredCapabilities
+            if (declaration.isEmpty) return@forEach
+            val modelId = normalizeModelId(preset.modelIdentifier)
+            if (modelId.isBlank()) return@forEach
+            val providerId = preset.providerId
+            capabilityRegistry.registerOrUpdate(
+                declaration.applyTo(capabilityRegistry.profile(providerId, modelId)),
+            )
+        }
     }
 
     /**

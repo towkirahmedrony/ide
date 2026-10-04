@@ -3,6 +3,8 @@ package com.agentx.app.ui.ide.state
 import com.agentx.app.agent.domain.AgentRole
 import com.agentx.app.agent.model.AgentRoleModelRegistry
 import com.agentx.app.agent.model.RoleModelSelection
+import com.agentx.app.model.capability.CapabilitySupport
+import com.agentx.app.model.capability.ModelCapabilityDeclaration
 import com.agentx.app.model.catalog.ModelCatalogRegistry
 import com.agentx.app.model.connect.EndpointResolver
 import com.agentx.app.model.connect.KnownModelProviders
@@ -117,6 +119,17 @@ data class ModelSetupForm(
      * provider's list. Custom ids stay possible without cluttering the picker.
      */
     val manualModel: Boolean = false,
+    /**
+     * The user's statement that this Custom/Local model can serve a tool-enabled
+     * agent role — it calls tools and streams completions.
+     *
+     * AgentX does not infer this from the provider or a model name, so a model a
+     * server merely lists stays unknown and cannot fill a role that needs tools.
+     * Off by default: nothing is claimed on the user's behalf. The statement
+     * belongs to this one model, not to `openai-compatible` as a provider, so the
+     * switch never makes another custom model look tool-capable.
+     */
+    val declaresToolCalling: Boolean = false,
 ) {
 
     val isEditing: Boolean get() = presetId != null
@@ -149,6 +162,26 @@ data class ModelSetupForm(
 
     val serverUrlRequired: Boolean
         get() = connectionType == ModelConnectionType.LOCAL && serverUrl.isBlank() && !inheritsEndpointDiscovery
+
+    /**
+     * The declaration this form states, or null when the form has nothing to say
+     * about capabilities.
+     *
+     * Only a Custom/Local endpoint can be declared: an API provider states its
+     * capabilities through the provider catalogue, so editing one leaves whatever
+     * the preset already carries untouched. An endpoint the user does not declare
+     * for produces an empty declaration, which withdraws an earlier one.
+     */
+    fun declaredCapabilities(): ModelCapabilityDeclaration? =
+        if (connectionType == ModelConnectionType.LOCAL) {
+            if (declaresToolCalling) {
+                ModelCapabilityDeclaration.toolEnabledEndpoint()
+            } else {
+                ModelCapabilityDeclaration.EMPTY
+            }
+        } else {
+            null
+        }
 
     /** Where the model runs, as the runtime will record it. */
     private fun providerTypeFor(existing: ModelPreset?): ModelProviderType =
@@ -227,6 +260,9 @@ data class ModelSetupForm(
             health = existing?.health ?: HealthCheckConfig(),
             colab = existing?.colab,
             enabled = existing?.enabled ?: true,
+            declaredCapabilities = declaredCapabilities()
+                ?: existing?.declaredCapabilities
+                ?: ModelCapabilityDeclaration.EMPTY,
             setupKind = setupKind.id,
             createdAtMillis = existing?.createdAtMillis ?: 0L,
             updatedAtMillis = existing?.updatedAtMillis ?: 0L,
@@ -255,6 +291,7 @@ data class ModelSetupForm(
         enabled = duplicateOf?.enabled ?: true,
         startupScript = duplicateOf?.startupScript.orEmpty(),
         colabNotebookUrl = duplicateOf?.colab?.notebookUrl,
+        declaredCapabilities = declaredCapabilities(),
     )
 
     /** Every problem found, in field order. Empty means the form can be submitted. */
@@ -332,6 +369,9 @@ data class ModelSetupForm(
                 credential = "",
                 hasStoredCredential = preset.credentialRef != null,
                 inheritsEndpointDiscovery = preset.endpoint.mode != EndpointDiscoveryMode.CONFIGURED_ENDPOINT,
+                // Only a stated SUPPORTED is shown as on: an undeclared or unknown
+                // capability must never read back as a claim the user did not make.
+                declaresToolCalling = preset.declaredCapabilities.toolCalling == CapabilitySupport.SUPPORTED,
             )
         }
     }

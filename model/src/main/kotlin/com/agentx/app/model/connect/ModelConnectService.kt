@@ -9,6 +9,7 @@ import com.agentx.app.core.logging.ForgeLogger
 import com.agentx.app.core.success
 import com.agentx.app.core.valueOrNull
 import com.agentx.app.model.capability.InMemoryModelCapabilityRegistry
+import com.agentx.app.model.capability.ModelCapabilityDeclaration
 import com.agentx.app.model.capability.ModelCapabilityProfile
 import com.agentx.app.model.capability.ModelCapabilityRegistry
 import com.agentx.app.model.diagnostics.ApiOperation
@@ -60,6 +61,13 @@ data class ModelConnectRequest(
     val tunnelMarker: String? = null,
     val colabNotebookUrl: String? = null,
     val endpointMode: EndpointDiscoveryMode? = null,
+    /**
+     * What the user states this model can do. Null means "leave the preset's own
+     * declaration alone", so an edit that has nothing to say about capabilities
+     * never clears a declaration made earlier; an explicit empty declaration is
+     * how a user withdraws one.
+     */
+    val declaredCapabilities: ModelCapabilityDeclaration? = null,
 )
 
 sealed interface ModelConnectOutcome {
@@ -417,6 +425,12 @@ class ModelConnectService(
             ),
             colab = existing?.colab,
             enabled = request.enabled,
+            // An unnamed declaration keeps whatever the preset already carries, so
+            // reconnecting an endpoint never silently withdraws a capability the
+            // user stated for it.
+            declaredCapabilities = request.declaredCapabilities
+                ?: existing?.declaredCapabilities
+                ?: ModelCapabilityDeclaration.EMPTY,
             setupKind = request.setupKind.id,
             createdAtMillis = existing?.createdAtMillis ?: 0L,
             updatedAtMillis = existing?.updatedAtMillis ?: 0L,

@@ -1,5 +1,8 @@
 package com.agentx.app.model.preset
 
+import com.agentx.app.model.capability.CapabilitySupport
+import com.agentx.app.model.capability.ModelCapability
+import com.agentx.app.model.capability.ModelCapabilityDeclaration
 import com.agentx.app.model.json.Json
 import com.agentx.app.model.json.JsonCodec
 import com.agentx.app.model.json.JsonObject
@@ -49,6 +52,16 @@ object ModelPresetCodec {
         fields["startupScript"] = Json.of(preset.startupScript)
         preset.serverPort?.let { fields["serverPort"] = Json.of(it) }
         fields["enabled"] = Json.of(preset.enabled)
+        // Only what the user actually states is written, so a preset that declares
+        // nothing gains no field and an older build reads the same document back
+        // unchanged (unknown fields are already ignored on decode).
+        if (!preset.declaredCapabilities.isEmpty) {
+            val declared = LinkedHashMap<String, JsonValue>()
+            preset.declaredCapabilities.declared.forEach { (capability, support) ->
+                declared[capability.id] = Json.of(support.name)
+            }
+            fields["declaredCapabilities"] = Json.obj(declared)
+        }
         fields["setupKind"] = Json.of(preset.setupKind)
         fields["createdAtMillis"] = Json.of(preset.createdAtMillis)
         fields["updatedAtMillis"] = Json.of(preset.updatedAtMillis)
@@ -120,10 +133,31 @@ object ModelPresetCodec {
                 ?.takeIf { it.isNotBlank() }
                 ?.let(::ColabRuntimeConfig),
             enabled = json.booleanOrNull("enabled") ?: true,
+            declaredCapabilities = declaredCapabilitiesFrom(json.objectOrNull("declaredCapabilities")),
             setupKind = json.stringOrNull("setupKind")?.takeIf { it.isNotBlank() } ?: "custom",
             createdAtMillis = json.numberOrNull("createdAtMillis")?.toLong() ?: 0L,
             updatedAtMillis = json.numberOrNull("updatedAtMillis")?.toLong() ?: 0L,
         )
+    }
+
+    /**
+     * Reads a saved declaration. An absent object, an unknown capability name and
+     * an unreadable value are all ignored rather than guessed at, which is what
+     * keeps a document written by a newer build from turning into an unintended
+     * capability claim here. A declaration that survives none of that decoding is
+     * empty — the same as never having declared anything.
+     */
+    private fun declaredCapabilitiesFrom(json: JsonObject?): ModelCapabilityDeclaration {
+        if (json == null) return ModelCapabilityDeclaration.EMPTY
+        val stated = LinkedHashMap<ModelCapability, CapabilitySupport>()
+        json.forEach { (rawCapability, rawSupport) ->
+            val capability = ModelCapability.fromId(rawCapability) ?: return@forEach
+            val support = rawSupport.stringOrNull()
+                ?.let { name -> CapabilitySupport.entries.firstOrNull { it.name.equals(name, ignoreCase = true) } }
+                ?: return@forEach
+            stated[capability] = support
+        }
+        return ModelCapabilityDeclaration.from(stated)
     }
 
     private fun <T : Enum<T>> fromName(values: List<T>, raw: String?): T? =

@@ -1,5 +1,7 @@
 package com.agentx.app.model.preset
 
+import com.agentx.app.model.capability.ModelCapabilityDeclaration
+
 /**
  * Where a model actually runs. This is deliberately independent of *how* the
  * endpoint is spoken to: [ModelApiProtocol] covers the wire contract, while the
@@ -312,6 +314,17 @@ data class ModelPreset(
     val health: HealthCheckConfig = HealthCheckConfig(),
     val colab: ColabRuntimeConfig? = null,
     val enabled: Boolean = true,
+    /**
+     * What the user states this one model/configuration can do.
+     *
+     * Empty by default, which changes nothing: an undeclared model keeps
+     * resolving to `CapabilitySupport.UNKNOWN` and is never assumed capable. A
+     * Custom/Local user who knows their own server declares the capabilities
+     * AgentX cannot discover for itself here, so capability resolution stays
+     * accurate for a model that has no authoritative definition — without
+     * marking every OpenAI-compatible model tool-capable.
+     */
+    val declaredCapabilities: ModelCapabilityDeclaration = ModelCapabilityDeclaration(),
     /**
      * Quick-connect catalog id (`custom`, `gemini`, `groq`). Informational only;
      * the gateway still sees a normal OpenAI-compatible preset.
