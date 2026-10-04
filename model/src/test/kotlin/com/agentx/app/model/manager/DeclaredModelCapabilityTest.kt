@@ -134,9 +134,11 @@ class DeclaredModelCapabilityTest {
         )
         first.close()
 
-        // A registry that has never seen this model, and a manager over the same
-        // saved store: only loading the preset can put the declaration back.
-        val restartedRegistry = InMemoryModelCapabilityRegistry()
+        // A registry with no definitions at all, and a manager over the same saved
+        // store: only loading the preset can put the declaration back. (An empty
+        // seed keeps this about the declaration rather than about whatever the
+        // built-in catalog happens to define for this id.)
+        val restartedRegistry = InMemoryModelCapabilityRegistry(initial = emptyList())
         assertEquals(
             CapabilitySupport.UNKNOWN,
             restartedRegistry.support(providerId, devstral, ModelCapability.TOOL_CALLING),

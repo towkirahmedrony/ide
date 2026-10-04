@@ -236,10 +236,9 @@ class DeclaredCustomModelCapabilityTest {
 
         // Withdrawing a statement must not erase what the built-in definition says
         // about this model: the definition is authoritative, the statement is an
-        // addition on top of it.
+        // addition on top of it. The registry here is the real one the runtime uses.
         val result = resolver(
             model = reloaded.modelIdentifier,
-            registry = InMemoryModelCapabilityRegistry(initial = emptyList()),
             declared = reloaded.declaredCapabilities,
         ).resolveForRole(AgentRole.MAIN, active)
 
