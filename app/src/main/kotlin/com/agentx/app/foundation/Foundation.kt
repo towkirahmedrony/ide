@@ -138,7 +138,12 @@ object Foundation {
         integrationSetup: IntegrationSetupManager? = null,
         agentPromptStore: AgentPromptStore = InMemoryAgentPromptStore(),
         /**
-         * Persisted per-role model assignments; defaults when none are stored. */
+         * Where discovered provider models are kept between runs. The app passes a
+         * `SharedPreferences`-backed store so a restart restores the catalog a
+         * previous run discovered instead of falling back to a built-in list.
+         */
+        modelCatalogStore: ModelCatalogStore = InMemoryModelCatalogStore(),
+        /** Persisted per-role model assignments; defaults when none are stored. */
         agentRoleModelStore: AgentRoleModelStore = InMemoryAgentRoleModelStore(),
         /**
          * Where configured rate-limit profiles are kept between runs. One shared
