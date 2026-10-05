@@ -113,10 +113,14 @@ class AgentModelsViewModelTest {
         assertEquals("qwen2.5-coder-14b", saved.model)
         assertEquals("preset-1", saved.connectionId)
 
-        // The row reflects the saved assignment.
+        // The row reflects the saved assignment — and reports it truthfully. The
+        // connection it names ("preset-1") is not one this app can currently address, so
+        // the assignment is *stale*, not absent: it must not claim to be connected, and
+        // its identity is preserved so the user can repair it deliberately.
         val coder = vm.rows.first { it.role == AgentRole.CODER }
         assertEquals("qwen2.5-coder-14b", coder.model)
-        assertEquals(RoleModelState.NOT_CONFIGURED, coder.state)
+        assertEquals(RoleModelState.CONNECTION_MISSING, coder.state)
+        assertTrue(coder.state != RoleModelState.CONNECTED)
     }
 
     // --- live catalog -------------------------------------------------------
