@@ -103,6 +103,11 @@ class AgentModule(
             // as ineligible instead of being silently replaced.
             rateLimitManager = context.services.get<RateLimitManager>(ServiceKeys.RATE_LIMIT_MANAGER),
             healthTracker = healthTracker,
+            // Reported on an explicit-assignment failure so the user can tell that
+            // a substitution is possible only through the intentionally configured
+            // fallback policy, never through hidden resolution. The resolver never
+            // triggers it.
+            intentionalFallback = { role -> fallbackPolicy.enabledFor(role) },
         )
         val assembled = assemble(
             gateway = gateway,

@@ -1,13 +1,16 @@
 package com.agentx.app.agent
 
+import com.agentx.app.agent.domain.AgentErrorCode
 import com.agentx.app.agent.domain.AgentRole
 import com.agentx.app.agent.model.AgentModelPreferences
 import com.agentx.app.agent.model.AgentModelProviders
 import com.agentx.app.agent.model.AgentModelResolver
 import com.agentx.app.agent.model.RoleModelPreference
+import com.agentx.app.agent.model.AgentModelResolutionException
 import com.agentx.app.model.ModelConfig
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
@@ -92,12 +95,22 @@ class MultiConnectionRoleRoutingTest {
     }
 
     @Test
-    fun `disconnecting one connection falls back for it and leaves the others untouched`() {
-        // DEBUGGER's connection is gone; the other four are still connected.
+    fun `disconnecting one connection fails that role and leaves the others untouched`() {
+        // DEBUGGER's saved connection is gone; the other four are still connected.
         val remaining = all - debugger.connectionId
         val resolver = resolver(remaining)
 
-        assertEquals(debuggerConnectionFallback(), resolver.resolve(AgentRole.DEBUGGER, main))
+        // The DEBUGGER assignment is explicit (it names a saved connection), so it
+        // is authoritative: resolution fails with a structured error instead of
+        // silently running DEBUGGER on another connection or the active model.
+        val failure = assertFailsWith<AgentModelResolutionException> {
+            resolver.resolve(AgentRole.DEBUGGER, main)
+        }
+        assertEquals(AgentErrorCode.MODEL_NOT_CONNECTED, failure.error.code)
+        assertEquals(debugger.connectionId, failure.error.details["connection"])
+        assertEquals("false", failure.error.details["fallbackAvailable"])
+
+        // Every other role keeps its own identity untouched.
         assertEquals(main, resolver.resolve(AgentRole.MAIN, main))
         assertEquals(coder, resolver.resolve(AgentRole.CODER, coder))
         assertEquals(reviewer, resolver.resolve(AgentRole.REVIEWER, reviewer))
@@ -118,11 +131,4 @@ class MultiConnectionRoleRoutingTest {
         assertEquals(AgentModelProviders.GROQ, resolved.providerId)
         assertTrue(resolved.metadata.isEmpty() || resolved.model == "llama-3.3-70b-versatile")
     }
-
-    /**
-     * A role whose connection is gone degrades to the provider-family rules:
-     * the active configuration is default's provider, so the documented
-     * resolution order applies the role's model to it.
-     */
-    private fun debuggerConnectionFallback(): ModelConfig = main.copy(model = "qwen2.5-coder-14b")
 }

@@ -106,6 +106,19 @@ data class ModelEligibility(
         details["provider"] = providerId
         details["model"] = modelId
         details["reason"] = state.name
+        // Fine-grained, machine-readable cause so a caller can distinguish an
+        // unknown capability from a definite rejection, an observed-connection
+        // problem and a rate limit without parsing the human message. [code]
+        // stays MODEL_NOT_ELIGIBLE for every capability/health rejection.
+        details["cause"] = when (state) {
+            ModelEligibilityState.UNKNOWN -> "MODEL_CAPABILITY_UNKNOWN"
+            ModelEligibilityState.PROVIDER_UNHEALTHY -> "CONNECTION_DEGRADED"
+            ModelEligibilityState.RATE_LIMITED -> "MODEL_RATE_LIMITED"
+            ModelEligibilityState.DISABLED,
+            ModelEligibilityState.CAPABILITY_UNSUPPORTED,
+            -> "MODEL_NOT_ELIGIBLE"
+            ModelEligibilityState.AVAILABLE -> "AVAILABLE"
+        }
         first?.let { details["capability"] = it.id }
         // The runtime values behind the verdict, so a rejection can be traced
         // without guessing. Nothing here is a secret: it is the resolved support

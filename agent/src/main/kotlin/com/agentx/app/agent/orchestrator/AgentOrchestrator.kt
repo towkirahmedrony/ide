@@ -148,7 +148,10 @@ class DefaultAgentOrchestrator(
         // MAIN resolves its own model from the active configuration and the role
         // mapping; the loop and the session metadata then agree on one config.
         val mainConfig = try {
-            modelResolver.resolveForRole(mainAgent.definition, modelConfig).eligibleConfigOrThrow()
+            val resolution = modelResolver.resolveForRole(mainAgent.definition, modelConfig)
+            val resolved = resolution.eligibleConfigOrThrow()
+            emitModelSelected(sink, sessionId, mainAgent.definition.role, resolved, resolution.explicit)
+            resolved
         } catch (unsupported: AgentModelResolutionException) {
             val error = unsupported.error.copy(sessionId = sessionId)
             sink.emit(AgentEvent.Failed(sessionId, error, clock()))
@@ -311,7 +314,10 @@ class DefaultAgentOrchestrator(
 
         val modelConfig = paused.modelConfig
         val mainConfig = try {
-            modelResolver.resolveForRole(mainAgent.definition, modelConfig).eligibleConfigOrThrow()
+            val resolution = modelResolver.resolveForRole(mainAgent.definition, modelConfig)
+            val resolved = resolution.eligibleConfigOrThrow()
+            emitModelSelected(sink, sessionId, mainAgent.definition.role, resolved, resolution.explicit)
+            resolved
         } catch (unsupported: AgentModelResolutionException) {
             val error = unsupported.error.copy(sessionId = sessionId)
             sink.emit(AgentEvent.Failed(sessionId, error, clock()))
@@ -416,6 +422,46 @@ class DefaultAgentOrchestrator(
         }
     }
 
+    /**
+     * Records the model an execution actually resolved to.
+     *
+     * Emitted for every resolution — main, permission resume and each specialist —
+     * so the event stream always names the role, provider family/protocol, model,
+     * connection identity and whether the selection was an explicit assignment or
+     * policy-derived. A substitution can therefore never be hidden; the event and
+     * log carry no credential, endpoint or request body.
+     */
+    private fun emitModelSelected(
+        sink: AgentEventSink,
+        sessionId: String,
+        role: AgentRole,
+        config: ModelConfig,
+        explicit: Boolean,
+    ) {
+        sink.emit(
+            AgentEvent.ModelSelected(
+                sessionId = sessionId,
+                role = role,
+                providerId = config.providerId,
+                modelId = config.model,
+                connectionId = config.connectionId,
+                explicit = explicit,
+                timestampMillis = clock(),
+            ),
+        )
+        logger.info(
+            "Model selected",
+            mapOf(
+                "sessionId" to sessionId,
+                "role" to role.name,
+                "provider" to config.providerId,
+                "model" to config.model,
+                "connection" to config.connectionId,
+                "selection" to if (explicit) "explicit" else "policy",
+            ),
+        )
+    }
+
     override fun session(id: String): AgentSession? =
         history?.conversation(id)?.session ?: sessions.find(id)
 
@@ -455,8 +501,15 @@ class DefaultAgentOrchestrator(
         // role mapping before it is invoked; the session records the same one.
         val agent = specialized.get(request.role)
         val childConfig = try {
-            agent?.let { modelResolver.resolveForRole(it.definition, modelConfig).eligibleConfigOrThrow() }
-                ?: modelConfig
+            if (agent == null) {
+                // An unknown role keeps the caller's config; nothing is resolved here.
+                modelConfig
+            } else {
+                val resolution = modelResolver.resolveForRole(agent.definition, modelConfig)
+                val resolved = resolution.eligibleConfigOrThrow()
+                emitModelSelected(sink, request.sessionId, request.role, resolved, resolution.explicit)
+                resolved
+            }
         } catch (unsupported: AgentModelResolutionException) {
             val error = unsupported.error.copy(sessionId = request.sessionId)
             sink.emit(AgentEvent.Failed(request.sessionId, error, clock()))

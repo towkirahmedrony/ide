@@ -13,6 +13,26 @@ sealed interface AgentEvent {
         override val timestampMillis: Long,
     ) : AgentEvent
 
+    /**
+     * The model an execution actually resolved to, emitted once per resolution
+     * so a substitution can never be hidden from the event stream.
+     *
+     * It carries the complete, credential-free identity: the role, the provider
+     * family/protocol, the selected model, the saved connection it belongs to,
+     * and whether the selection came from an explicit role assignment
+     * (`explicit = true`) or from the role/active-model selection policy. It never
+     * carries an endpoint, credential or request body.
+     */
+    data class ModelSelected(
+        override val sessionId: String,
+        val role: AgentRole,
+        val providerId: String,
+        val modelId: String,
+        val connectionId: String,
+        val explicit: Boolean,
+        override val timestampMillis: Long,
+    ) : AgentEvent
+
     data class Thinking(
         override val sessionId: String,
         val role: AgentRole,
@@ -156,8 +176,12 @@ sealed interface AgentEvent {
         val role: AgentRole,
         val fromProviderId: String,
         val fromModelId: String,
+        /** Connection identity of the model being left, so two same-family connections stay distinct. */
+        val fromConnectionId: String? = null,
         val toProviderId: String,
         val toModelId: String,
+        /** Connection identity of the fallback candidate. */
+        val toConnectionId: String? = null,
         val reason: ModelFallbackReason,
         /** 1-based fallback attempt; the primary attempt is never counted. */
         val attempt: Int,
@@ -170,8 +194,10 @@ sealed interface AgentEvent {
         val role: AgentRole,
         val fromProviderId: String,
         val fromModelId: String,
+        val fromConnectionId: String? = null,
         val toProviderId: String,
         val toModelId: String,
+        val toConnectionId: String? = null,
         val attempts: Int,
         override val timestampMillis: Long,
     ) : AgentEvent

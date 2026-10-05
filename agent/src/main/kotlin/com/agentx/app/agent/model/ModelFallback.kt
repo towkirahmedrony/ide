@@ -118,17 +118,21 @@ data class ModelFallbackDecision(
     val sessionId: String,
     val originalProviderId: String,
     val originalModelId: String,
+    /** Connection identity of the model being left, so same-family connections stay distinct. */
+    val originalConnectionId: String? = null,
     /** Why the original candidate was passed over. */
     val ineligibleReason: String? = null,
     /** The candidate considered for this decision. */
     val consideredProviderId: String? = null,
     val consideredModelId: String? = null,
+    val consideredConnectionId: String? = null,
     /** The capability/quota/health outcome for the considered candidate. */
     val eligibilityState: String? = null,
     val healthState: String? = null,
     val quotaState: String? = null,
     val selectedProviderId: String? = null,
     val selectedModelId: String? = null,
+    val selectedConnectionId: String? = null,
     /** True when a request was actually sent to the selected candidate. */
     val requestSent: Boolean = false,
     /** True when the switch happened before any request, false after a failure. */
@@ -143,14 +147,17 @@ data class ModelFallbackDecision(
         "sessionId" to sessionId,
         "originalProvider" to originalProviderId,
         "originalModel" to originalModelId,
+        "originalConnection" to originalConnectionId,
         "ineligibleReason" to ineligibleReason,
         "consideredProvider" to consideredProviderId,
         "consideredModel" to consideredModelId,
+        "consideredConnection" to consideredConnectionId,
         "eligibility" to eligibilityState,
         "health" to healthState,
         "quota" to quotaState,
         "selectedProvider" to selectedProviderId,
         "selectedModel" to selectedModelId,
+        "selectedConnection" to selectedConnectionId,
         "requestSent" to requestSent,
         "beforeRequest" to beforeRequest,
         "attempts" to attempts,
@@ -338,14 +345,17 @@ class ModelFallback(
                     sessionId = sessionId,
                     originalProviderId = primary.providerId,
                     originalModelId = primary.model,
+                    originalConnectionId = primary.connectionId,
                     ineligibleReason = eligibility.state.name,
                     consideredProviderId = candidate.providerId,
                     consideredModelId = candidate.model,
+                    consideredConnectionId = candidate.connectionId,
                     eligibilityState = candidateEligibility.state.name,
                     healthState = candidateEligibility.healthState?.name,
                     quotaState = candidateEligibility.rateLimitKind?.name,
                     selectedProviderId = candidate.providerId,
                     selectedModelId = candidate.model,
+                    selectedConnectionId = candidate.connectionId,
                     requestSent = true,
                     beforeRequest = true,
                     attempts = attempts,
@@ -444,8 +454,10 @@ class ModelFallback(
                         role = role,
                         fromProviderId = primary.providerId,
                         fromModelId = primary.model,
+                        fromConnectionId = primary.connectionId,
                         toProviderId = candidate.providerId,
                         toModelId = candidate.model,
+                        toConnectionId = candidate.connectionId,
                         attempts = attempts,
                         timestampMillis = clock(),
                     ),
@@ -505,8 +517,10 @@ class ModelFallback(
                 role = role,
                 fromProviderId = from.providerId,
                 fromModelId = from.model,
+                fromConnectionId = from.connectionId,
                 toProviderId = to.providerId,
                 toModelId = to.model,
+                toConnectionId = to.connectionId,
                 reason = reason,
                 attempt = attempt,
                 timestampMillis = clock(),
@@ -539,5 +553,12 @@ class ModelFallback(
         )
     }
 
-    private fun key(config: ModelConfig): String = "${config.providerId}::${config.model}"
+    /**
+     * Identity of one candidate. The saved connection is part of the key because
+     * two independent connections can share a provider family and even a model
+     * id; without it a legitimate candidate would look like a duplicate of the
+     * primary or of a previously tried one.
+     */
+    private fun key(config: ModelConfig): String =
+        "${config.connectionId}::${config.providerId}::${config.model}"
 }

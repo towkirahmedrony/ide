@@ -19,6 +19,14 @@ enum class AgentErrorCode {
 
     /** The resolved model cannot run the role right now (capability/disabled/rate limit). */
     MODEL_NOT_ELIGIBLE,
+
+    /**
+     * An explicit role assignment names a connection/provider that is not
+     * currently connected. Resolution fails instead of substituting another
+     * connection or the active model; see [AgentError.details] for the role,
+     * connection and whether an intentional fallback is configured.
+     */
+    MODEL_NOT_CONNECTED,
     UNKNOWN,
 }
 

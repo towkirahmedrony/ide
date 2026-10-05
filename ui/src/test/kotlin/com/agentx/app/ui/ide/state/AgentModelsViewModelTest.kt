@@ -96,7 +96,10 @@ class AgentModelsViewModelTest {
         val active = config(AgentModelProviders.GEMINI, "gemini-3.5-flash")
         val resolver = AgentModelResolver(
             preferences = AgentModelPreferences.DEFAULT,
-            connections = { mapOf(AgentModelProviders.OPENAI_COMPATIBLE_LOCAL to local) },
+            // The saved connection identity ("preset-1") is the map key: a named
+            // assignment is addressed by its own identity, exactly as the Model
+            // Manager publishes connections (P0-1).
+            connections = { mapOf("preset-1" to local) },
             livePreferences = { registry.preferences() },
         )
         assertEquals("qwen2.5-coder-14b", resolver.resolve(AgentRole.CODER, active).model)

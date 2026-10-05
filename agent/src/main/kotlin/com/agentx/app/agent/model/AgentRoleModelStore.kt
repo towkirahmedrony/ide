@@ -29,8 +29,13 @@ data class RoleModelConfig(
      * The resolver-facing preference: provider family, optional model, and the
      * saved connection the role was assigned from — never an endpoint or key. The
      * connection id is what lets two connections of one family stay distinct.
+     *
+     * A [RoleModelConfig] only ever represents a saved per-role override, so the
+     * preference is marked [RoleModelPreference.explicit]: the assignment is the
+     * user's authoritative choice and must not be silently replaced.
      */
-    fun toPreference(): RoleModelPreference = RoleModelPreference(providerId, model, connectionId)
+    fun toPreference(): RoleModelPreference =
+        RoleModelPreference(providerId, model, connectionId, explicit = true)
 }
 
 /**

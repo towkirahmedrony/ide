@@ -69,15 +69,27 @@ data class RoleModelPreference(
      *
      * When present it wins over [providerId], because several independent
      * connections can share one provider family (two custom OpenAI-compatible
-     * endpoints, or a custom endpoint and an Ollama server). When the named
-     * connection is not among the supplied connections (disconnected or
-     * deleted), resolution degrades to the provider-family rules rather than
-     * dropping the preference, so a saved assignment survives a restart.
+     * endpoints, or a custom endpoint and an Ollama server). A preference that
+     * names a connection is treated as an explicit assignment: if that exact
+     * connection is not connected, resolution fails rather than degrading to the
+     * provider-family rules, so a saved assignment is never silently answered by
+     * a different connection of the same family.
      * Null means "resolve by provider family", which is what the built-in
      * defaults use and what a role configured before connections had identities
      * keeps doing.
      */
     val connectionId: String? = null,
+    /**
+     * Whether this preference is an explicit role assignment (the user's saved
+     * Settings choice) rather than a policy default.
+     *
+     * An explicit assignment is authoritative: when the provider/connection it
+     * names cannot be addressed, the resolver returns a structured failure and
+     * never substitutes the active model. A policy default (the built-in mapping)
+     * keeps the documented compatibility behaviour. A preference that names a
+     * [connectionId] is authoritative regardless of this flag.
+     */
+    val explicit: Boolean = false,
 ) {
     init {
         require(providerId.isNotBlank()) { "providerId must not be blank" }
@@ -146,13 +158,22 @@ data class AgentModelPreferences(
  *
  * Resolution order:
  * 1. No role preference → the [default] configuration.
- * 2. The preferred provider is [default]'s provider → [default] with the role's
+ * 2. The preferred connection is named by [RoleModelPreference.connectionId] →
+ *    that exact connection when connected. When it is not connected resolution
+ *    fails with [AgentErrorCode.MODEL_NOT_CONNECTED]; a named assignment is never
+ *    answered by another connection.
+ * 3. The preferred provider is [default]'s provider → [default] with the role's
  *    model when one is known.
- * 3. The preferred connection has a supplied [connections] entry (by
- *    [RoleModelPreference.connectionId] when named, else by provider family) →
- *    that configuration, with the role's model when one is known.
- * 4. Otherwise → the [default] configuration, so an unconnected provider never
- *    breaks a run that works today.
+ * 4. A supplied [connections] entry of the preferred provider family → that
+ *    configuration, with the role's model when one is known.
+ * 5. The preferred provider/connection is not connected:
+ *    - an explicit assignment ([RoleModelPreference.explicit], or a named
+ *      connection) → a structured failure, never a substitute model;
+ *    - a policy default → the [default] configuration, so an unconnected built-in
+ *      preference never breaks a run that works today.
+ *
+ * The distinction in step 5 is what makes an explicit role → model assignment
+ * authoritative while keeping the built-in mapping's compatibility behaviour.
  */
 class AgentModelResolver(
     private val preferences: AgentModelPreferences = AgentModelPreferences.EMPTY,
@@ -189,6 +210,15 @@ class AgentModelResolver(
      * A null tracker means health is not recorded for this host.
      */
     private val healthTracker: CandidateHealthTracker? = null,
+    /**
+     * Whether an intentional fallback chain is configured for [AgentRole].
+     *
+     * Purely informational for the structured resolution failure: it lets the
+     * error report that a substitution is possible only through the explicitly
+     * configured fallback policy, never through hidden resolution. The resolver
+     * itself never falls back; it never consults or triggers the fallback layer.
+     */
+    private val intentionalFallback: (AgentRole) -> Boolean = { false },
 ) {
 
     /**
@@ -213,14 +243,22 @@ class AgentModelResolver(
      * @param preferredModel the caller's model preference (for example an
      *   [AgentDefinition.modelPreference]); when blank, the role's configured
      *   model is used.
+     *
+     * @throws AgentModelResolutionException when an explicit role assignment's
+     *   connection/provider is not connected. The configured model is never
+     *   silently replaced.
      */
-    fun resolve(role: AgentRole, preferredModel: String?, default: ModelConfig): ModelConfig =
-        select(role, preferredModel, default).config
+    fun resolve(role: AgentRole, preferredModel: String?, default: ModelConfig): ModelConfig {
+        val selection = select(role, preferredModel, default)
+        selection.error?.let { throw AgentModelResolutionException(it) }
+        return checkNotNull(selection.config) { "selection without config and without error" }
+    }
 
     /**
      * Internal selection shared by [resolve] and [resolveForRole]. It records
      * whether the role's own mapping produced the config, so an explicit role
-     * assignment can be reported as such.
+     * assignment can be reported as such, and carries a structured error when an
+     * explicit assignment cannot be addressed.
      */
     private fun select(role: AgentRole, preferredModel: String?, default: ModelConfig): Selection {
         val preference = currentPreferences()[role] ?: return Selection(default, fromRoleMapping = false)
@@ -231,21 +269,43 @@ class AgentModelResolver(
         // what makes a model picked in Settings take effect at run time.
         val model = preference.model?.takeIf { it.isNotBlank() }
             ?: preferredModel?.takeIf { it.isNotBlank() }
+        // An explicit assignment — the user's saved Settings choice, or any
+        // preference that names a specific saved connection — is authoritative. It
+        // is never silently answered by another connection or the active model.
+        val authoritative = preference.explicit || !preference.connectionId.isNullOrBlank()
 
         // A specific saved connection is addressed by its own identity, so a role
         // assigned to one custom endpoint never resolves to another endpoint of the
         // same provider family. A named connection that is not connected right now
-        // (disconnected or deleted, or a map keyed differently) degrades to the
-        // provider-family rules below — exactly what a preference without an
-        // identity gets — so a saved assignment keeps resolving instead of being
-        // silently dropped to the default.
-        val named = preference.connectionId?.takeIf { it.isNotBlank() }
-            ?.let { connectionId -> connections()[connectionId] }
-        if (named != null) return Selection(withModel(named, model), fromRoleMapping = true)
+        // (disconnected or deleted, or a map keyed differently) is a hard failure:
+        // the saved identity is preserved and reported instead of being replaced.
+        val namedId = preference.connectionId?.takeIf { it.isNotBlank() }
+        if (namedId != null) {
+            val named = connections()[namedId]
+                ?: return Selection(
+                    config = null,
+                    fromRoleMapping = true,
+                    error = connectionFailure(role, preference, model, namedId),
+                )
+            return Selection(withModel(named, model), fromRoleMapping = true)
+        }
 
         if (providerId == default.providerId) return Selection(withModel(default, model), fromRoleMapping = true)
-        val connection = connectionForProvider(providerId) ?: return Selection(default, fromRoleMapping = false)
-        return Selection(withModel(connection, model), fromRoleMapping = true)
+
+        val connection = connectionForProvider(providerId)
+        if (connection != null) return Selection(withModel(connection, model), fromRoleMapping = true)
+
+        // The provider family is not connected. A policy default may still fall
+        // back to the active model (documented compatibility); an explicit
+        // assignment may not.
+        if (authoritative) {
+            return Selection(
+                config = null,
+                fromRoleMapping = true,
+                error = connectionFailure(role, preference, model, providerId),
+            )
+        }
+        return Selection(default, fromRoleMapping = false)
     }
 
     /**
@@ -256,7 +316,53 @@ class AgentModelResolver(
     private fun connectionForProvider(providerId: String): ModelConfig? =
         connections().values.firstOrNull { it.providerId == providerId }
 
-    private data class Selection(val config: ModelConfig, val fromRoleMapping: Boolean)
+    /**
+     * The outcome of [select]: a resolved configuration, or a structured failure
+     * when an explicit assignment cannot be addressed ([config] is null then).
+     */
+    private data class Selection(
+        val config: ModelConfig?,
+        val fromRoleMapping: Boolean,
+        val error: AgentError? = null,
+    )
+
+    /**
+     * The structured failure for an explicit assignment whose provider or saved
+     * connection is not currently connected.
+     *
+     * The role, the requested provider/connection, the requested model and
+     * whether an intentional fallback is configured are carried on
+     * [AgentError.details], so the UI/runtime can explain the failure instead of
+     * silently executing the role on a different model. It never contains a
+     * credential or an endpoint.
+     */
+    private fun connectionFailure(
+        role: AgentRole,
+        preference: RoleModelPreference,
+        model: String?,
+        missingConnectionId: String,
+    ): AgentError {
+        val connection = preference.connectionId?.takeIf { it.isNotBlank() } ?: missingConnectionId
+        val requestedModel = model ?: preference.model
+        val fallbackConfigured = intentionalFallback(role)
+        return AgentError(
+            code = AgentErrorCode.MODEL_NOT_CONNECTED,
+            message = "MODEL_NOT_CONNECTED role=${role.name} provider=${preference.providerId} " +
+                "connection=$connection model=${requestedModel ?: "(provider default)"} " +
+                "reason=CONNECTION_NOT_CONNECTED fallbackAvailable=$fallbackConfigured",
+            role = role,
+            details = buildMap {
+                put("role", role.name)
+                put("provider", preference.providerId)
+                put("connection", connection)
+                requestedModel?.let { put("model", it) }
+                put("reason", "CONNECTION_NOT_CONNECTED")
+                put("cause", "MODEL_NOT_CONNECTED")
+                put("explicit", "true")
+                put("fallbackAvailable", fallbackConfigured.toString())
+            },
+        )
+    }
 
     /** The configured preference for [role], when any. */
     fun preference(role: AgentRole): RoleModelPreference? = currentPreferences()[role]
@@ -269,16 +375,21 @@ class AgentModelResolver(
      *
      * Returns null when the preference's provider is not connected, so a caller
      * (the fallback layer) can skip a candidate instead of inventing an
-     * endpoint. It performs no network request and touches no credential beyond
-     * what the supplied connection already holds.
+     * endpoint. A named connection that is not connected yields null rather than
+     * degrading to a different connection of the same family, so a candidate's
+     * identity is preserved. It performs no network request and touches no
+     * credential beyond what the supplied connection already holds.
      */
     fun configFor(preference: RoleModelPreference, default: ModelConfig): ModelConfig? {
         val model = preference.model?.takeIf { it.isNotBlank() }
-        // Same rule as [select]: the named connection wins when it is connected;
-        // when it is not, the preference degrades to the provider-family rules.
-        val named = preference.connectionId?.takeIf { it.isNotBlank() }
-            ?.let { connectionId -> connections()[connectionId] }
-        if (named != null) return withModel(named, model)
+        // A named connection is addressed by its own identity: when it is not
+        // connected the candidate is skipped, never swapped for a sibling
+        // connection of the same provider family.
+        val namedId = preference.connectionId?.takeIf { it.isNotBlank() }
+        if (namedId != null) {
+            val named = connections()[namedId] ?: return null
+            return withModel(named, model)
+        }
         if (preference.providerId == default.providerId) return withModel(default, model)
         val connection = connectionForProvider(preference.providerId) ?: return null
         return withModel(connection, model)
@@ -328,6 +439,12 @@ class AgentModelResolver(
     ): ModelResolutionResult =
         resolveForRole(role = role, preferredModel = null, default = default, requirements = requirements)
 
+    /**
+     * @throws AgentModelResolutionException when an explicit role assignment's
+     *   connection/provider is not connected. The runtime receives the same
+     *   structured failure [resolve] produces; it never receives a substitute
+     *   model.
+     */
     suspend fun resolveForRole(
         role: AgentRole,
         preferredModel: String?,
@@ -335,10 +452,12 @@ class AgentModelResolver(
         requirements: ModelRequestRequirements = ModelRequestRequirements.DEFAULT,
     ): ModelResolutionResult {
         val selection = select(role, preferredModel, default)
-        val eligibility = eligibilityChecker.check(role, selection.config, requirements)
+        selection.error?.let { throw AgentModelResolutionException(it) }
+        val config = checkNotNull(selection.config) { "selection without config and without error" }
+        val eligibility = eligibilityChecker.check(role, config, requirements)
         return ModelResolutionResult(
             role = role,
-            config = selection.config,
+            config = config,
             eligibility = eligibility,
             explicit = selection.fromRoleMapping,
         )
