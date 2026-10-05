@@ -82,7 +82,7 @@ class SpecialistPermissionPropagationTest {
     private fun askTool(name: String, id: String = "call-$name") =
         response("", toolCall(name, "path" to "Auth.kt", id = id))
 
-    private fun pause(
+    private suspend fun pause(
         fixture: Fixture,
         role: AgentRole,
         childScript: MutableList<com.agentx.app.model.ModelResponse>,
