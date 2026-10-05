@@ -24,7 +24,17 @@ PROOT_REV="d4d2a19081c3c07f75250e4ce2980b9fa2f5720f"
 PROOT_TAG="v5.1.107.95"
 TALLOC_VERSION="2.4.3"
 TALLOC_SHA256="dc46c40b9f46bb34dd97fe41f548b0e8b247b77a918576733c528e83abd854dd"
-TALLOC_URL="https://www.samba.org/ftp/talloc/talloc-${TALLOC_VERSION}.tar.gz"
+# The talloc tarball, tried in order across independent Samba hosts.
+#
+# This build used to fetch from www.samba.org alone. That origin web server has been seen
+# accepting a transfer and then dropping it part-way (`curl: (56) Connection died`), which
+# fails the whole APK build for a reason that has nothing to do with this project.
+# download.samba.org is the CDN-backed mirror pool for the same release and serves the
+# identical file.
+#
+# A mirror can only ever be accepted by serving the exact bytes pinned in TALLOC_SHA256
+# below: the hash is checked per mirror, so adding one cannot weaken what is built.
+TALLOC_MIRRORS="https://download.samba.org/pub/talloc/talloc-${TALLOC_VERSION}.tar.gz https://www.samba.org/ftp/talloc/talloc-${TALLOC_VERSION}.tar.gz"
 SHMEM_REPO="https://github.com/termux/libandroid-shmem"
 SHMEM_REV="7f0bd7e25dbdd146265aff7c6a890029e374622d"
 SHMEM_PATCH="libandroid-shmem-proot-tmpdir.patch"
@@ -85,10 +95,26 @@ export PATH
 echo "==> talloc $TALLOC_VERSION"
 (
   cd "$WORK"
-  curl -fsSL "$TALLOC_URL" -o talloc.tar.gz
-  actual=$(sha256sum talloc.tar.gz | awk '{print $1}')
-  if [ "$actual" != "$TALLOC_SHA256" ]; then
-    echo "talloc tarball SHA-256 mismatch: expected $TALLOC_SHA256 got $actual" >&2
+  # Retry within a mirror before moving on, and verify the hash per mirror: a mirror that
+  # answers with anything other than the pinned tarball is rejected and the next one is
+  # tried, so falling back can never change what gets built.
+  fetched=0
+  for url in $TALLOC_MIRRORS; do
+    echo "  fetching $url"
+    if curl -fsSL --retry 3 --retry-all-errors --retry-delay 2 \
+        --connect-timeout 20 --max-time 120 "$url" -o talloc.tar.gz; then
+      actual=$(sha256sum talloc.tar.gz | awk '{print $1}')
+      if [ "$actual" = "$TALLOC_SHA256" ]; then
+        fetched=1
+        break
+      fi
+      echo "  rejected $url: served $actual, expected $TALLOC_SHA256" >&2
+    else
+      echo "  could not fetch from $url" >&2
+    fi
+  done
+  if [ "$fetched" -ne 1 ]; then
+    echo "talloc $TALLOC_VERSION could not be fetched from any known mirror" >&2
     exit 1
   fi
   tar -xzf talloc.tar.gz
