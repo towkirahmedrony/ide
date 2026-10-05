@@ -18,6 +18,7 @@ import com.agentx.app.model.capability.isLocalRuntime
 import com.agentx.app.model.ratelimit.RateLimitDecision
 import com.agentx.app.model.ratelimit.RateLimitKind
 import com.agentx.app.model.ratelimit.RateLimitManager
+import com.agentx.app.model.ratelimit.quotaScope
 
 /**
  * Typed eligibility of one role + model + rate-limit snapshot.
@@ -284,6 +285,11 @@ class ModelEligibilityChecker(
             modelId = config.model,
             estimatedInputTokens = requirements.estimatedInputTokens,
             estimatedOutputTokens = requirements.estimatedOutputTokens,
+            // The same scope the gateway will reserve against ([ModelConfig.quotaScope]).
+            // Asking a different one used to make a connection-scoped quota invisible
+            // here, so a candidate with no headroom was reported as available and only
+            // discovered otherwise when the request was already being sent.
+            accountId = config.quotaScope(),
             local = isLocal(config),
         )
         return when (decision) {

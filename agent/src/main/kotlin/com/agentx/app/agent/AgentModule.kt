@@ -52,9 +52,23 @@ class AgentModule(
      * root explicitly enables it and declares per-role chains.
      */
     private val fallbackPolicy: ModelFallbackPolicy = ModelFallbackPolicy.DISABLED,
+    /**
+     * A live view of the fallback policy, used instead of [fallbackPolicy] when the
+     * composition root has a configuration source that can change while the app runs.
+     *
+     * The agent layer is assembled once, so a policy captured by value would freeze
+     * the chains at whatever they were at boot and a saved change would need a
+     * restart to take effect — or, worse, never take effect at all. Reading through a
+     * provider keeps the runtime's answer and the persisted configuration the same
+     * thing.
+     */
+    private val fallbackPolicyProvider: (() -> ModelFallbackPolicy)? = null,
 ) : ForgeModule {
 
     override val id: String = "agent"
+
+    /** The policy in force: the live source when there is one, else the fixed value. */
+    private fun activePolicy(): ModelFallbackPolicy = fallbackPolicyProvider?.invoke() ?: fallbackPolicy
 
     override fun initialize(context: ModuleContext) {
         val gateway = context.services.get<ModelGateway>(ServiceKeys.MODEL_GATEWAY) ?: DefaultModelGateway()
@@ -107,7 +121,7 @@ class AgentModule(
             // a substitution is possible only through the intentionally configured
             // fallback policy, never through hidden resolution. The resolver never
             // triggers it.
-            intentionalFallback = { role -> fallbackPolicy.enabledFor(role) },
+            intentionalFallback = { role -> activePolicy().enabledFor(role) },
         )
         val assembled = assemble(
             gateway = gateway,
@@ -126,6 +140,7 @@ class AgentModule(
             // role falls back to the active model until its provider is connected.
             modelResolver = modelResolver,
             fallbackPolicy = fallbackPolicy,
+            fallbackPolicyProvider = fallbackPolicyProvider,
         )
         context.services.register(ServiceKeys.AGENT_ORCHESTRATOR, assembled.orchestrator)
         context.services.register(ServiceKeys.AGENT_REGISTRY, assembled.specialized)
@@ -154,6 +169,12 @@ class AgentModule(
             modelResolver: AgentModelResolver = AgentModelResolver(),
             fallbackPolicy: ModelFallbackPolicy = ModelFallbackPolicy.DISABLED,
             /**
+             * Live view of the fallback policy; takes precedence over
+             * [fallbackPolicy] so a saved configuration change applies to the next
+             * request without re-assembling the agent layer.
+             */
+            fallbackPolicyProvider: (() -> ModelFallbackPolicy)? = null,
+            /**
              * Observed candidate health, shared with the resolver so the fallback
              * layer records what happened and selection respects it.
              */
@@ -170,7 +191,7 @@ class AgentModule(
                 skillContext = skillContext,
                 timeouts = timeouts,
                 modelFallback = ModelFallback(
-                    policy = { fallbackPolicy },
+                    policy = fallbackPolicyProvider ?: { fallbackPolicy },
                     resolver = modelResolver,
                     health = healthTracker,
                 ),

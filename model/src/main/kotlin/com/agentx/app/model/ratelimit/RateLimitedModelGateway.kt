@@ -114,9 +114,7 @@ class RateLimitedModelGateway(
      * configuration's metadata wins, so a host that really does run several accounts
      * through one connection can say so.
      */
-    private fun quotaScope(config: ModelConfig): String? =
-        config.metadata[ACCOUNT_METADATA_KEY]?.takeIf { it.isNotBlank() }
-            ?: quotaScopeOf(config.connectionId, config.providerId)
+    private fun quotaScope(config: ModelConfig): String? = config.quotaScope()
 
     private fun isRemote(config: ModelConfig): Boolean {
         if (config.isLocalRuntime()) return false
@@ -146,6 +144,7 @@ class RateLimitedModelGateway(
 
     companion object {
         const val PROVIDER_TYPE_METADATA_KEY: String = "providerType"
-        const val ACCOUNT_METADATA_KEY: String = "accountId"
+        // The account discriminator key now lives with the scope rule itself
+        // ([ACCOUNT_METADATA_KEY]) so evaluation and enforcement cannot drift apart.
     }
 }

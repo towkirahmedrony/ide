@@ -2,6 +2,9 @@ package com.agentx.app.foundation
 
 import com.agentx.app.agent.AGENT_LAYER
 import com.agentx.app.agent.AgentModule
+import com.agentx.app.agent.model.AgentFallbackConfigRepository
+import com.agentx.app.agent.model.AgentFallbackStore
+import com.agentx.app.agent.model.InMemoryAgentFallbackStore
 import com.agentx.app.agent.conversation.ConversationStore
 import com.agentx.app.agent.conversation.InMemoryConversationStore
 import com.agentx.app.agent.model.AgentRoleModelRegistry
@@ -146,6 +149,14 @@ object Foundation {
         /** Persisted per-role model assignments; defaults when none are stored. */
         agentRoleModelStore: AgentRoleModelStore = InMemoryAgentRoleModelStore(),
         /**
+         * Persisted controlled-fallback configuration: whether fallback is enabled
+         * and which ordered candidate chain each role may use.
+         *
+         * Defaults to the disabled opt-in baseline, so a build that passes nothing
+         * behaves exactly as it did before fallback existed.
+         */
+        agentFallbackStore: AgentFallbackStore = InMemoryAgentFallbackStore(),
+        /**
          * Where configured rate-limit profiles are kept between runs. One shared
          * instance backs both the manager that enforces them and each connection
          * that publishes its provider's documented quota, so a limit configured
@@ -194,6 +205,15 @@ object Foundation {
             DefaultAgentRoleModelRepository(agentRoleModelStore),
         )
         services.register(ServiceKeys.AGENT_ROLE_MODELS, roleModels)
+
+        // The fallback configuration is built here, before the agent layer, because
+        // the agent layer must execute the same chains the app can configure. It is
+        // registered so a settings surface can change them, and the agent module
+        // reads it live: a saved chain applies to the next request rather than
+        // needing a restart. Opt-in is preserved — the default store holds no chains
+        // and leaves fallback disabled.
+        val fallbackConfig = AgentFallbackConfigRepository(agentFallbackStore)
+        services.register(ServiceKeys.AGENT_FALLBACK_CONFIG, fallbackConfig)
         // Execution budgets are registered before the agent modules so every
         // layer resolves the same configuration instead of a private constant.
         services.register(ServiceKeys.AGENT_TIMEOUTS, timeouts)
@@ -325,7 +345,14 @@ object Foundation {
         modules.register(WorkspaceModule(runtime = processRuntime, executor = processExecutor))
         // The module reads the registered budgets from the container; the value
         // passed here is only the fallback for an unregistered container.
-        modules.register(AgentModule(timeouts))
+        // The policy is read through the repository rather than captured, so the
+        // chains the runtime executes are always the chains that are configured.
+        modules.register(
+            AgentModule(
+                timeouts = timeouts,
+                fallbackPolicyProvider = fallbackConfig.livePolicy(),
+            ),
+        )
         modules.initialize(services)
 
         val health = HealthMonitor()

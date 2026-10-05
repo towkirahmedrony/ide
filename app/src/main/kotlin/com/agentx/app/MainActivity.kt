@@ -39,6 +39,7 @@ import com.agentx.app.integrations.setup.IntegrationSetupManager
 import com.agentx.app.oauth.IntentOAuthBrowserLauncher
 import com.agentx.app.settings.FilesystemSkillFileStore
 import com.agentx.app.settings.SharedPreferencesAgentPromptStore
+import com.agentx.app.settings.SharedPreferencesAgentFallbackStore
 import com.agentx.app.settings.SharedPreferencesAgentRoleModelStore
 import com.agentx.app.settings.SharedPreferencesSkillConfigStore
 import com.agentx.app.skills.CompositeSkillStore
@@ -133,6 +134,11 @@ class MainActivity : ComponentActivity() {
             integrationSetup = built.setup,
             agentPromptStore = SharedPreferencesAgentPromptStore(applicationContext),
             agentRoleModelStore = SharedPreferencesAgentRoleModelStore(applicationContext),
+            // Controlled fallback is opt-in and user-owned: a chain configured here
+            // outlives the process, and an app that never configures one keeps
+            // failing clearly instead of quietly using another model. A chain entry
+            // names a connection, never a credential.
+            agentFallbackStore = SharedPreferencesAgentFallbackStore(applicationContext),
             // Provider model catalogs persist beside the presets, so a restart keeps
             // the models a previous run discovered instead of falling back to a
             // built-in list. No credential is written here; a snapshot holds none.

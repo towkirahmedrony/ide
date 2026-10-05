@@ -22,6 +22,27 @@ internal fun quotaScopeOf(connectionId: String, providerId: String): String? {
     return connection.takeIf { it != providerId.trim() }
 }
 
+/** Configuration metadata key holding an explicit account discriminator. */
+const val ACCOUNT_METADATA_KEY: String = "accountId"
+
+/**
+ * The quota scope this configuration's traffic is admitted under.
+ *
+ * This is the one function both sides of admission must agree on: the gateway
+ * *reserves* against it, and any pre-request eligibility check must *evaluate*
+ * against the same scope. When they disagreed, a connection-scoped quota registered
+ * by the rate-limit manager was invisible to the eligibility check, which then
+ * reported a candidate as having headroom that the gateway would have refused —
+ * exactly the "it looked allowed and then failed" behaviour a proactive limiter
+ * exists to prevent.
+ *
+ * An explicit `accountId` in the metadata wins, so a host that really does run
+ * several accounts through one connection can say so.
+ */
+fun com.agentx.app.model.ModelConfig.quotaScope(): String? =
+    metadata[ACCOUNT_METADATA_KEY]?.takeIf { it.isNotBlank() }
+        ?: quotaScopeOf(connectionId, providerId)
+
 /**
  * Headroom policy, kept apart from provider facts.
  *

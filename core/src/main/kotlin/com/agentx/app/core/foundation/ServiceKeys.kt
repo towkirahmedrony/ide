@@ -46,6 +46,15 @@ object ServiceKeys {
     const val AGENT_ROLE_MODELS = "forge.agent.roleModels"
 
     /**
+     * The persisted, user-owned fallback configuration: whether controlled fallback
+     * is enabled and which ordered candidate chain each role may use.
+     *
+     * Registered so the runtime can execute it and a settings surface can change it
+     * without either side inventing a second source of truth.
+     */
+    const val AGENT_FALLBACK_CONFIG = "forge.agent.fallbackConfig"
+
+    /**
      * Central, per-operation execution budgets shared by the Agent Core, the Tool
      * System and the Model Gateway. One source of truth for every timeout.
      */

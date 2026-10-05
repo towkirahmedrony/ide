@@ -11,6 +11,7 @@ import com.agentx.app.agent.domain.AgentErrorCode
 import com.agentx.app.agent.domain.AgentEvent
 import com.agentx.app.agent.domain.AgentEventSink
 import com.agentx.app.agent.domain.AgentResult
+import com.agentx.app.agent.domain.ModelFallbackReason
 import com.agentx.app.agent.domain.AgentRole
 import com.agentx.app.agent.domain.AgentRunRequest
 import com.agentx.app.agent.domain.AgentStatus
@@ -391,9 +392,51 @@ internal fun mapEvent(event: AgentEvent): AgentStreamEvent? = when (event) {
         )
     }
 
+    // Fallback must never be invisible: a user needs to be able to tell that the
+    // answer came from a configured alternate model rather than the primary, and
+    // whether the configured chain was exhausted. These carry provider/model
+    // identifiers and a reason only — never a prompt or a credential.
+    is AgentEvent.ModelFallbackStarted -> AgentStreamEvent.Activity(
+        AgentActivity(
+            AgentActivityStatus.WAITING,
+            "Primary ${label(event.fromProviderId, event.fromModelId)} failed " +
+                "(${describeReason(event.reason)}); using configured fallback " +
+                "${label(event.toProviderId, event.toModelId)} (attempt ${event.attempt})",
+        ),
+    )
+
+    is AgentEvent.ModelFallbackSucceeded -> AgentStreamEvent.Activity(
+        AgentActivity(
+            AgentActivityStatus.WAITING,
+            "Fallback ${label(event.toProviderId, event.toModelId)} responded after " +
+                "${label(event.fromProviderId, event.fromModelId)} failed",
+        ),
+    )
+
+    is AgentEvent.ModelFallbackExhausted -> AgentStreamEvent.Activity(
+        AgentActivity(
+            AgentActivityStatus.ERROR,
+            "Configured fallback models were exhausted after ${event.attempts} " +
+                "attempt(s); last tried ${label(event.providerId, event.modelId)} " +
+                "(${describeReason(event.reason)})",
+        ),
+    )
+
     is AgentEvent.OutputDelta -> AgentStreamEvent.Chunk(event.text)
 
     else -> null
+}
+
+/** `provider/model`, for an operator-readable fallback line. */
+private fun label(providerId: String, modelId: String): String =
+    if (modelId.isBlank()) providerId else "$providerId/$modelId"
+
+/** A human phrase for a fallback trigger, kept separate from the enum name. */
+private fun describeReason(reason: ModelFallbackReason): String = when (reason) {
+    ModelFallbackReason.RATE_LIMITED -> "rate limited"
+    ModelFallbackReason.TIMEOUT -> "timed out"
+    ModelFallbackReason.NETWORK_FAILURE -> "network failure"
+    ModelFallbackReason.PROVIDER_UNAVAILABLE -> "provider unavailable"
 }
 
 internal fun failureKind(error: AgentError?): AgentFailureKind {

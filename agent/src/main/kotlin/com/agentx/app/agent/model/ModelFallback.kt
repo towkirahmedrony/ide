@@ -3,6 +3,7 @@ package com.agentx.app.agent.model
 import com.agentx.app.agent.domain.AgentEvent
 import com.agentx.app.agent.domain.AgentEventSink
 import com.agentx.app.agent.domain.AgentRole
+import com.agentx.app.agent.domain.FallbackFailureCategory
 import com.agentx.app.agent.domain.ModelFallbackReason
 import com.agentx.app.core.logging.ForgeLogger
 import com.agentx.app.core.logging.ForgeLoggers
@@ -68,27 +69,55 @@ data class ModelFallbackPolicy(
  */
 object ModelFallbackErrors {
 
+    /**
+     * The named category of [error], whether or not it may trigger a fallback.
+     *
+     * Use this when the *reason* matters — for a log, an event, or a message to the
+     * user. [triggerFor] answers the narrower question of whether a configured
+     * candidate may be tried.
+     */
+    fun categoryFor(error: Throwable): FallbackFailureCategory = FallbackFailureCategory.of(error)
+
     fun triggerFor(error: Throwable): ModelFallbackReason? =
         (error as? ModelProviderError)?.let(::triggerFor)
 
-    fun triggerFor(error: ModelProviderError): ModelFallbackReason? = when (error.code) {
-        ModelProviderErrorCode.RATE_LIMITED -> ModelFallbackReason.RATE_LIMITED
-        ModelProviderErrorCode.TIMEOUT -> ModelFallbackReason.TIMEOUT
-        ModelProviderErrorCode.NETWORK_ERROR,
-        ModelProviderErrorCode.CONNECTION_FAILED,
-        -> ModelFallbackReason.NETWORK_FAILURE
-        ModelProviderErrorCode.PROVIDER_ERROR -> {
-            // Captured locally: httpStatus is an API property from another
-            // module, so it cannot be smart-cast across the null check.
-            val status = error.httpStatus
-            if (status == null || status >= 500) ModelFallbackReason.PROVIDER_UNAVAILABLE else null
-        }
-        // INVALID_CONFIG, INVALID_REQUEST, AUTHENTICATION_FAILED, UNSUPPORTED,
-        // INVALID_RESPONSE, PROVIDER_NOT_FOUND, DUPLICATE_PROVIDER, CANCELLED,
-        // UNKNOWN: all permanent / not a temporary execution failure.
-        else -> null
-    }
+    fun triggerFor(error: ModelProviderError): ModelFallbackReason? =
+        categoryFor(error).toFallbackReason()
 }
+
+/**
+ * The trigger a category produces, or null when it is not a fallback trigger.
+ *
+ * The category decides, and only [FallbackFailureCategory.fallbackEligible]
+ * categories can produce a reason; an ineligible one returns null so the original
+ * failure is returned to the caller unchanged. Deriving the trigger here rather than
+ * listing provider codes a second time is what keeps "may this fall back?" and "what
+ * actually happened?" from drifting apart.
+ */
+internal fun FallbackFailureCategory.toFallbackReason(): ModelFallbackReason? =
+    if (!fallbackEligible) {
+        null
+    } else {
+        when (this) {
+            FallbackFailureCategory.RATE_LIMITED,
+            FallbackFailureCategory.QUOTA_EXHAUSTED,
+            -> ModelFallbackReason.RATE_LIMITED
+
+            FallbackFailureCategory.TIMEOUT -> ModelFallbackReason.TIMEOUT
+
+            FallbackFailureCategory.NETWORK_FAILURE,
+            FallbackFailureCategory.CONNECTION_DEGRADED,
+            -> ModelFallbackReason.NETWORK_FAILURE
+
+            FallbackFailureCategory.TEMPORARY_PROVIDER_FAILURE,
+            FallbackFailureCategory.PROVIDER_UNAVAILABLE,
+            -> ModelFallbackReason.PROVIDER_UNAVAILABLE
+
+            // Eligible categories added later must state their trigger explicitly;
+            // falling through to a reason would invent a classification.
+            else -> null
+        }
+    }
 
 /**
  * Maps a temporary fallback reason onto the health kind recorded for a candidate.
@@ -140,6 +169,14 @@ data class ModelFallbackDecision(
     val attempts: Int = 0,
     /** The reason that triggered the chain, when there was one. */
     val trigger: String? = null,
+    /**
+     * The named failure category behind the decision.
+     *
+     * Distinct from [trigger]: the category says what happened even when the answer
+     * is "no fallback", which is what lets a reader tell "the key was rejected" from
+     * "the provider was down" instead of seeing the same silence for both.
+     */
+    val failureCategory: String? = null,
 ) {
     /** Credential-free field map for structured logging. */
     fun fields(): Map<String, Any?> = mapOf(
@@ -162,7 +199,11 @@ data class ModelFallbackDecision(
         "beforeRequest" to beforeRequest,
         "attempts" to attempts,
         "trigger" to trigger,
+        "failureCategory" to failureCategory,
     )
+
+    /** Structural equality over the credential-free field map, for tests and logs. */
+    fun describe(): String = fields().entries.joinToString(", ") { "${it.key}=${it.value}" }
 }
 
 /**
@@ -360,6 +401,10 @@ class ModelFallback(
                     beforeRequest = true,
                     attempts = attempts,
                     trigger = ModelFallbackReason.RATE_LIMITED.name,
+                    // No request was sent, so this is AgentX's own admission control
+                    // refusing rather than a provider answering 429 — a distinction
+                    // the user can act on differently.
+                    failureCategory = FallbackFailureCategory.QUOTA_EXHAUSTED.name,
                 ).fields(),
             )
             // Structured, credential-free record that the switch happened *before*
@@ -419,6 +464,9 @@ class ModelFallback(
         var current = primary
         var lastError = primaryError
         var lastReason = primaryReason
+        // Kept alongside the reason so the chain's outcome is described by what
+        // happened, not only by whether it was worth retrying.
+        var lastCategory = ModelFallbackErrors.categoryFor(primaryError)
 
         for (preference in policy.candidates(role)) {
             if (attempts >= policy.maxFallbackAttempts) break
@@ -468,6 +516,7 @@ class ModelFallback(
             } catch (error: Throwable) {
                 lastError = error
                 current = candidate
+                lastCategory = ModelFallbackErrors.categoryFor(error)
                 ModelFallbackErrors.triggerFor(error)?.let { lastReason = it }
                 // A candidate that failed after producing output cannot be
                 // replaced safely either.
@@ -496,6 +545,10 @@ class ModelFallback(
                     "lastProvider" to current.providerId,
                     "lastModel" to current.model,
                     "reason" to lastReason.name,
+                    // The category the chain ended on, so "we tried the configured
+                    // fallbacks and they were all down" is legible without reading
+                    // each attempt's own record.
+                    "failureCategory" to lastCategory.name,
                 ),
             )
         }
