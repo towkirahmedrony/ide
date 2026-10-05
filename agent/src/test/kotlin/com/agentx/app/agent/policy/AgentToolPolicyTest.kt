@@ -25,8 +25,16 @@ import com.agentx.app.tools.codeintel.FindReferencesTool
 import com.agentx.app.tools.codeintel.GetFileOutlineTool
 import com.agentx.app.tools.codeintel.GetFileSymbolsTool
 import com.agentx.app.tools.effectiveAvailability
-import com.agentx.app.tools.extensions.RunCommandToolStub
+import com.agentx.app.tools.execution.RunCommandTool
+import com.agentx.app.tools.extensions.BrowserToolStub
 import com.agentx.app.tools.filesystem.ListDirectoryTool
+import com.agentx.app.tools.git.GitBranchesTool
+import com.agentx.app.tools.git.GitCommitTool
+import com.agentx.app.tools.git.GitDiffTool
+import com.agentx.app.tools.git.GitLogTool
+import com.agentx.app.tools.git.GitStatusTool
+import com.agentx.app.tools.web.WebFetchTool
+import com.agentx.app.tools.web.WebSearchTool
 import com.agentx.app.tools.filesystem.ReadFileTool
 import com.agentx.app.tools.filesystem.SearchFilesTool
 import com.agentx.app.tools.filesystem.WriteFileTool
@@ -54,7 +62,6 @@ class AgentToolPolicyTest {
         AgentRole.REVIEWER,
         AgentRole.SECURITY_REVIEWER,
         AgentRole.RESEARCHER,
-        AgentRole.COMMIT_PR,
     )
 
     private val writeRoles = listOf(
@@ -110,6 +117,36 @@ class AgentToolPolicyTest {
                 permission = ToolPermissionDecision.ASK,
             ),
         )
+        // The newly implemented families are registered under their real names so
+        // the policy is exercised against the same ids the agent sees.
+        register(
+            ProbeTool(
+                name = RunCommandTool.NAME,
+                capabilities = setOf(ToolCapability.SHELL, ToolCapability.MUTATING),
+                required = setOf(ToolPermissionLevel.COMMAND_EXECUTION),
+                permission = ToolPermissionDecision.ASK,
+            ),
+        )
+        listOf(GitStatusTool.NAME, GitDiffTool.NAME, GitLogTool.NAME, GitBranchesTool.NAME).forEach { name ->
+            register(ProbeTool(name, readOnly))
+        }
+        register(
+            ProbeTool(
+                name = GitCommitTool.NAME,
+                capabilities = setOf(ToolCapability.GIT, ToolCapability.MUTATING),
+                required = setOf(ToolPermissionLevel.GIT_WRITE),
+                permission = ToolPermissionDecision.ASK,
+            ),
+        )
+        listOf(WebSearchTool.NAME, WebFetchTool.NAME).forEach { name ->
+            register(
+                ProbeTool(
+                    name = name,
+                    capabilities = setOf(ToolCapability.NETWORK, ToolCapability.READ_ONLY),
+                    required = setOf(ToolPermissionLevel.NETWORK),
+                ),
+            )
+        }
     }
 
     private fun definitions(registry: DefaultToolRegistry): (String) -> ToolDefinition? =
@@ -173,15 +210,46 @@ class AgentToolPolicyTest {
         val explorerTools = AgentToolPolicy.toolIdsFor(AgentRole.EXPLORER).toSet()
         assertTrue(explorerTools.all { it in mainTools })
         assertFalse(WriteFileTool.NAME in explorerTools)
-        // No role is granted a capability whose tool does not exist yet.
-        AgentRole.entries.forEach { role ->
-            AgentToolPolicy.toolIdsFor(role).forEach { toolId ->
-                assertFalse(
-                    toolId.startsWith("git") || toolId.startsWith("web") || toolId.contains("command"),
-                    "$role must not be granted the unimplemented tool '$toolId'",
-                )
-            }
+        // The orchestrator holds read-only git, but no shell and no git write.
+        assertTrue(GitStatusTool.NAME in mainTools)
+        assertFalse(RunCommandTool.NAME in mainTools)
+        assertFalse(GitCommitTool.NAME in mainTools)
+    }
+
+    @Test
+    fun `the new tool families are granted to exactly the intended roles`() {
+        // Shell only where a role must run code, and never the orchestrator.
+        listOf(AgentRole.DEBUGGER, AgentRole.TESTER).forEach { role ->
+            assertTrue(RunCommandTool.NAME in AgentToolPolicy.toolIdsFor(role), "$role must execute commands")
         }
+        listOf(AgentRole.EXPLORER, AgentRole.PLANNER, AgentRole.RESEARCHER, AgentRole.REVIEWER).forEach { role ->
+            assertFalse(RunCommandTool.NAME in AgentToolPolicy.toolIdsFor(role), "$role must not run shell")
+        }
+
+        // Web research belongs to the researcher; no other role holds it.
+        assertTrue(WebSearchTool.NAME in AgentToolPolicy.toolIdsFor(AgentRole.RESEARCHER))
+        assertTrue(WebFetchTool.NAME in AgentToolPolicy.toolIdsFor(AgentRole.RESEARCHER))
+        AgentRole.entries.filter { it != AgentRole.RESEARCHER }.forEach { role ->
+            assertFalse(WebSearchTool.NAME in AgentToolPolicy.toolIdsFor(role), "$role must not search the web")
+        }
+
+        // Only commit/PR may write to the repository.
+        assertTrue(GitCommitTool.NAME in AgentToolPolicy.toolIdsFor(AgentRole.COMMIT_PR))
+        AgentRole.entries.filter { it != AgentRole.COMMIT_PR }.forEach { role ->
+            assertFalse(GitCommitTool.NAME in AgentToolPolicy.toolIdsFor(role), "$role must not commit")
+        }
+
+        // Read-only inspection is available to the reviewing roles without any write.
+        listOf(AgentRole.REVIEWER, AgentRole.SECURITY_REVIEWER).forEach { role ->
+            val tools = AgentToolPolicy.toolIdsFor(role)
+            assertTrue(GitDiffTool.NAME in tools && GitLogTool.NAME in tools, "$role reviews the change set")
+            assertFalse(WriteFileTool.NAME in tools, "$role must not write")
+        }
+
+        // COMMIT_PR commits but never edits source.
+        val commitPr = AgentToolPolicy.toolIdsFor(AgentRole.COMMIT_PR)
+        assertFalse(WriteFileTool.NAME in commitPr)
+        assertTrue(GitStatusTool.NAME in commitPr)
     }
 
     // --- 13. MAIN receives its intended tools, including code intelligence --
@@ -398,7 +466,7 @@ class AgentToolPolicyTest {
 
     @Test
     fun `a declared but unimplemented tool is unavailable rather than merely denied`() = runBlocking {
-        val stub = RunCommandToolStub()
+        val stub = BrowserToolStub()
         assertFalse(stub.definition.effectiveAvailability.isAvailable)
 
         val registry = DefaultToolRegistry().apply {

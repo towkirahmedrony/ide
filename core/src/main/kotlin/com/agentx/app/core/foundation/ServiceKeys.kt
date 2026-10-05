@@ -9,6 +9,12 @@ object ServiceKeys {
     const val TOOL_ROUTER = "forge.tools.router"
     const val TOOL_PERMISSION_POLICY = "forge.tools.permissionPolicy"
     const val TOOL_WORKSPACE_RESOLVER = "forge.tools.workspaceResolver"
+
+    /** Bindable host-directory resolver for agent-issued commands. */
+    const val TOOL_WORKSPACE_HOST_PATHS = "forge.tools.workspaceHostPaths"
+
+    /** Bindable Git service the git tools operate through. */
+    const val GIT_SERVICE = "forge.git.service"
     const val CONTEXT_ENGINE = "forge.context.engine"
     const val MODEL_GATEWAY = "forge.model.gateway"
     const val MODEL_MANAGER = "forge.model.manager"

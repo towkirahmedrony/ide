@@ -9,10 +9,18 @@ import com.agentx.app.tools.codeintel.FindReferencesTool
 import com.agentx.app.tools.codeintel.GetFileOutlineTool
 import com.agentx.app.tools.codeintel.GetFileSymbolsTool
 import com.agentx.app.tools.effectiveAvailability
+import com.agentx.app.tools.execution.RunCommandTool
 import com.agentx.app.tools.filesystem.ListDirectoryTool
 import com.agentx.app.tools.filesystem.ReadFileTool
 import com.agentx.app.tools.filesystem.SearchFilesTool
 import com.agentx.app.tools.filesystem.WriteFileTool
+import com.agentx.app.tools.git.GitBranchesTool
+import com.agentx.app.tools.git.GitCommitTool
+import com.agentx.app.tools.git.GitDiffTool
+import com.agentx.app.tools.git.GitLogTool
+import com.agentx.app.tools.git.GitStatusTool
+import com.agentx.app.tools.web.WebFetchTool
+import com.agentx.app.tools.web.WebSearchTool
 
 /**
  * The single authoritative tool policy.
@@ -45,9 +53,10 @@ import com.agentx.app.tools.filesystem.WriteFileTool
  * tool shown to the model must still pass authorization. Neither answer is taken
  * from a prompt, and neither is decided by the model.
  *
- * Nothing is invented here. A capability whose tool does not exist (web fetch,
- * shell, git write, GitHub, browser, MCP) is simply not granted, and its stub is
- * reported as unavailable rather than advertised as working.
+ * Nothing is invented here. A capability whose tool does not exist (GitHub,
+ * browser, MCP) is simply not granted, and its stub is reported as unavailable
+ * rather than advertised as working. The families that now have real tools
+ * (filesystem, code intelligence, shell, git, web) are granted per role below.
  */
 object AgentToolPolicy {
 
@@ -80,6 +89,25 @@ object AgentToolPolicy {
         /** Writing inside the open workspace. Mutating, so it needs approval. */
         WRITE(setOf(WriteFileTool.NAME)),
 
+        /** Running a shell command inside the open workspace. Approval-gated. */
+        EXECUTE(setOf(RunCommandTool.NAME)),
+
+        /** Read-only git inspection: status, diff, history and branches. */
+        GIT_READ(
+            setOf(
+                GitStatusTool.NAME,
+                GitDiffTool.NAME,
+                GitLogTool.NAME,
+                GitBranchesTool.NAME,
+            ),
+        ),
+
+        /** Controlled git write. Approval-gated and capability-gated. */
+        GIT_WRITE(setOf(GitCommitTool.NAME)),
+
+        /** Web research: search plus single-page retrieval. */
+        WEB(setOf(WebSearchTool.NAME, WebFetchTool.NAME)),
+
         /** Delegating a focused sub-task. Only the orchestrating role may. */
         DELEGATE(setOf(AgentProtocol.DELEGATE_TOOL)),
 
@@ -94,23 +122,31 @@ object AgentToolPolicy {
      * given WRITE merely because another role has it, and no role is given a
      * capability whose tool does not exist:
      *
-     *  - MAIN orchestrates, inspects, understands code, edits it and delegates;
-     *  - EXPLORER / PLANNER / REVIEWER / SECURITY_REVIEWER / RESEARCHER reason
-     *    about code without changing it;
-     *  - CODER / FAST_CODER / DEBUGGER / TESTER / DOCS change code as well as read
-     *    it;
-     *  - COMMIT_PR inspects what would be committed. Git and GitHub write tools do
-     *    not exist yet, so it holds none: the policy must not pretend a capability
-     *    exists just to satisfy a role description.
+     *  - MAIN orchestrates, inspects, understands code, edits it, reads git and
+     *    delegates;
+     *  - EXPLORER / PLANNER reason about code without changing it;
+     *  - REVIEWER / SECURITY_REVIEWER additionally read git diffs and history;
+     *  - RESEARCHER searches and fetches the web without mutating the workspace;
+     *  - CODER / FAST_CODER / DOCS change code as well as read it;
+     *  - DEBUGGER / TESTER change code and may execute commands, within their
+     *    COMMAND_EXECUTION ceiling and approval gate;
+     *  - COMMIT_PR inspects git and performs the controlled git commit; GitHub
+     *    operations are withheld until a credential path for tools exists.
      */
     private val ROLE_GRANTS: Map<AgentRole, Set<ToolGrant>> = mapOf(
+        // MAIN orchestrates: it inspects, understands and edits code, reads git
+        // history, and delegates. It does not hold shell or git write: those
+        // belong to the specialist roles, so a broad capability never leaks into
+        // the orchestrator.
         AgentRole.MAIN to setOf(
             ToolGrant.INSPECT,
             ToolGrant.CODE_INTELLIGENCE,
             ToolGrant.WRITE,
+            ToolGrant.GIT_READ,
             ToolGrant.DELEGATE,
             ToolGrant.FINISH,
         ),
+        // Read-only investigation. No mutation, no shell, no network.
         AgentRole.EXPLORER to setOf(
             ToolGrant.INSPECT,
             ToolGrant.CODE_INTELLIGENCE,
@@ -121,27 +157,33 @@ object AgentToolPolicy {
             ToolGrant.CODE_INTELLIGENCE,
             ToolGrant.FINISH,
         ),
+        // A reviewer reads the change set it reviews, but never mutates it.
         AgentRole.REVIEWER to setOf(
             ToolGrant.INSPECT,
             ToolGrant.CODE_INTELLIGENCE,
+            ToolGrant.GIT_READ,
             ToolGrant.FINISH,
         ),
         AgentRole.SECURITY_REVIEWER to setOf(
             ToolGrant.INSPECT,
             ToolGrant.CODE_INTELLIGENCE,
+            ToolGrant.GIT_READ,
             ToolGrant.FINISH,
         ),
-        // A researcher reads the project it researches; network tools are not
-        // granted because none exist yet and the stubs stay unavailable.
+        // The researcher's real job is external information: it searches and
+        // fetches the web, and reads the project it is researching. It never
+        // mutates the workspace.
         AgentRole.RESEARCHER to setOf(
             ToolGrant.INSPECT,
             ToolGrant.CODE_INTELLIGENCE,
+            ToolGrant.WEB,
             ToolGrant.FINISH,
         ),
         AgentRole.CODER to setOf(
             ToolGrant.INSPECT,
             ToolGrant.CODE_INTELLIGENCE,
             ToolGrant.WRITE,
+            ToolGrant.GIT_READ,
             ToolGrant.FINISH,
         ),
         AgentRole.FAST_CODER to setOf(
@@ -150,16 +192,22 @@ object AgentToolPolicy {
             ToolGrant.WRITE,
             ToolGrant.FINISH,
         ),
+        // The debugger must run the code and its tests. It may execute commands,
+        // but its write access stays approval-gated and its permission ceiling is
+        // COMMAND_EXECUTION, not unrestricted.
         AgentRole.DEBUGGER to setOf(
             ToolGrant.INSPECT,
             ToolGrant.CODE_INTELLIGENCE,
             ToolGrant.WRITE,
+            ToolGrant.EXECUTE,
+            ToolGrant.GIT_READ,
             ToolGrant.FINISH,
         ),
         AgentRole.TESTER to setOf(
             ToolGrant.INSPECT,
             ToolGrant.CODE_INTELLIGENCE,
             ToolGrant.WRITE,
+            ToolGrant.EXECUTE,
             ToolGrant.FINISH,
         ),
         AgentRole.DOCS to setOf(
@@ -168,9 +216,15 @@ object AgentToolPolicy {
             ToolGrant.WRITE,
             ToolGrant.FINISH,
         ),
+        // Commit/PR owns the repository writes: git inspection, git commit and
+        // (once a credential path exists) GitHub operations. It still holds no
+        // source-editing tool, so it commits what the coder changed rather than
+        // rewriting it.
         AgentRole.COMMIT_PR to setOf(
             ToolGrant.INSPECT,
             ToolGrant.CODE_INTELLIGENCE,
+            ToolGrant.GIT_READ,
+            ToolGrant.GIT_WRITE,
             ToolGrant.FINISH,
         ),
     )

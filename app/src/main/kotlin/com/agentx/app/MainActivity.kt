@@ -66,6 +66,9 @@ import com.agentx.app.ubuntu.LocalUbuntuRuntime
 import com.agentx.app.ui.theme.ForgeTheme
 import com.agentx.app.workspace.DefaultWorkspaceManager
 import com.agentx.app.workspace.FileWorkspaceBackend
+import com.agentx.app.git.DelegatingGitService
+import com.agentx.app.tools.DelegatingWorkspaceHostPathResolver
+import com.agentx.app.tools.WorkspaceHostPathResolver
 import com.agentx.app.workspace.RoutingWorkspaceBackend
 import com.agentx.app.workspace.android.SafWorkspaceBackend
 import com.agentx.app.workspace.android.SharedPreferencesWorkspaceMetadataStore
@@ -268,6 +271,23 @@ class MainActivity : ComponentActivity() {
                         checkNotNull(connectionManager) { "Connection manager is not registered" },
                     ),
                 )
+        }
+        // Agent-issued commands need a real host directory; it is the same project the
+        // terminal and Git see, resolved live so a stale path is never used.
+        val gitProjectProvider = ActiveGitProjectProvider(workspaceManager)
+        when (val hostPaths = foundation.services.get<Any>(ServiceKeys.TOOL_WORKSPACE_HOST_PATHS)) {
+            is DelegatingWorkspaceHostPathResolver ->
+                hostPaths.bind(
+                    WorkspaceHostPathResolver { context ->
+                        val active = gitProjectProvider.active()
+                        val matches = context.workspaceId == null || context.workspaceId == active?.workspaceId
+                        active?.takeIf { it.available && matches }?.hostPath
+                    },
+                )
+        }
+        // The git tools operate through this same service the IDE uses.
+        when (val holder = foundation.services.get<Any>(ServiceKeys.GIT_SERVICE)) {
+            is DelegatingGitService -> holder.bind(gitService)
         }
 
         setContent {

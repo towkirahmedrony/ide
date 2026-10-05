@@ -3,17 +3,35 @@ package com.agentx.app.tools
 import com.agentx.app.core.foundation.ServiceKeys
 import com.agentx.app.core.module.ForgeModule
 import com.agentx.app.core.module.ModuleContext
+import com.agentx.app.git.DelegatingGitService
+import com.agentx.app.git.GitService
+import com.agentx.app.tools.web.DelegatingHttpGetClient
+import com.agentx.app.tools.web.DelegatingWebSearchProvider
+import com.agentx.app.tools.web.HttpGetClient
+import com.agentx.app.tools.web.WebSearchProvider
+import com.agentx.app.workspace.ProcessExecutor
 
 /**
  * Wires the tool infrastructure into the platform. Filesystem tools are
  * registered against a bindable workspace resolver so the Android app can
  * attach the live Workspace Runtime after boot.
+ *
+ * The command, git and web families are registered here too. Each takes a
+ * collaborator that the app may bind after boot (a process executor, a Git
+ * service, an HTTP client, a search provider); when one is absent the tool is
+ * still registered but fails closed with a structured "unavailable" error — a
+ * declared-but-unavailable tool is never advertised or run as if it worked.
  */
 class ToolsModule(
     private val tools: List<Tool> = emptyList(),
     private val policy: ToolPermissionPolicy = ToolPermissionPolicy.default(),
     private val workspaces: WorkspaceFileSystemResolver = DelegatingWorkspaceFileSystemResolver(),
     private val connections: ToolConnectionAuthorizer = DelegatingToolConnectionAuthorizer(),
+    private val hostPaths: WorkspaceHostPathResolver = DelegatingWorkspaceHostPathResolver(),
+    private val commandExecutor: ProcessExecutor? = null,
+    private val git: GitService = DelegatingGitService(),
+    private val webFetch: HttpGetClient = DelegatingHttpGetClient(),
+    private val webSearch: WebSearchProvider = DelegatingWebSearchProvider(),
 ) : ForgeModule {
 
     private val registry = DefaultToolRegistry()
@@ -23,6 +41,13 @@ class ToolsModule(
     override fun initialize(context: ModuleContext) {
         val resolver = workspaces
         BuiltinTools.filesystem(resolver).forEach(registry::register)
+        // Execution is only registered when a backend exists for this build; a
+        // build with no executor therefore does not advertise a command tool.
+        commandExecutor?.let { executor ->
+            BuiltinTools.execution(executor, hostPaths).forEach(registry::register)
+        }
+        BuiltinTools.git(git).forEach(registry::register)
+        BuiltinTools.web(webFetch, webSearch).forEach(registry::register)
         tools.forEach(registry::register)
         context.services.register(ServiceKeys.TOOL_REGISTRY, registry)
         context.services.register(
@@ -31,6 +56,8 @@ class ToolsModule(
         )
         context.services.register(ServiceKeys.TOOL_PERMISSION_POLICY, policy)
         context.services.register(ServiceKeys.TOOL_WORKSPACE_RESOLVER, resolver)
+        context.services.register(ServiceKeys.TOOL_WORKSPACE_HOST_PATHS, hostPaths)
+        context.services.register(ServiceKeys.GIT_SERVICE, git)
         context.services.register(ServiceKeys.TOOL_CONNECTION_AUTHORIZER, connections)
     }
 }

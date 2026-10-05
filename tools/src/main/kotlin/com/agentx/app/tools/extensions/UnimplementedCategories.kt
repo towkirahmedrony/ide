@@ -16,11 +16,13 @@ import com.agentx.app.tools.ToolPermissionDecision
 import com.agentx.app.tools.ToolPermissionLevel
 
 /**
- * Placeholder tools for categories that must not run yet. They exist so the
- * registry, router, and agent loop already know the extension points.
+ * Placeholder tools for categories that still have no real backend.
  *
- * Real shell, git-write, browser, MCP, and unrestricted network access are
- * intentionally not implemented here.
+ * Command execution, git read/write and web fetch/search now have real
+ * implementations (see `execution/`, `git/` and `web/`). Browser automation,
+ * MCP servers, GitHub and Supabase still have no credential/transport path a
+ * tool could use, so they stay declared-but-unavailable rather than pretending
+ * to work.
  */
 abstract class UnavailableCategoryTool(
     name: String,
@@ -48,30 +50,6 @@ abstract class UnavailableCategoryTool(
         )
     }
 }
-
-class RunCommandToolStub : UnavailableCategoryTool(
-    name = "run_command",
-    description = "Reserved for workspace command execution. Not enabled.",
-    category = ToolCategory.COMMAND,
-    capabilities = setOf(ToolCapability.SHELL, ToolCapability.MUTATING),
-    required = setOf(ToolPermissionLevel.COMMAND_EXECUTION),
-)
-
-class GitWriteToolStub : UnavailableCategoryTool(
-    name = "git_write",
-    description = "Reserved for git write operations. Not enabled.",
-    category = ToolCategory.GIT,
-    capabilities = setOf(ToolCapability.GIT, ToolCapability.MUTATING),
-    required = setOf(ToolPermissionLevel.GIT_WRITE),
-)
-
-class WebFetchToolStub : UnavailableCategoryTool(
-    name = "web_fetch",
-    description = "Reserved for network fetch. Not enabled.",
-    category = ToolCategory.WEB,
-    capabilities = setOf(ToolCapability.NETWORK, ToolCapability.READ_ONLY),
-    required = setOf(ToolPermissionLevel.NETWORK),
-)
 
 class BrowserToolStub : UnavailableCategoryTool(
     name = "browser",

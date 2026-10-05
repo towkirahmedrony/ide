@@ -20,6 +20,13 @@ import com.agentx.app.workspace.process.RuntimeProcessExecutor
  */
 class WorkspaceModule(
     private val runtime: ProcessRuntime = JvmProcessRuntime(),
+    /**
+     * The one-shot executor to publish. When absent an executor is created over
+     * [runtime], so tests and previews keep working. The app passes the same
+     * instance it hands to the Tool System, so command execution and the rest of
+     * the platform share one backend.
+     */
+    private val executor: ProcessExecutor? = null,
 ) : ForgeModule {
 
     override val id: String = "workspace"
@@ -28,7 +35,7 @@ class WorkspaceModule(
         context.services.register(ServiceKeys.PROCESS_RUNTIME, runtime)
         context.services.register(
             ServiceKeys.PROCESS_EXECUTOR,
-            RuntimeProcessExecutor(runtime, allowsArbitrary = false),
+            executor ?: RuntimeProcessExecutor(runtime, allowsArbitrary = false),
         )
     }
 }

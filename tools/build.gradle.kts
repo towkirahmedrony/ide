@@ -13,6 +13,10 @@ dependencies {
     // Code intelligence tools are tools like any other: same registry, same
     // router, same permission policy.
     api(project(":codeintel"))
+    // The git tools wrap the project's existing GitService rather than running
+    // git themselves, so status/diff/log/commit stay the same implementation the
+    // IDE already uses.
+    api(project(":git"))
     api(libs.kotlinx.coroutines.core)
 
     testImplementation(kotlin("test"))

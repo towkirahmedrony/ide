@@ -70,13 +70,21 @@ import com.agentx.app.skills.SKILLS_LAYER
 import com.agentx.app.skills.SkillDiscoverySource
 import com.agentx.app.skills.SkillManager
 import com.agentx.app.skills.SkillStore
+import com.agentx.app.git.DelegatingGitService
 import com.agentx.app.tools.BuiltinTools
 import com.agentx.app.tools.DelegatingWorkspaceFileSystemResolver
+import com.agentx.app.tools.DelegatingWorkspaceHostPathResolver
 import com.agentx.app.tools.TOOLS_LAYER
 import com.agentx.app.tools.ToolsModule
+import com.agentx.app.tools.web.DuckDuckGoWebSearchProvider
+import com.agentx.app.tools.web.HttpGetClient
+import com.agentx.app.tools.web.UrlConnectionHttpGetClient
+import com.agentx.app.tools.web.WebSearchProvider
 import com.agentx.app.ui.UI_LAYER
 import com.agentx.app.workspace.WORKSPACE_LAYER
 import com.agentx.app.workspace.WorkspaceModule
+import com.agentx.app.workspace.process.JvmProcessRuntime
+import com.agentx.app.workspace.process.RuntimeProcessExecutor
 
 /** Everything the UI needs to render the running foundation. */
 data class FoundationState(
@@ -227,6 +235,18 @@ object Foundation {
         // Tool System publishes its tools and the Context Engine publishes file
         // structure, and neither of them builds a second parser.
         val toolWorkspaces = DelegatingWorkspaceFileSystemResolver()
+        // One-shot command execution backend, shared with the Workspace Runtime so
+        // the command tool and the rest of the platform use the same executor.
+        val processRuntime = JvmProcessRuntime()
+        val processExecutor = RuntimeProcessExecutor(processRuntime, allowsArbitrary = false)
+        // Bindable collaborators the app attaches after boot: the workspace host
+        // path (for commands) and the live Git service (for the git tools).
+        val toolHostPaths = DelegatingWorkspaceHostPathResolver()
+        val gitService = DelegatingGitService()
+        // Web research is real out of the box: a URL-connection transport backs
+        // web_fetch, and a provider-agnostic search provider backs web_search.
+        val webFetch: HttpGetClient = UrlConnectionHttpGetClient()
+        val webSearch: WebSearchProvider = DuckDuckGoWebSearchProvider(webFetch)
         val codeIntelligence = CodeIntelligenceModule(
             parsers = codeIntelligenceParsers,
             limits = codeIntelligenceLimits,
@@ -239,6 +259,11 @@ object Foundation {
             ToolsModule(
                 tools = BuiltinTools.codeIntelligence(toolWorkspaces, codeIntelligence.engine),
                 workspaces = toolWorkspaces,
+                hostPaths = toolHostPaths,
+                commandExecutor = processExecutor,
+                git = gitService,
+                webFetch = webFetch,
+                webSearch = webSearch,
             ),
         )
         modules.register(codeIntelligence)
@@ -277,7 +302,7 @@ object Foundation {
                 setup = integrationSetup,
             ),
         )
-        modules.register(WorkspaceModule())
+        modules.register(WorkspaceModule(runtime = processRuntime, executor = processExecutor))
         // The module reads the registered budgets from the container; the value
         // passed here is only the fallback for an unregistered container.
         modules.register(AgentModule(timeouts))
