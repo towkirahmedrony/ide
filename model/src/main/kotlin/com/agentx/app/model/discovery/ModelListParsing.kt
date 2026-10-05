@@ -1,5 +1,6 @@
 package com.agentx.app.model.discovery
 
+import com.agentx.app.model.capability.CapabilitySupport
 import com.agentx.app.model.preset.normalizeModelId
 import com.agentx.app.model.json.JsonCodec
 import com.agentx.app.model.json.JsonObject
@@ -27,6 +28,15 @@ object ModelListParsing {
 
     /** The generation method that means "this model does text chat". */
     const val GENERATE_CONTENT_METHOD: String = "generateContent"
+
+    /**
+     * The generation method that attests streamed generation.
+     *
+     * Only this method turns [DiscoveredModel.streaming] into a claim: it is the
+     * provider's own metadata, not an inference from a protocol or a name. A list
+     * that omits it leaves streaming unknown rather than unsupported.
+     */
+    const val STREAM_GENERATE_CONTENT_METHOD: String = "streamGenerateContent"
 
     /** How many rejection reasons are reported, so a log stays readable. */
     const val REJECTION_SAMPLE_SIZE: Int = 3
@@ -141,6 +151,14 @@ object ModelListParsing {
         if (!isRunnableTextModel(providerId, id, methods)) {
             return ParsedEntry.Rejected(id, nonTextReason(methods))
         }
+        // The provider's own generation methods are the narrowest reliable source
+        // of a capability claim here. A reported stream method proves streaming; a
+        // missing one proves nothing, so anything else stays UNKNOWN.
+        val streaming = if (methods.any { it.equals(STREAM_GENERATE_CONTENT_METHOD, ignoreCase = true) }) {
+            CapabilitySupport.SUPPORTED
+        } else {
+            CapabilitySupport.UNKNOWN
+        }
 
         val metadata = LinkedHashMap<String, String>()
         if (methods.isNotEmpty()) metadata[SUPPORTED_METHODS_KEY] = methods.joinToString(",")
@@ -173,6 +191,7 @@ object ModelListParsing {
                 providerOwnedBy = model.stringOrNull("owned_by")?.takeIf { it.isNotBlank() },
                 createdAtMillis = model.numberOrNull("created")?.toLong(),
                 providerMetadata = metadata,
+                streaming = streaming,
             ),
         )
     }

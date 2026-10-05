@@ -2,6 +2,8 @@ package com.agentx.app.model.discovery
 
 import com.agentx.app.model.ModelCapabilities
 import com.agentx.app.model.ModelDescriptor
+import com.agentx.app.model.capability.CapabilityProvenance
+import com.agentx.app.model.capability.CapabilitySupport
 import com.agentx.app.model.capability.ModelCapabilityProfile
 import com.agentx.app.model.connect.DiscoveryFailureKind
 
@@ -16,10 +18,14 @@ import com.agentx.app.model.connect.DiscoveryFailureKind
  * an unknown context window stays unknown, and an unknown deprecation stays
  * unknown rather than being guessed from a model name.
  *
- * Capabilities are deliberately absent. Authoritative capability knowledge lives
- * in the Part 1 `ModelCapabilityRegistry` (hardcoded overlays plus an explicit
- * per-connection override), so a discovered model can never gain tool calling or
- * streaming support just by being listed.
+ * Capability knowledge does not live here beyond what the provider itself
+ * stated, and even that is carried as a tri-state so a bare listing never looks
+ * capable. Authoritative capability knowledge lives in the
+ * `ModelCapabilityRegistry` (hardcoded overlays, narrow provider-reported
+ * evidence, plus an explicit per-connection override), so a discovered model can
+ * never gain tool calling just by being listed. An OpenAI-compatible protocol
+ * says nothing about a model's tool calling, so [toolCalling] stays UNKNOWN
+ * unless a provider actually reports it.
  */
 data class DiscoveredModel(
     /** The id that is sent to the provider's chat endpoint. */
@@ -48,6 +54,15 @@ data class DiscoveredModel(
      * entry is a text-chat model at all. Never a credential.
      */
     val providerMetadata: Map<String, String> = emptyMap(),
+    /**
+     * Streaming support the provider's own metadata attests, otherwise
+     * [CapabilitySupport.UNKNOWN]. Gemini reports `streamGenerateContent` in
+     * `supportedGenerationMethods`, which is exactly this kind of evidence; a
+     * provider that does not report it leaves the value UNKNOWN. It is never
+     * [CapabilitySupport.UNSUPPORTED], because a list that omits a method is not
+     * proof that the model cannot stream.
+     */
+    val streaming: CapabilitySupport = CapabilitySupport.UNKNOWN,
 ) {
     init {
         require(modelId.isNotBlank()) { "modelId must not be blank" }
@@ -73,6 +88,9 @@ data class DiscoveredModel(
         providerOwnedBy = providerOwnedBy ?: other.providerOwnedBy,
         createdAtMillis = createdAtMillis ?: other.createdAtMillis,
         providerMetadata = other.providerMetadata + providerMetadata,
+        // Provider-attested streaming survives a merge; two reports that both
+        // stayed silent leave it unknown.
+        streaming = if (streaming == CapabilitySupport.UNKNOWN) other.streaming else streaming,
     )
 
     /** The canonical descriptor shape `ModelProvider.listModels` reports. */
@@ -82,6 +100,7 @@ data class DiscoveredModel(
         providerId = providerId,
         contextWindow = contextWindowTokens,
         capabilities = ModelCapabilities(
+            streaming = streaming.isSupported,
             contextWindowTokens = contextWindowTokens,
             maxOutputTokens = maxOutputTokens,
             local = local,
@@ -176,4 +195,10 @@ fun DiscoveredModel.toCapabilityProfile(providerId: String): ModelCapabilityProf
         maxContextTokens = contextWindowTokens,
         maxOutputTokens = maxOutputTokens,
         local = local,
+        streaming = streaming,
+        provenance = if (streaming == CapabilitySupport.UNKNOWN) {
+            CapabilityProvenance.DISCOVERED
+        } else {
+            CapabilityProvenance.PROVIDER_REPORTED
+        },
     )

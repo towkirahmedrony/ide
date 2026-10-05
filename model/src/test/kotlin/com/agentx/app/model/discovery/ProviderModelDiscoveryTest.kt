@@ -2,6 +2,7 @@ package com.agentx.app.model.discovery
 
 import com.agentx.app.model.FakeHttpTransport
 import com.agentx.app.model.ModelConfig
+import com.agentx.app.model.capability.CapabilityProvenance
 import com.agentx.app.model.capability.CapabilitySupport
 import com.agentx.app.model.capability.InMemoryModelCapabilityRegistry
 import com.agentx.app.model.capability.ModelCapability
@@ -388,6 +389,62 @@ class ProviderModelDiscoveryTest {
         assertFalse(
             capabilities.supports(ModelProviderIds.GEMINI, "gemini-9-experimental", ModelCapability.TOOL_CALLING),
         )
+    }
+
+    @Test
+    fun `provider metadata attests streaming but never tool calling`() = runSuspend {
+        val transport = FakeHttpTransport(
+            response = HttpResponseSpec(
+                statusCode = 200,
+                body = """
+                    {"models":[
+                      {"name":"models/gemini-9-experimental",
+                       "supportedGenerationMethods":["generateContent", "streamGenerateContent"]}
+                    ]}
+                """.trimIndent(),
+            ),
+        )
+        val capabilities = InMemoryModelCapabilityRegistry(initial = emptyList())
+        registryWith(
+            connections = mapOf(ModelProviderIds.GEMINI to geminiConfig("gemini-9-experimental")),
+            transport = transport,
+            capabilities = capabilities,
+        ).refresh(ModelProviderIds.GEMINI, force = true)
+
+        val profile = assertNotNull(capabilities.get(ModelProviderIds.GEMINI, "gemini-9-experimental"))
+        // The provider's own list reports stream generation, so streaming is trusted.
+        assertEquals(CapabilitySupport.SUPPORTED, profile.streaming)
+        assertEquals(CapabilityProvenance.PROVIDER_REPORTED, profile.provenance)
+        // It says nothing about tool calling, so a tool-enabled role still cannot take it.
+        assertEquals(CapabilitySupport.UNKNOWN, profile.toolCalling)
+        assertFalse(
+            capabilities.supports(ModelProviderIds.GEMINI, "gemini-9-experimental", ModelCapability.TOOL_CALLING),
+        )
+    }
+
+    @Test
+    fun `a model list without a stream method leaves streaming unknown`() = runSuspend {
+        val transport = FakeHttpTransport(
+            response = HttpResponseSpec(
+                statusCode = 200,
+                body = """
+                    {"models":[
+                      {"name":"models/gemini-9-plain", "supportedGenerationMethods":["generateContent"]}
+                    ]}
+                """.trimIndent(),
+            ),
+        )
+        val capabilities = InMemoryModelCapabilityRegistry(initial = emptyList())
+        registryWith(
+            connections = mapOf(ModelProviderIds.GEMINI to geminiConfig("gemini-9-plain")),
+            transport = transport,
+            capabilities = capabilities,
+        ).refresh(ModelProviderIds.GEMINI, force = true)
+
+        val profile = assertNotNull(capabilities.get(ModelProviderIds.GEMINI, "gemini-9-plain"))
+        assertEquals(CapabilitySupport.UNKNOWN, profile.streaming)
+        assertEquals(CapabilitySupport.UNKNOWN, profile.toolCalling)
+        assertEquals(CapabilityProvenance.DISCOVERED, profile.provenance)
     }
 
     @Test

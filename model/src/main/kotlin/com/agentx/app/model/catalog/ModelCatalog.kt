@@ -37,6 +37,14 @@ data class CatalogModel(
     val maxOutputTokens: Int? = null,
     val capabilities: ModelCapabilities = ModelCapabilities(streaming = true),
     /**
+     * True only when the provider's own metadata attested streamed generation
+     * (for example Gemini's `streamGenerateContent`). Distinct from
+     * [capabilities], which is a display hint the picker may default; this is the
+     * narrow evidence the capability registry is allowed to trust, so it is
+     * persisted with the snapshot and re-registered identically on restore.
+     */
+    val providerAttestedStreaming: Boolean = false,
+    /**
      * True when the provider explicitly reports the model as deprecated or
      * retired. Null means the provider did not say, which is not the same as
      * "current": nothing is inferred from an identifier.
@@ -210,6 +218,7 @@ object ModelCatalogCodec {
         "local" to Json.of(model.local),
         "streaming" to Json.of(model.capabilities.streaming),
         "toolCalling" to Json.of(model.capabilities.toolCalling),
+        "providerAttestedStreaming" to Json.of(model.providerAttestedStreaming),
         "providerOwnedBy" to (model.providerOwnedBy?.let { Json.of(it) } ?: JsonValue.Null),
         "createdAtMillis" to (model.createdAtMillis?.let { Json.of(it) } ?: JsonValue.Null),
     )
@@ -226,6 +235,7 @@ object ModelCatalogCodec {
                 streaming = json.booleanOrNull("streaming") ?: true,
                 toolCalling = json.booleanOrNull("toolCalling") ?: false,
             ),
+            providerAttestedStreaming = json.booleanOrNull("providerAttestedStreaming") ?: false,
             available = json.booleanOrNull("available") ?: true,
             local = json.booleanOrNull("local") ?: false,
             providerOwnedBy = json.stringOrNull("providerOwnedBy")?.takeIf { it.isNotBlank() },

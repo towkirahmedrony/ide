@@ -1,6 +1,7 @@
 package com.agentx.app.model.catalog
 
 import com.agentx.app.model.ModelCapabilities
+import com.agentx.app.model.capability.CapabilitySupport
 import com.agentx.app.model.capability.ModelCapabilityRegistry
 import com.agentx.app.model.discovery.DiscoveredModel
 import com.agentx.app.model.discovery.toCapabilityProfile
@@ -22,6 +23,10 @@ internal fun DiscoveredModel.toCatalogModel(capabilitiesFor: (String) -> ModelCa
         contextWindowTokens = contextWindowTokens,
         maxOutputTokens = maxOutputTokens,
         capabilities = capabilitiesFor(modelId).copy(local = local),
+        // The provider's own stream attestation is carried separately from the
+        // display hint above, so it survives persistence and is the only
+        // streaming claim the registry is allowed to trust.
+        providerAttestedStreaming = streaming.isSupported,
         deprecated = deprecated,
         // A model is offered unless the provider said it is inactive or deprecated.
         available = (available != false) && deprecated != true,
@@ -31,12 +36,15 @@ internal fun DiscoveredModel.toCatalogModel(capabilitiesFor: (String) -> ModelCa
     )
 
 /**
- * Identity-only registration of discovered models into the capability registry.
+ * Registration of discovered models into the capability registry.
  *
  * Catalog listing is not capability proof: a discovered model enters the registry
- * with unknown support, so it stays usable for plain chat without ever being
- * treated as tool-capable. Called from a successful refresh and from a restore of
- * a persisted snapshot, so both paths register exactly the same way.
+ * with unknown tool calling, so it stays usable for plain chat without ever being
+ * treated as tool-capable. The single exception is streaming, and only when the
+ * provider's own metadata attested it ([CatalogModel.providerAttestedStreaming]) —
+ * never inferred from a provider family or a model name. Called from a successful
+ * refresh and from a restore of a persisted snapshot, so both paths register
+ * exactly the same way and a restart keeps the same evidence.
  */
 internal fun registerDiscoveredModels(
     registry: ModelCapabilityRegistry,
@@ -52,6 +60,11 @@ internal fun registerDiscoveredModels(
                 maxOutputTokens = model.maxOutputTokens,
                 deprecated = model.deprecated,
                 local = model.local,
+                streaming = if (model.providerAttestedStreaming) {
+                    CapabilitySupport.SUPPORTED
+                } else {
+                    CapabilitySupport.UNKNOWN
+                },
             ).toCapabilityProfile(providerId),
         )
     }

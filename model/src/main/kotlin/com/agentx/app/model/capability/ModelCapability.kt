@@ -58,6 +58,15 @@ enum class CapabilitySupport {
 enum class CapabilityProvenance {
     /** Hardcoded overlay from [KnownModelCapabilities]. */
     HARDCODED,
+    /**
+     * Attested by the provider's own API metadata — for example Gemini's
+     * `supportedGenerationMethods`, which reports whether the model offers stream
+     * generation. This is narrow, provider-reported evidence for one capability,
+     * never an inference from a provider family or a model name: an
+     * OpenAI-compatible protocol and a bare model listing still leave every
+     * capability [CapabilitySupport.UNKNOWN].
+     */
+    PROVIDER_REPORTED,
     /** Listed by a provider catalog. Not capability proof. */
     DISCOVERED,
     /** Selected during connect. Identity only, not capability proof. */
@@ -66,7 +75,7 @@ enum class CapabilityProvenance {
 
     companion object {
         fun merge(existing: CapabilityProvenance, incoming: CapabilityProvenance): CapabilityProvenance {
-            val rank = listOf(HARDCODED, DISCOVERED, CONNECTED)
+            val rank = listOf(HARDCODED, PROVIDER_REPORTED, DISCOVERED, CONNECTED)
             val existingRank = rank.indexOf(existing).takeIf { it >= 0 } ?: rank.lastIndex
             val incomingRank = rank.indexOf(incoming).takeIf { it >= 0 } ?: rank.lastIndex
             return if (incomingRank < existingRank) incoming else existing
@@ -164,12 +173,15 @@ data class ModelCapabilityProfile(
             maxContextTokens: Int? = null,
             maxOutputTokens: Int? = null,
             local: Boolean = false,
+            /** Provider-attested support, or [CapabilitySupport.UNKNOWN]. */
+            streaming: CapabilitySupport = CapabilitySupport.UNKNOWN,
+            provenance: CapabilityProvenance = CapabilityProvenance.DISCOVERED,
         ): ModelCapabilityProfile = ModelCapabilityProfile(
             providerId = providerId,
             modelId = modelId,
             displayName = displayName?.takeIf { it.isNotBlank() } ?: modelId,
             toolCalling = CapabilitySupport.UNKNOWN,
-            streaming = CapabilitySupport.UNKNOWN,
+            streaming = streaming,
             vision = CapabilitySupport.UNKNOWN,
             structuredOutput = CapabilitySupport.UNKNOWN,
             reasoning = CapabilitySupport.UNKNOWN,
@@ -178,7 +190,7 @@ data class ModelCapabilityProfile(
             local = local,
             enabled = true,
             known = false,
-            provenance = CapabilityProvenance.DISCOVERED,
+            provenance = provenance,
         )
 
         fun connected(
@@ -213,11 +225,11 @@ data class ModelCapabilityProfile(
         val overlay = incoming.known || incoming.provenance == CapabilityProvenance.HARDCODED
         return copy(
             displayName = mergedDisplayName(incoming, overlay),
-            toolCalling = mergedSupport(toolCalling, incoming.toolCalling, overlay),
-            streaming = mergedSupport(streaming, incoming.streaming, overlay),
-            vision = mergedSupport(vision, incoming.vision, overlay),
-            structuredOutput = mergedSupport(structuredOutput, incoming.structuredOutput, overlay),
-            reasoning = mergedSupport(reasoning, incoming.reasoning, overlay),
+            toolCalling = mergedSupport(toolCalling, incoming.toolCalling, overlay, incoming.provenance),
+            streaming = mergedSupport(streaming, incoming.streaming, overlay, incoming.provenance),
+            vision = mergedSupport(vision, incoming.vision, overlay, incoming.provenance),
+            structuredOutput = mergedSupport(structuredOutput, incoming.structuredOutput, overlay, incoming.provenance),
+            reasoning = mergedSupport(reasoning, incoming.reasoning, overlay, incoming.provenance),
             maxContextTokens = incoming.maxContextTokens ?: maxContextTokens,
             maxOutputTokens = incoming.maxOutputTokens ?: maxOutputTokens,
             local = local || incoming.local,
@@ -237,15 +249,30 @@ data class ModelCapabilityProfile(
         existing: CapabilitySupport,
         incoming: CapabilitySupport,
         overlay: Boolean,
+        incomingProvenance: CapabilityProvenance,
     ): CapabilitySupport {
         if (overlay) return incoming
+        // An authoritative definition always wins over dynamic evidence.
         if (known) return existing
+        // Narrow provider-attested evidence may resolve a capability that was
+        // previously unknown, but it never overwrites a stated value and never
+        // fabricates support for a capability the provider did not report.
+        if (existing == CapabilitySupport.UNKNOWN &&
+            incoming != CapabilitySupport.UNKNOWN &&
+            incomingProvenance == CapabilityProvenance.PROVIDER_REPORTED
+        ) {
+            return incoming
+        }
         return existing
     }
 
     /** Drops inferred capability flags so a dynamic model cannot look tool-capable. */
     fun withoutInferredCapabilities(): ModelCapabilityProfile {
         if (known || provenance == CapabilityProvenance.HARDCODED) return this
+        // Provider-reported evidence is trusted for exactly the capabilities the
+        // provider stated (a provider model list reports stream generation, and
+        // nothing about tool calling). Everything unstated stays UNKNOWN.
+        if (provenance == CapabilityProvenance.PROVIDER_REPORTED) return copy(known = false)
         // A dynamic profile that asserted support it cannot prove is not trusted for
         // its metadata either. Its name is cleared as well as its flags, so it cannot
         // overwrite a name an earlier, honest discovery already settled — otherwise
