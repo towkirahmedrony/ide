@@ -3,11 +3,17 @@ package com.agentx.app.model.ratelimit
 import kotlin.math.min
 
 /**
- * Bounded, centralized retry policy for provider rate-limit (HTTP 429) responses.
+ * The project's single bounded backoff schedule: increasing delay, a hard ceiling,
+ * and jitter so callers that failed together do not retry in lockstep.
  *
- * There is exactly one of these on the request path: providers do not retry by
- * themselves, so retries can never multiply into an uncontrolled loop. Every
- * retry goes back through [RateLimitManager] admission control.
+ * It owns the *timing* of a retry and nothing else — never whether a retry is
+ * allowed, which category a failure belongs to, or which model is asked next. Those
+ * are decided by [com.agentx.app.model.retry.TransientRetryPolicy] (transient
+ * failures) and by the configured fallback policy (a different model).
+ *
+ * There is exactly one schedule per retry site and providers never retry by
+ * themselves, so retries cannot multiply into an uncontrolled loop. Every attempt a
+ * caller starts goes back through [RateLimitManager] admission control.
  */
 class RateLimitBackoff(
     /** Total attempts including the first. `4` means the first call plus three retries. */

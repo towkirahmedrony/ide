@@ -281,7 +281,7 @@ class OpenAiCompatibleProviderTest {
     }
 
     @Test
-    fun `http 429 normalizes to a retryable rate limit`() {
+    fun `http 429 normalizes to a rate limit that the retry layer does not repeat`() {
         val transport = FakeHttpTransport(response = HttpResponseSpec(429, """{"error":{"message":"slow down"}}"""))
         val provider = provider(transport)
 
@@ -290,7 +290,11 @@ class OpenAiCompatibleProviderTest {
         }
 
         assertEquals(ModelProviderErrorCode.RATE_LIMITED, error.code)
-        assertTrue(error.retryable)
+        // A rate limit is not repeated by the transient-retry layer: RateLimitManager
+        // owns the cooldown the provider asked for, and recovery is the configured
+        // fallback. "Retryable" therefore means "repeat this exact request", and for a
+        // 429 that answer is no.
+        assertFalse(error.retryable)
         assertNull(error.retryAfterMillis)
     }
 
@@ -314,7 +318,7 @@ class OpenAiCompatibleProviderTest {
     }
 
     @Test
-    fun `http 500 normalizes to a retryable provider error`() {
+    fun `http 500 normalizes to a retryable server error`() {
         val transport = FakeHttpTransport(response = HttpResponseSpec(500, "server exploded"))
         val provider = provider(transport)
 
@@ -322,8 +326,57 @@ class OpenAiCompatibleProviderTest {
             runSuspend { provider.complete(request(openAiConfig(), ModelMessage.user("hi"))) }
         }
 
-        assertEquals(ModelProviderErrorCode.PROVIDER_ERROR, error.code)
+        // A plain 5xx is the provider's own fault, not a nameless "provider error".
+        assertEquals(ModelProviderErrorCode.SERVER_ERROR, error.code)
         assertTrue(error.retryable)
+    }
+
+    @Test
+    fun `http 403 normalizes to an authorization failure and is not retryable`() {
+        val transport = FakeHttpTransport(
+            response = HttpResponseSpec(403, """{"error":{"message":"no access to this model"}}"""),
+        )
+        val provider = provider(transport)
+
+        val error = assertFailsWith<ModelProviderError> {
+            runSuspend { provider.complete(request(openAiConfig(), ModelMessage.user("hi"))) }
+        }
+
+        assertEquals(ModelProviderErrorCode.AUTHORIZATION_FAILED, error.code)
+        assertFalse(error.retryable)
+    }
+
+    @Test
+    fun `http 404 normalizes to a model-not-found failure and is not retryable`() {
+        val transport = FakeHttpTransport(
+            response = HttpResponseSpec(404, """{"error":{"message":"model does not exist","code":"model_not_found"}}"""),
+        )
+        val provider = provider(transport)
+
+        val error = assertFailsWith<ModelProviderError> {
+            runSuspend { provider.complete(request(openAiConfig(), ModelMessage.user("hi"))) }
+        }
+
+        assertEquals(ModelProviderErrorCode.MODEL_NOT_FOUND, error.code)
+        assertFalse(error.retryable)
+    }
+
+    @Test
+    fun `a 429 that reports a spent quota is classified apart from a rate limit`() {
+        val transport = FakeHttpTransport(
+            response = HttpResponseSpec(
+                429,
+                """{"error":{"message":"You exceeded your current quota","type":"insufficient_quota"}}""",
+            ),
+        )
+        val provider = provider(transport)
+
+        val error = assertFailsWith<ModelProviderError> {
+            runSuspend { provider.complete(request(openAiConfig(), ModelMessage.user("hi"))) }
+        }
+
+        assertEquals(ModelProviderErrorCode.QUOTA_EXHAUSTED, error.code)
+        assertFalse(error.retryable)
     }
 
     @Test
@@ -391,7 +444,7 @@ class OpenAiCompatibleProviderTest {
             runSuspend { provider.stream(request(openAiConfig(stream = true), ModelMessage.user("hi"))) { } }
         }
 
-        assertEquals(ModelProviderErrorCode.PROVIDER_ERROR, error.code)
+        assertEquals(ModelProviderErrorCode.SERVICE_UNAVAILABLE, error.code)
         assertEquals("unavailable", error.message)
     }
 

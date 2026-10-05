@@ -13,6 +13,7 @@ import com.agentx.app.model.ModelProviderError
 import com.agentx.app.model.ModelProviderErrorCode
 import com.agentx.app.model.health.CandidateFailure
 import com.agentx.app.model.health.CandidateHealthTracker
+import com.agentx.app.model.retry.RetryVerdict
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
@@ -493,7 +494,7 @@ class ModelFallback(
             }
 
             attempts += 1
-            emitStarted(sink, sessionId, role, current, candidate, lastReason, attempts)
+            emitStarted(sink, sessionId, role, current, candidate, lastReason, attempts, lastError)
             try {
                 val result = call(candidate)
                 sink.emit(
@@ -549,7 +550,7 @@ class ModelFallback(
                     // fallbacks and they were all down" is legible without reading
                     // each attempt's own record.
                     "failureCategory" to lastCategory.name,
-                ),
+                ) + retryFieldsOf(lastError),
             )
         }
         throw lastError
@@ -563,6 +564,7 @@ class ModelFallback(
         to: ModelConfig,
         reason: ModelFallbackReason,
         attempt: Int,
+        cause: Throwable? = null,
     ) {
         sink.emit(
             AgentEvent.ModelFallbackStarted(
@@ -590,7 +592,27 @@ class ModelFallback(
                 "toModel" to to.model,
                 "reason" to reason.name,
                 "attempt" to attempt,
-            ),
+            ) + retryFieldsOf(cause),
+        )
+    }
+
+    /**
+     * What the bounded retry layer did before this fallback decision, read from the
+     * failure the retry layer annotated.
+     *
+     * A chain that starts only after the same model was retried and gave up is a
+     * different story from one that starts on the first failure, and the difference
+     * is only legible if it is stated. Empty when the failure never went through a
+     * retry, so the common case carries no extra fields.
+     */
+    private fun retryFieldsOf(cause: Throwable?): Map<String, Any?> {
+        val details = (cause as? ModelProviderError)?.details ?: return emptyMap()
+        val attempts = details["attempts"] ?: return emptyMap()
+        return mapOf(
+            "retryAttempts" to attempts,
+            "retryMaxAttempts" to details["maxAttempts"],
+            "retryOutcome" to details["retryOutcome"],
+            "retriesExhausted" to (details["retryOutcome"] == RetryVerdict.ATTEMPTS_EXHAUSTED.name),
         )
     }
 

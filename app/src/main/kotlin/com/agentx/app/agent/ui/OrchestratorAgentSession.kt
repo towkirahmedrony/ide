@@ -449,9 +449,27 @@ internal fun failureKind(error: AgentError?): AgentFailureKind {
         AgentErrorCode.MODEL_FAILURE -> when (providerCode(error)) {
             ModelProviderErrorCode.TIMEOUT -> AgentFailureKind.TIMEOUT
             ModelProviderErrorCode.INVALID_RESPONSE -> AgentFailureKind.INVALID_RESPONSE
+            // Server-side and transport faults are shown as a connection problem: the
+            // request, not the user's setup, is what failed, and it is worth retrying.
             ModelProviderErrorCode.CONNECTION_FAILED,
             ModelProviderErrorCode.NETWORK_ERROR,
+            ModelProviderErrorCode.SERVER_ERROR,
+            ModelProviderErrorCode.SERVICE_UNAVAILABLE,
+            ModelProviderErrorCode.PROVIDER_ERROR,
+            ModelProviderErrorCode.RATE_LIMITED,
+            ModelProviderErrorCode.QUOTA_EXHAUSTED,
             -> AgentFailureKind.CONNECTION
+            // Rejected credentials, a refused permission and a model that does not
+            // exist are all setup problems: repeating the identical request changes
+            // nothing, so they are presented as "not configured" rather than as a
+            // transient failure the UI would invite the user to retry.
+            ModelProviderErrorCode.AUTHENTICATION_FAILED,
+            ModelProviderErrorCode.AUTHORIZATION_FAILED,
+            ModelProviderErrorCode.PERMISSION_DENIED,
+            ModelProviderErrorCode.MODEL_NOT_FOUND,
+            ModelProviderErrorCode.PROVIDER_NOT_FOUND,
+            ModelProviderErrorCode.INVALID_CONFIG,
+            -> AgentFailureKind.NOT_CONFIGURED
             else -> AgentFailureKind.UNKNOWN
         }
         else -> AgentFailureKind.UNKNOWN

@@ -15,6 +15,7 @@ import com.agentx.app.model.diagnostics.firstHeaderValue
 import com.agentx.app.model.diagnostics.rateLimitHeaderNames
 import com.agentx.app.model.diagnostics.safeResponsePreview
 import com.agentx.app.model.diagnostics.sanitizeForLog
+import com.agentx.app.model.error.ProviderErrorClassifier
 import com.agentx.app.model.http.*
 import com.agentx.app.model.json.*
 import com.agentx.app.model.ratelimit.RetryAfter
@@ -576,21 +577,17 @@ class OpenAiCompatibleProvider(
     private fun httpError(response: HttpResponseSpec): ModelProviderError {
         val status = response.statusCode
         val info = extractErrorInfo(response.body)
-        val code = when (status) {
-            400 -> ModelProviderErrorCode.INVALID_REQUEST
-            401, 403 -> ModelProviderErrorCode.AUTHENTICATION_FAILED
-            408 -> ModelProviderErrorCode.TIMEOUT
-            429 -> ModelProviderErrorCode.RATE_LIMITED
-            in 500..599 -> ModelProviderErrorCode.PROVIDER_ERROR
-            else -> ModelProviderErrorCode.PROVIDER_ERROR
-        }
+        // One shared rule for every provider: the status and the endpoint's own
+        // error type decide the category, so 401/403/404/408/429/5xx stop collapsing
+        // into a single "provider error".
+        val code = ProviderErrorClassifier.forHttpStatus(status, info.type, info.message)
         return ModelProviderError(
             code = code,
             message = info.message ?: "Model endpoint returned HTTP $status",
             providerId = id,
             httpStatus = status,
             providerErrorType = info.type,
-            retryable = status == 429 || status in 500..599,
+            retryable = ProviderErrorClassifier.isTransient(code, status),
             retryAfterMillis = if (status == 429) RetryAfter.parseMillis(response.headers) else null,
         )
     }

@@ -33,6 +33,7 @@ import com.agentx.app.model.http.HttpRequestSpec
 import com.agentx.app.model.http.HttpResponseSpec
 import com.agentx.app.model.http.HttpTransport
 import com.agentx.app.model.http.UrlConnectionHttpTransport
+import com.agentx.app.model.error.ProviderErrorClassifier
 import com.agentx.app.model.ratelimit.RetryAfter
 import com.agentx.app.model.json.Json
 import com.agentx.app.model.json.JsonCodec
@@ -530,21 +531,17 @@ class GeminiModelProvider(
     private fun httpError(response: HttpResponseSpec): ModelProviderError {
         val status = response.statusCode
         val info = extractErrorInfo(response.body)
-        val code = when (status) {
-            400 -> ModelProviderErrorCode.INVALID_REQUEST
-            401, 403 -> ModelProviderErrorCode.AUTHENTICATION_FAILED
-            404 -> ModelProviderErrorCode.UNSUPPORTED
-            429 -> ModelProviderErrorCode.RATE_LIMITED
-            in 500..599 -> ModelProviderErrorCode.PROVIDER_ERROR
-            else -> ModelProviderErrorCode.PROVIDER_ERROR
-        }
+        // Same shared rule as every other provider. Gemini also reports a canonical
+        // status string (`NOT_FOUND`, `PERMISSION_DENIED`, `RESOURCE_EXHAUSTED`),
+        // which is more specific than the bare HTTP status and is read first.
+        val code = ProviderErrorClassifier.forHttpStatus(status, info.status, info.message)
         return ModelProviderError(
             code = code,
             message = info.message ?: "Gemini returned HTTP $status",
             providerId = id,
             httpStatus = status,
             providerErrorType = info.status,
-            retryable = status == 429 || status in 500..599,
+            retryable = ProviderErrorClassifier.isTransient(code, status),
             retryAfterMillis = if (status == 429) RetryAfter.parseMillis(response.headers) else null,
         )
     }

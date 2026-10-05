@@ -2,6 +2,7 @@ package com.agentx.app.agent.domain
 
 import com.agentx.app.model.ModelProviderError
 import com.agentx.app.model.ModelProviderErrorCode
+import com.agentx.app.model.capability.ModelCapabilityErrors
 
 /**
  * The named category a model failure falls into, whether or not it may trigger a
@@ -109,16 +110,32 @@ enum class FallbackFailureCategory(
          */
         fun of(error: ModelProviderError): FallbackFailureCategory = when (error.code) {
             ModelProviderErrorCode.RATE_LIMITED -> RATE_LIMITED
+            ModelProviderErrorCode.QUOTA_EXHAUSTED -> QUOTA_EXHAUSTED
             ModelProviderErrorCode.TIMEOUT -> TIMEOUT
             ModelProviderErrorCode.NETWORK_ERROR -> NETWORK_FAILURE
             ModelProviderErrorCode.CONNECTION_FAILED -> CONNECTION_DEGRADED
             ModelProviderErrorCode.AUTHENTICATION_FAILED -> AUTHENTICATION_FAILED
+            ModelProviderErrorCode.AUTHORIZATION_FAILED -> AUTHORIZATION_FAILED
+            ModelProviderErrorCode.PERMISSION_DENIED -> PERMISSION_DENIED
             ModelProviderErrorCode.INVALID_REQUEST -> INVALID_REQUEST
             ModelProviderErrorCode.INVALID_CONFIG -> INVALID_CONFIGURATION
-            ModelProviderErrorCode.UNSUPPORTED -> MODEL_NOT_ELIGIBLE
+
+            // Three ways of saying "the thing you named is not there": the provider
+            // does not serve that model, AgentX has no connection under that identity,
+            // or that identity is registered twice. None is fixed by asking another
+            // model, which is why they share a category rather than a fallback trigger.
+            ModelProviderErrorCode.MODEL_NOT_FOUND,
             ModelProviderErrorCode.PROVIDER_NOT_FOUND,
             ModelProviderErrorCode.DUPLICATE_PROVIDER,
             -> MODEL_NOT_FOUND
+
+            // A 5xx is the provider's problem and may be answered elsewhere, but the
+            // categorical difference is kept: a plain server fault is temporary, while
+            // a provider that reports itself unavailable is named as such.
+            ModelProviderErrorCode.SERVER_ERROR -> TEMPORARY_PROVIDER_FAILURE
+            ModelProviderErrorCode.SERVICE_UNAVAILABLE -> PROVIDER_UNAVAILABLE
+
+            ModelProviderErrorCode.UNSUPPORTED -> capabilityRefusal(error)
             ModelProviderErrorCode.CANCELLED -> USER_CANCELLED
             ModelProviderErrorCode.INVALID_RESPONSE -> MALFORMED_RESPONSE
             ModelProviderErrorCode.PROVIDER_ERROR -> {
@@ -135,4 +152,24 @@ enum class FallbackFailureCategory(
         fun of(error: Throwable): FallbackFailureCategory =
             (error as? ModelProviderError)?.let(::of) ?: UNKNOWN
     }
+}
+
+/**
+ * Separates a capability the model *refused* from one AgentX simply does not *know*
+ * about.
+ *
+ * [ModelCapabilityErrors.unsupported] already carries whether a definition was known
+ * when it raised the refusal, so the distinction is read from the error rather than
+ * re-derived. It matters because the two must never be treated the same: "this model
+ * cannot call tools" is a fact, while "nothing here says whether it can" is ignorance
+ * that must not be upgraded to either answer — least of all by asking a different
+ * model instead.
+ *
+ * A refusal raised without that metadata stays [FallbackFailureCategory.MODEL_NOT_ELIGIBLE],
+ * which is the pre-existing classification.
+ */
+private fun capabilityRefusal(error: ModelProviderError): FallbackFailureCategory {
+    if (error.providerErrorType != ModelCapabilityErrors.CODE) return FallbackFailureCategory.MODEL_NOT_ELIGIBLE
+    val known = error.details[ModelCapabilityErrors.DETAIL_KNOWN]?.toString()?.toBooleanStrictOrNull() ?: false
+    return if (known) FallbackFailureCategory.MODEL_NOT_ELIGIBLE else FallbackFailureCategory.CAPABILITY_UNKNOWN
 }

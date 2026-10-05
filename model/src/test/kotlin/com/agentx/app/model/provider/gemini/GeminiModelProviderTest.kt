@@ -264,7 +264,9 @@ class GeminiModelProviderTest {
 
         val providerError = error as ModelProviderError
         assertEquals(404, providerError.httpStatus)
-        assertEquals(ModelProviderErrorCode.UNSUPPORTED, providerError.code)
+        // Gemini reports its own canonical status, so the failure is named as a
+        // missing model rather than as an unclassified provider fault.
+        assertEquals(ModelProviderErrorCode.MODEL_NOT_FOUND, providerError.code)
         assertTrue(providerError.message.orEmpty().contains("not found"), providerError.message)
         assertFalse(providerError.message.orEmpty().contains("AIza-secret"))
     }

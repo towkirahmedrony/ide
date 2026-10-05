@@ -192,11 +192,22 @@ class ChatCapabilityProbe(
     }
 
     private fun kindFor(error: ModelProviderError): DiscoveryFailureKind = when (error.code) {
-        ModelProviderErrorCode.AUTHENTICATION_FAILED -> DiscoveryFailureKind.AUTHENTICATION_REQUIRED
+        // A probe the server refused is a credential/access problem whether it said
+        // 401 (rejected) or 403 (accepted but not permitted): the setup is what has to
+        // change, so both lead the user to the same place.
+        ModelProviderErrorCode.AUTHENTICATION_FAILED,
+        ModelProviderErrorCode.AUTHORIZATION_FAILED,
+        ModelProviderErrorCode.PERMISSION_DENIED,
+        -> DiscoveryFailureKind.AUTHENTICATION_REQUIRED
+
         ModelProviderErrorCode.TIMEOUT -> DiscoveryFailureKind.TIMEOUT
-        ModelProviderErrorCode.RATE_LIMITED -> DiscoveryFailureKind.RATE_LIMITED
+        ModelProviderErrorCode.RATE_LIMITED, ModelProviderErrorCode.QUOTA_EXHAUSTED ->
+            DiscoveryFailureKind.RATE_LIMITED
         ModelProviderErrorCode.CONNECTION_FAILED, ModelProviderErrorCode.NETWORK_ERROR ->
             DiscoveryFailureKind.UNREACHABLE
+        ModelProviderErrorCode.MODEL_NOT_FOUND -> DiscoveryFailureKind.NOT_FOUND
+        ModelProviderErrorCode.SERVER_ERROR, ModelProviderErrorCode.SERVICE_UNAVAILABLE ->
+            DiscoveryFailureKind.SERVER_ERROR
         ModelProviderErrorCode.INVALID_RESPONSE, ModelProviderErrorCode.INVALID_REQUEST ->
             DiscoveryFailureKind.MALFORMED
         ModelProviderErrorCode.PROVIDER_ERROR ->
@@ -218,6 +229,15 @@ class ChatCapabilityProbe(
                     "The server is reachable, but it requires authentication. " +
                         "Add the API key for this endpoint."
                 }
+            // The credential was accepted but the account may not use this endpoint or
+            // model. Telling the user to check the key again would send them to fix
+            // something that is not broken.
+            error.code == ModelProviderErrorCode.AUTHORIZATION_FAILED ||
+                error.code == ModelProviderErrorCode.PERMISSION_DENIED ->
+                "The server is reachable, but this credential is not permitted to use " +
+                    "this endpoint or model. Check the account's access."
+            error.code == ModelProviderErrorCode.QUOTA_EXHAUSTED ->
+                "The model endpoint reports that this account's quota is exhausted."
             error.code == ModelProviderErrorCode.TIMEOUT ->
                 "The chat endpoint did not respond in time."
             error.code == ModelProviderErrorCode.RATE_LIMITED ->
