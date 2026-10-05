@@ -19,22 +19,22 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
@@ -141,17 +141,14 @@ private fun AgentUserMessage(
     var editing by remember { mutableStateOf(false) }
     var draft by remember(message.id) { mutableStateOf(message.rawText) }
 
-    Column(
-        modifier = modifier.fillMaxWidth(),
-        horizontalAlignment = Alignment.End,
-    ) {
+    Column(modifier = modifier.fillMaxWidth()) {
         if (editing) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(16.dp))
+                    .clip(RoundedCornerShape(12.dp))
                     .background(ForgeSurface)
-                    .border(1.dp, ForgeBorder, RoundedCornerShape(16.dp))
+                    .border(1.dp, ForgeBorder, RoundedCornerShape(12.dp))
                     .padding(12.dp),
             ) {
                 BasicTextField(
@@ -164,45 +161,42 @@ private fun AgentUserMessage(
                 Spacer(Modifier.height(10.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     TextButton(onClick = { editing = false; draft = message.rawText }) { Text("Cancel") }
-                    TextButton(
-                        onClick = {
-                            editing = false
-                            onEditSend(draft)
-                        },
-                    ) { Text("Resend") }
+                    TextButton(onClick = { editing = false; onEditSend(draft) }) { Text("Resend") }
                 }
             }
         } else {
-            Box(
-                modifier = Modifier
-                    .widthIn(max = 340.dp)
-                    .background(
-                        ForgePeriwinkle.copy(alpha = 0.18f),
-                        RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 4.dp),
-                    )
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
-            ) {
-                SelectionContainer { AgentMarkdownText(message.blocks, message.rawText) }
-            }
-        }
-
-        if (!editing) {
-            Row(
-                modifier = Modifier.padding(top = 2.dp, end = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                MessageTimestamp(message.timestampMillis)
-                CopyAction(onCopy = onCopy, label = "Copy message")
-                IconButton(
-                    onClick = { editing = true; draft = message.rawText },
-                    modifier = Modifier.size(34.dp),
-                ) {
-                    Icon(
-                        Icons.Filled.Edit,
-                        contentDescription = "Edit and resend",
-                        tint = ForgeMuted,
-                        modifier = Modifier.size(15.dp),
-                    )
+            Row(modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
+                TurnRail(ForgePeriwinkle)
+                Spacer(Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    SenderLabel("You", ForgePeriwinkle)
+                    Spacer(Modifier.height(4.dp))
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(ForgeSurfaceVariant.copy(alpha = 0.5f), RoundedCornerShape(10.dp))
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                    ) {
+                        SelectionContainer { AgentMarkdownText(message.blocks, message.rawText) }
+                    }
+                    Row(
+                        modifier = Modifier.padding(top = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        MessageTimestamp(message.timestampMillis)
+                        CopyAction(onCopy = onCopy, label = "Copy")
+                        IconButton(
+                            onClick = { editing = true; draft = message.rawText },
+                            modifier = Modifier.size(32.dp),
+                        ) {
+                            Icon(
+                                Icons.Filled.Edit,
+                                contentDescription = "Edit and resend",
+                                tint = ForgeMuted,
+                                modifier = Modifier.size(15.dp),
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -218,12 +212,18 @@ private fun AgentAssistantMessage(
     onRegenerate: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Row(
-        modifier = modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        AgentAvatar()
-        Column(modifier = Modifier.weight(1f).padding(top = 3.dp)) {
+    val railColor = when {
+        message.state == MessageState.FAILED -> ForgeDanger
+        message.state == MessageState.STOPPED -> ForgeAmber
+        else -> ForgeMint
+    }
+    Row(modifier = modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
+        TurnRail(railColor)
+        Spacer(Modifier.width(10.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            SenderLabel("Main Agent", ForgeMint)
+            Spacer(Modifier.height(4.dp))
+
             if (message.activities.isNotEmpty()) {
                 AgentActivityPanel(
                     activities = message.activities,
@@ -236,13 +236,18 @@ private fun AgentAssistantMessage(
                     elapsedMillis = message.elapsedMillis ?: 0L,
                     planSteps = message.planSteps,
                 )
-                Spacer(Modifier.height(10.dp))
+                Spacer(Modifier.height(8.dp))
             }
 
             if (message.rawText.isEmpty() && message.state == MessageState.STREAMING) {
                 TypingDots()
             } else {
                 SelectionContainer { AgentMarkdownText(message.blocks, message.rawText) }
+            }
+
+            if (message.filesChanged.isNotEmpty()) {
+                Spacer(Modifier.height(10.dp))
+                CodeChangesCard(changed = message.filesChanged)
             }
 
             if (message.rawText.isNotEmpty() || message.state != MessageState.STREAMING) {
@@ -254,8 +259,8 @@ private fun AgentAssistantMessage(
                     }
                     MessageTimestamp(message.timestampMillis)
                     MessageMeta(message)
-                    CopyAction(onCopy = onCopy, label = "Copy response")
-                    IconButton(onClick = onRegenerate, modifier = Modifier.size(34.dp)) {
+                    CopyAction(onCopy = onCopy, label = "Copy")
+                    IconButton(onClick = onRegenerate, modifier = Modifier.size(32.dp)) {
                         Icon(
                             Icons.Filled.Refresh,
                             contentDescription = "Regenerate response",
@@ -264,6 +269,108 @@ private fun AgentAssistantMessage(
                         )
                     }
                 }
+            }
+        }
+    }
+}
+
+/** A full-height left accent that turns the list into a document rail, not chat bubbles. */
+@Composable
+private fun TurnRail(color: Color) {
+    Box(
+        modifier = Modifier
+            .width(2.dp)
+            .fillMaxHeight()
+            .background(color.copy(alpha = 0.55f), RoundedCornerShape(1.dp)),
+    )
+}
+
+/** Muted mono sender label above a turn's content. */
+@Composable
+private fun SenderLabel(text: String, color: Color) {
+    Text(
+        text = text.uppercase(),
+        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, letterSpacing = 0.6.sp),
+        fontFamily = FontFamily.Monospace,
+        fontWeight = FontWeight.SemiBold,
+        color = color,
+        maxLines = 1,
+    )
+}
+
+/**
+ * Compact code-changes card fed only by the runtime's real [changed] file list.
+ * No fabricated line counts: only the paths the Agent Loop actually reported.
+ */
+@Composable
+private fun CodeChangesCard(changed: List<String>) {
+    var expanded by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(12.dp)
+    val shown = if (expanded) changed else changed.take(3)
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(ForgeSurface)
+            .border(1.dp, ForgeBorder, shape),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { expanded = !expanded }
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "✎",
+                color = ForgeMint,
+                fontSize = 13.sp,
+                fontFamily = FontFamily.Monospace,
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = "${changed.size} file${if (changed.size == 1) "" else "s"} changed",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = ForgeInk,
+                modifier = Modifier.weight(1f),
+            )
+            if (changed.size > 3) {
+                Icon(
+                    imageVector = if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                    contentDescription = if (expanded) "Collapse changes" else "Expand changes",
+                    tint = ForgeMuted,
+                    modifier = Modifier.size(16.dp),
+                )
+            }
+        }
+        Column(modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 10.dp)) {
+            shown.forEach { path ->
+                Row(
+                    modifier = Modifier.padding(vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = path,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 12.sp,
+                        color = ForgeMuted,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+            if (!expanded && changed.size > 3) {
+                Text(
+                    text = "+${changed.size - 3} more",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ForgeMuted,
+                    modifier = Modifier
+                        .clickable { expanded = true }
+                        .padding(top = 2.dp),
+                )
             }
         }
     }
@@ -596,10 +703,19 @@ fun AgentActivityPanel(
  */
 @Composable
 private fun PlanStepsBlock(steps: List<PlanStepUiModel>) {
-    Column(modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp)) {
+    val shape = RoundedCornerShape(10.dp)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 4.dp)
+            .clip(shape)
+            .background(ForgeSurfaceVariant.copy(alpha = 0.5f))
+            .border(1.dp, ForgeBorder, shape)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+    ) {
         Text(
-            text = "Plan · ${AgentChatPresentation.planProgressLabel(steps)}",
-            style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+            text = "PLAN · ${AgentChatPresentation.planProgressLabel(steps)}",
+            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, letterSpacing = 0.4.sp),
             color = ForgeMuted,
             fontFamily = FontFamily.Monospace,
         )
@@ -1016,23 +1132,6 @@ fun copyToClipboard(context: Context, label: String, text: String) {
         putExtra(Intent.EXTRA_TEXT, text)
     }
     context.startActivity(Intent.createChooser(sendIntent, label))
-}
-
-@Composable
-private fun AgentAvatar() {
-    Box(
-        modifier = Modifier
-            .size(28.dp)
-            .background(ForgePeriwinkle.copy(alpha = 0.18f), CircleShape),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            imageVector = Icons.Filled.AutoAwesome,
-            contentDescription = null,
-            tint = ForgePeriwinkle,
-            modifier = Modifier.size(16.dp),
-        )
-    }
 }
 
 @Composable

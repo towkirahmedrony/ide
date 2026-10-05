@@ -150,6 +150,10 @@ data class ChatMessageUiModel(
     val planSteps: List<PlanStepUiModel> = emptyList(),
     val elapsedMillis: Long? = null,
     val modelId: String? = null,
+    /** Real files the runtime reports as changed this turn; empty when it edited none. */
+    val filesChanged: List<String> = emptyList(),
+    /** Real files the runtime inspected this turn; never fabricated. */
+    val filesInspected: List<String> = emptyList(),
 ) {
     /** Plain text a copy action should place on the clipboard. */
     val copyText: String get() = rawText

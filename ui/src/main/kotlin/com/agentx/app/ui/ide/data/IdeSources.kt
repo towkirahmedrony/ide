@@ -27,7 +27,13 @@ fun interface WorkspacePicker {
 sealed interface AgentStreamEvent {
     data class Activity(val activity: AgentActivity) : AgentStreamEvent
     data class Chunk(val text: String) : AgentStreamEvent
-    data class Completed(val text: String) : AgentStreamEvent
+    data class Completed(
+        val text: String,
+        /** Files the runtime reports as changed this turn; empty when it made no edits. */
+        val filesChanged: List<String> = emptyList(),
+        /** Files the runtime inspected this turn; shown for context, never fabricated. */
+        val filesInspected: List<String> = emptyList(),
+    ) : AgentStreamEvent
     data class Failed(
         val message: String,
         val kind: AgentFailureKind = AgentFailureKind.UNKNOWN,

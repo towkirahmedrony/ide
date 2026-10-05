@@ -237,7 +237,13 @@ class OrchestratorAgentSession(
     ) {
         when (result.status) {
             AgentStatus.COMPLETED ->
-                onEvent(AgentStreamEvent.Completed(result.summary))
+                onEvent(
+                    AgentStreamEvent.Completed(
+                        text = result.summary,
+                        filesChanged = result.filesChanged,
+                        filesInspected = result.filesInspected,
+                    ),
+                )
             AgentStatus.CANCELLED ->
                 onEvent(AgentStreamEvent.Failed("Cancelled", AgentFailureKind.CANCELLED))
             AgentStatus.WAITING_FOR_PERMISSION -> {

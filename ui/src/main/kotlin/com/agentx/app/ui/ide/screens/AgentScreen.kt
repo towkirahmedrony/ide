@@ -35,7 +35,6 @@ import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -57,14 +56,18 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.agentx.app.ui.ide.components.IdeDivider
+import com.agentx.app.ui.ide.model.AgentActivityStatus
 import com.agentx.app.ui.ide.model.AgentChatUiState
+import com.agentx.app.ui.ide.model.GenerationPhase
 import com.agentx.app.ui.ide.model.GenerationState
 import com.agentx.app.ui.ide.model.PermissionPromptUi
 import com.agentx.app.ui.ide.screens.agent.AgentMessageItem
@@ -110,8 +113,6 @@ fun AgentScreen(
     // The sidebar's relative timestamps are refreshed once per composition of a
     // new session list, never on every streaming frame.
     LaunchedEffect(state.sessions) { nowMillis = System.currentTimeMillis() }
-
-    val activeTitle = state.sessions.firstOrNull { it.id == state.activeSessionId }?.title ?: "Agent"
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -175,7 +176,6 @@ fun AgentScreen(
         // the activity stream is meant to replace.
         Column(modifier = Modifier.fillMaxSize().background(ForgeCanvas)) {
             AgentHeader(
-                title = activeTitle,
                 workspaceName = workspaceName,
                 modelId = state.modelId,
                 activity = state.activity,
@@ -189,7 +189,7 @@ fun AgentScreen(
 
             Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                 if (renderedMessages.isEmpty()) {
-                    AgentEmptyState()
+                    AgentEmptyState(onSuggestion = viewModel::onInputChange)
                 } else {
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
@@ -237,13 +237,13 @@ fun AgentScreen(
 // ───────────────────────────── Header ─────────────────────────────
 
 /**
- * Compact top-level header of the dedicated Agent workspace. It keeps maximum
- * room for the conversation and absorbs the controls the global top bar used to
- * offer on this tab: back, workspace context, sessions, model and settings.
+ * Compact top-level header of the dedicated Agent workspace: back, the live agent
+ * name, a real status indicator, the active model as a subdued pill, and the
+ * session drawer / settings controls. Session history lives in the drawer, so the
+ * header keeps maximum room for the conversation itself.
  */
 @Composable
 private fun AgentHeader(
-    title: String,
     workspaceName: String?,
     modelId: String?,
     activity: AgentActivity,
@@ -254,49 +254,89 @@ private fun AgentHeader(
     onNewSession: () -> Unit,
     onOpenSettings: (() -> Unit)?,
 ) {
+    val statusLabel = agentStatusLabel(generation, activity)
+    val statusColor = agentStatusColor(generation)
+    val agentName = remember(currentAgent) { displayAgentName(currentAgent) }
+
     Column(modifier = Modifier.fillMaxWidth().background(ForgeSurface)) {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(start = 2.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+            modifier = Modifier.fillMaxWidth().padding(start = 2.dp, end = 4.dp, top = 2.dp, bottom = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (onBack != null) {
-                IconButton(onClick = onBack, modifier = Modifier.size(42.dp)) {
+                IconButton(onClick = onBack, modifier = Modifier.size(40.dp)) {
                     Icon(
                         Icons.AutoMirrored.Filled.ArrowBack,
                         contentDescription = "Back to workspace",
                         tint = ForgeInk,
+                        modifier = Modifier.size(20.dp),
                     )
                 }
             }
-            IconButton(onClick = onOpenDrawer, modifier = Modifier.size(42.dp)) {
-                Icon(Icons.Filled.Menu, contentDescription = "Open sessions", tint = ForgeInk)
-            }
             Column(modifier = Modifier.weight(1f).padding(horizontal = 4.dp)) {
                 Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleMedium,
+                    text = agentName,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
                     color = ForgeInk,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                val subtitle = headerSubtitle(workspaceName, modelId, currentAgent, activity.label)
-                if (subtitle.isNotEmpty()) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    AgentStatusDot(color = statusColor)
+                    Spacer(Modifier.width(6.dp))
                     Text(
-                        text = subtitle,
+                        text = statusLabel,
                         style = MaterialTheme.typography.labelSmall,
-                        color = ForgeMuted,
+                        color = statusColor,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
+                    if (!workspaceName.isNullOrBlank()) {
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = "·",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = ForgeMuted,
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = workspaceName,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = ForgeMuted,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
             }
-            GenerationChip(generation = generation)
-            IconButton(onClick = onNewSession, modifier = Modifier.size(42.dp)) {
-                Icon(Icons.Filled.Add, contentDescription = "New session", tint = ForgeInk)
+            if (!modelId.isNullOrBlank()) {
+                ModelPill(modelId = modelId)
+            }
+            IconButton(onClick = onNewSession, modifier = Modifier.size(40.dp)) {
+                Icon(
+                    Icons.Filled.Add,
+                    contentDescription = "New session",
+                    tint = ForgeInk,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+            IconButton(onClick = onOpenDrawer, modifier = Modifier.size(40.dp)) {
+                Icon(
+                    Icons.Filled.Menu,
+                    contentDescription = "Open sessions",
+                    tint = ForgeInk,
+                    modifier = Modifier.size(20.dp),
+                )
             }
             if (onOpenSettings != null) {
-                IconButton(onClick = onOpenSettings, modifier = Modifier.size(42.dp)) {
-                    Icon(Icons.Filled.Settings, contentDescription = "Settings", tint = ForgeInk)
+                IconButton(onClick = onOpenSettings, modifier = Modifier.size(40.dp)) {
+                    Icon(
+                        Icons.Filled.Settings,
+                        contentDescription = "Settings",
+                        tint = ForgeInk,
+                        modifier = Modifier.size(20.dp),
+                    )
                 }
             }
         }
@@ -304,61 +344,129 @@ private fun AgentHeader(
     }
 }
 
-/** One muted line: `MyProject · qwen2.5 · Main · Working`. Never shows a raw model URL. */
-private fun headerSubtitle(
-    workspaceName: String?,
-    modelId: String?,
-    currentAgent: String,
-    activityLabel: String,
-): String = listOf(workspaceName, modelId, currentAgent, activityLabel)
-    .filterNotNull()
-    .filter { it.isNotBlank() }
-    .joinToString(" · ")
+/** The default parent agent reads as a proper name; a delegated specialist keeps its own. */
+private fun displayAgentName(currentAgent: String): String =
+    if (currentAgent.isBlank() || currentAgent.equals("Main", ignoreCase = true)) "Main Agent" else currentAgent
 
-/** `Generating… 12s` while running, the final `12.4s` once the turn ends. */
+/**
+ * A coarse, truthful status word derived only from the real generation phase and
+ * activity. `Working · 12s` while the ticker is live; no invented states.
+ */
+private fun agentStatusLabel(generation: GenerationState, activity: AgentActivity): String {
+    val base = when {
+        generation.phase == GenerationPhase.WAITING_PERMISSION -> "Waiting"
+        generation.running && generation.phase == GenerationPhase.TOOL -> "Working"
+        generation.running -> "Thinking"
+        generation.phase == GenerationPhase.COMPLETED -> "Completed"
+        generation.phase == GenerationPhase.STOPPED -> "Stopped"
+        generation.phase == GenerationPhase.FAILED -> "Error"
+        activity.status == AgentActivityStatus.IDLE -> "Idle"
+        else -> activity.status.name.lowercase().replace('_', ' ').replaceFirstChar { it.uppercase() }
+    }
+    val elapsed = if (generation.running) {
+        AgentChatPresentation.formatElapsedSeconds(generation.elapsedMillis)
+    } else {
+        ""
+    }
+    return if (elapsed.isEmpty()) base else "$base · $elapsed"
+}
+
+/** Restrained status colour: mint while active, amber when waiting, danger on error. */
+private fun agentStatusColor(generation: GenerationState): Color = when {
+    generation.phase == GenerationPhase.WAITING_PERMISSION -> ForgeAmber
+    generation.running -> ForgeMint
+    generation.phase == GenerationPhase.COMPLETED -> ForgeMint
+    generation.phase == GenerationPhase.STOPPED -> ForgeAmber
+    generation.phase == GenerationPhase.FAILED -> ForgeDanger
+    else -> ForgeMuted
+}
+
+/** A tiny live status dot, only coloured where it carries meaning. */
 @Composable
-private fun GenerationChip(generation: GenerationState) {
-    if (generation.running) {
-        Row(
-            modifier = Modifier
-                .clip(RoundedCornerShape(14.dp))
-                .background(ForgeMint.copy(alpha = 0.14f))
-                .padding(horizontal = 10.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(12.dp),
-                strokeWidth = 2.dp,
-                color = ForgeMint,
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(
-                text = "Generating… ${AgentChatPresentation.formatElapsedSeconds(generation.elapsedMillis)}",
-                style = MaterialTheme.typography.labelSmall,
-                color = ForgeMint,
-            )
+private fun AgentStatusDot(color: Color) {
+    Box(
+        modifier = Modifier
+            .size(7.dp)
+            .background(color, CircleShape),
+    )
+}
+
+/** Subdued model indicator; never the primary element of the header. */
+@Composable
+private fun ModelPill(modelId: String) {
+    Text(
+        text = modelId,
+        style = MaterialTheme.typography.labelSmall,
+        fontFamily = FontFamily.Monospace,
+        color = ForgeMuted,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier
+            .background(ForgeSurfaceVariant, RoundedCornerShape(8.dp))
+            .border(1.dp, ForgeBorder, RoundedCornerShape(8.dp))
+            .padding(horizontal = 7.dp, vertical = 4.dp),
+    )
+}
+
+/**
+ * Workspace-oriented empty state. The suggestions are plain prompt templates
+ * (no invented project statistics); tapping one fills the composer so the user
+ * can edit before sending.
+ */
+@Composable
+private fun AgentEmptyState(onSuggestion: (String) -> Unit) {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(horizontal = 28.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.Start,
+    ) {
+        Text(
+            text = "AgentX",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.SemiBold,
+            color = ForgeInk,
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = "What are we building?",
+            style = MaterialTheme.typography.titleMedium,
+            color = ForgeMuted,
+        )
+        Spacer(Modifier.height(20.dp))
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                SuggestionChip("Explore repo", onSuggestion, Modifier.weight(1f))
+                SuggestionChip("Fix a problem", onSuggestion, Modifier.weight(1f))
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                SuggestionChip("Build a feature", onSuggestion, Modifier.weight(1f))
+                SuggestionChip("Run tests", onSuggestion, Modifier.weight(1f))
+            }
         }
+        Spacer(Modifier.height(20.dp))
+        Text(
+            text = "…or describe what you want AgentX to do.",
+            style = MaterialTheme.typography.bodySmall,
+            color = ForgeMuted,
+        )
     }
 }
 
 @Composable
-private fun AgentEmptyState() {
-    Column(
-        modifier = Modifier.fillMaxSize().padding(32.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally,
+private fun SuggestionChip(label: String, onSuggestion: (String) -> Unit, modifier: Modifier = Modifier) {
+    OutlinedButton(
+        onClick = { onSuggestion(label) },
+        modifier = modifier.height(42.dp),
+        shape = RoundedCornerShape(10.dp),
+        border = BorderStroke(1.dp, ForgeBorder),
+        colors = ButtonDefaults.outlinedButtonColors(contentColor = ForgeInk),
+        contentPadding = PaddingValues(horizontal = 10.dp),
     ) {
         Text(
-            text = "Start an agent task",
-            style = MaterialTheme.typography.titleMedium,
-            color = ForgeInk,
-        )
-        Spacer(Modifier.height(8.dp))
-        Text(
-            text = "Describe a task and the agent will inspect, plan, edit and verify. " +
-                "Its tool calls and reasoning summary appear here as it works.",
-            style = MaterialTheme.typography.bodySmall,
-            color = ForgeMuted,
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }
@@ -387,7 +495,14 @@ private fun PermissionPromptCard(
     prompt: PermissionPromptUi,
     onDecision: (Boolean) -> Unit,
 ) {
-    val shape = RoundedCornerShape(16.dp)
+    val destructive = isPotentiallyDestructive(prompt)
+    // Only terminal-style tools render as `$ command`; a file tool keeps its name.
+    val command = if (prompt.toolName.lowercase() in TERMINAL_TOOLS) {
+        AgentChatPresentation.terminalCommand(prompt.detail)
+    } else {
+        null
+    }
+    val shape = RoundedCornerShape(14.dp)
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -406,22 +521,26 @@ private fun PermissionPromptCard(
             )
             Spacer(Modifier.width(8.dp))
             Text(
-                text = "Permission required",
+                text = if (destructive) "This command may modify files" else "Permission required",
                 style = MaterialTheme.typography.titleMedium,
                 color = ForgeAmber,
             )
         }
         Spacer(Modifier.height(10.dp))
+        // Render the real command when one is extractable (`$ git status`), otherwise
+        // fall back to the tool name. The decision still flows through the same
+        // ALLOW / DENY security path — this card never creates local approval state.
+        val commandText = if (command != null) "$ $command" else prompt.toolName
         Text(
-            text = prompt.toolName,
+            text = commandText,
             fontFamily = FontFamily.Monospace,
             fontSize = 13.sp,
             color = ForgeInk,
             modifier = Modifier
                 .background(ForgeCanvas.copy(alpha = 0.6f), RoundedCornerShape(6.dp))
-                .padding(horizontal = 8.dp, vertical = 3.dp),
+                .padding(horizontal = 8.dp, vertical = 4.dp),
         )
-        if (prompt.detail.isNotBlank()) {
+        if (command == null && prompt.detail.isNotBlank()) {
             Spacer(Modifier.height(8.dp))
             Text(text = prompt.detail, style = MaterialTheme.typography.bodySmall, color = ForgeMuted)
         }
@@ -446,7 +565,7 @@ private fun PermissionPromptCard(
                 border = BorderStroke(1.dp, ForgeBorder),
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = ForgeDanger),
             ) {
-                Text("Deny")
+                Text(if (destructive) "Cancel" else "Deny")
             }
             Button(
                 onClick = { onDecision(true) },
@@ -460,6 +579,25 @@ private fun PermissionPromptCard(
     }
 }
 
+/** Terminal-style tools whose permission prompt renders as a `$ command` line. */
+private val TERMINAL_TOOLS = setOf("run_command", "execute", "execute_command", "shell", "terminal", "sh", "bash")
+
+/** Heuristic for a destructive variant, from the tool and its permission/reason text only. */
+private fun isPotentiallyDestructive(prompt: PermissionPromptUi): Boolean {
+    val tool = prompt.toolName.lowercase()
+    val writeTool = tool in setOf(
+        "write_file", "create_file", "apply_patch", "edit_file",
+        "delete_file", "remove_file", "move_file", "rename_file",
+    )
+    val permissionHint = prompt.requiredPermission.lowercase().let {
+        it.contains("write") || it.contains("modify") || it.contains("delete")
+    }
+    val reasonHint = prompt.reason.lowercase().let {
+        it.contains("modify") || it.contains("write") || it.contains("delete") || it.contains("remove")
+    }
+    return writeTool || permissionHint || reasonHint
+}
+
 // ───────────────────────────── Input ─────────────────────────────
 
 @Composable
@@ -471,7 +609,7 @@ private fun AgentInputBar(
 ) {
     val awaitingPermission = state.pendingPermission != null
     val canSend = state.input.isNotBlank() && !awaitingPermission && !state.running
-    val shape = RoundedCornerShape(26.dp)
+    val shape = RoundedCornerShape(16.dp)
 
     Column(
         modifier = Modifier
@@ -484,9 +622,9 @@ private fun AgentInputBar(
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(shape)
-                .background(ForgeSurfaceVariant)
+                .background(ForgeSurface)
                 .border(1.dp, ForgeBorder, shape)
-                .padding(start = 18.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+                .padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
             verticalAlignment = Alignment.Bottom,
         ) {
             Box(
@@ -515,7 +653,7 @@ private fun AgentInputBar(
                                     text = if (awaitingPermission) {
                                         "Answer the permission request above…"
                                     } else {
-                                        "Describe a task for the agent…"
+                                        "Ask AgentX what to do…"
                                     },
                                     style = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp, lineHeight = 22.sp),
                                     color = ForgeMuted,

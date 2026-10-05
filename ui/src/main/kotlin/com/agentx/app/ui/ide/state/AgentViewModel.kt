@@ -397,6 +397,9 @@ class AgentViewModel(
                 // Only replace the streamed text when the final summary carries
                 // content; a blank summary must not wipe what was already shown.
                 if (event.text.isNotBlank()) setAssistantText(assistantId, event.text)
+                // The runtime's real changed/inspected files are attached verbatim;
+                // the UI shows a code-changes card only when this list is non-empty.
+                attachFileChanges(assistantId, event.filesChanged, event.filesInspected)
                 finishGeneration(GenerationPhase.COMPLETED, AgentActivityStatus.COMPLETED, "Completed")
             }
 
@@ -533,6 +536,17 @@ class AgentViewModel(
             messages = uiState.messages.map { message ->
                 if (message.id != id) message
                 else message.copy(rawText = visible, blocks = AgentChatPresentation.parseBlocks(visible))
+            },
+        )
+    }
+
+    /** Attaches the runtime's changed/inspected file lists to the finished turn. */
+    private fun attachFileChanges(id: String, changed: List<String>, inspected: List<String>) {
+        if (changed.isEmpty() && inspected.isEmpty()) return
+        uiState = uiState.copy(
+            messages = uiState.messages.map { message ->
+                if (message.id != id) message
+                else message.copy(filesChanged = changed, filesInspected = inspected)
             },
         )
     }
