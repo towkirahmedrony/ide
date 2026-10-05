@@ -12,7 +12,7 @@ import com.agentx.app.agent.domain.SubAgentRequest
 import com.agentx.app.agent.protocol.AgentProtocol
 import com.agentx.app.agent.runtime.AgentLoop
 import com.agentx.app.agent.runtime.AgentLoopRequest
-import com.agentx.app.agent.runtime.ResumedPermission
+import com.agentx.app.agent.domain.ResumedPermission
 import com.agentx.app.agent.specialized.SpecializedAgentFactory
 import com.agentx.app.agent.tools.AgentToolBridge
 import com.agentx.app.context.DefaultContextEngine

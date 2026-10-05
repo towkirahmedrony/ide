@@ -8,7 +8,8 @@ import com.agentx.app.agent.domain.AgentTask
 import com.agentx.app.agent.prompt.PromptVariables
 import com.agentx.app.agent.runtime.AgentLoop
 import com.agentx.app.agent.runtime.AgentLoopRequest
-import com.agentx.app.agent.runtime.ResumedPermission
+import com.agentx.app.agent.domain.ResumedPermission
+import com.agentx.app.agent.runtime.ResolvedDelegation
 import com.agentx.app.agent.runtime.SubAgentInvoker
 import com.agentx.app.agent.tools.AgentToolBridge
 import com.agentx.app.context.ContextBudget
@@ -24,6 +25,8 @@ data class MainAgentRequest(
     val contextBudget: ContextBudget = ContextBudget.DEFAULT,
     val resumeContext: List<ModelMessage> = emptyList(),
     val resumePermission: ResumedPermission? = null,
+    /** A delegation resolved while this run was parked; resumes without re-running it. */
+    val resolvedDelegation: ResolvedDelegation? = null,
     val promptVariables: PromptVariables = PromptVariables.EMPTY,
     val requiresWorkspace: Boolean = true,
 )
@@ -59,6 +62,7 @@ class MainAgent(
                 contextBudget = request.contextBudget,
                 resumeContext = request.resumeContext,
                 resumePermission = request.resumePermission,
+                resolvedDelegation = request.resolvedDelegation,
                 promptVariables = request.promptVariables,
                 requiresWorkspace = request.requiresWorkspace,
             ),

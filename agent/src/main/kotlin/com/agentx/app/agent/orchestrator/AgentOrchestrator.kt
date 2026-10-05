@@ -14,6 +14,8 @@ import com.agentx.app.agent.domain.AgentRunRequest
 import com.agentx.app.agent.domain.AgentSession
 import com.agentx.app.agent.domain.AgentStatus
 import com.agentx.app.agent.domain.AgentTask
+import com.agentx.app.agent.domain.DelegatedPermissionPause
+import com.agentx.app.agent.domain.ResumedPermission
 import com.agentx.app.agent.domain.SubAgentRequest
 import com.agentx.app.agent.domain.SubAgentResult
 import com.agentx.app.agent.main.MainAgent
@@ -23,8 +25,9 @@ import com.agentx.app.agent.model.AgentModelResolver
 import com.agentx.app.agent.prompt.PromptVariables
 import com.agentx.app.agent.runtime.AgentIds
 import com.agentx.app.agent.runtime.ConversationalTurn
-import com.agentx.app.agent.runtime.ResumedPermission
+import com.agentx.app.agent.runtime.ResolvedDelegation
 import com.agentx.app.agent.runtime.SubAgentInvoker
+import com.agentx.app.agent.specialized.SpecializedAgent
 import com.agentx.app.agent.specialized.SpecializedAgentRegistry
 import com.agentx.app.agent.specialized.unknownSubAgent
 import com.agentx.app.context.ContextAgentState
@@ -109,9 +112,24 @@ class DefaultAgentOrchestrator(
         val contextBudget: ContextBudget,
         val promptVariables: PromptVariables,
         val requiresWorkspace: Boolean,
+        /**
+         * Set when this pause belongs to a delegated specialist. The parent run is
+         * waiting because its child is waiting; the permission is the child's and
+         * the decision must resume the child, never the parent.
+         */
+        val delegated: DelegatedPermissionPause? = null,
+    )
+
+    /** The original delegation of a specialist that parked, so it can be resumed. */
+    private class PausedChild(
+        val request: SubAgentRequest,
+        val config: ModelConfig,
     )
 
     private val pausedPermissions = ConcurrentHashMap<String, PausedRun>()
+
+    /** Paused specialists, keyed by child session id. */
+    private val pausedChildren = ConcurrentHashMap<String, PausedChild>()
 
     override suspend fun run(
         request: AgentRunRequest,
@@ -231,18 +249,16 @@ class DefaultAgentOrchestrator(
             }
             rememberTurn(sessionId, request.prompt, result)
             sessions.update(sessionId) { it.withStatus(result.status, clock()) }
-            if (result.status == AgentStatus.WAITING_FOR_PERMISSION && result.pendingPermission != null) {
-                pausedPermissions[sessionId] = PausedRun(
-                    pending = result.pendingPermission,
-                    resumeContext = result.resumeContext,
-                    context = assembled,
-                    modelConfig = modelConfig,
-                    budgetMillis = budget,
-                    contextBudget = request.contextBudget,
-                    promptVariables = variables,
-                    requiresWorkspace = requiresWorkspace,
-                )
-            }
+            rememberPause(
+                sessionId = sessionId,
+                result = result,
+                context = assembled,
+                modelConfig = modelConfig,
+                budgetMillis = budget,
+                contextBudget = request.contextBudget,
+                promptVariables = variables,
+                requiresWorkspace = requiresWorkspace,
+            )
             result
         } catch (error: TimeoutCancellationException) {
             val agentError = AgentError(
@@ -332,6 +348,20 @@ class DefaultAgentOrchestrator(
         val job = coroutineContext[Job]
         if (job != null) jobs[sessionId] = job
 
+        // The pause belongs to a delegated specialist: resume that child, then
+        // continue the parent with the child's result. The parent must never be
+        // resumed as though it had issued the specialist's tool.
+        if (paused.delegated != null) {
+            return resumeDelegatedPermission(
+                session = session,
+                sessionId = sessionId,
+                paused = paused,
+                mainConfig = mainConfig,
+                approved = approved,
+                sink = sink,
+            )
+        }
+
         return try {
             val result = withExecutionBudget(paused.budgetMillis) {
                 mainAgent.run(
@@ -366,18 +396,16 @@ class DefaultAgentOrchestrator(
             }
             rememberTurn(sessionId, session.task.prompt, result)
             sessions.update(sessionId) { it.withStatus(result.status, clock()) }
-            if (result.status == AgentStatus.WAITING_FOR_PERMISSION && result.pendingPermission != null) {
-                pausedPermissions[sessionId] = PausedRun(
-                    pending = result.pendingPermission,
-                    resumeContext = result.resumeContext,
-                    context = paused.context,
-                    modelConfig = modelConfig,
-                    budgetMillis = paused.budgetMillis,
-                    contextBudget = paused.contextBudget,
-                    promptVariables = paused.promptVariables,
-                    requiresWorkspace = paused.requiresWorkspace,
-                )
-            }
+            rememberPause(
+                sessionId = sessionId,
+                result = result,
+                context = paused.context,
+                modelConfig = paused.modelConfig,
+                budgetMillis = paused.budgetMillis,
+                contextBudget = paused.contextBudget,
+                promptVariables = paused.promptVariables,
+                requiresWorkspace = paused.requiresWorkspace,
+            )
             result
         } catch (error: TimeoutCancellationException) {
             val agentError = AgentError(
@@ -480,6 +508,18 @@ class DefaultAgentOrchestrator(
     override fun cancel(sessionId: String): Boolean {
         cancellations[sessionId] = true
         jobs[sessionId]?.cancel()
+        // Cancelling a parent that is parked on a specialist's permission also
+        // cancels that child and drops the pause, so no WAITING_FOR_PERMISSION
+        // state is left behind for a run that will never resume.
+        val paused = pausedPermissions.remove(sessionId)
+        paused?.delegated?.let { delegated ->
+            val childId = delegated.childSessionId
+            pausedChildren.remove(childId)
+            cancellations[childId] = true
+            jobs[childId]?.cancel()
+            sessions.update(childId) { it.withStatus(AgentStatus.CANCELLED, clock()) }
+            history?.markStatus(childId, AgentStatus.CANCELLED)
+        }
         sessions.update(sessionId) { current ->
             if (
                 current.status == AgentStatus.RUNNING ||
@@ -592,7 +632,7 @@ class DefaultAgentOrchestrator(
                 // task is not cut short by the Main Agent's remaining time.
                 coroutineScope {
                     withExecutionBudget(timeouts.subAgentTaskMillis) {
-                        agent.run(request, childConfig, sink, onCancelled)
+                        agent.run(request, childConfig, childPermissionFilter(sink), onCancelled)
                     }
                 }
             } catch (timeout: TimeoutCancellationException) {
@@ -620,6 +660,12 @@ class DefaultAgentOrchestrator(
         }
         sessions.update(request.sessionId) { it.withStatus(result.status, clock()) }
         sessions.update(request.parentSessionId) { it.withStatus(AgentStatus.RUNNING, clock()) }
+        // A parked specialist is remembered whole — its original request and the
+        // model config it already resolved — so a later decision resumes THIS
+        // child with the same identity, provider and model.
+        if (result.status == AgentStatus.WAITING_FOR_PERMISSION && result.pendingPermission != null) {
+            pausedChildren[request.sessionId] = PausedChild(request = request, config = childConfig)
+        }
         val asAgent = result.toAgentResult()
         history?.applyTurn(request.sessionId, request.task, asAgent)
         history?.recordSubAgent(
@@ -631,6 +677,301 @@ class DefaultAgentOrchestrator(
         )
         return result
     }
+
+    /**
+     * Resumes a delegated specialist that parked for permission, then continues the
+     * parent run with the child's result. The decision belongs to the child, so the
+     * child is re-entered with its own parked call and conversation; the parent is
+     * resumed only once the child finishes, and never as though it had issued the
+     * specialist's tool.
+     */
+    private suspend fun resumeDelegatedPermission(
+        session: AgentSession,
+        sessionId: String,
+        paused: PausedRun,
+        mainConfig: ModelConfig,
+        approved: Boolean,
+        sink: AgentEventSink,
+    ): AgentResult {
+        val delegated = requireNotNull(paused.delegated)
+        val task = session.task.prompt
+        val child = pausedChildren.remove(delegated.childSessionId)
+        val childAgent = specialized.get(delegated.childRole)
+        val resumedChild = if (child == null || childAgent == null) {
+            SubAgentResult(
+                sessionId = delegated.childSessionId,
+                role = delegated.childRole,
+                status = AgentStatus.FAILED,
+                summary = "The paused specialist is no longer available",
+                errors = listOf(
+                    AgentError(
+                        code = AgentErrorCode.SUB_AGENT_FAILURE,
+                        message = "The paused specialist is no longer available",
+                        role = delegated.childRole,
+                        sessionId = delegated.childSessionId,
+                    ),
+                ),
+            )
+        } else {
+            resumeChild(childAgent, child, delegated, sessionId, approved, sink)
+        }
+
+        // A later sibling of the specialist asked for approval too: park the parent
+        // again so the next decision resumes the SAME child, never the parent.
+        if (resumedChild.status == AgentStatus.WAITING_FOR_PERMISSION && resumedChild.pendingPermission != null) {
+            if (child != null) pausedChildren[delegated.childSessionId] = child
+            val reParked = delegated.copy(
+                pendingPermission = resumedChild.pendingPermission,
+                childResumeContext = resumedChild.resumeContext,
+            )
+            sessions.update(sessionId) { it.withStatus(AgentStatus.WAITING_FOR_PERMISSION, clock()) }
+            sessions.update(delegated.childSessionId) { it.withStatus(AgentStatus.WAITING_FOR_PERMISSION, clock()) }
+            val display = displayPending(reParked)
+            pausedPermissions[sessionId] = PausedRun(
+                pending = display,
+                resumeContext = paused.resumeContext,
+                context = paused.context,
+                modelConfig = paused.modelConfig,
+                budgetMillis = paused.budgetMillis,
+                contextBudget = paused.contextBudget,
+                promptVariables = paused.promptVariables,
+                requiresWorkspace = paused.requiresWorkspace,
+                delegated = reParked,
+            )
+            sink.emit(
+                AgentEvent.PermissionRequested(
+                    sessionId = sessionId,
+                    pending = display,
+                    timestampMillis = clock(),
+                ),
+            )
+            return AgentResult(
+                sessionId = sessionId,
+                status = AgentStatus.WAITING_FOR_PERMISSION,
+                summary = "Waiting for approval to run '${reParked.pendingPermission.toolName}' " +
+                    "(${reParked.childRole.name})",
+                role = session.role,
+                pendingPermission = display,
+                resumeContext = paused.resumeContext,
+                delegatedPermissionPause = reParked,
+            )
+        }
+
+        // The child finished: continue the parent's own model loop with the child's
+        // result as the delegate tool result.
+        val job = coroutineContext[Job]
+        if (job != null) jobs[sessionId] = job
+        return try {
+            val result = withExecutionBudget(paused.budgetMillis) {
+                mainAgent.run(
+                    request = MainAgentRequest(
+                        sessionId = sessionId,
+                        task = session.task,
+                        context = paused.context,
+                        modelConfig = mainConfig,
+                        contextBudget = paused.contextBudget,
+                        resumeContext = paused.resumeContext,
+                        resumePermission = ResumedPermission(
+                            toolName = delegated.pendingPermission.toolName,
+                            arguments = delegated.pendingPermission.arguments,
+                            reason = delegated.pendingPermission.reason,
+                            toolCallId = delegated.pendingPermission.toolCallId,
+                            approved = approved,
+                            // The parent's own batch, with the delegate call already
+                            // satisfied, so only the siblings that never ran dispatch.
+                            batch = delegated.parentBatchForResume,
+                            pendingIndex = delegated.parentPendingIndex,
+                        ),
+                        resolvedDelegation = ResolvedDelegation(
+                            toolCallId = delegated.delegateToolCallId,
+                            result = resumedChild,
+                            task = child?.request?.task.orEmpty(),
+                        ),
+                        promptVariables = paused.promptVariables,
+                        requiresWorkspace = paused.requiresWorkspace,
+                    ),
+                    sink = trackingSink(sink),
+                    subAgentInvoker = SubAgentInvoker { childRequest ->
+                        runSubAgent(childRequest, paused.modelConfig, sink) {
+                            isCancelled(sessionId) || isCancelled(childRequest.sessionId)
+                        }
+                    },
+                    onCancelled = { isCancelled(sessionId) },
+                )
+            }
+            rememberTurn(sessionId, task, result)
+            sessions.update(sessionId) { it.withStatus(result.status, clock()) }
+            rememberPause(
+                sessionId = sessionId,
+                result = result,
+                context = paused.context,
+                modelConfig = paused.modelConfig,
+                budgetMillis = paused.budgetMillis,
+                contextBudget = paused.contextBudget,
+                promptVariables = paused.promptVariables,
+                requiresWorkspace = paused.requiresWorkspace,
+            )
+            result
+        } catch (error: TimeoutCancellationException) {
+            val agentError = AgentError(
+                code = AgentErrorCode.TIMEOUT,
+                message = "Agent task exceeded its ${paused.budgetMillis}ms budget",
+                sessionId = sessionId,
+                cause = error,
+            )
+            sessions.update(sessionId) { it.withStatus(AgentStatus.FAILED, clock()) }
+            sink.emit(AgentEvent.Failed(sessionId, agentError, clock()))
+            AgentResult(
+                sessionId = sessionId,
+                status = AgentStatus.FAILED,
+                summary = agentError.message,
+                errors = listOf(agentError),
+            )
+        } catch (cancelled: CancellationException) {
+            sessions.update(sessionId) { it.withStatus(AgentStatus.CANCELLED, clock()) }
+            sink.emit(AgentEvent.Cancelled(sessionId, "Cancelled", clock()))
+            if (isCancelled(sessionId)) {
+                AgentResult(sessionId = sessionId, status = AgentStatus.CANCELLED, summary = "Cancelled")
+            } else {
+                throw cancelled
+            }
+        } catch (error: Throwable) {
+            val agentError = AgentError(
+                code = AgentErrorCode.UNKNOWN,
+                message = error.message ?: "Agent failed",
+                sessionId = sessionId,
+                cause = error,
+            )
+            sessions.update(sessionId) { it.withStatus(AgentStatus.FAILED, clock()) }
+            sink.emit(AgentEvent.Failed(sessionId, agentError, clock()))
+            AgentResult(
+                sessionId = sessionId,
+                status = AgentStatus.FAILED,
+                summary = agentError.message,
+                errors = listOf(agentError),
+            )
+        } finally {
+            jobs.remove(sessionId)
+            contextEngine?.clearSession(sessionId)
+        }
+    }
+
+    /** Re-enters the parked specialist with its own parked call and conversation. */
+    private suspend fun resumeChild(
+        agent: SpecializedAgent,
+        child: PausedChild,
+        delegated: DelegatedPermissionPause,
+        parentSessionId: String,
+        approved: Boolean,
+        sink: AgentEventSink,
+    ): SubAgentResult {
+        // The child's provider/connection/model are reused exactly as resolved when
+        // the delegation started; they are never re-resolved here.
+        val request = child.request.copy(
+            resumeContext = delegated.childResumeContext,
+            resumePermission = ResumedPermission(
+                toolName = delegated.pendingPermission.toolName,
+                arguments = delegated.pendingPermission.arguments,
+                reason = delegated.pendingPermission.reason,
+                toolCallId = delegated.pendingPermission.toolCallId,
+                approved = approved,
+                batch = delegated.pendingPermission.batchOrSelf,
+                pendingIndex = delegated.pendingPermission.pendingIndex,
+            ),
+        )
+        sessions.update(child.request.sessionId) { it.withStatus(AgentStatus.RUNNING, clock()) }
+        val result = try {
+            coroutineScope {
+                withExecutionBudget(timeouts.subAgentTaskMillis) {
+                    agent.run(request, child.config, childPermissionFilter(sink)) {
+                        isCancelled(parentSessionId) || isCancelled(child.request.sessionId)
+                    }
+                }
+            }
+        } catch (timeout: TimeoutCancellationException) {
+            val error = AgentError(
+                code = AgentErrorCode.TIMEOUT,
+                message = "Sub-agent '${child.request.role.name}' exceeded its " +
+                    "${timeouts.subAgentTaskMillis}ms budget",
+                role = child.request.role,
+                sessionId = child.request.sessionId,
+                cause = timeout,
+                details = mapOf("stage" to "sub_agent"),
+            )
+            sink.emit(AgentEvent.Failed(child.request.sessionId, error, clock()))
+            SubAgentResult(
+                sessionId = child.request.sessionId,
+                role = child.request.role,
+                status = AgentStatus.FAILED,
+                summary = error.message.orEmpty(),
+                errors = listOf(error),
+            )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            val agentError = AgentError(
+                code = AgentErrorCode.SUB_AGENT_FAILURE,
+                message = error.message ?: "Sub-agent '${child.request.role.name}' failed",
+                role = child.request.role,
+                sessionId = child.request.sessionId,
+                cause = error,
+            )
+            sink.emit(AgentEvent.Failed(child.request.sessionId, agentError, clock()))
+            SubAgentResult(
+                sessionId = child.request.sessionId,
+                role = child.request.role,
+                status = AgentStatus.FAILED,
+                summary = agentError.message.orEmpty(),
+                errors = listOf(agentError),
+            )
+        }
+        sessions.update(child.request.sessionId) { it.withStatus(result.status, clock()) }
+        return result
+    }
+
+    /**
+     * Records a run parked in WAITING_FOR_PERMISSION so the user's decision can
+     * re-enter it. A pause caused by a delegated specialist carries that child's
+     * state too, so the decision resumes the child rather than the parent.
+     */
+    private fun rememberPause(
+        sessionId: String,
+        result: AgentResult,
+        context: String,
+        modelConfig: ModelConfig,
+        budgetMillis: Long,
+        contextBudget: ContextBudget,
+        promptVariables: PromptVariables,
+        requiresWorkspace: Boolean,
+    ) {
+        if (result.status != AgentStatus.WAITING_FOR_PERMISSION || result.pendingPermission == null) return
+        pausedPermissions[sessionId] = PausedRun(
+            pending = result.pendingPermission,
+            resumeContext = result.resumeContext,
+            context = context,
+            modelConfig = modelConfig,
+            budgetMillis = budgetMillis,
+            contextBudget = contextBudget,
+            promptVariables = promptVariables,
+            requiresWorkspace = requiresWorkspace,
+            delegated = result.delegatedPermissionPause,
+        )
+    }
+
+    /**
+     * A child's own permission pause is surfaced by the parent run, which owns the
+     * resumable session. Forwarding the child's event too would offer a prompt whose
+     * session id cannot be resumed, so it is filtered out here.
+     */
+    private fun childPermissionFilter(sink: AgentEventSink): AgentEventSink = AgentEventSink { event ->
+        if (event !is AgentEvent.PermissionRequested) sink.emit(event)
+    }
+
+    /** The permission as shown to the user, naming the specialist that requested it. */
+    private fun displayPending(pause: DelegatedPermissionPause): com.agentx.app.agent.domain.PendingPermission =
+        pause.pendingPermission.copy(
+            reason = "${pause.pendingPermission.reason} (requested by ${pause.childRole.name})",
+        )
 
     /**
      * Asks the Context Engine for the supporting context of this task: workspace

@@ -87,6 +87,13 @@ data class AgentResult(
     val pendingPermission: PendingPermission? = null,
     /** Conversation snapshot to restore when resuming a paused run. */
     val resumeContext: List<ModelMessage> = emptyList(),
+    /**
+     * Set when the run paused because one of its delegated specialists parked for
+     * permission. The permission belongs to the child, so this carries the child's
+     * identity and its own resume state rather than flattening the pause into a
+     * failure.
+     */
+    val delegatedPermissionPause: DelegatedPermissionPause? = null,
 )
 
 /**
@@ -162,6 +169,66 @@ data class PendingPermission(
         }
 }
 
+/**
+ * Parent-side view of a delegated specialist that parked for permission.
+ *
+ * The permission belongs to the child, so the parent keeps the child's session
+ * identity, the pending decision, and the child's own resume context. The
+ * parent's own conversation snapshot is carried on the enclosing
+ * [AgentResult.resumeContext], and its assistant tool batch here, so the parent
+ * can be resumed after the child finishes without re-running the delegation.
+ */
+data class DelegatedPermissionPause(
+    val childSessionId: String,
+    val childRole: AgentRole,
+    val pendingPermission: PendingPermission,
+    /** The specialist's conversation snapshot, needed to resume the child later. */
+    val childResumeContext: List<ModelMessage> = emptyList(),
+    /**
+     * The parent's assistant tool batch at the moment of the pause, in order.
+     * [parentPendingIndex] marks the delegate call, so resume can finish any
+     * sibling that had not run yet without re-dispatching the delegation.
+     */
+    val parentBatch: List<PendingToolCall> = emptyList(),
+    /** Position of the delegate call within [parentBatch]. */
+    val parentPendingIndex: Int = 0,
+) {
+    /** The parent's delegate call whose result the child's completion satisfies. */
+    val delegateToolCallId: String
+        get() = parentBatch.getOrNull(parentPendingIndex)?.toolCallId.orEmpty()
+
+    /**
+     * [parentBatch] with the delegate call marked completed, so resuming the
+     * parent dispatches only the siblings that never ran — never the delegation.
+     */
+    val parentBatchForResume: List<PendingToolCall>
+        get() = parentBatch.map { call ->
+            if (call.index == parentPendingIndex) call.copy(completed = true) else call
+        }
+}
+
+/**
+ * A parked tool call plus the user's decision, used to resume a run that
+ * stopped in [AgentStatus.WAITING_FOR_PERMISSION].
+ */
+data class ResumedPermission(
+    val toolName: String,
+    val arguments: JsonObject,
+    val reason: String,
+    val toolCallId: String,
+    val approved: Boolean,
+    /**
+     * The whole assistant message the decision belongs to, and the position of the
+     * decided call in it.
+     *
+     * Carried through the pause so the resumed run can finish every sibling that had
+     * not executed yet, in order, rather than sending the provider an assistant
+     * message with fewer tool results than tool calls.
+     */
+    val batch: List<PendingToolCall> = emptyList(),
+    val pendingIndex: Int = 0,
+)
+
 data class SubAgentRequest(
     val role: AgentRole,
     val task: String,
@@ -187,6 +254,10 @@ data class SubAgentRequest(
      * default keeps the previous behaviour for callers that do not scope it.
      */
     val contextBudget: ContextBudget = ContextBudget.DEFAULT,
+    /** Conversation snapshot to restore when resuming a paused specialist. */
+    val resumeContext: List<ModelMessage> = emptyList(),
+    /** The user's decision on a parked tool call; present only when resuming. */
+    val resumePermission: ResumedPermission? = null,
 )
 
 data class SubAgentResult(
@@ -199,6 +270,10 @@ data class SubAgentResult(
     val filesChanged: List<String> = emptyList(),
     val toolActions: List<ToolActionRecord> = emptyList(),
     val errors: List<AgentError> = emptyList(),
+    /** Set when the specialist parked in [AgentStatus.WAITING_FOR_PERMISSION]. */
+    val pendingPermission: PendingPermission? = null,
+    /** The specialist's conversation snapshot, needed to resume it later. */
+    val resumeContext: List<ModelMessage> = emptyList(),
 ) {
     fun toAgentResult(plan: AgentPlan? = null): AgentResult = AgentResult(
         sessionId = sessionId,
@@ -211,6 +286,8 @@ data class SubAgentResult(
         errors = errors,
         plan = plan,
         role = role,
+        pendingPermission = pendingPermission,
+        resumeContext = resumeContext,
     )
 }
 

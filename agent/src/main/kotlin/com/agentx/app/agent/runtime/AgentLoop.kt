@@ -11,9 +11,11 @@ import com.agentx.app.agent.domain.AgentStatus
 import com.agentx.app.agent.domain.AgentPlan
 import com.agentx.app.agent.domain.AgentStep
 import com.agentx.app.agent.domain.AgentStepStats
+import com.agentx.app.agent.domain.DelegatedPermissionPause
 import com.agentx.app.agent.domain.PermissionLevel
 import com.agentx.app.agent.domain.PendingPermission
 import com.agentx.app.agent.domain.PendingToolCall
+import com.agentx.app.agent.domain.ResumedPermission
 import com.agentx.app.agent.domain.SubAgentRequest
 import com.agentx.app.agent.domain.SubAgentResult
 import com.agentx.app.agent.domain.ToolActionRecord
@@ -42,7 +44,6 @@ import com.agentx.app.model.ModelResponse
 import com.agentx.app.model.ModelStreamEvent
 import com.agentx.app.model.ModelToolCall
 import com.agentx.app.model.ModelToolSpec
-import com.agentx.app.model.json.JsonObject
 import com.agentx.app.model.json.JsonValue
 import com.agentx.app.agent.domain.toToolGrants
 import com.agentx.app.agent.delegation.DelegationDecision
@@ -87,6 +88,13 @@ data class AgentLoopRequest(
     val resumeContext: List<ModelMessage> = emptyList(),
     /** Tool call awaiting approval with the user's decision; when present the loop is resuming. */
     val resumePermission: ResumedPermission? = null,
+    /**
+     * A delegation that finished while the parent was parked for the specialist's
+     * permission. When present the loop records it as the delegate tool result and
+     * continues its own model loop — the parent is never resumed as though it had
+     * issued the specialist's tool.
+     */
+    val resolvedDelegation: ResolvedDelegation? = null,
     /** Template variables used to resolve this run's system prompt. */
     val promptVariables: PromptVariables = PromptVariables.EMPTY,
     /**
@@ -109,25 +117,18 @@ data class AgentLoopRequest(
 )
 
 /**
- * A parked tool call plus the user's decision, used to resume a run that
- * stopped in [com.agentx.app.agent.domain.AgentStatus.WAITING_FOR_PERMISSION].
+ * A delegation that finished while the parent was parked for the specialist's
+ * permission. The parent loop turns it into the delegate tool result and then
+ * continues its model loop, so the child is never resumed as if it were the
+ * parent and the delegation is never run twice.
  */
-data class ResumedPermission(
-    val toolName: String,
-    val arguments: JsonObject,
-    val reason: String,
+data class ResolvedDelegation(
+    /** The parent's delegate tool call whose result this is. */
     val toolCallId: String,
-    val approved: Boolean,
-    /**
-     * The whole assistant message the decision belongs to, and the position of the
-     * decided call in it.
-     *
-     * Carried through the pause so the resumed run can finish every sibling that had
-     * not executed yet, in order, rather than sending the provider an assistant
-     * message with fewer tool results than tool calls.
-     */
-    val batch: List<com.agentx.app.agent.domain.PendingToolCall> = emptyList(),
-    val pendingIndex: Int = 0,
+    /** The specialist's final result. */
+    val result: SubAgentResult,
+    /** The delegated task, recorded so delegation accounting stays meaningful. */
+    val task: String = "",
 )
 
 /** Outcome of dispatching one tool call requested by the model. */
@@ -289,6 +290,34 @@ class AgentLoop(
             ),
         )
 
+        // A delegation that finished while the parent was parked for the specialist's
+        // permission: the child has now completed, so its result becomes the delegate
+        // tool result here and the parent continues its own model loop. The parent is
+        // never resumed as if it had issued the specialist's own tool.
+        request.resolvedDelegation?.let { resolved ->
+            val outcome = consumeSubAgentResult(
+                request = request,
+                role = resolved.result.role,
+                result = resolved.result,
+                task = resolved.task,
+                sink = sink,
+                findings = findings,
+                filesInspected = filesInspected,
+                filesChanged = filesChanged,
+                toolActions = toolActions,
+                errors = errors,
+                state = delegationState,
+            )
+            delegationState = outcome.state
+            context.addToolResult(
+                callId = resolved.toolCallId,
+                toolName = AgentProtocol.DELEGATE_TOOL,
+                content = outcome.resultText,
+                path = outcome.path,
+                status = statusOf(outcome.success),
+            )
+        }
+
         // Resume continues the SAME assistant message: the parked call gets the user's
         // decision, and every sibling that had not run yet is dispatched in its original
         // order. Only after the whole message has results may the model be asked again —
@@ -379,6 +408,28 @@ class AgentLoop(
                             state = delegationState,
                         )
                         delegationState = delegated.state
+                        val pausedDelegation = delegated.paused
+                        if (pausedDelegation != null) {
+                            return parkedForDelegation(
+                                request = request,
+                                startedAt = startedAt,
+                                stepIndex = 0,
+                                modelCalls = modelCalls,
+                                toolCalls = toolCalls,
+                                subAgentCalls = subAgentCalls,
+                                findings = findings,
+                                filesInspected = filesInspected,
+                                filesChanged = filesChanged,
+                                toolActions = toolActions,
+                                errors = errors,
+                                delegated = pausedDelegation.copy(
+                                    parentBatch = markCompleted(batch, pendingIndex = entry.index),
+                                    parentPendingIndex = entry.index,
+                                ),
+                                context = context,
+                                sink = sink,
+                            )
+                        }
                         context.addToolResult(
                             callId = call.id,
                             toolName = call.name,
@@ -640,6 +691,28 @@ class AgentLoop(
                             state = delegationState,
                         )
                         delegationState = delegated.state
+                        val pausedDelegation = delegated.paused
+                        if (pausedDelegation != null) {
+                            return parkedForDelegation(
+                                request = request,
+                                startedAt = startedAt,
+                                stepIndex = stepIndex,
+                                modelCalls = modelCalls,
+                                toolCalls = toolCalls,
+                                subAgentCalls = subAgentCalls,
+                                findings = findings,
+                                filesInspected = filesInspected,
+                                filesChanged = filesChanged,
+                                toolActions = toolActions,
+                                errors = errors,
+                                delegated = pausedDelegation.copy(
+                                    parentBatch = batchOf(response.toolCalls, pendingIndex = index),
+                                    parentPendingIndex = index,
+                                ),
+                                context = context,
+                                sink = sink,
+                            )
+                        }
                         context.addToolResult(
                             callId = call.id,
                             toolName = call.name,
@@ -828,6 +901,58 @@ class AgentLoop(
         )
     }
 
+    /**
+     * Parks the parent because a delegated specialist parked for permission.
+     *
+     * The permission belongs to the child, so the parent records the child's session
+     * identity and resume context and never converts the pause into a failure. The UI
+     * still receives a permission request — for the specialist's tool, naming the role
+     * — and a later decision resumes that same child.
+     */
+    private suspend fun parkedForDelegation(
+        request: AgentLoopRequest,
+        startedAt: Long,
+        stepIndex: Int,
+        modelCalls: Int,
+        toolCalls: Int,
+        subAgentCalls: Int,
+        findings: List<String>,
+        filesInspected: List<String>,
+        filesChanged: List<String>,
+        toolActions: List<ToolActionRecord>,
+        errors: List<AgentError>,
+        delegated: DelegatedPermissionPause,
+        context: RunContext,
+        sink: AgentEventSink,
+    ): AgentResult {
+        val display = delegated.pendingPermission.copy(
+            reason = "${delegated.pendingPermission.reason} (requested by ${delegated.childRole.name})",
+        )
+        sink.emit(
+            AgentEvent.PermissionRequested(
+                sessionId = request.sessionId,
+                pending = display,
+                timestampMillis = clock(),
+            ),
+        )
+        return AgentResult(
+            sessionId = request.sessionId,
+            status = AgentStatus.WAITING_FOR_PERMISSION,
+            summary = "Waiting for approval to run '${delegated.pendingPermission.toolName}' " +
+                "(${delegated.childRole.name})",
+            findings = findings.toList(),
+            filesInspected = filesInspected.toList(),
+            filesChanged = filesChanged.toList(),
+            toolActions = toolActions.toList(),
+            errors = errors.toList(),
+            role = request.definition.role,
+            stepStats = stats(startedAt, stepIndex, request.maxSteps, modelCalls, toolCalls, subAgentCalls),
+            pendingPermission = display,
+            resumeContext = context.messages(),
+            delegatedPermissionPause = delegated,
+        )
+    }
+
     private suspend fun executeScopedTool(
         request: AgentLoopRequest,
         call: ModelToolCall,
@@ -1003,6 +1128,12 @@ class AgentLoop(
         val path: String?,
         val success: Boolean,
         val state: DelegationState,
+        /**
+         * Set when the specialist parked for permission. The child's own state is
+         * carried out so the parent parks too instead of reporting a failure; the
+         * parent's assistant batch is filled in by the caller that knows it.
+         */
+        val paused: DelegatedPermissionPause? = null,
     )
 
     private suspend fun handleDelegate(
@@ -1118,6 +1249,56 @@ class AgentLoop(
                 state = state.record(role, task, succeeded = false),
             )
         }
+        // A specialist that parked for permission is NOT a failure: return the pause
+        // to the parent, preserving the child's session identity and its own resume
+        // state, so the user is prompted and the same child can be resumed later.
+        if (result.status == AgentStatus.WAITING_FOR_PERMISSION && result.pendingPermission != null) {
+            return DelegateOutcome(
+                resultText = "",
+                path = null,
+                success = false,
+                state = state,
+                paused = DelegatedPermissionPause(
+                    childSessionId = result.sessionId,
+                    childRole = role,
+                    pendingPermission = result.pendingPermission,
+                    childResumeContext = result.resumeContext,
+                ),
+            )
+        }
+        return consumeSubAgentResult(
+            request = request,
+            role = role,
+            result = result,
+            task = task,
+            sink = sink,
+            findings = findings,
+            filesInspected = filesInspected,
+            filesChanged = filesChanged,
+            toolActions = toolActions,
+            errors = errors,
+            state = state,
+        )
+    }
+
+    /**
+     * Merges a finished specialist's result into the parent run and renders the
+     * delegate tool result. Shared by a live delegation and a delegation that
+     * finished while the parent was parked, so both paths stay identical.
+     */
+    private fun consumeSubAgentResult(
+        request: AgentLoopRequest,
+        role: AgentRole,
+        result: SubAgentResult,
+        task: String,
+        sink: AgentEventSink,
+        findings: MutableList<String>,
+        filesInspected: MutableList<String>,
+        filesChanged: MutableList<String>,
+        toolActions: MutableList<ToolActionRecord>,
+        errors: MutableList<AgentError>,
+        state: DelegationState,
+    ): DelegateOutcome {
         findings += result.findings
         filesInspected += result.filesInspected
         filesChanged += result.filesChanged
@@ -1132,7 +1313,7 @@ class AgentLoop(
                 code = AgentErrorCode.SUB_AGENT_FAILURE,
                 message = "Sub-agent '${role.name}' ended with status ${result.status}",
                 role = role,
-                sessionId = childId,
+                sessionId = result.sessionId,
                 details = mapOf("subAgentStatus" to result.status.name),
             )
         }
@@ -1143,7 +1324,7 @@ class AgentLoop(
         )
         sink.emit(
             AgentEvent.SubAgentCompleted(
-                sessionId = childId,
+                sessionId = result.sessionId,
                 parentSessionId = request.sessionId,
                 role = role,
                 status = result.status,
@@ -1151,16 +1332,8 @@ class AgentLoop(
                 timestampMillis = clock(),
             ),
         )
-        val rendered = buildString {
-            append("status=${result.status}\n")
-            append("summary=${result.summary}\n")
-            if (result.findings.isNotEmpty()) append("findings:\n").append(result.findings.joinToString("\n")).append('\n')
-            if (result.filesInspected.isNotEmpty()) append("filesInspected=").append(result.filesInspected.joinToString(",")).append('\n')
-            if (result.filesChanged.isNotEmpty()) append("filesChanged=").append(result.filesChanged.joinToString(",")).append('\n')
-            if (result.errors.isNotEmpty()) append("errors=").append(result.errors.joinToString { it.message }).append('\n')
-        }
         return DelegateOutcome(
-            resultText = rendered,
+            resultText = renderSubAgentResult(result),
             path = result.filesChanged.firstOrNull() ?: result.filesInspected.firstOrNull(),
             success = succeeded,
             state = state.record(
@@ -1171,6 +1344,15 @@ class AgentLoop(
                 inspectedFiles = result.filesInspected,
             ),
         )
+    }
+
+    private fun renderSubAgentResult(result: SubAgentResult): String = buildString {
+        append("status=${result.status}\n")
+        append("summary=${result.summary}\n")
+        if (result.findings.isNotEmpty()) append("findings:\n").append(result.findings.joinToString("\n")).append('\n')
+        if (result.filesInspected.isNotEmpty()) append("filesInspected=").append(result.filesInspected.joinToString(",")).append('\n')
+        if (result.filesChanged.isNotEmpty()) append("filesChanged=").append(result.filesChanged.joinToString(",")).append('\n')
+        if (result.errors.isNotEmpty()) append("errors=").append(result.errors.joinToString { it.message }).append('\n')
     }
 
     private fun toolTimeout(toolName: String): Long {

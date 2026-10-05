@@ -86,6 +86,10 @@ class DefaultSpecializedAgent(
                 contextBudget = request.contextBudget,
                 promptVariables = request.promptVariables,
                 delegationState = request.delegationState,
+                // A resumed specialist re-enters the same run with its parked call and
+                // conversation restored, exactly like a resumed MAIN run.
+                resumeContext = request.resumeContext,
+                resumePermission = request.resumePermission,
             ),
             sink = sink,
             subAgentInvoker = null,
@@ -101,6 +105,11 @@ class DefaultSpecializedAgent(
             filesChanged = result.filesChanged,
             toolActions = result.toolActions,
             errors = result.errors,
+            // A parked specialist keeps its identity and its own resume state, so the
+            // parent can surface a real permission request and resume this child —
+            // never flatten the pause into a generic sub-agent failure.
+            pendingPermission = result.pendingPermission,
+            resumeContext = result.resumeContext,
         )
     }
 }
