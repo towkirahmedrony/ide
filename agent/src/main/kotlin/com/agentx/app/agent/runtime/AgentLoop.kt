@@ -13,6 +13,7 @@ import com.agentx.app.agent.domain.AgentStep
 import com.agentx.app.agent.domain.AgentStepStats
 import com.agentx.app.agent.domain.PermissionLevel
 import com.agentx.app.agent.domain.PendingPermission
+import com.agentx.app.agent.domain.PendingToolCall
 import com.agentx.app.agent.domain.SubAgentRequest
 import com.agentx.app.agent.domain.SubAgentResult
 import com.agentx.app.agent.domain.ToolActionRecord
@@ -25,6 +26,7 @@ import com.agentx.app.agent.tools.intOrNull
 import com.agentx.app.agent.tools.stringOrNull
 import com.agentx.app.context.ContextBudget
 import com.agentx.app.context.ModelContextBudget
+import com.agentx.app.context.RunContext
 import com.agentx.app.context.RunContextFactory
 import com.agentx.app.context.SkillContext
 import com.agentx.app.context.SkillContextResolver
@@ -116,6 +118,16 @@ data class ResumedPermission(
     val reason: String,
     val toolCallId: String,
     val approved: Boolean,
+    /**
+     * The whole assistant message the decision belongs to, and the position of the
+     * decided call in it.
+     *
+     * Carried through the pause so the resumed run can finish every sibling that had
+     * not executed yet, in order, rather than sending the provider an assistant
+     * message with fewer tool results than tool calls.
+     */
+    val batch: List<com.agentx.app.agent.domain.PendingToolCall> = emptyList(),
+    val pendingIndex: Int = 0,
 )
 
 /** Outcome of dispatching one tool call requested by the model. */
@@ -277,8 +289,11 @@ class AgentLoop(
             ),
         )
 
-        // When resuming, the parked permission call is re-dispatched first with
-        // the user's decision, before the next model call.
+        // Resume continues the SAME assistant message: the parked call gets the user's
+        // decision, and every sibling that had not run yet is dispatched in its original
+        // order. Only after the whole message has results may the model be asked again —
+        // otherwise the transcript would carry an assistant message with more tool calls
+        // than tool results, which is not a valid request.
         request.resumePermission?.let { resumed ->
             sink.emit(
                 AgentEvent.PermissionResolved(
@@ -288,32 +303,161 @@ class AgentLoop(
                     timestampMillis = clock(),
                 ),
             )
-            val outcome = executeScopedTool(
-                request = request,
-                call = ModelToolCall(
-                    id = resumed.toolCallId,
-                    name = resumed.toolName,
-                    arguments = resumed.arguments,
-                ),
-                router = scopedRouter,
-                context = executionContext,
-                sink = sink,
-                toolActions = toolActions,
-                filesInspected = filesInspected,
-                filesChanged = filesChanged,
-                errors = errors,
-                forcedApproval = resumed.approved,
-            )
-            toolCalls += 1
-            // forcedApproval != null means the outcome is always Completed.
-            val resumedOutcome = outcome as? ToolOutcome.Completed
-            context.addToolResult(
-                callId = resumed.toolCallId,
-                toolName = resumed.toolName,
-                content = resumedOutcome?.resultText.orEmpty(),
-                path = resumedOutcome?.path,
-                status = statusOf(resumedOutcome?.success == true),
-            )
+            val batch = resumed.batch.ifEmpty {
+                listOf(
+                    PendingToolCall(
+                        toolCallId = resumed.toolCallId,
+                        toolName = resumed.toolName,
+                        arguments = resumed.arguments,
+                    ),
+                )
+            }
+            val toDispatch = batch
+                .filter { !it.completed && it.index >= resumed.pendingIndex }
+                .sortedBy { it.index }
+            for (entry in toDispatch) {
+                if (onCancelled()) {
+                    return cancelled(
+                        request = request,
+                        startedAt = startedAt,
+                        stepIndex = 0,
+                        modelCalls = modelCalls,
+                        toolCalls = toolCalls,
+                        subAgentCalls = subAgentCalls,
+                        output = output,
+                        findings = findings,
+                        filesInspected = filesInspected,
+                        filesChanged = filesChanged,
+                        toolActions = toolActions,
+                        errors = errors,
+                        sink = sink,
+                        delegations = delegationState.records,
+                    )
+                }
+                val call = ModelToolCall(id = entry.toolCallId, name = entry.toolName, arguments = entry.arguments)
+                sink.emit(
+                    AgentEvent.ToolRequested(
+                        sessionId = request.sessionId,
+                        toolCallId = call.id,
+                        toolName = call.name,
+                        role = request.definition.role,
+                        arguments = call.arguments,
+                        timestampMillis = clock(),
+                    ),
+                )
+                // Only the call the user actually decided on is forced. A sibling that
+                // was never asked about goes through the ordinary permission path, so a
+                // second ASK parks the run again instead of running unapproved work.
+                val decided = entry.index == resumed.pendingIndex
+                when {
+                    call.name == AgentProtocol.FINISH_TOOL -> {
+                        finished = finishFromCall(
+                            request = request,
+                            call = call,
+                            findings = findings,
+                            filesInspected = filesInspected,
+                            filesChanged = filesChanged,
+                            toolActions = toolActions,
+                            errors = errors,
+                            fallback = output.toString().trim(),
+                            stepStats = stats(startedAt, 0, request.maxSteps, modelCalls, toolCalls, subAgentCalls),
+                        )
+                    }
+
+                    call.name == AgentProtocol.DELEGATE_TOOL -> {
+                        subAgentCalls += 1
+                        val delegated = handleDelegate(
+                            request = request,
+                            call = call,
+                            invoker = subAgentInvoker,
+                            sink = sink,
+                            findings = findings,
+                            filesInspected = filesInspected,
+                            filesChanged = filesChanged,
+                            toolActions = toolActions,
+                            errors = errors,
+                            state = delegationState,
+                        )
+                        delegationState = delegated.state
+                        context.addToolResult(
+                            callId = call.id,
+                            toolName = call.name,
+                            content = delegated.resultText,
+                            path = delegated.path,
+                            status = statusOf(delegated.success),
+                        )
+                    }
+
+                    else -> {
+                        val outcome = if (decided) {
+                            executeScopedTool(
+                                request = request,
+                                call = call,
+                                router = scopedRouter,
+                                context = executionContext,
+                                sink = sink,
+                                toolActions = toolActions,
+                                filesInspected = filesInspected,
+                                filesChanged = filesChanged,
+                                errors = errors,
+                                forcedApproval = resumed.approved,
+                            )
+                        } else {
+                            handleTool(
+                                request = request,
+                                call = call,
+                                router = scopedRouter,
+                                context = executionContext,
+                                sink = sink,
+                                toolActions = toolActions,
+                                filesInspected = filesInspected,
+                                filesChanged = filesChanged,
+                                errors = errors,
+                            )
+                        }
+                        when (outcome) {
+                            is ToolOutcome.Paused -> {
+                                // A sibling needs its own decision: park again with the
+                                // same batch and the new position, so the calls that still
+                                // have no result are never dropped.
+                                return parked(
+                                    request = request,
+                                    startedAt = startedAt,
+                                    stepIndex = 0,
+                                    modelCalls = modelCalls,
+                                    toolCalls = toolCalls,
+                                    subAgentCalls = subAgentCalls,
+                                    findings = findings,
+                                    filesInspected = filesInspected,
+                                    filesChanged = filesChanged,
+                                    toolActions = toolActions,
+                                    errors = errors,
+                                    pending = outcome.pending.copy(
+                                        batch = markCompleted(batch, pendingIndex = entry.index),
+                                        pendingIndex = entry.index,
+                                    ),
+                                    context = context,
+                                    sink = sink,
+                                )
+                            }
+
+                            is ToolOutcome.Completed -> {
+                                // Counted only now, when the result actually exists: a
+                                // call that parked has not produced anything yet.
+                                toolCalls += 1
+                                context.addToolResult(
+                                    callId = call.id,
+                                    toolName = call.name,
+                                    content = outcome.resultText,
+                                    path = outcome.path,
+                                    status = statusOf(outcome.success),
+                                )
+                            }
+                        }
+                    }
+                }
+                if (finished != null) break
+            }
             sink.emit(
                 AgentEvent.StatsUpdated(
                     request.sessionId,
@@ -322,6 +466,7 @@ class AgentLoop(
                 ),
             )
         }
+        if (finished != null) return finished
 
         var stepIndex = 0
         while (stepIndex < request.maxSteps) {
@@ -436,7 +581,7 @@ class AgentLoop(
 
             context.addAssistant(response.content, response.toolCalls)
 
-            for (call in response.toolCalls) {
+            for ((index, call) in response.toolCalls.withIndex()) {
                 if (onCancelled()) {
                     return cancelled(
                         request = request,
@@ -518,26 +663,29 @@ class AgentLoop(
                         )
                         when (outcome) {
                             is ToolOutcome.Paused -> {
-                                sink.emit(
-                                    AgentEvent.PermissionRequested(
-                                        sessionId = request.sessionId,
-                                        pending = outcome.pending,
-                                        timestampMillis = clock(),
+                                // Park with the *whole* assistant message. The calls
+                                // before this one already have results; this one is
+                                // awaiting a decision; the rest have not run. Recording
+                                // all three is what lets resume finish the message
+                                // instead of dropping the siblings.
+                                return parked(
+                                    request = request,
+                                    startedAt = startedAt,
+                                    stepIndex = stepIndex,
+                                    modelCalls = modelCalls,
+                                    toolCalls = toolCalls,
+                                    subAgentCalls = subAgentCalls,
+                                    findings = findings,
+                                    filesInspected = filesInspected,
+                                    filesChanged = filesChanged,
+                                    toolActions = toolActions,
+                                    errors = errors,
+                                    pending = outcome.pending.copy(
+                                        batch = batchOf(response.toolCalls, pendingIndex = index),
+                                        pendingIndex = index,
                                     ),
-                                )
-                                return AgentResult(
-                                    sessionId = request.sessionId,
-                                    status = AgentStatus.WAITING_FOR_PERMISSION,
-                                    summary = "Waiting for approval to run '${outcome.pending.toolName}'",
-                                    findings = findings.toList(),
-                                    filesInspected = filesInspected.toList(),
-                                    filesChanged = filesChanged.toList(),
-                                    toolActions = toolActions.toList(),
-                                    errors = errors.toList(),
-                                    role = request.definition.role,
-                                    stepStats = stats(startedAt, stepIndex, request.maxSteps, modelCalls, toolCalls, subAgentCalls),
-                                    pendingPermission = outcome.pending,
-                                    resumeContext = context.messages(),
+                                    context = context,
+                                    sink = sink,
                                 )
                             }
                             is ToolOutcome.Completed -> {
@@ -610,6 +758,75 @@ class AgentLoop(
         errors = errors,
         forcedApproval = null,
     )
+
+    /**
+     * The assistant message's tool calls as parked state, in order.
+     *
+     * [pendingIndex] is the call awaiting a decision; because the loop dispatches
+     * sequentially, everything before it has already produced a result. Recording that
+     * makes resume able to tell "already done" from "never ran" instead of re-executing
+     * anything.
+     */
+    private fun batchOf(calls: List<ModelToolCall>, pendingIndex: Int): List<PendingToolCall> =
+        calls.mapIndexed { position, call ->
+            PendingToolCall(
+                toolCallId = call.id,
+                toolName = call.name,
+                arguments = call.arguments,
+                index = position,
+                completed = position < pendingIndex,
+            )
+        }
+
+    /** [batch] re-marked for a pause at [pendingIndex]; already-completed entries stay so. */
+    private fun markCompleted(batch: List<PendingToolCall>, pendingIndex: Int): List<PendingToolCall> =
+        batch.map { it.copy(completed = it.completed || it.index < pendingIndex) }.sortedBy { it.index }
+
+    /**
+     * Parks the run in [AgentStatus.WAITING_FOR_PERMISSION].
+     *
+     * [pending] carries the complete assistant message, and [RunContext.messages] is
+     * snapshotted as-is, so the transcript at the moment of the pause is exactly what a
+     * resume restores — never a reconstruction from the blocked call alone.
+     */
+    private suspend fun parked(
+        request: AgentLoopRequest,
+        startedAt: Long,
+        stepIndex: Int,
+        modelCalls: Int,
+        toolCalls: Int,
+        subAgentCalls: Int,
+        findings: List<String>,
+        filesInspected: List<String>,
+        filesChanged: List<String>,
+        toolActions: List<ToolActionRecord>,
+        errors: List<AgentError>,
+        pending: PendingPermission,
+        context: RunContext,
+        sink: AgentEventSink,
+    ): AgentResult {
+        sink.emit(
+            AgentEvent.PermissionRequested(
+                sessionId = request.sessionId,
+                pending = pending,
+                timestampMillis = clock(),
+            ),
+        )
+        return AgentResult(
+            sessionId = request.sessionId,
+            status = AgentStatus.WAITING_FOR_PERMISSION,
+            summary = "Waiting for approval to run '${pending.toolName}'",
+            findings = findings.toList(),
+            filesInspected = filesInspected.toList(),
+            filesChanged = filesChanged.toList(),
+            toolActions = toolActions.toList(),
+            errors = errors.toList(),
+            role = request.definition.role,
+            stepStats = stats(startedAt, stepIndex, request.maxSteps, modelCalls, toolCalls, subAgentCalls),
+            pendingPermission = pending,
+            resumeContext = context.messages(),
+        )
+    }
 
     private suspend fun executeScopedTool(
         request: AgentLoopRequest,

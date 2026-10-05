@@ -105,6 +105,25 @@ data class AgentStepStats(
         "Step $currentStep / $maxSteps · model: $modelCalls · tools: $toolCalls · sub-agents: $subAgentCalls"
 }
 
+/**
+ * One tool call belonging to the assistant message that is waiting for a decision.
+ *
+ * A single model response may request several tools at once, so the parked state has
+ * to remember the whole message: resuming from the blocked call alone would discard
+ * its siblings and leave an assistant message whose tool calls have no matching
+ * results, which is not a valid transcript to send back to the provider.
+ */
+data class PendingToolCall(
+    val toolCallId: String,
+    val toolName: String,
+    /** Structured arguments, preserved so resume replays the exact same call. */
+    val arguments: JsonObject = emptyMap(),
+    /** Position in the assistant message; resume dispatches in this order. */
+    val index: Int = 0,
+    /** True when this call already produced a result before the pause. */
+    val completed: Boolean = false,
+)
+
 /** A tool call parked while waiting for the user's approval decision. */
 data class PendingPermission(
     val toolName: String,
@@ -114,7 +133,34 @@ data class PendingPermission(
     val toolCallId: String,
     /** Permission levels the tool needs, shown in the approval prompt. */
     val requiredPermissions: Set<String> = emptySet(),
-)
+    /**
+     * Every tool call of the assistant message this decision belongs to, in order.
+     *
+     * The assistant message is never reconstructed from the blocked call alone: the
+     * siblings are carried here so an approval finishes the message instead of losing
+     * the calls that had not run yet.
+     */
+    val batch: List<PendingToolCall> = emptyList(),
+    /** Index of the call awaiting a decision; earlier calls have already run. */
+    val pendingIndex: Int = 0,
+) {
+    /**
+     * The calls still to run once a decision is made — the decided call and any
+     * sibling after it — in their original order.
+     */
+    val remaining: List<PendingToolCall>
+        get() = batch.filter { !it.completed && it.index >= pendingIndex }.sortedBy { it.index }
+
+    /**
+     * The complete assistant tool-call message as it must be replayed on resume.
+     * Falls back to the single parked call for state written before batches existed,
+     * so an older paused run still resumes rather than misreporting itself.
+     */
+    val batchOrSelf: List<PendingToolCall>
+        get() = batch.ifEmpty {
+            listOf(PendingToolCall(toolCallId = toolCallId, toolName = toolName, arguments = arguments))
+        }
+}
 
 data class SubAgentRequest(
     val role: AgentRole,

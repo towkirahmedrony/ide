@@ -348,6 +348,11 @@ class DefaultAgentOrchestrator(
                             reason = paused.pending.reason,
                             toolCallId = paused.pending.toolCallId,
                             approved = approved,
+                            // The whole assistant message travels with the decision, so the
+                            // resumed run can finish its remaining calls rather than
+                            // abandoning the ones the model asked for in the same turn.
+                            batch = paused.pending.batchOrSelf,
+                            pendingIndex = paused.pending.pendingIndex,
                         ),
                         promptVariables = paused.promptVariables,
                         requiresWorkspace = paused.requiresWorkspace,
