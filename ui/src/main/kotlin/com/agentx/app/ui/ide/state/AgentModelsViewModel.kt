@@ -8,12 +8,9 @@ import androidx.lifecycle.viewModelScope
 import com.agentx.app.agent.catalog.AgentCatalog
 import com.agentx.app.agent.domain.AgentRole
 import com.agentx.app.agent.model.AgentRoleModelRegistry
-import com.agentx.app.agent.model.AgentRoleRequirements
 import com.agentx.app.agent.model.ProviderModelOption
 import com.agentx.app.agent.model.RoleModelEvaluation
 import com.agentx.app.agent.model.RoleModelState
-import com.agentx.app.agent.model.RoleModelStatus
-import com.agentx.app.model.capability.CapabilitySupport
 import com.agentx.app.model.capability.ModelCapabilityRegistry
 import com.agentx.app.model.catalog.ModelCatalogRegistry
 import com.agentx.app.model.catalog.ModelCatalogState
@@ -96,6 +93,20 @@ class AgentModelsViewModel(
         private set
 
     private var managerState: ModelManagerState = ModelManagerState()
+
+    /**
+     * One option per saved *connection*, used only to judge a role's assignment.
+     *
+     * [options] is grouped per provider family for the editor, which is the right shape
+     * for "pick a provider, then a model". Judging an assignment needs the opposite: a
+     * role saved against one exact connection must be evaluated against that connection,
+     * not against whichever sibling of the family happens to be listed first, or two
+     * connections exposing the same model id become indistinguishable.
+     */
+    private var connectionOptions: List<ProviderModelOption> = emptyList()
+
+    /** Connection identities the runtime can address right now. */
+    private var liveConnections: Set<String> = emptySet()
 
     init {
         viewModelScope.launch {
@@ -185,8 +196,19 @@ class AgentModelsViewModel(
         managerState = state
         val current = optionsFor(state)
         options = current
+        connectionOptions = connectionOptionsFor(state)
+        liveConnections = state.presets.filter { state.status(it.id).isUsable }.map { it.id }.toSet()
         rows = AgentRole.entries.map { role ->
-            val status = RoleModelEvaluation.evaluate(registry.selection(role), current)
+            // One evaluation, shared with the runtime's rules: the exact connection, the
+            // model it offers and the capability verdict all come from the same
+            // authoritative sources the resolver uses, so Settings and the runtime cannot
+            // disagree about whether an assignment can run.
+            val status = RoleModelEvaluation.evaluate(
+                selection = registry.selection(role),
+                options = connectionOptions,
+                availableConnections = liveConnections,
+                capabilities = capabilities,
+            )
             AgentModelRow(
                 role = role,
                 name = AgentCatalog.definition(role).name,
@@ -197,30 +219,36 @@ class AgentModelsViewModel(
                 state = status.state,
                 message = status.message,
                 explicit = status.explicit,
-                capabilityNote = capabilityNote(role, status),
+                capabilityNote = status.capabilityNote,
             )
         }
         providerSummaries = current.associate { it.providerId to summaryFor(it) }
     }
 
     /**
-     * Whether the assigned model can serve the role's required capabilities.
+     * One option per saved connection, for judging assignments.
      *
-     * Only an authoritative "unsupported" or "disabled" answer is reported: an
-     * unknown capability is not a failure here, exactly as the eligibility checker
-     * treats it, so a model nobody has described yet is never labelled broken.
+     * Built from the same presets, live catalog and manager status as [optionsFor]; it
+     * differs only in being keyed by connection identity rather than grouped by provider
+     * family, which is what lets an assignment be checked against the exact connection
+     * it was saved against.
      */
-    private fun capabilityNote(role: AgentRole, status: RoleModelStatus): String? {
-        val registry = capabilities ?: return null
-        val providerId = status.providerId ?: return null
-        val model = status.model ?: return null
-        val profile = registry.get(providerId, model) ?: return null
-        if (!profile.enabled) return "This model is disabled and cannot be run."
-        val missing = AgentRoleRequirements.required(role)
-            .filter { profile.support(it) == CapabilitySupport.UNSUPPORTED }
-        if (missing.isEmpty()) return null
-        return "This model does not support ${missing.joinToString(", ") { it.id }} required by this agent."
-    }
+    private fun connectionOptionsFor(state: ModelManagerState): List<ProviderModelOption> =
+        state.presets.map { preset ->
+            val status = state.status(preset.id)
+            val snapshot = catalog?.snapshot(preset.providerId)
+            val liveModels = snapshot?.availableModels()?.map { it.id }.orEmpty()
+            ProviderModelOption(
+                providerId = preset.providerId,
+                providerLabel = RoleModelEvaluation.providerLabel(preset.providerId),
+                models = if (liveModels.isNotEmpty()) liveModels else listOfNotNull(preset.modelIdentifier),
+                unavailableModels = snapshot?.models?.filterNot { it.available }?.map { it.id }.orEmpty(),
+                connected = status.isUsable,
+                connectionId = preset.id,
+                connectionLabel = preset.displayName,
+                endpoint = status.endpoint?.url,
+            )
+        }
 
     /**
      * Builds the provider catalog from the Model Manager's saved presets plus any

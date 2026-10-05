@@ -1,6 +1,9 @@
 package com.agentx.app.agent.model
 
 import com.agentx.app.agent.domain.AgentRole
+import com.agentx.app.model.ModelConfig
+import com.agentx.app.model.capability.CapabilitySupport
+import com.agentx.app.model.capability.ModelCapabilityRegistry
 import com.agentx.app.model.preset.ModelProviderIds
 
 /**
@@ -33,16 +36,49 @@ data class ProviderModelOption(
     val discoveryNote: String? = null,
 )
 
-/** Whether a role's assignment can actually run right now. */
+/**
+ * Whether a role's assignment can actually run right now.
+ *
+ * [CONNECTED] means *runtime-ready*: the exact assigned connection is addressable,
+ * it offers the assigned model, and the model can serve the role's required
+ * capabilities. It is deliberately not the same as "a string is saved": every other
+ * value below is a state where the assignment exists but the runtime would not
+ * execute it, and each is reported separately because they are repaired differently.
+ */
 enum class RoleModelState {
-    /** The provider is connected and the model is available. */
+    /** Runtime-ready: connection, model and capabilities all agree. */
     CONNECTED,
 
-    /** The provider is not connected (or does not exist) yet. */
+    /** Nothing is assigned for this role yet. */
     NOT_CONFIGURED,
 
     /** The provider is connected but does not offer the assigned model. */
     MODEL_UNAVAILABLE,
+
+    /**
+     * The exact saved connection the role was assigned from is not currently
+     * addressable (deleted, disconnected, or never restored).
+     *
+     * Distinct from [NOT_CONFIGURED] because the assignment is *stale*, not absent:
+     * the user's choice is preserved and must not be silently re-pointed at another
+     * connection of the same provider family.
+     */
+    CONNECTION_MISSING,
+
+    /** The model authoritatively does not support a capability this role requires. */
+    CAPABILITY_UNSUPPORTED,
+
+    /**
+     * Runtime support for a required capability is unconfirmed.
+     *
+     * The model is visible and the assignment is intact — this is an unresolved
+     * verdict, not a rejection — but the runtime will not treat it as eligible, so
+     * Settings must not present it as ready either.
+     */
+    CAPABILITY_UNKNOWN,
+
+    /** The model definition exists but is disabled. */
+    DISABLED,
 }
 
 /** A role's assignment plus the honest configuration state shown in Settings. */
@@ -54,7 +90,22 @@ data class RoleModelStatus(
     val state: RoleModelState,
     val message: String,
     val explicit: Boolean,
-)
+    /**
+     * The exact connection the assignment was saved against, when it named one.
+     * Reported so the state can be explained by identity rather than by provider
+     * family alone.
+     */
+    val connectionId: String? = null,
+    /**
+     * Why the model cannot serve this role's capabilities, when that is the state.
+     * Null whenever nothing is known to be missing, so an unverified model is never
+     * reported as broken.
+     */
+    val capabilityNote: String? = null,
+) {
+    /** True only when the runtime would actually run this assignment. */
+    val runtimeReady: Boolean get() = state == RoleModelState.CONNECTED
+}
 
 /**
  * Judges a role's assignment against the providers the user has configured.
@@ -75,7 +126,25 @@ object RoleModelEvaluation {
         else -> providerId
     }
 
-    fun evaluate(selection: RoleModelSelection, options: List<ProviderModelOption>): RoleModelStatus {
+    fun evaluate(
+        selection: RoleModelSelection,
+        options: List<ProviderModelOption>,
+        /**
+         * Connection identities the runtime can currently address.
+         *
+         * Null means "not reported", for a caller with no runtime view. It is never
+         * read as "this connection is missing": a connection nobody reported on is not
+         * the same as a connection that was deleted. The Settings screen always passes
+         * the Model Manager's own set.
+         */
+        availableConnections: Set<String>? = null,
+        /**
+         * The authoritative capability registry — the same one the runtime's
+         * eligibility check reads. Supplied so Settings reports the runtime's own
+         * verdict rather than a second, weaker opinion.
+         */
+        capabilities: ModelCapabilityRegistry? = null,
+    ): RoleModelStatus {
         val providerId = selection.providerId?.takeIf { it.isNotBlank() }
         if (providerId == null) {
             return RoleModelStatus(
@@ -89,7 +158,30 @@ object RoleModelEvaluation {
             )
         }
 
-        val option = options.firstOrNull { it.providerId == providerId }
+        // A saved assignment names one exact connection. When that connection is gone
+        // the assignment is stale and is reported as such; it is never answered by a
+        // sibling connection of the same provider family, which is the substitution the
+        // runtime already refuses to make.
+        val assignedConnection = selection.connectionId?.takeIf { it.isNotBlank() }
+        if (assignedConnection != null && availableConnections != null && assignedConnection !in availableConnections) {
+            return RoleModelStatus(
+                role = selection.role,
+                providerId = providerId,
+                providerLabel = providerLabel(providerId),
+                model = selection.model,
+                state = RoleModelState.CONNECTION_MISSING,
+                message = "The saved connection for this agent is no longer available. " +
+                    "Choose its model again to repair the assignment.",
+                explicit = selection.explicit,
+                connectionId = assignedConnection,
+            )
+        }
+
+        // The exact connection is matched first, then the provider family. Matching the
+        // exact identity is what keeps two connections exposing the same model id apart.
+        val option = assignedConnection
+            ?.let { id -> options.firstOrNull { it.connectionId == id } }
+            ?: options.firstOrNull { it.providerId == providerId }
         val label = option?.providerLabel ?: providerLabel(providerId)
         if (option == null || !option.connected) {
             return RoleModelStatus(
@@ -100,6 +192,7 @@ object RoleModelEvaluation {
                 state = RoleModelState.NOT_CONFIGURED,
                 message = "$label is not connected. Add or start it in Models.",
                 explicit = selection.explicit,
+                connectionId = assignedConnection,
             )
         }
 
@@ -113,6 +206,7 @@ object RoleModelEvaluation {
                 state = RoleModelState.MODEL_UNAVAILABLE,
                 message = "$label no longer lists $model. Refresh the catalog or choose another model.",
                 explicit = selection.explicit,
+                connectionId = assignedConnection,
             )
         }
         if (model != null && option.models.isNotEmpty() && model !in option.models) {
@@ -124,17 +218,84 @@ object RoleModelEvaluation {
                 state = RoleModelState.MODEL_UNAVAILABLE,
                 message = "$label does not offer $model. Choose another model or update the connection.",
                 explicit = selection.explicit,
+                connectionId = assignedConnection,
             )
+        }
+
+        // The model the runtime would actually run: the assigned one, or the provider's
+        // first when the assignment leaves the choice to the provider.
+        val effectiveModel = model ?: option.models.firstOrNull()
+
+        // The capability verdict, from the runtime's own source and in the runtime's own
+        // order — disabled, then unsupported, then unknown — because a disagreement here
+        // is exactly what lets Settings call a model ready while the runtime refuses to
+        // run it. Quota and observed health are deliberately absent: Settings must not
+        // consult admission, nor require a provider to be answering right now in order
+        // to describe what its models can do.
+        if (capabilities != null && effectiveModel != null) {
+            val profile = ModelEligibilityChecker(capabilities).profile(
+                ModelConfig(
+                    providerId = providerId,
+                    // Inert for capability resolution, which reads identity and any saved
+                    // declaration only. Never logged and never used to connect.
+                    baseUrl = option.endpoint.orEmpty(),
+                    model = effectiveModel,
+                ),
+            )
+            if (!profile.enabled) {
+                return RoleModelStatus(
+                    role = selection.role,
+                    providerId = providerId,
+                    providerLabel = label,
+                    model = effectiveModel,
+                    state = RoleModelState.DISABLED,
+                    message = "$label reports $effectiveModel as disabled.",
+                    explicit = selection.explicit,
+                    connectionId = assignedConnection,
+                    capabilityNote = "This model is disabled and cannot be run.",
+                )
+            }
+            val missing = AgentRoleRequirements.required(selection.role).filterNot { profile.supports(it) }
+            if (missing.isNotEmpty()) {
+                val unsupported = missing.filter { profile.support(it) == CapabilitySupport.UNSUPPORTED }
+                val definite = unsupported.isNotEmpty()
+                val named = (if (definite) unsupported else missing).joinToString(", ") { it.id }
+                return RoleModelStatus(
+                    role = selection.role,
+                    providerId = providerId,
+                    providerLabel = label,
+                    model = effectiveModel,
+                    state = if (definite) {
+                        RoleModelState.CAPABILITY_UNSUPPORTED
+                    } else {
+                        RoleModelState.CAPABILITY_UNKNOWN
+                    },
+                    message = if (definite) {
+                        "$label does not support $named, which this agent requires."
+                    } else {
+                        "Runtime support for $named is not confirmed for $effectiveModel, " +
+                            "so this agent cannot run on it yet."
+                    },
+                    explicit = selection.explicit,
+                    connectionId = assignedConnection,
+                    capabilityNote = if (definite) {
+                        "This model does not support $named required by this agent."
+                    } else {
+                        "Support for $named has not been confirmed for this model."
+                    },
+                )
+            }
         }
 
         return RoleModelStatus(
             role = selection.role,
             providerId = providerId,
             providerLabel = label,
-            model = model ?: option.models.firstOrNull(),
+            model = effectiveModel,
             state = RoleModelState.CONNECTED,
             message = "$label is connected.",
             explicit = selection.explicit,
+            connectionId = assignedConnection,
         )
     }
 }

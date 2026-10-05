@@ -196,19 +196,12 @@ private fun AgentModelCard(row: AgentModelRow, onClick: () -> Unit) {
         if (row.state != RoleModelState.CONNECTED) {
             IdeSpacer(6)
             Text(
-                text = row.message,
+                // One explanation, not two. The capability note, when there is one, is
+                // the same fact stated in terms of the fix the user needs; showing both
+                // would report a single problem twice with two different colours.
+                text = row.capabilityNote ?: row.message,
                 style = MaterialTheme.typography.bodyMedium,
                 color = color,
-            )
-        }
-        // A model can be present and still be the wrong model for this agent. That
-        // is reported separately from availability so the two fixes stay distinct.
-        row.capabilityNote?.let { note ->
-            IdeSpacer(4)
-            Text(
-                text = note,
-                style = MaterialTheme.typography.bodyMedium,
-                color = ForgeDanger,
             )
         }
         IdeSpacer(4)
@@ -374,10 +367,22 @@ private fun statusLabel(state: RoleModelState): String = when (state) {
     RoleModelState.CONNECTED -> "Connected"
     RoleModelState.NOT_CONFIGURED -> "Not configured"
     RoleModelState.MODEL_UNAVAILABLE -> "Model unavailable"
+    RoleModelState.CONNECTION_MISSING -> "Connection missing"
+    RoleModelState.CAPABILITY_UNSUPPORTED -> "Unsupported by this model"
+    RoleModelState.CAPABILITY_UNKNOWN -> "Capability unconfirmed"
+    RoleModelState.DISABLED -> "Disabled"
 }
 
 private fun statusColor(state: RoleModelState): Color = when (state) {
     RoleModelState.CONNECTED -> ForgeMint
     RoleModelState.NOT_CONFIGURED -> ForgeAmber
     RoleModelState.MODEL_UNAVAILABLE -> ForgeDanger
+    // The saved connection is gone: the assignment is stale rather than absent, and it
+    // is repaired by re-picking the model, not by adding a provider.
+    RoleModelState.CONNECTION_MISSING -> ForgeDanger
+    RoleModelState.CAPABILITY_UNSUPPORTED -> ForgeDanger
+    RoleModelState.DISABLED -> ForgeDanger
+    // Amber, not red: an unconfirmed capability is an unresolved verdict, not a
+    // rejection, and a model nobody has described yet must not look broken.
+    RoleModelState.CAPABILITY_UNKNOWN -> ForgeAmber
 }
