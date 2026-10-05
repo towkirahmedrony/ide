@@ -24,6 +24,7 @@ import com.agentx.app.agent.tools.AgentToolBridge
 import com.agentx.app.agent.tools.intOrNull
 import com.agentx.app.agent.tools.stringOrNull
 import com.agentx.app.context.ContextBudget
+import com.agentx.app.context.ModelContextBudget
 import com.agentx.app.context.RunContextFactory
 import com.agentx.app.context.SkillContext
 import com.agentx.app.context.SkillContextResolver
@@ -160,6 +161,16 @@ class AgentLoop(
      * model request is returned unchanged, exactly as before this phase.
      */
     private val modelFallback: ModelFallback? = null,
+    /**
+     * The declared context window of a model, read from descriptor metadata.
+     *
+     * Injected rather than looked up here so the loop stays free of capability
+     * resolution: the assembled agent passes the authoritative profile lookup, and a
+     * test passes whatever capacity it wants to exercise. Returning `null` means "not
+     * declared", which is budgeted conservatively — never as unlimited. The default
+     * reads the capabilities already carried on the resolved configuration.
+     */
+    private val windowTokensOf: (ModelConfig) -> Int? = { it.capabilities?.contextWindowTokens },
 ) {
 
     suspend fun run(
@@ -180,10 +191,6 @@ class AgentLoop(
                 "allowedTools" to request.allowedTools.size,
             ),
         )
-        // Conversation and tool-result context are built by the Context Engine;
-        // the loop only drives them. [context.messages] is the budgeted,
-        // model-ready form of that context.
-        val context = runContexts.create(request.sessionId, request.contextBudget)
         // Resolved once per run, never per loop iteration: the system instruction
         // must stay identical for every model call of this run.
         val basePrompt = resolveBasePrompt(request)
@@ -194,6 +201,26 @@ class AgentLoop(
             skillBlock = skillContext.rendered,
         )
         logPromptAssembly(request, basePrompt, skillContext, systemPrompt)
+        val userPrompt = buildUserPrompt(request)
+        // The role's own tool schemas, already scoped by authorization. They are sent
+        // on every call, so they are part of the request's cost — never free.
+        val toolSpecs = bridge.toModelSpecs(request.allowedTools)
+        // The context ceiling comes from the model that will read it, not from a
+        // global default. Everything that is not ranked context is measured here and
+        // subtracted, output is reserved, and only what is left is offered to the
+        // engine. A model that does not declare a window gets the conservative
+        // default rather than an unlimited one.
+        val contextPlan = ModelContextBudget.forModel(
+            windowTokens = windowTokensOf(request.modelConfig),
+            maxOutputTokens = request.modelConfig.generation.maxOutputTokens,
+            overheadChars = systemPrompt.length + userPrompt.length + toolSchemaChars(toolSpecs),
+            base = request.contextBudget,
+        )
+        logContextBudget(request, contextPlan)
+        // Conversation and tool-result context are built by the Context Engine;
+        // the loop only drives them. [context.messages] is the budgeted,
+        // model-ready form of that context.
+        val context = runContexts.create(request.sessionId, contextPlan.budget)
         if (request.resumeContext.isNotEmpty()) {
             // Resuming a run that paused for a permission: restore the saved
             // conversation and keep its tool/call state, but refresh the system
@@ -234,7 +261,6 @@ class AgentLoop(
             },
         )
 
-        val toolSpecs = bridge.toModelSpecs(request.allowedTools)
         val executionContext = ToolExecutionContext(
             sessionId = request.sessionId,
             agentId = request.definition.role.name,
@@ -1284,6 +1310,49 @@ class AgentLoop(
      *
      * Skill ids, statuses and sizes only — no instruction text is ever logged.
      */
+    /**
+     * Characters consumed by the tool schemas this run will send.
+     *
+     * Every field the provider serializes is counted — name, description and each
+     * parameter — because a tool definition is prompt text like any other. The
+     * caller's role-scoped list is what is measured, so a role that may use three
+     * tools pays for three, not for every tool the process knows about.
+     */
+    private fun toolSchemaChars(specs: List<ModelToolSpec>): Int =
+        specs.sumOf { spec ->
+            spec.name.length + spec.description.length +
+                spec.parameters.sumOf { parameter -> parameter.name.length + parameter.description.length }
+        }
+
+    /**
+     * Records how the context budget was derived, so "why did this run send so
+     * little context?" is answerable from the log instead of by guessing. Counts,
+     * sizes and descriptor metadata only: no prompt text, no file contents and no
+     * credential is written.
+     */
+    private fun logContextBudget(request: AgentLoopRequest, plan: ModelContextBudget.Plan) {
+        val report = plan.report
+        logger.info(
+            "Model context budget derived",
+            mapOf(
+                "sessionId" to request.sessionId,
+                "role" to request.definition.role.name,
+                "providerId" to request.modelConfig.providerId,
+                "model" to request.modelConfig.model,
+                "contextWindowTokens" to report.windowTokens,
+                "contextWindowKnown" to report.windowKnown,
+                "reservedOutputTokens" to report.reservedOutputTokens,
+                "promptOverheadTokens" to report.overheadTokens,
+                "safetyMarginTokens" to report.safetyMarginTokens,
+                "availableInputTokens" to report.availableInputTokens,
+                "contextCharBudget" to plan.budget.maxTotalChars,
+                "maxFileChars" to plan.budget.maxFileChars,
+                "maxToolResultChars" to plan.budget.maxToolResultChars,
+                "maxConversationChars" to plan.budget.maxConversationChars,
+            ),
+        )
+    }
+
     private fun logPromptAssembly(
         request: AgentLoopRequest,
         basePrompt: BasePrompt,

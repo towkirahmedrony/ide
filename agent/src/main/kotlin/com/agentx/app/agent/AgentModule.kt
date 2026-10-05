@@ -190,6 +190,11 @@ class AgentModule(
                 prompts = prompts,
                 skillContext = skillContext,
                 timeouts = timeouts,
+                // The context ceiling of every run is read from the selected model's
+                // authoritative capability profile, so a specialist running a small
+                // local model is budgeted for that model rather than inheriting the
+                // Main Agent's capacity.
+                windowTokensOf = { config -> modelResolver.capabilityProfileFor(config).maxContextTokens },
                 modelFallback = ModelFallback(
                     policy = fallbackPolicyProvider ?: { fallbackPolicy },
                     resolver = modelResolver,

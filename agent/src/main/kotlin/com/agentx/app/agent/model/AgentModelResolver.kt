@@ -497,6 +497,17 @@ class AgentModelResolver(
      * checker and the gateway honor it.
      */
     private fun profileFor(config: ModelConfig): ModelCapabilityProfile =
+        capabilityProfileFor(config)
+
+    /**
+     * The authoritative capability record for [config], exposed so callers outside
+     * this class can read descriptor metadata — most importantly `maxContextTokens`
+     * — through the one shared precedence rule rather than reconstructing it from
+     * `providerId` and `model` and risking a different answer.
+     *
+     * Reads no credential and performs no network request.
+     */
+    fun capabilityProfileFor(config: ModelConfig): ModelCapabilityProfile =
         config.capabilityProfile(capabilityRegistry)
 
     private fun capabilityError(
