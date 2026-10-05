@@ -109,7 +109,11 @@ class RateLimitQuotaDimensionsTest {
         // Well within the input side, far beyond the output side: the output ceiling
         // must block even though the input side has room to spare.
         val blocked = assertIs<RateLimitDecision.Blocked>(manager.decide(input = 10, output = 2_000))
-        assertTrue(blocked.reason.contains("output tokens per minute"), blocked.reason)
+        assertTrue(blocked.reason.contains("output tokens"), blocked.reason)
+        assertTrue(
+            !blocked.reason.contains("input tokens"),
+            "the input side is well within its ceiling and must not be blamed: ${blocked.reason}",
+        )
         assertNull(blocked.retryAfterMs, "one request can never fit, so waiting does not help")
     }
 
@@ -119,7 +123,11 @@ class RateLimitQuotaDimensionsTest {
         manager.configure(profile(inputTpm = 1_000L, outputTpm = 100L))
 
         val blocked = assertIs<RateLimitDecision.Blocked>(manager.decide(input = 2_000, output = 10))
-        assertTrue(blocked.reason.contains("input tokens per minute"), blocked.reason)
+        assertTrue(blocked.reason.contains("input tokens"), blocked.reason)
+        assertTrue(
+            !blocked.reason.contains("output tokens"),
+            "the output side is well within its ceiling and must not be blamed: ${blocked.reason}",
+        )
     }
 
     @Test
