@@ -71,6 +71,19 @@ data class RateLimitProfile(
     val tokensPerDay: Long? = null,
     /** Maximum requests in flight at once. */
     val maxConcurrentRequests: Int? = null,
+    /** Requests allowed per rolling hour window. */
+    val requestsPerHour: Int? = null,
+    /**
+     * Input (prompt) tokens allowed per rolling minute window.
+     *
+     * A provider that publishes one token ceiling for a request treats the whole
+     * request against [tokensPerMinute]; a provider that publishes the prompt and
+     * the completion sides separately is described here instead, so the two are
+     * never conflated into a single number that neither provider stated.
+     */
+    val inputTokensPerMinute: Long? = null,
+    /** Output (completion) tokens allowed per rolling minute window. */
+    val outputTokensPerMinute: Long? = null,
     /** When false the scope is explicitly unlimited and no default is applied. */
     val enabled: Boolean = true,
     /**
@@ -80,6 +93,12 @@ data class RateLimitProfile(
      */
     val safetyMargin: Double = 0.0,
     val source: RateLimitSource = RateLimitSource.UNKNOWN,
+    /**
+     * The provider documentation a [RateLimitSource.PROVIDER_REPORTED] value came
+     * from, so a limit can be audited back to its source instead of being taken on
+     * trust. Never a credential and never a request; null when nothing was cited.
+     */
+    val reference: String? = null,
     val updatedAtMillis: Long = 0L,
 ) {
     init {
@@ -92,6 +111,9 @@ data class RateLimitProfile(
         requirePositiveOrNull("requestsPerDay", requestsPerDay)
         requirePositiveOrNull("tokensPerDay", tokensPerDay)
         requirePositiveOrNull("maxConcurrentRequests", maxConcurrentRequests)
+        requirePositiveOrNull("requestsPerHour", requestsPerHour)
+        requirePositiveOrNull("inputTokensPerMinute", inputTokensPerMinute)
+        requirePositiveOrNull("outputTokensPerMinute", outputTokensPerMinute)
     }
 
     val scope: RateLimitScope
@@ -110,7 +132,10 @@ data class RateLimitProfile(
             tokensPerMinute != null ||
             requestsPerDay != null ||
             tokensPerDay != null ||
-            maxConcurrentRequests != null
+            maxConcurrentRequests != null ||
+            requestsPerHour != null ||
+            inputTokensPerMinute != null ||
+            outputTokensPerMinute != null
 
     /** The limits after the configured safety margin is applied. Unknown stays unknown. */
     fun effectiveLimits(): RateLimitLimits = RateLimitLimits(
@@ -119,7 +144,17 @@ data class RateLimitProfile(
         requestsPerDay = Quota.of(requestsPerDay?.scaleInt()?.toLong()),
         tokensPerDay = Quota.of(tokensPerDay?.scaleLong()),
         maxConcurrentRequests = Quota.of(maxConcurrentRequests?.toLong()),
+        requestsPerHour = Quota.of(requestsPerHour?.scaleInt()?.toLong()),
+        inputTokensPerMinute = Quota.of(inputTokensPerMinute?.scaleLong()),
+        outputTokensPerMinute = Quota.of(outputTokensPerMinute?.scaleLong()),
     )
+
+    /** The same profile applied to one connection's quota scope. */
+    fun scopedTo(accountId: String?): RateLimitProfile =
+        copy(accountId = accountId?.trim()?.takeIf { it.isNotBlank() })
+
+    /** The same profile with policy (not provider facts) applied. */
+    fun withSafetyMargin(margin: Double): RateLimitProfile = copy(safetyMargin = margin)
 
     /**
      * Returns this profile with each limit reduced so it never exceeds the same
@@ -147,6 +182,9 @@ data class RateLimitProfile(
             requestsPerDay = minInt(requestsPerDay, ceiling.requestsPerDay),
             tokensPerDay = minLong(tokensPerDay, ceiling.tokensPerDay),
             maxConcurrentRequests = minInt(maxConcurrentRequests, ceiling.maxConcurrentRequests),
+            requestsPerHour = minInt(requestsPerHour, ceiling.requestsPerHour),
+            inputTokensPerMinute = minLong(inputTokensPerMinute, ceiling.inputTokensPerMinute),
+            outputTokensPerMinute = minLong(outputTokensPerMinute, ceiling.outputTokensPerMinute),
         )
     }
 
@@ -174,13 +212,19 @@ data class RateLimitLimits(
     val requestsPerDay: Quota = Quota.Unknown,
     val tokensPerDay: Quota = Quota.Unknown,
     val maxConcurrentRequests: Quota = Quota.Unknown,
+    val requestsPerHour: Quota = Quota.Unknown,
+    val inputTokensPerMinute: Quota = Quota.Unknown,
+    val outputTokensPerMinute: Quota = Quota.Unknown,
 ) {
     val isEmpty: Boolean
         get() = requestsPerMinute.isUnknown &&
             tokensPerMinute.isUnknown &&
             requestsPerDay.isUnknown &&
             tokensPerDay.isUnknown &&
-            maxConcurrentRequests.isUnknown
+            maxConcurrentRequests.isUnknown &&
+            requestsPerHour.isUnknown &&
+            inputTokensPerMinute.isUnknown &&
+            outputTokensPerMinute.isUnknown
 
     companion object {
         val NONE: RateLimitLimits = RateLimitLimits()

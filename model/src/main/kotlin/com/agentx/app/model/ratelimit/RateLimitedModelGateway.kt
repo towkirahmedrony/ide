@@ -87,6 +87,7 @@ class RateLimitedModelGateway(
                 modelId = admission.modelId,
                 retryAfterMs = error.retryAfterMillis,
                 kind = kind,
+                accountId = admission.accountId,
             )
             throw structuredRateLimit(error, admission, kind)
         } catch (error: Throwable) {
@@ -98,11 +99,24 @@ class RateLimitedModelGateway(
     private fun admissionFor(request: ModelRequest): RateLimitRequest = RateLimitRequest(
         providerId = request.config.providerId,
         modelId = request.model,
-        accountId = request.config.metadata[ACCOUNT_METADATA_KEY]?.takeIf { it.isNotBlank() },
+        accountId = quotaScope(request.config),
         estimatedInputTokens = tokenEstimator.estimateInputTokens(request),
         estimatedOutputTokens = tokenEstimator.estimateOutputTokens(request),
         rateLimited = isRemote(request.config),
     )
+
+    /**
+     * The quota scope this request's capacity is taken from.
+     *
+     * [quotaScopeOf] holds the rule, so admission here and profile registration
+     * ([RateLimitProfileRegistrar]) can never disagree about which bucket a
+     * connection's requests belong to. An explicit `accountId` in the
+     * configuration's metadata wins, so a host that really does run several accounts
+     * through one connection can say so.
+     */
+    private fun quotaScope(config: ModelConfig): String? =
+        config.metadata[ACCOUNT_METADATA_KEY]?.takeIf { it.isNotBlank() }
+            ?: quotaScopeOf(config.connectionId, config.providerId)
 
     private fun isRemote(config: ModelConfig): Boolean {
         if (config.isLocalRuntime()) return false

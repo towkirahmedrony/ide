@@ -18,6 +18,9 @@ import com.agentx.app.model.preset.InMemoryModelSecretStore
 import com.agentx.app.model.preset.ModelPresetStore
 import com.agentx.app.model.preset.ModelSecretStore
 import com.agentx.app.model.preset.StoreBackedModelCredentialResolver
+import com.agentx.app.model.ratelimit.CatalogRateLimitProfileRegistrar
+import com.agentx.app.model.ratelimit.RateLimitManager
+import com.agentx.app.model.ratelimit.RateLimitProfileRegistrar
 import com.agentx.app.model.runtime.ColabRunner
 import com.agentx.app.model.runtime.DefaultModelEndpointDiscovery
 import com.agentx.app.model.runtime.HostedEndpointRunner
@@ -54,6 +57,11 @@ class ModelRuntimeModule(
         val gateway = context.services.get<ModelGateway>(ServiceKeys.MODEL_GATEWAY) ?: DefaultModelGateway()
         val capabilities = context.services.get<ModelCapabilityRegistry>(ServiceKeys.MODEL_CAPABILITY_REGISTRY)
             ?: InMemoryModelCapabilityRegistry.DEFAULT
+        // The same manager the gateway admits against: a connection publishes its
+        // quota here, and the gateway reads it there. Without a registered manager
+        // there is nothing to publish to, and connections stay unconfigured exactly
+        // as before.
+        val rateLimitManager = context.services.get<RateLimitManager>(ServiceKeys.RATE_LIMIT_MANAGER)
         val created = ModelManagers.create(
             gateway = gateway,
             capabilityRegistry = capabilities,
@@ -64,6 +72,9 @@ class ModelRuntimeModule(
             runners = runners,
             monitorEnabled = monitorEnabled,
             logger = context.logger,
+            quotaRegistrar = rateLimitManager
+                ?.let { CatalogRateLimitProfileRegistrar(it) }
+                ?: RateLimitProfileRegistrar.NONE,
         )
         manager = created
         context.services.register(ServiceKeys.MODEL_MANAGER, created)
@@ -97,6 +108,12 @@ object ModelManagers {
             baseFields = mapOf("component" to "model-manager"),
         ),
         capabilityRegistry: ModelCapabilityRegistry = InMemoryModelCapabilityRegistry(),
+        /**
+         * Publishes each live connection's quota to the rate-limit manager. The
+         * module supplies the catalog-backed registrar; tests and previews that want
+         * no configured quota leave it at the no-op default.
+         */
+        quotaRegistrar: RateLimitProfileRegistrar = RateLimitProfileRegistrar.NONE,
     ): ModelManager {
         val repository = DefaultModelPresetRepository(presetStore, clock)
         val credentials = StoreBackedModelCredentialResolver(secretStore)
@@ -143,6 +160,7 @@ object ModelManagers {
             monitorEnabled = monitorEnabled,
             transport = transport,
             capabilityRegistry = capabilityRegistry,
+            quotaRegistrar = quotaRegistrar,
         )
     }
 }

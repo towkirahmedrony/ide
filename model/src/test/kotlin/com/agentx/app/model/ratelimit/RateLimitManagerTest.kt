@@ -231,7 +231,9 @@ class RateLimitManagerTest {
     fun `http 429 records temporary unavailability`() = runSuspend {
         val clock = FakeRateLimitClock(now = 5_000L)
         val manager = manager(clock)
-        manager.recordRateLimited("groq", "llama-3.3-70b-versatile", retryAfterMs = 2_000L)
+        // accountId = null: the request carries no connection discriminator, so the
+        // cooldown belongs to the provider/model scope itself.
+        manager.recordRateLimited("groq", "llama-3.3-70b-versatile", retryAfterMs = 2_000L, accountId = null)
 
         val blocked = assertIs<RateLimitDecision.Blocked>(manager.canRequest(request()))
         assertEquals(2_000L, blocked.retryAfterMs)
@@ -248,6 +250,7 @@ class RateLimitManagerTest {
             modelId = "llama-3.3-70b-versatile",
             retryAfterMs = null,
             kind = RateLimitKind.TOKENS,
+            accountId = null,
         )
 
         val blocked = assertIs<RateLimitDecision.Blocked>(manager.canRequest(request()))
@@ -258,7 +261,7 @@ class RateLimitManagerTest {
     @Test
     fun `missing retry-after does not invent a wait when limits are unknown`() = runSuspend {
         val manager = manager()
-        manager.recordRateLimited("groq", "llama-3.3-70b-versatile", retryAfterMs = null)
+        manager.recordRateLimited("groq", "llama-3.3-70b-versatile", retryAfterMs = null, accountId = null)
 
         assertIs<RateLimitDecision.Allowed>(manager.canRequest(request()))
         assertNull(manager.canRequest(request()).let { (it as? RateLimitDecision.Blocked)?.retryAfterMs })

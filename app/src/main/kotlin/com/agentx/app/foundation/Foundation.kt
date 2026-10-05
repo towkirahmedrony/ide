@@ -58,7 +58,10 @@ import com.agentx.app.model.catalog.RemoteModelCatalogFactory
 import com.agentx.app.model.manager.DefaultModelDiscoverySource
 import com.agentx.app.model.manager.ModelManager
 import com.agentx.app.model.manager.ModelRuntimeModule
+import com.agentx.app.model.ratelimit.CatalogRateLimitLimitSource
 import com.agentx.app.model.ratelimit.DefaultRateLimitManager
+import com.agentx.app.model.ratelimit.InMemoryRateLimitProfileStore
+import com.agentx.app.model.ratelimit.RateLimitProfileStore
 import com.agentx.app.model.preset.InMemoryModelPresetStore
 import com.agentx.app.model.preset.InMemoryModelSecretStore
 import com.agentx.app.model.preset.ModelPresetStore
@@ -135,13 +138,15 @@ object Foundation {
         integrationSetup: IntegrationSetupManager? = null,
         agentPromptStore: AgentPromptStore = InMemoryAgentPromptStore(),
         /**
-         * Where discovered provider models are kept between runs. The app passes a
-         * `SharedPreferences`-backed store so a restart restores the catalog a
-         * previous run discovered instead of falling back to a built-in list.
-         */
-        modelCatalogStore: ModelCatalogStore = InMemoryModelCatalogStore(),
-        /** Persisted per-role model assignments; defaults when none are stored. */
+         * Persisted per-role model assignments; defaults when none are stored. */
         agentRoleModelStore: AgentRoleModelStore = InMemoryAgentRoleModelStore(),
+        /**
+         * Where configured rate-limit profiles are kept between runs. One shared
+         * instance backs both the manager that enforces them and each connection
+         * that publishes its provider's documented quota, so a limit configured
+         * once is in force after a restart without being restated.
+         */
+        rateLimitProfileStore: RateLimitProfileStore = InMemoryRateLimitProfileStore(),
         conversationStore: ConversationStore = InMemoryConversationStore(),
         skillStore: SkillStore = InMemorySkillStore(),
         skillSources: List<SkillDiscoverySource> = emptyList(),
@@ -195,7 +200,17 @@ object Foundation {
         // Central rate limiting and usage tracking are registered before the
         // model module so the published gateway routes every remote request
         // through one admission point. Local (on-device) runtimes are exempt.
-        val rateLimitManager = DefaultRateLimitManager()
+        //
+        // The manager is given the configured profile store and the provider quota
+        // catalog, which together are what make it more than reactive: quotas saved
+        // by a previous run are in force from the first request, and a documented
+        // provider ceiling is enforceable for a request that no registered profile
+        // covered. Without both, the manager holds no limits at all and every
+        // provider looks unlimited until a 429 says otherwise.
+        val rateLimitManager = DefaultRateLimitManager(
+            profileStore = rateLimitProfileStore,
+            limitSource = CatalogRateLimitLimitSource(),
+        )
         services.register(ServiceKeys.RATE_LIMIT_MANAGER, rateLimitManager)
         services.register(ServiceKeys.MODEL_USAGE, rateLimitManager.usage)
         // One shared capability registry: catalog/connect register identities here

@@ -52,6 +52,7 @@ import com.agentx.app.integrations.connection.ConnectionManager
 import com.agentx.app.model.android.KeystoreModelSecretStore
 import com.agentx.app.model.android.SharedPreferencesModelCatalogStore
 import com.agentx.app.model.android.SharedPreferencesModelPresetStore
+import com.agentx.app.model.android.SharedPreferencesRateLimitProfileStore
 import com.agentx.app.model.runtime.RuntimeOutputBuffer
 import com.agentx.app.tools.DelegatingToolConnectionAuthorizer
 import com.agentx.app.tools.DelegatingWorkspaceFileSystemResolver
@@ -136,6 +137,10 @@ class MainActivity : ComponentActivity() {
             // the models a previous run discovered instead of falling back to a
             // built-in list. No credential is written here; a snapshot holds none.
             modelCatalogStore = SharedPreferencesModelCatalogStore(applicationContext),
+            // Configured rate-limit quotas persist beside the presets, so a provider's
+            // limits are in force for the first request after a restart instead of
+            // only being learnt from a 429. A profile holds no credential.
+            rateLimitProfileStore = SharedPreferencesRateLimitProfileStore(applicationContext),
             // Agent sessions persist as one JSON file each, so a session can be
             // reopened (or deleted) without touching another session's history.
             conversationStore = FilesystemConversationStore(

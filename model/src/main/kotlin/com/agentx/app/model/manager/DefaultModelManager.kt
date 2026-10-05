@@ -13,6 +13,7 @@ import com.agentx.app.model.DefaultModelGateway
 import com.agentx.app.model.ModelConfig
 import com.agentx.app.model.capability.InMemoryModelCapabilityRegistry
 import com.agentx.app.model.capability.ModelCapabilityRegistry
+import com.agentx.app.model.capability.isLocalRuntime
 import com.agentx.app.model.connect.ChatCapabilityProbe
 import com.agentx.app.model.connect.ModelApiDiscovery
 import com.agentx.app.model.connect.ModelConnectOutcome
@@ -26,6 +27,7 @@ import com.agentx.app.model.preset.ModelPreset
 import com.agentx.app.model.preset.ModelPresetRepository
 import com.agentx.app.model.preset.ModelSecretStore
 import com.agentx.app.model.preset.normalizeModelId
+import com.agentx.app.model.ratelimit.RateLimitProfileRegistrar
 import com.agentx.app.model.runtime.ModelEndpoint
 import com.agentx.app.model.runtime.ModelHealth
 import com.agentx.app.model.runtime.ModelHealthStatus
@@ -98,6 +100,18 @@ class DefaultModelManager(
         ApiModelConnectionManager(),
         LocalModelConnectionManager(),
     ),
+    /**
+     * Publishes the quota profiles a connection is admitted against.
+     *
+     * Called from [bind], i.e. at the one moment a connection actually becomes live,
+     * so the limits in force always belong to a connection that exists. A connection
+     * that is never connected is never given a quota, and reconnecting re-states the
+     * same limits instead of stacking new ones.
+     *
+     * Defaults to publishing nothing, which keeps a manager built without a
+     * rate-limit manager working exactly as before.
+     */
+    private val quotaRegistrar: RateLimitProfileRegistrar = RateLimitProfileRegistrar.NONE,
 ) : ModelManager {
 
     private val connectService: ModelConnectService =
@@ -522,6 +536,15 @@ class DefaultModelManager(
         val endpoint = connectionManager(preset).endpointFor(preset, runtimeEndpoint) ?: return null
         val credential = io { credentials.resolve(preset) }
         val config = registry.connect(preset, endpoint, credential)
+        // Publish this connection's quota before any request can be routed through
+        // it, so the very first call is already admitted against its limits instead
+        // of discovering them from a 429. A local runtime is excluded by the
+        // registrar: it consumes no remote quota.
+        quotaRegistrar.registerFor(
+            connectionId = config.connectionId,
+            providerId = config.providerId,
+            local = config.isLocalRuntime(capabilityRegistry),
+        )
         mutableState.update { it.copy(activeConfig = config, activePresetId = preset.id) }
         startMonitor(preset)
         return config

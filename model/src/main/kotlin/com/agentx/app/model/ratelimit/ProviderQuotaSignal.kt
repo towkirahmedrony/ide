@@ -37,6 +37,15 @@ enum class QuotaDimension(val kind: RateLimitKind, val window: QuotaWindow) {
     TOKENS_PER_MINUTE(RateLimitKind.TOKENS, QuotaWindow.MINUTE),
     TOKENS_PER_HOUR(RateLimitKind.TOKENS, QuotaWindow.HOUR),
     TOKENS_PER_DAY(RateLimitKind.TOKENS, QuotaWindow.DAY),
+    /**
+     * The prompt side of a token ceiling, for a provider that publishes input and
+     * output separately. Distinct from [TOKENS_PER_MINUTE], which is one ceiling
+     * for a whole request: reporting one as the other would misstate what the
+     * provider actually enforces.
+     */
+    INPUT_TOKENS_PER_MINUTE(RateLimitKind.TOKENS, QuotaWindow.MINUTE),
+    /** The completion side of a split token ceiling. See [INPUT_TOKENS_PER_MINUTE]. */
+    OUTPUT_TOKENS_PER_MINUTE(RateLimitKind.TOKENS, QuotaWindow.MINUTE),
     CONCURRENT_REQUESTS(RateLimitKind.REQUEST, QuotaWindow.INSTANT),
 
     /** A dimension the provider named that this build does not model yet. */
@@ -241,6 +250,14 @@ object ProviderQuotaHeaders {
         }
         return when {
             concurrency -> QuotaDimension.CONCURRENT_REQUESTS
+            // A header that names the prompt or completion side reports that side,
+            // not the whole-request ceiling. Only the minute window is modelled for
+            // the split, so a longer window keeps the total dimension it already
+            // mapped to rather than being reported as a bucket it may not belong to.
+            tokens && window == QuotaWindow.MINUTE && header.contains("input") ->
+                QuotaDimension.INPUT_TOKENS_PER_MINUTE
+            tokens && window == QuotaWindow.MINUTE && header.contains("output") ->
+                QuotaDimension.OUTPUT_TOKENS_PER_MINUTE
             tokens && window == QuotaWindow.MINUTE -> QuotaDimension.TOKENS_PER_MINUTE
             tokens && window == QuotaWindow.HOUR -> QuotaDimension.TOKENS_PER_HOUR
             tokens && window == QuotaWindow.DAY -> QuotaDimension.TOKENS_PER_DAY

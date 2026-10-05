@@ -59,6 +59,7 @@ class RateLimitReservation internal constructor(
         val key: RateLimitKey,
         val limits: RateLimitLimits,
         val minuteWindowStart: Long,
+        val hourWindowStart: Long,
         val dayWindowStart: Long,
     )
 
