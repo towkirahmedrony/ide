@@ -102,7 +102,7 @@ class GitHubDeviceFlowTest {
     // --- Protocol error mapping ---------------------------------------------
 
     @Test
-    fun `authorization_pending keeps the flow polling`() = runBlocking {
+    fun `authorization_pending keeps the flow polling`(): Unit = runBlocking {
         val (client, _) = deviceClient { OAuthHttpResponse(200, """{"error":"authorization_pending"}""") }
         assertIs<OAuthDevicePollResult.Pending>(client.poll("dev-code-secret"))
     }
@@ -139,7 +139,7 @@ class GitHubDeviceFlowTest {
     }
 
     @Test
-    fun `a malformed device-code response is refused`() = runBlocking {
+    fun `a malformed device-code response is refused`(): Unit = runBlocking {
         val (client, _) = deviceClient { OAuthHttpResponse(200, """{"user_code":"ABCD-1234"}""") }
         val failure = assertIs<OAuthDeviceCodeResult.Failure>(client.requestDeviceCode(emptySet()))
         assertEquals(OAuthFailureReason.AUTHORIZATION_ERROR, failure.reason)
@@ -149,7 +149,7 @@ class GitHubDeviceFlowTest {
     }
 
     @Test
-    fun `a malformed token response is refused`() = runBlocking {
+    fun `a malformed token response is refused`(): Unit = runBlocking {
         val (client, _) = deviceClient { OAuthHttpResponse(200, """{"token_type":"bearer"}""") }
         assertIs<OAuthDevicePollResult.Failure>(client.poll("dev-code-secret"))
 
@@ -288,7 +288,7 @@ class GitHubDeviceFlowTest {
     }
 
     @Test
-    fun `disconnect removes the credential without deleting unrelated data`() = runBlocking {
+    fun `disconnect removes the credential without deleting unrelated data`(): Unit = runBlocking {
         val harness = harness()
         harness.manager.addConnection(
             ConnectionDraft(
@@ -384,7 +384,7 @@ class GitHubDeviceFlowTest {
     }
 
     @Test
-    fun `a non-device-flow provider reports the capability as unavailable`() = runBlocking {
+    fun `a non-device-flow provider reports the capability as unavailable`(): Unit = runBlocking {
         val harness = harness(withDeviceFlow = false)
         assertFalse(harness.manager.supportsDeviceAuthorization(ConnectionType.GITHUB))
         val failure = harness.manager.beginDeviceAuthorization(ConnectionType.GITHUB).errorOrNull()
