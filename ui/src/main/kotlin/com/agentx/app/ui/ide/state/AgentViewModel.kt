@@ -736,7 +736,7 @@ class AgentViewModel(
                             activity
                         }
                     }
-                    message.copy(activities = settled + row)
+                    message.copy(activities = settled + row.copy(textOffset = message.rawText.length))
                 }
             },
         )

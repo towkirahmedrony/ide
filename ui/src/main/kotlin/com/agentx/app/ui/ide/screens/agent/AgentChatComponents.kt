@@ -110,10 +110,10 @@ fun AgentMessageItem(
 ) {
     when (message.kind) {
         ChatMessageKind.SYSTEM -> AgentSystemNote(message, modifier)
-        ChatMessageKind.USER -> AgentUserMessage(message, onCopy, onEditSend, modifier)
+        ChatMessageKind.USER -> AgentUserBubble(message, onCopy, onEditSend, modifier)
         ChatMessageKind.TOOL -> AgentToolCardMessage(message, modifier)
         ChatMessageKind.ERROR -> AgentErrorCard(message, onCopy, onRetry, modifier)
-        ChatMessageKind.ASSISTANT -> AgentAssistantMessage(message, onCopy, onRegenerate, awaitingPermission, modifier)
+        ChatMessageKind.ASSISTANT -> AgentTurnMessage(message, onCopy, onRegenerate, awaitingPermission, modifier)
     }
 }
 

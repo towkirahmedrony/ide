@@ -102,6 +102,8 @@ data class AgentActivityUiModel(
     val outputLines: List<String> = emptyList(),
     /** Sub-agent role name when [kind] is [AgentActivityKind.SUB_AGENT]. */
     val role: String? = null,
+    /** Message text length when this step started; orders steps between text. */
+    val textOffset: Int = -1,
 )
 
 /**
