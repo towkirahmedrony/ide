@@ -18,6 +18,7 @@ import com.agentx.app.tools.ToolParameterType
 import com.agentx.app.tools.ToolPermissionDecision
 import com.agentx.app.tools.ToolPermissionLevel
 import com.agentx.app.tools.WorkspaceFileSystemResolver
+import com.agentx.app.tools.isProtectedWorkspacePath
 import com.agentx.app.tools.missingWorkspace
 import com.agentx.app.tools.orThrow
 import com.agentx.app.tools.toToolError
@@ -25,6 +26,19 @@ import com.agentx.app.workspace.WorkspaceErrorCode
 import com.agentx.app.workspace.WorkspaceFileSystem
 import com.agentx.app.workspace.WorkspacePath
 
+/**
+ * Creates or overwrites one workspace file for the agent.
+ *
+ * This is a mutating tool: its declared permission is ASK, so the router parks
+ * the call for the user's approval and this code only ever runs once a decision
+ * exists. It never accepts a filesystem root — the path is workspace-relative and
+ * the workspace filesystem resolves it against the managed root, rejecting
+ * absolute paths, `..`, and any canonical target outside the workspace.
+ *
+ * On top of those rules this tool refuses AgentX-protected internals (`.git`),
+ * refuses to write the workspace root, and creates missing parent directories
+ * only through the same validated filesystem.
+ */
 class WriteFileTool(
     private val workspaces: WorkspaceFileSystemResolver,
 ) : Tool {
@@ -36,13 +50,13 @@ class WriteFileTool(
         inputSchema = ToolInputSchema(
             parameters = listOf(
                 ToolParameter(
-                    name = "path",
+                    name = ARG_PATH,
                     type = ToolParameterType.STRING,
                     description = "Workspace-relative file path.",
                     required = true,
                 ),
                 ToolParameter(
-                    name = "content",
+                    name = ARG_CONTENT,
                     type = ToolParameterType.STRING,
                     description = "UTF-8 file contents to write.",
                     required = true,
@@ -61,42 +75,58 @@ class WriteFileTool(
 
     override suspend fun execute(input: ToolInput, context: ToolExecutionContext): ToolOutput {
         val fs = workspaces.resolve(context) ?: missingWorkspace(NAME)
-        val path = input.string("path").orEmpty()
-        val content = input.string("content").orEmpty()
-        when (val written = fs.writeFile(path, content)) {
+        val path = input.string(ARG_PATH).orEmpty()
+        val content = input.string(ARG_CONTENT).orEmpty()
+
+        val normalized = WorkspacePath.normalize(path).orThrow(NAME, path)
+        requireWritablePath(path, normalized)
+
+        when (val written = fs.writeFile(normalized, content)) {
             is ForgeResult.Success -> Unit
             is ForgeResult.Failure -> {
                 if (written.error.code == WorkspaceErrorCode.NOT_FOUND) {
-                    createParentsAndFile(fs, path)
-                    fs.writeFile(path, content).orThrow(NAME, path)
+                    createParentsAndFile(fs, normalized)
+                    fs.writeFile(normalized, content).orThrow(NAME, normalized)
                 } else {
-                    throw written.error.toToolError(NAME, path)
+                    throw written.error.toToolError(NAME, normalized)
                 }
             }
         }
         return ToolOutput(
             content = mapOf(
-                "path" to Json.of(path),
+                "path" to normalized,
                 "bytes" to Json.of(content.length),
             ),
-            displayText = "Wrote $path (${content.length} bytes)",
+            displayText = "Wrote $normalized (${content.length} bytes)",
         )
     }
 
-    private suspend fun createParentsAndFile(fs: WorkspaceFileSystem, path: String) {
-        val normalized = WorkspacePath.normalize(path).orThrow(NAME, path)
+    /** Rejects a path that is valid but must never be written by the agent. */
+    private fun requireWritablePath(rawPath: String, normalized: String) {
         if (normalized.isEmpty()) {
             throw ToolExecutionError(
                 code = ToolErrorCode.INVALID_ARGUMENTS,
                 message = "Cannot write the workspace root as a file",
                 toolName = NAME,
+                details = mapOf("path" to Json.of(rawPath)),
             )
         }
-        ensureDirectory(fs, WorkspacePath.parent(normalized))
-        when (val created = fs.createFile(normalized)) {
+        if (isProtectedWorkspacePath(normalized)) {
+            throw ToolExecutionError(
+                code = ToolErrorCode.INVALID_ARGUMENTS,
+                message = "Writing inside .git is not allowed",
+                toolName = NAME,
+                details = mapOf("path" to Json.of(rawPath)),
+            )
+        }
+    }
+
+    private suspend fun createParentsAndFile(fs: WorkspaceFileSystem, path: String) {
+        ensureDirectory(fs, WorkspacePath.parent(path))
+        when (val created = fs.createFile(path)) {
             is ForgeResult.Success -> Unit
             is ForgeResult.Failure -> if (created.error.code != WorkspaceErrorCode.ALREADY_EXISTS) {
-                throw created.error.toToolError(NAME, normalized)
+                throw created.error.toToolError(NAME, path)
             }
         }
     }
@@ -115,5 +145,7 @@ class WriteFileTool(
 
     companion object {
         const val NAME = "write_file"
+        const val ARG_PATH = "path"
+        const val ARG_CONTENT = "content"
     }
 }

@@ -56,9 +56,16 @@ internal fun missingWorkspace(toolName: String): Nothing = throw ToolExecutionEr
 internal fun WorkspaceError.toToolError(toolName: String, path: String?): ToolExecutionError {
     val code = when (this.code) {
         WorkspaceErrorCode.PERMISSION_DENIED -> ToolErrorCode.PERMISSION_DENIED
+        // A path the caller got wrong — absolute, traversal, illegal, the wrong kind
+        // of node, or too large to hand back — is an argument problem, not a backend
+        // failure, so the model can correct it instead of retrying blindly.
         WorkspaceErrorCode.ABSOLUTE_PATH,
         WorkspaceErrorCode.PATH_TRAVERSAL,
         WorkspaceErrorCode.INVALID_PATH,
+        WorkspaceErrorCode.NOT_A_FILE,
+        WorkspaceErrorCode.NOT_A_DIRECTORY,
+        WorkspaceErrorCode.FILE_TOO_LARGE,
+        WorkspaceErrorCode.UNSUPPORTED_FILE_TYPE,
         -> ToolErrorCode.INVALID_ARGUMENTS
         else -> ToolErrorCode.EXECUTION_FAILED
     }
@@ -78,3 +85,18 @@ internal fun <T> ForgeResult<T, WorkspaceError>.orThrow(toolName: String, path: 
     is ForgeResult.Success -> value
     is ForgeResult.Failure -> throw error.toToolError(toolName, path ?: error.path)
 }
+
+/**
+ * Workspace-relative locations the agent must never write through, even though
+ * they are valid paths inside the workspace.
+ *
+ * `.git` is repository metadata, not project source: letting a tool rewrite it
+ * would let the model forge history, redirect the remote, or plant a hook. The
+ * workspace's own path rules ([com.agentx.app.workspace.WorkspacePath]) already
+ * reject absolute paths and `..`; this is the separate, single rule that a
+ * syntactically valid path can still be one the agent is not allowed to touch.
+ */
+internal fun isProtectedWorkspacePath(normalizedPath: String): Boolean =
+    normalizedPath.split('/').any { it == PROTECTED_GIT_DIRECTORY }
+
+private const val PROTECTED_GIT_DIRECTORY: String = ".git"

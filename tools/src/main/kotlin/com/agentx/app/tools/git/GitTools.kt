@@ -1,5 +1,6 @@
 package com.agentx.app.tools.git
 
+import com.agentx.app.core.ForgeResult
 import com.agentx.app.git.GitBranch
 import com.agentx.app.git.GitChangeType
 import com.agentx.app.git.GitFileChange
@@ -24,7 +25,11 @@ import com.agentx.app.tools.ToolParameter
 import com.agentx.app.tools.ToolParameterType
 import com.agentx.app.tools.ToolPermissionDecision
 import com.agentx.app.tools.ToolPermissionLevel
+import com.agentx.app.tools.SecretRedactor
+import com.agentx.app.tools.isProtectedWorkspacePath
 import com.agentx.app.tools.stringOrNull
+import com.agentx.app.tools.toToolError
+import com.agentx.app.workspace.WorkspacePath
 
 /**
  * Read-only git tools for the active workspace.
@@ -105,13 +110,23 @@ class GitStatusTool(private val git: GitService) : Tool {
     }
 }
 
-/** `git diff` for the working tree or the index, optionally limited to paths. */
+/**
+ * `git diff` for the working tree or the index, optionally limited to paths.
+ *
+ * The repository is never chosen by the caller: it is resolved from the active
+ * workspace context by the existing [GitService], and a call for a workspace the
+ * service is not pointed at is refused. The result is a bounded, secret-redacted
+ * unified diff plus the structured change summary the agent needs (changed files,
+ * additions, deletions), so a huge diff cannot flood the model and a crafted
+ * pathspec cannot pull in `.git` internals.
+ */
 class GitDiffTool(private val git: GitService) : Tool {
 
     override val definition = ToolDefinition(
         name = NAME,
         title = "Git diff",
-        description = "Shows the active workspace's git diff (working tree, or staged when requested).",
+        description = "Shows the active workspace's git diff (working tree, or staged when requested) " +
+            "together with the changed files and a change summary.",
         inputSchema = ToolInputSchema(
             parameters = listOf(
                 ToolParameter(
@@ -123,12 +138,15 @@ class GitDiffTool(private val git: GitService) : Tool {
                 ToolParameter(
                     name = ARG_PATHS,
                     type = ToolParameterType.ARRAY,
-                    description = "Optional list of repository-relative paths to limit the diff to.",
+                    description = "Optional list of repository-relative paths to limit the diff to. " +
+                        "Protected paths such as .git are refused.",
                     required = false,
                 ),
             ),
         ),
-        output = ToolOutputSpec(description = "The unified diff text."),
+        output = ToolOutputSpec(
+            description = "Branch, changed files, additions/deletions and the bounded unified diff text.",
+        ),
         permission = ToolPermissionDecision.ALLOW,
         capabilities = setOf(ToolCapability.READ_ONLY),
         category = ToolCategory.GIT,
@@ -139,23 +157,93 @@ class GitDiffTool(private val git: GitService) : Tool {
     override suspend fun execute(input: ToolInput, context: ToolExecutionContext): ToolOutput {
         val workspaceId = context.requireWorkspaceId(NAME)
         val staged = input.boolean(ARG_STAGED) ?: false
-        val paths = input.arrayValue(ARG_PATHS).orEmpty().mapNotNull { it.stringOrNull() }
-        val diff = git.diff(workspaceId, staged, paths).orThrowGit(NAME)
-        val text = diff.ifBlank { "(no changes)" }
+        val paths = input.arrayValue(ARG_PATHS).orEmpty()
+            .mapNotNull { it.stringOrNull() }
+            .map(::validatePath)
+            .distinct()
+
+        val status = git.status(workspaceId).orThrowGit(NAME)
+        val raw = git.diff(workspaceId, staged, paths).orThrowGit(NAME)
+        val redacted = SecretRedactor.redactText(raw)
+        val bounded = redacted.take(MAX_DIFF_CHARS)
+        val truncated = bounded.length < redacted.length
+        val summary = summarize(redacted)
+        val text = bounded.ifBlank { NO_CHANGES }
+
         return ToolOutput(
             content = mapOf(
+                "branch" to (status.branch?.let { Json.of(it) } ?: JsonValue.Null),
+                "clean" to Json.of(status.isClean),
                 "staged" to Json.of(staged),
                 "paths" to Json.array(paths.map { Json.of(it) }),
+                "changedFiles" to Json.array(status.changes.map { it.toJson() }),
+                "changedFileCount" to Json.of(status.changes.size),
+                "additions" to Json.of(summary.additions),
+                "deletions" to Json.of(summary.deletions),
                 "diff" to Json.of(text),
+                "truncated" to Json.of(truncated),
+                "returnedBytes" to Json.of(bounded.length),
             ),
             displayText = text,
         )
     }
 
+    /**
+     * A pathspec is untrusted input. Absolute paths and `..` are refused by the
+     * shared workspace path rule; on top of that `.git` internals and git pathspec
+     * "magic" (a leading `:`) are refused, so a path can never be used to reach
+     * repository metadata the agent should not see.
+     */
+    private fun validatePath(raw: String): String {
+        val normalized = when (val result = WorkspacePath.normalize(raw)) {
+            is ForgeResult.Success -> result.value
+            is ForgeResult.Failure -> throw result.error.toToolError(NAME, raw)
+        }
+        if (normalized.isEmpty() || isProtectedWorkspacePath(normalized) || normalized.startsWith(':')) {
+            throw ToolExecutionError(
+                code = ToolErrorCode.INVALID_ARGUMENTS,
+                message = "Refusing to diff the protected path '$raw'",
+                toolName = NAME,
+                details = mapOf("path" to Json.of(raw)),
+            )
+        }
+        return normalized
+    }
+
+    private fun summarize(diff: String): DiffSummary {
+        var additions = 0
+        var deletions = 0
+        for (line in diff.lineSequence()) {
+            when {
+                line.startsWith("+++") || line.startsWith("---") -> Unit
+                line.startsWith("+") -> additions++
+                line.startsWith("-") -> deletions++
+            }
+        }
+        return DiffSummary(additions, deletions)
+    }
+
+    private data class DiffSummary(val additions: Int, val deletions: Int)
+
+    private fun GitFileChange.toJson(): JsonValue = Json.obj(
+        buildMap<String, JsonValue> {
+            put("path", Json.of(path))
+            put("type", Json.of(type.name))
+            put("staged", Json.of(staged))
+            put("unstaged", Json.of(unstaged))
+            originalPath?.let { put("originalPath", Json.of(it)) }
+        },
+    )
+
     companion object {
         const val NAME = "git_diff"
         const val ARG_STAGED = "staged"
         const val ARG_PATHS = "paths"
+
+        /** Upper bound on the diff characters returned to the model. */
+        const val MAX_DIFF_CHARS: Int = 200_000
+
+        const val NO_CHANGES: String = "(no changes)"
     }
 }
 

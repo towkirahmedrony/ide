@@ -4,6 +4,9 @@ import com.agentx.app.core.ForgeResult
 import com.agentx.app.core.failure
 import com.agentx.app.core.success
 import java.io.File
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 
 /**
  * A [WorkspaceFileSystem] over an ordinary directory.
@@ -70,9 +73,38 @@ class FileWorkspaceFileSystem(root: File) : WorkspaceFileSystem {
         if (!target.exists()) return notFound(path)
         if (target.isDirectory) return notAFile(path)
         return runCatching {
-            target.writeText(content, Charsets.UTF_8)
+            writeAtomically(target, content)
             success(Unit)
         }.getOrElse { ioFailed(path) }
+    }
+
+    /**
+     * Writes [content] beside [target] and renames it into place, so a failure
+     * part-way through a write leaves the previous file untouched rather than
+     * truncated. The temporary file lives in the same directory as [target], which
+     * keeps the rename on one filesystem and off any path the caller did not ask
+     * for; it is always removed, whether the move succeeded or failed.
+     */
+    private fun writeAtomically(target: File, content: String) {
+        val parent = target.parentFile ?: error("A workspace file must have a parent directory")
+        val temp = File.createTempFile(TEMP_PREFIX, TEMP_SUFFIX, parent)
+        try {
+            temp.writeText(content, Charsets.UTF_8)
+            try {
+                Files.move(
+                    temp.toPath(),
+                    target.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING,
+                    StandardCopyOption.ATOMIC_MOVE,
+                )
+            } catch (unsupported: AtomicMoveNotSupportedException) {
+                // Not every filesystem can rename atomically; a plain replace is the
+                // best available guarantee there, and the temp file is still cleaned up.
+                Files.move(temp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            }
+        } finally {
+            if (temp.exists()) runCatching { temp.delete() }
+        }
     }
 
     override suspend fun createFile(path: String): WorkspaceResult<WorkspaceFile> {
@@ -247,6 +279,9 @@ class FileWorkspaceFileSystem(root: File) : WorkspaceFileSystem {
     private companion object {
         /** Same ceiling the SAF filesystem uses, so the editor's contract is identical. */
         const val MAX_FILE_BYTES: Long = 2L * 1024L * 1024L
+
+        const val TEMP_PREFIX: String = ".agentx-write-"
+        const val TEMP_SUFFIX: String = ".tmp"
 
         val NODE_ORDER =
             compareByDescending<WorkspaceNode> { it is WorkspaceDirectory }.thenBy { it.name.lowercase() }
