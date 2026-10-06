@@ -252,7 +252,7 @@ class GitHubRepositoryCloneServiceTest {
                 assertFalse(rewritten.contains(TEST_TOKEN), "the credential is gone from git config")
                 assertEquals(
                     "https://github.com/octocat/hello-world.git",
-                    config.getString("remote", "origin", "url", ""),
+                    config.getString("remote", "origin", "url"),
                 )
                 assertNull(config.getString("credential", null, "helper"))
             } finally {
