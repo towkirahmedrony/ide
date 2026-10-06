@@ -29,8 +29,8 @@ class GitHubActionsServiceTest {
     private val repository = CiRepositoryRef("towkirahmedrony", "ide")
 
     private class FakeRestClient(
-        private val responses: (String) -> GitHubRestResponse,
         private val failure: Throwable? = null,
+        private val responses: (String) -> GitHubRestResponse,
     ) : GitHubRestClient {
         val urls = mutableListOf<String>()
 
