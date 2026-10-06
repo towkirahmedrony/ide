@@ -53,7 +53,7 @@ class AgentxStorageAuditTest {
         write("terminal-diagnostics.log", 2_400)
         write("something-else/notes.txt", 100)
 
-        write("cache/blobs/thumb.png", 640)
+        cache("blobs/thumb.png", 640)
 
         // The APK's executable side, which Android reports as app size but which is not user data.
         writeNative("libproot.so", 250_000)
