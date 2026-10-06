@@ -19,6 +19,7 @@ import com.agentx.app.model.runtime.ModelRunner
 import com.agentx.app.model.runtime.RecordingLogSink
 import com.agentx.app.model.runtime.customPreset
 import com.agentx.app.model.runtime.geminiPreset
+import com.agentx.app.model.runtime.healthy
 import com.agentx.app.model.runtime.recordingLogger
 import com.agentx.app.model.runtime.unhealthy
 import kotlinx.coroutines.CoroutineScope
@@ -216,6 +217,7 @@ class ApiLocalConnectionSeparationTest {
         assertEquals(apiKey, after.apiKey)
         assertEquals(api.id, manager.state.value.presets.first { it.providerId == ModelProviderIds.GEMINI }.id)
         assertNotNull(gateway.provider(ModelProviderIds.GEMINI))
+        Unit
     }
 
     // --- Test 3 ------------------------------------------------------------
@@ -276,6 +278,7 @@ class ApiLocalConnectionSeparationTest {
         assertEquals(local.id, restarted.state.value.activePresetId)
         assertNotNull(restarted.activeConfig())
         assertNotNull(restarted.connections()[local.id])
+        Unit
     }
 
     // --- Test 5 ------------------------------------------------------------
@@ -353,6 +356,39 @@ class ApiLocalConnectionSeparationTest {
         val reconnected = assertNotNull(manager.reconnectModel(api.id).valueOrNull())
         assertEquals(ModelLifecycleState.DEGRADED, reconnected.state)
         assertNotNull(apiConnection(manager))
+        Unit
+    }
+
+    @Test
+    fun `an API provider recovers and reconnects after a temporary failure without a new connection`() = runBlocking {
+        val manager = manager()
+        val api = apiPreset(manager)
+        assertNotNull(manager.selectModel(api.id).valueOrNull())
+        val before = assertNotNull(apiConnection(manager))
+
+        // A temporary outage: the provider stops answering, but the saved configuration
+        // is reported as degraded health and the connection is never released.
+        runner.onHealth = { unhealthy("the provider is temporarily unavailable") }
+        assertFalse(manager.checkModelHealth(api.id).valueOrNull()?.isReachable == true)
+        assertEquals(ModelLifecycleState.DEGRADED, manager.state.value.status(api.id).state)
+        assertNotNull(apiConnection(manager), "the saved configuration survives the outage")
+
+        // The outage clears. Reconnect recovers the SAME connection in place: the user
+        // never has to delete the connection and add it again.
+        runner.onHealth = { healthy() }
+        val reconnected = assertNotNull(manager.reconnectModel(api.id).valueOrNull())
+
+        assertEquals(ModelLifecycleState.ONLINE, reconnected.state)
+        val after = assertNotNull(apiConnection(manager))
+        // The connection identity is unchanged: reconnect repaired the existing record
+        // rather than producing a new one.
+        assertEquals(before.connectionId, after.connectionId)
+        assertEquals(before.baseUrl, after.baseUrl)
+        assertEquals(before.model, after.model)
+        assertEquals(apiKey, after.apiKey)
+        assertEquals(api.id, manager.state.value.activePresetId)
+        assertNotNull(gateway.provider(ModelProviderIds.GEMINI))
+        Unit
     }
 
     @Test
