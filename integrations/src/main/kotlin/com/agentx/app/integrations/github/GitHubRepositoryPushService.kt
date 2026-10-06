@@ -199,6 +199,18 @@ class JGitGitHubRepositoryPushService(
             )
         } catch (error: IOException) {
             failure(GitPushError(GitPushFailure.NETWORK, "The push could not reach GitHub."))
+        } catch (error: RuntimeException) {
+            // JGit also reports some transport problems as internal runtime exceptions.
+            // They become the structured "unknown Git failure" category rather than a
+            // raw crash; the message is the transport's own text, which never contains
+            // the credential (the password is a separate string handed to the provider).
+            val message = error.message.orEmpty()
+            failure(
+                GitPushError(
+                    failure = classifyPushFailure(message),
+                    message = message.ifBlank { "The push failed." },
+                ),
+            )
         }
     }
 

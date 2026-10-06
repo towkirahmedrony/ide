@@ -233,6 +233,46 @@ class GitHubRepositoryPushServiceTest {
         assertEquals(0, gateway.calls)
     }
 
+    @Test
+    fun `a failed authenticated push never carries the token in its error`() {
+        val dir = temporaryDirectory()
+        var local: Git? = null
+        try {
+            val repo = Git.init().setDirectory(dir).call()
+            local = repo
+            val config = repo.repository.config
+            config.setString("user", null, "name", "AgentX Test")
+            config.setString("user", null, "email", "agentx@example.com")
+            config.save()
+            File(dir, "README.md").writeText("init\n")
+            repo.add().addFilepattern("README.md").call()
+            repo.commit().setMessage("init").call()
+            val branch = assertNotNull(repo.repository.branch)
+
+            // The token is handed to the transport, then the push fails before any
+            // remote exists — the exact moment a leak could surface in an error.
+            val result = JGitGitHubRepositoryPushService(
+                credentialGateway = FakeCredentialGateway(),
+                connections = GitHubRepositoryConnectionResolver { TEST_CONNECTION_ID },
+                projects = projects(dir),
+            ).pushWithCredentials(
+                git = repo,
+                remote = "missing",
+                branch = branch,
+                commitSha = null,
+                token = TEST_TOKEN,
+            )
+
+            val error = assertNotNull(result.errorOrNull(), "the failure must be structured, not a crash")
+            assertTrue(GitPushFailure.entries.contains(error.failure), "a known push failure category")
+            assertFalse(error.message.contains(TEST_TOKEN), "an error must never carry the token: ${error.message}")
+            assertFalse(error.userMessage.contains(TEST_TOKEN), error.userMessage)
+        } finally {
+            local?.close()
+            dir.deleteRecursively()
+        }
+    }
+
     // --- real (local) transport -------------------------------------------
 
     @Test
