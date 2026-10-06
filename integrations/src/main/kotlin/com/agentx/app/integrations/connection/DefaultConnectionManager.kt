@@ -7,6 +7,7 @@ import com.agentx.app.core.errorOrNull
 import com.agentx.app.core.failure
 import com.agentx.app.core.success
 import com.agentx.app.core.valueOrNull
+import com.agentx.app.integrations.oauth.DeviceFlowState
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -370,6 +371,132 @@ class DefaultConnectionManager(
         io { store.save(next) }
         reload()
         return success(start)
+    }
+
+    override fun supportsDeviceAuthorization(type: ConnectionType): Boolean =
+        providers.provider(type)?.supportsDeviceAuthorization == true
+
+    override suspend fun beginDeviceAuthorization(
+        type: ConnectionType,
+        displayName: String?,
+    ): ForgeResult<DeviceAuthorization, ForgeError> {
+        val provider = providers.provider(type)
+            ?: return failure(
+                unavailable(null, "No provider is registered for ${type.displayName} in this build.", type),
+            )
+        if (!provider.supportsDeviceAuthorization) {
+            return failure(
+                unavailable(
+                    null,
+                    "${type.displayName} does not support device authorization in this build.",
+                    type,
+                ),
+            )
+        }
+
+        // A first connection creates the record; a reconnect reuses the existing id
+        // and only the credential is replaced later, so nothing else is disturbed.
+        val existing = io { store.load() }
+            .filter { it.type == type }
+            .sortedBy { if (it.enabled) 0 else 1 }
+            .firstOrNull()
+
+        val connection: Connection = when {
+            existing == null -> {
+                val name = displayName?.trim()?.takeIf { it.isNotBlank() }
+                    ?: uniqueName(type.displayName, io { store.load() }, type)
+                val created = addConnection(
+                    ConnectionDraft(
+                        displayName = name,
+                        type = type,
+                        config = ConnectionConfig(authMethod = ConnectionAuthMethod.OAUTH),
+                        capabilities = ConnectionCapabilities.defaultsFor(type),
+                    ),
+                )
+                created.valueOrNull()
+                    ?: return failure(
+                        created.errorOrNull()
+                            ?: unavailable(null, "The connection could not be created", type),
+                    )
+            }
+
+            !existing.enabled -> return failure(
+                connectionFailure(
+                    code = ForgeErrorCode.CONNECTION_OPERATION_FAILED,
+                    message = "The ${type.displayName} connection is disabled; enable it to connect.",
+                    details = mapOf("connectionId" to existing.id.value),
+                ),
+            )
+
+            else -> existing
+        }
+
+        val target = connection.copy(
+            config = connection.config.copy(authMethod = ConnectionAuthMethod.OAUTH),
+            updatedAtMillis = clock(),
+        )
+        val started = provider.beginDeviceAuthorization(target)
+        val authorization = started.valueOrNull()
+            ?: return failure(
+                started.errorOrNull()
+                    ?: unavailable(target, "The device authorization could not be started"),
+            )
+
+        // Only after the provider returned a code does the record become authorizing;
+        // a failed start leaves it exactly as it was.
+        io {
+            store.save(
+                target.copy(
+                    status = ConnectionStatus.AUTHORIZING,
+                    statusMessage = "Waiting for you to authorize on ${type.displayName}",
+                    updatedAtMillis = clock(),
+                ),
+            )
+        }
+        reload()
+        return success(authorization)
+    }
+
+    override suspend fun completeDeviceAuthorization(
+        id: ConnectionId,
+        onState: suspend (DeviceFlowState) -> Unit,
+    ): ForgeResult<Connection, ForgeError> {
+        val existing = io { store.load() }.firstOrNull { it.id == id }
+            ?: return failure(connectionNotFound(id))
+        if (!existing.enabled) {
+            return failure(
+                connectionFailure(
+                    code = ForgeErrorCode.CONNECTION_OPERATION_FAILED,
+                    message = "Disabled connections cannot be authorized",
+                    details = mapOf("connectionId" to id.value),
+                ),
+            )
+        }
+        val provider = providers.provider(existing.type)
+            ?: return failure(unavailable(existing, "No provider handles ${existing.type.displayName}."))
+        if (!provider.supportsDeviceAuthorization) {
+            return failure(
+                unavailable(existing, "${existing.type.displayName} does not support device authorization in this build."),
+            )
+        }
+
+        // The provider owns the poll loop; it runs in the caller's coroutine, so
+        // cancelling the caller cancels the loop and nothing keeps polling.
+        val completed = provider.completeDeviceAuthorization(existing, onState)
+
+        val grant = completed.valueOrNull()
+        if (grant == null) {
+            val error = completed.errorOrNull() ?: unavailable(existing, "The device authorization failed")
+            // A failed attempt only settles this connection's status; its metadata,
+            // and every other connection, is left untouched.
+            io { store.save(toFailed(existing, error)) }
+            reload()
+            return failure(error)
+        }
+
+        val saved = saveGrant(existing, provider, grant)
+        if (saved.valueOrNull() != null) onState(DeviceFlowState.CONNECTED)
+        return saved
     }
 
     override suspend fun completeAuthorization(callbackUri: String): ForgeResult<Connection, ForgeError> {

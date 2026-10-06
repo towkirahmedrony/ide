@@ -1,17 +1,33 @@
 package com.agentx.app.integrations.providers
 
+import com.agentx.app.core.ForgeError
+import com.agentx.app.core.ForgeErrorCode
+import com.agentx.app.core.ForgeResult
+import com.agentx.app.core.errorOrNull
+import com.agentx.app.core.failure
+import com.agentx.app.core.success
+import com.agentx.app.core.valueOrNull
 import com.agentx.app.integrations.connection.Connection
 import com.agentx.app.integrations.connection.ConnectionAuthMethod
 import com.agentx.app.integrations.connection.ConnectionCapabilities
+import com.agentx.app.integrations.connection.ConnectionId
 import com.agentx.app.integrations.connection.ConnectionType
+import com.agentx.app.integrations.connection.DeviceAuthorization
 import com.agentx.app.integrations.connection.ProviderCapabilityInfo
 import com.agentx.app.integrations.connection.ProviderDescriptor
+import com.agentx.app.integrations.connection.ProviderGrant
+import com.agentx.app.integrations.connection.ProviderIdentity
 import com.agentx.app.integrations.connection.ProviderToolCatalog
 import com.agentx.app.integrations.connection.ProviderToolCategory
 import com.agentx.app.integrations.connection.ProviderToolSpec
+import com.agentx.app.integrations.connection.connectionFailure
+import com.agentx.app.integrations.oauth.DeviceFlowRunner
+import com.agentx.app.integrations.oauth.DeviceFlowState
 import com.agentx.app.integrations.oauth.GitHubOAuthProvider
+import com.agentx.app.integrations.oauth.OAuthFailureReason
 import com.agentx.app.integrations.oauth.OAuthFlowRunner
 import com.agentx.app.integrations.oauth.OAuthProvider
+import com.agentx.app.integrations.oauth.OAuthTokenCodec
 
 /**
  * GitHub, described for the Connections UI and the Tool System.
@@ -29,7 +45,93 @@ class GitHubConnectionProvider(
     oauthProvider: OAuthProvider,
     flow: OAuthFlowRunner,
     clock: () -> Long = System::currentTimeMillis,
+    /**
+     * OAuth Device Flow support. Optional so a build without it (and the redirect
+     * tests) keeps working unchanged; when absent the provider reports that device
+     * authorization is unsupported instead of faking it.
+     */
+    private val deviceFlow: DeviceFlowRunner? = null,
 ) : OAuthBackedConnectionProvider(oauthProvider, flow, clock) {
+
+    /** GitHub device flow needs no redirect; it needs a Client ID, nothing else. */
+    override val supportsDeviceAuthorization: Boolean get() = deviceFlow != null && oauthProvider.client.clientId.isNotBlank()
+
+    override fun hasPendingAuthorization(connectionId: ConnectionId): Boolean =
+        super.hasPendingAuthorization(connectionId) || deviceFlow?.pendingFor(connectionId) != null
+
+    override suspend fun cancelAuthorization(connectionId: ConnectionId) {
+        super.cancelAuthorization(connectionId)
+        deviceFlow?.cancel(connectionId)
+    }
+
+    override suspend fun beginDeviceAuthorization(
+        connection: Connection,
+    ): ForgeResult<DeviceAuthorization, ForgeError> {
+        val runner = deviceFlow ?: return failure(deviceFlowUnsupported(connection))
+        if (oauthProvider.client.clientId.isBlank()) {
+            return failure(
+                connectionFailure(
+                    code = ForgeErrorCode.CONNECTION_OAUTH_UNAVAILABLE,
+                    message = "GitHub authorization is not configured: save a Client ID first.",
+                    details = mapOf("connectionId" to connection.id.value, "type" to connection.type.name),
+                ),
+            )
+        }
+        return runner.begin(connection, oauthProvider.scopesFor(connection.capabilities))
+    }
+
+    override suspend fun completeDeviceAuthorization(
+        connection: Connection,
+        onState: suspend (DeviceFlowState) -> Unit,
+    ): ForgeResult<ProviderGrant, ForgeError> {
+        val runner = deviceFlow ?: return failure(deviceFlowUnsupported(connection))
+
+        val polled = runner.complete(connection.id, onState)
+        val tokens = polled.valueOrNull()
+            ?: return failure(polled.errorOrNull() ?: deviceFlowUnsupported(connection))
+
+        // The grant is verified with GitHub's own API before it is stored: a token
+        // that cannot be used is never reported as connected.
+        val validation = oauthProvider.validate(tokens)
+        if (!validation.valid) {
+            onState(DeviceFlowState.AUTH_ERROR)
+            return failure(
+                connectionFailure(
+                    code = ForgeErrorCode.CONNECTION_OAUTH_FAILED,
+                    message = validation.message.ifBlank { "GitHub rejected the new credentials" },
+                    details = mapOf(
+                        "connectionId" to connection.id.value,
+                        "type" to connection.type.name,
+                        "reason" to OAuthFailureReason.VALIDATION_FAILED.name,
+                    ),
+                ),
+            )
+        }
+
+        val accountLabel = validation.accountLabel ?: tokens.accountLabel ?: handleFor(connection)
+        val grantedScopes = oauthProvider.grantedScopes(tokens)
+        return success(
+            ProviderGrant(
+                connectionId = connection.id,
+                payload = OAuthTokenCodec.encode(tokens.copy(accountLabel = accountLabel)),
+                scopes = grantedScopes,
+                identity = ProviderIdentity(
+                    accountLabel = accountLabel,
+                    message = validation.message,
+                    expiresAtMillis = tokens.expiresAtMillis,
+                ),
+                capabilities = oauthProvider.capabilitiesFor(grantedScopes).intersect(connection.capabilities),
+                expiresAtMillis = tokens.expiresAtMillis,
+                refreshable = tokens.hasRefreshToken && oauthProvider.descriptor.supportsRefresh,
+            ),
+        )
+    }
+
+    private fun deviceFlowUnsupported(connection: Connection): ForgeError = connectionFailure(
+        code = ForgeErrorCode.CONNECTION_OAUTH_UNAVAILABLE,
+        message = "GitHub device authorization is unavailable in this build.",
+        details = mapOf("connectionId" to connection.id.value, "type" to connection.type.name),
+    )
 
     override val descriptor: ProviderDescriptor = ProviderDescriptor(
         type = ConnectionType.GITHUB,

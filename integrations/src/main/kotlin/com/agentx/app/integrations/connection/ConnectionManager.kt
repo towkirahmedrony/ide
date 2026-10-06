@@ -3,6 +3,7 @@ package com.agentx.app.integrations.connection
 import com.agentx.app.core.ForgeError
 import com.agentx.app.core.ForgeErrorCode
 import com.agentx.app.core.ForgeResult
+import com.agentx.app.integrations.oauth.DeviceFlowState
 import kotlinx.coroutines.flow.StateFlow
 
 /** Current snapshot of the Connection Manager. */
@@ -84,6 +85,35 @@ interface ConnectionManager {
 
     /** Re-runs authorization for an existing connection (reconnect or re-authorize). */
     suspend fun beginAuthorization(id: ConnectionId): ForgeResult<AuthorizationStart, ForgeError>
+
+    /**
+     * True when [type] can be authorized with a device code the user approves on
+     * the provider's page, without a browser redirect back to the app.
+     */
+    fun supportsDeviceAuthorization(type: ConnectionType): Boolean
+
+    /**
+     * Starts a device authorization for [type], creating the connection record on
+     * first use. Returns only the user code and verification URI; the device code
+     * and any token stay inside the provider.
+     */
+    suspend fun beginDeviceAuthorization(
+        type: ConnectionType,
+        displayName: String? = null,
+    ): ForgeResult<DeviceAuthorization, ForgeError>
+
+    /**
+     * Polls the device authorization until the user approves or the attempt fails,
+     * reporting each [DeviceFlowState] transition, then stores the grant through the
+     * existing credential infrastructure and marks the connection connected.
+     *
+     * Cancelling the calling coroutine stops the polling; a failure never deletes
+     * the connection.
+     */
+    suspend fun completeDeviceAuthorization(
+        id: ConnectionId,
+        onState: suspend (DeviceFlowState) -> Unit = {},
+    ): ForgeResult<Connection, ForgeError>
 
     /**
      * Handles the provider redirect: the provider validates `state` (single use) and

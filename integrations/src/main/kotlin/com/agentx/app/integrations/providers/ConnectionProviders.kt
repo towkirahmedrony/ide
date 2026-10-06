@@ -4,6 +4,8 @@ import com.agentx.app.core.config.OAuthConfig
 import com.agentx.app.integrations.connection.ConnectionProvider
 import com.agentx.app.integrations.connection.ConnectionProviderRegistry
 import com.agentx.app.integrations.connection.ConnectionType
+import com.agentx.app.integrations.oauth.DeviceFlowRunner
+import com.agentx.app.integrations.oauth.GitHubDeviceFlowClient
 import com.agentx.app.integrations.oauth.GitHubOAuthProvider
 import com.agentx.app.integrations.oauth.InMemoryOAuthSessionStore
 import com.agentx.app.integrations.oauth.OAuthCallbackAuthority
@@ -48,8 +50,15 @@ object ConnectionProviders {
         val supabase = SupabaseOAuthProvider(client = supabaseClient, http = http, clock = clock)
         val githubFlow = flowFor(github, clock)
         val supabaseFlow = flowFor(supabase, clock)
+        // GitHub's Device Flow reuses the same public client id as the redirect flow
+        // and the shared HTTP stack; the live client is read on every call so a
+        // Client ID saved after startup takes effect immediately.
+        val githubDeviceFlow = DeviceFlowRunner(
+            client = GitHubDeviceFlowClient(http = http, clientProvider = { github.client }, clock = clock),
+            clock = clock,
+        )
         val registry = ConnectionProviderRegistry.builder()
-            .register(GitHubConnectionProvider(github, githubFlow, clock))
+            .register(GitHubConnectionProvider(github, githubFlow, clock, deviceFlow = githubDeviceFlow))
             .register(SupabaseConnectionProvider(supabase, supabaseFlow, clock))
             .register(McpConnectionProvider(clock))
             .build()

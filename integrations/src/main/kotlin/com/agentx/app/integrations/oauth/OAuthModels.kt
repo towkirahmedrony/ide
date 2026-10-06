@@ -120,6 +120,12 @@ enum class OAuthFailureReason(val userMessage: String) {
     REVOKE_FAILED("The provider did not confirm that access was revoked."),
     NETWORK("The provider could not be reached."),
     NOT_CONNECTED("The connection is not authorized."),
+    /** The device code the user was approving has expired. */
+    DEVICE_CODE_EXPIRED("The authorization code expired. Start the connection again."),
+    /** The provider is throttling this app; the user should try again later. */
+    RATE_LIMITED("The provider is rate limiting this app. Try again later."),
+    /** The provider has device flow disabled for this OAuth app. */
+    DEVICE_FLOW_DISABLED("Device authorization is disabled for this OAuth app."),
 }
 
 /** A failure from the OAuth layer: a coarse reason plus a user-facing message. */

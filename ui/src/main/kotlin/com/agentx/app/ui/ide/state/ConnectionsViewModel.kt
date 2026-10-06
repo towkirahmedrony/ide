@@ -15,14 +15,17 @@ import com.agentx.app.integrations.connection.ConnectionManager
 import com.agentx.app.integrations.connection.ConnectionManagerState
 import com.agentx.app.integrations.connection.ConnectionStatus
 import com.agentx.app.integrations.connection.ConnectionType
+import com.agentx.app.integrations.connection.DeviceAuthorization
 import com.agentx.app.integrations.connection.InstalledTool
 import com.agentx.app.integrations.connection.ProviderAvailability
 import com.agentx.app.integrations.connection.ProviderDescriptor
 import com.agentx.app.integrations.setup.IntegrationSetupManager
 import com.agentx.app.integrations.setup.ProviderSetupGuide
 import com.agentx.app.integrations.setup.ProviderSetupSnapshot
+import com.agentx.app.integrations.oauth.DeviceFlowState
 import com.agentx.app.ui.ide.data.OAuthBrowserLauncher
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
@@ -170,11 +173,44 @@ class ConnectionsViewModel(
 
     fun isBusy(key: String): Boolean = busyKey == key
 
+    // --- Device flow (GitHub) -----------------------------------------------
+
+    /**
+     * The typed device-flow state for the service being connected. It is separate
+     * from the connection's saved status: a service can be AUTHORIZING while the
+     * attempt is WAITING_FOR_USER or POLLING. It never carries a token.
+     */
+    var deviceFlowState by mutableStateOf(DeviceFlowState.DISCONNECTED)
+        private set
+
+    /** The user code and verification URI to show while the user authorizes. */
+    var deviceAuthorization by mutableStateOf<DeviceAuthorization?>(null)
+        private set
+
+    private var deviceFlowJob: Job? = null
+    private var deviceFlowConnectionId: String? = null
+
+    /** True when this service can be authorized with a device code. */
+    fun supportsDeviceAuthorization(type: ConnectionType): Boolean =
+        manager.supportsDeviceAuthorization(type)
+
+    /** Opens the provider page where the user enters the device code. */
+    fun openDeviceVerificationPage(): Boolean {
+        val authorization = deviceAuthorization ?: return false
+        return browser.launch(authorization.verificationUri)
+    }
+
     // --- Actions ------------------------------------------------------------
 
     /** Starts the connection flow for a service the user has not connected yet. */
     fun connect(type: ConnectionType) {
-        if (busyKey != null) return
+        if (busyKey != null || deviceFlowState.isInProgress) return
+        // GitHub authorizes with a device code: no browser redirect is involved, so
+        // the redirect flow is not started for it.
+        if (manager.supportsDeviceAuthorization(type)) {
+            startDeviceFlow(type)
+            return
+        }
         busyKey = type.name
         viewModelScope.launch {
             try {
@@ -194,7 +230,14 @@ class ConnectionsViewModel(
 
     /** Re-runs authorization for an existing connection (reconnect / re-authorize). */
     fun reconnect(id: String) {
-        if (busyKey != null) return
+        if (busyKey != null || deviceFlowState.isInProgress) return
+        // A device-flow service re-authorizes with a new device code: reusing the
+        // existing connection id, never a second connection record.
+        val type = manager.state.value.connection(ConnectionId(id))?.type
+        if (type != null && manager.supportsDeviceAuthorization(type)) {
+            startDeviceFlow(type)
+            return
+        }
         busyKey = id
         viewModelScope.launch {
             try {
@@ -212,9 +255,18 @@ class ConnectionsViewModel(
         }
     }
 
-    fun cancelAuthorization(id: String) = operate(id) { manager.cancelAuthorization(ConnectionId(it)) }
+    fun cancelAuthorization(id: String) {
+        if (deviceFlowConnectionId == id && deviceFlowState.isInProgress) {
+            cancelDeviceFlow()
+            return
+        }
+        operate(id) { manager.cancelAuthorization(ConnectionId(it)) }
+    }
 
-    fun disconnect(id: String) = operate(id) { manager.disconnect(ConnectionId(it)) }
+    fun disconnect(id: String) {
+        if (deviceFlowConnectionId == id) stopDeviceFlow()
+        operate(id) { manager.disconnect(ConnectionId(it)) }
+    }
 
     fun verify(id: String) = operate(id) { manager.testConnection(ConnectionId(it)) }
 
@@ -244,6 +296,11 @@ class ConnectionsViewModel(
         providers = manager.providerAvailability()
         descriptors = manager.providerDescriptors()
         tools = manager.tools()
+        // Once a device authorization settles the code is no longer usable; keep the
+        // card from showing a stale code after a connect, cancel or disconnect.
+        if (deviceAuthorization != null && !deviceFlowState.isInProgress) {
+            deviceAuthorization = null
+        }
         val awaiting = awaitingAuthorizationId
         if (awaiting != null && manager.state.value.connection(ConnectionId(awaiting))?.status?.isAuthorizing != true) {
             // The manager settled the attempt: connected, denied, cancelled or expired.
@@ -274,6 +331,105 @@ class ConnectionsViewModel(
         awaitingAuthorizationId = null
         manager.cancelAuthorization(start.connectionId)
         message = "No browser is available to open the authorization page."
+    }
+
+    /**
+     * Requests a device code, shows the user code and verification URI, and starts
+     * polling. The access token is stored by the manager; nothing here ever sees it.
+     */
+    private fun startDeviceFlow(type: ConnectionType) {
+        busyKey = type.name
+        deviceAuthorization = null
+        deviceFlowState = DeviceFlowState.AUTHORIZING
+        viewModelScope.launch {
+            try {
+                when (val result = manager.beginDeviceAuthorization(type)) {
+                    is ForgeResult.Success -> {
+                        val authorization = result.value
+                        deviceAuthorization = authorization
+                        deviceFlowConnectionId = authorization.connectionId.value
+                        deviceFlowState = DeviceFlowState.WAITING_FOR_USER
+                        // Best effort: point the user at GitHub's page. The code and
+                        // URL stay on screen either way.
+                        browser.launch(authorization.verificationUri)
+                        busyKey = null
+                        pollDeviceAuthorization(authorization.connectionId.value)
+                    }
+
+                    is ForgeResult.Failure -> {
+                        deviceFlowState = DeviceFlowState.AUTH_ERROR
+                        message = result.error.message
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                deviceFlowState = DeviceFlowState.AUTH_ERROR
+                message = error.message ?: failedToStart(type)
+            } finally {
+                busyKey = null
+            }
+        }
+    }
+
+    /**
+     * Runs the manager's polling loop. Cancelling [deviceFlowJob] stops it cleanly:
+     * the manager's polling coroutine is the same one, so nothing keeps running in
+     * the background.
+     */
+    private fun pollDeviceAuthorization(connectionId: String) {
+        deviceFlowJob?.cancel()
+        deviceFlowJob = viewModelScope.launch {
+            try {
+                val result = manager.completeDeviceAuthorization(ConnectionId(connectionId)) { state ->
+                    deviceFlowState = state
+                }
+                when (result) {
+                    is ForgeResult.Success -> {
+                        deviceAuthorization = null
+                        deviceFlowConnectionId = null
+                        deviceFlowState = DeviceFlowState.CONNECTED
+                        lastConnectedId = connectionId
+                    }
+
+                    is ForgeResult.Failure -> {
+                        // The manager reported the terminal state through the callback;
+                        // the message explains why.
+                        message = result.error.message
+                    }
+                }
+                refreshDerived()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                deviceAuthorization = null
+                deviceFlowState = DeviceFlowState.AUTH_ERROR
+                message = error.message ?: "The GitHub authorization failed"
+            } finally {
+                deviceFlowJob = null
+            }
+        }
+    }
+
+    /** Stops polling and forgets the attempt without touching the saved connection. */
+    private fun stopDeviceFlow() {
+        deviceFlowJob?.cancel()
+        deviceFlowJob = null
+        deviceFlowConnectionId = null
+        deviceAuthorization = null
+        deviceFlowState = DeviceFlowState.DISCONNECTED
+    }
+
+    /** Cancels a running device authorization and resets the service to not connected. */
+    fun cancelDeviceFlow() {
+        val id = deviceFlowConnectionId
+        stopDeviceFlow()
+        if (id != null) {
+            viewModelScope.launch {
+                manager.cancelAuthorization(ConnectionId(id))
+                refreshDerived()
+            }
+        }
     }
 
     private fun operate(id: String, block: suspend (String) -> ForgeResult<*, ForgeError>) {

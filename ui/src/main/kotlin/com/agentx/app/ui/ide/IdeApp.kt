@@ -487,8 +487,23 @@ fun ForgeIdeApp(
                 setupOf = { type, connection -> connectionsViewModel.setupOf(type, connection) },
                 onBack = { navController.popBackStack() },
                 onOpenService = { type -> navController.navigate(IdeDestinations.serviceDetails(type.name)) },
-                onConnect = connectionsViewModel::connect,
-                onReconnect = connectionsViewModel::reconnect,
+                // A device-code service is authorized on its own page, where the user
+                // code and verification URL are shown; the card just opens it.
+                onConnect = { type ->
+                    if (connectionsViewModel.supportsDeviceAuthorization(type)) {
+                        navController.navigate(IdeDestinations.serviceDetails(type.name))
+                    } else {
+                        connectionsViewModel.connect(type)
+                    }
+                },
+                onReconnect = { id ->
+                    val type = connectionsState.connections.firstOrNull { it.id.value == id }?.type
+                    if (type != null && connectionsViewModel.supportsDeviceAuthorization(type)) {
+                        navController.navigate(IdeDestinations.serviceDetails(type.name))
+                    } else {
+                        connectionsViewModel.reconnect(id)
+                    }
+                },
                 onCancelAuthorization = connectionsViewModel::cancelAuthorization,
                 onDisconnect = connectionsViewModel::disconnect,
                 onDismissMessage = connectionsViewModel::dismissMessage,
@@ -527,10 +542,14 @@ fun ForgeIdeApp(
                 busy = detailsViewModel.isBusy(connection?.id?.value ?: type.name),
                 authorizing = detailsViewModel.isAuthorizing(connection),
                 setupBusy = detailsViewModel.setupBusy,
+                deviceState = detailsViewModel.deviceFlowState,
+                deviceAuthorization = detailsViewModel.deviceAuthorization,
                 onBack = { navController.popBackStack() },
                 onConnect = { detailsViewModel.connect(type) },
                 onReconnect = { connection?.let { detailsViewModel.reconnect(it.id.value) } },
                 onCancelAuthorization = { connection?.let { detailsViewModel.cancelAuthorization(it.id.value) } },
+                onOpenDeviceVerification = { detailsViewModel.openDeviceVerificationPage() },
+                onCancelDeviceFlow = { detailsViewModel.cancelDeviceFlow() },
                 onDisconnect = { connection?.let { detailsViewModel.disconnect(it.id.value) } },
                 onVerify = { connection?.let { detailsViewModel.verify(it.id.value) } },
                 onSaveSetup = { clientId, broker ->

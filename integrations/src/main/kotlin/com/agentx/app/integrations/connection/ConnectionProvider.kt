@@ -4,6 +4,7 @@ import com.agentx.app.core.ForgeError
 import com.agentx.app.core.ForgeErrorCode
 import com.agentx.app.core.ForgeResult
 import com.agentx.app.core.failure
+import com.agentx.app.integrations.oauth.DeviceFlowState
 
 /**
  * Everything the Connections UI and the Connection Manager need from a service
@@ -64,6 +65,45 @@ interface ConnectionProvider {
         connection: Connection,
         callbackUri: String,
     ): ForgeResult<ProviderGrant, ForgeError>
+
+    /**
+     * True when this provider can authorize with a device code the user approves
+     * on the provider's own page, instead of a browser redirect back to the app.
+     * The default is false: a provider opts in explicitly.
+     */
+    val supportsDeviceAuthorization: Boolean get() = false
+
+    /**
+     * Starts a device authorization. Returns only the user-facing values (user code
+     * and verification URI); the device code the client later polls with stays
+     * inside the provider.
+     */
+    suspend fun beginDeviceAuthorization(
+        connection: Connection,
+    ): ForgeResult<DeviceAuthorization, ForgeError> = failure(
+        connectionFailure(
+            code = ForgeErrorCode.CONNECTION_OAUTH_UNAVAILABLE,
+            message = "${descriptor.displayName} does not support device authorization in this build.",
+            details = mapOf("connectionId" to connection.id.value),
+        ),
+    )
+
+    /**
+     * Polls a device authorization until it is answered or fails, reporting each
+     * [DeviceFlowState] transition. The provider owns the polling interval and the
+     * cancellation discipline; the returned grant holds the credential payload the
+     * manager stores, and is never handed to the UI.
+     */
+    suspend fun completeDeviceAuthorization(
+        connection: Connection,
+        onState: suspend (DeviceFlowState) -> Unit,
+    ): ForgeResult<ProviderGrant, ForgeError> = failure(
+        connectionFailure(
+            code = ForgeErrorCode.CONNECTION_OAUTH_UNAVAILABLE,
+            message = "${descriptor.displayName} does not support device authorization in this build.",
+            details = mapOf("connectionId" to connection.id.value),
+        ),
+    )
 
     /**
      * True when this provider is holding an authorization for [connectionId] that
@@ -223,6 +263,27 @@ sealed interface AuthorizationStart {
         val reason: String,
         val credentialLabel: String,
     ) : AuthorizationStart
+}
+
+/**
+ * What the UI needs to let the user authorize through a device code: the code to
+ * type and where to type it. It never carries the device code or a token.
+ */
+data class DeviceAuthorization(
+    val connectionId: ConnectionId,
+    val type: ConnectionType,
+    val displayName: String,
+    /** Short code the user enters on the provider's page, e.g. `ABCD-1234`. */
+    val userCode: String,
+    /** Provider page the user opens to enter the code. */
+    val verificationUri: String,
+    val expiresAtMillis: Long,
+    val intervalSeconds: Long,
+) {
+    /** Never prints the user code; it is user-facing, but not for a log. */
+    override fun toString(): String =
+        "DeviceAuthorization(connectionId=$connectionId, type=${type.name}, userCode=present, " +
+            "verificationUri=$verificationUri)"
 }
 
 /** What a completed authorization produced, before it is persisted. */

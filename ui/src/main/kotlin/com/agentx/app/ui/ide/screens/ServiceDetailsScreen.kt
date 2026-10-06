@@ -31,10 +31,12 @@ import com.agentx.app.integrations.connection.Connection
 import com.agentx.app.integrations.connection.ConnectionCapability
 import com.agentx.app.integrations.connection.ConnectionStatus
 import com.agentx.app.integrations.connection.ConnectionType
+import com.agentx.app.integrations.connection.DeviceAuthorization
 import com.agentx.app.integrations.connection.InstalledTool
 import com.agentx.app.integrations.connection.ProviderAvailability
 import com.agentx.app.integrations.connection.ProviderCapabilityInfo
 import com.agentx.app.integrations.connection.ProviderDescriptor
+import com.agentx.app.integrations.oauth.DeviceFlowState
 import com.agentx.app.integrations.setup.IntegrationLifecycle
 import com.agentx.app.integrations.setup.ProviderSetupGuide
 import com.agentx.app.integrations.setup.ProviderSetupSnapshot
@@ -52,6 +54,7 @@ import com.agentx.app.ui.theme.ForgeDanger
 import com.agentx.app.ui.theme.ForgeInk
 import com.agentx.app.ui.theme.ForgeMint
 import com.agentx.app.ui.theme.ForgeMuted
+import com.agentx.app.ui.theme.ForgePeriwinkle
 
 /**
  * One service, in full: what the agent can do with it, how to connect it, and —
@@ -73,10 +76,14 @@ fun ServiceDetailsScreen(
     busy: Boolean,
     authorizing: Boolean,
     setupBusy: Boolean = false,
+    deviceState: DeviceFlowState = DeviceFlowState.DISCONNECTED,
+    deviceAuthorization: DeviceAuthorization? = null,
     onBack: () -> Unit,
     onConnect: () -> Unit,
     onReconnect: () -> Unit,
     onCancelAuthorization: () -> Unit,
+    onOpenDeviceVerification: () -> Unit = {},
+    onCancelDeviceFlow: () -> Unit = {},
     onDisconnect: () -> Unit,
     onVerify: () -> Unit,
     onSaveSetup: (clientId: String, brokerUrl: String?) -> Unit = { _, _ -> },
@@ -136,6 +143,36 @@ fun ServiceDetailsScreen(
                         text = "Access expires ${formatTimestamp(expires)}",
                         style = MaterialTheme.typography.bodySmall,
                         color = ForgeAmber,
+                    )
+                }
+            }
+
+            // Device authorization: only the user code and the verification URI
+            // cross into the UI. No token is ever shown or held here.
+            deviceAuthorization?.let { authorization ->
+                IdeSpacer(16)
+                DeviceAuthorizationCard(
+                    authorization = authorization,
+                    state = deviceState,
+                    busy = busy,
+                    onOpen = onOpenDeviceVerification,
+                    onCancel = onCancelDeviceFlow,
+                )
+            }
+
+            // A settled device attempt that did not connect says why, so the user can
+            // tell "authorize again" from "try again later".
+            if (deviceAuthorization == null &&
+                deviceState.isTerminal &&
+                deviceState != DeviceFlowState.CONNECTED &&
+                deviceState != DeviceFlowState.DISCONNECTED
+            ) {
+                IdeSpacer(16)
+                IdeCard {
+                    Text(
+                        text = deviceErrorText(deviceState, connection?.statusMessage),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = ForgeDanger,
                     )
                 }
             }
@@ -235,11 +272,13 @@ fun ServiceDetailsScreen(
                 connected = connected,
                 busy = busy,
                 authorizing = authorizing,
+                deviceActive = deviceAuthorization != null && deviceState.isInProgress,
                 canConnect = setup?.canConnect != false &&
                     lifecycle != IntegrationLifecycle.NOT_CONFIGURED,
                 onConnect = onConnect,
                 onReconnect = onReconnect,
                 onCancelAuthorization = onCancelAuthorization,
+                onCancelDeviceFlow = onCancelDeviceFlow,
                 onDisconnect = { confirmDisconnect = true },
                 onVerify = onVerify,
                 onManage = onManage,
@@ -281,16 +320,31 @@ private fun ActionRow(
     connected: Boolean,
     busy: Boolean,
     authorizing: Boolean,
+    deviceActive: Boolean,
     canConnect: Boolean,
     onConnect: () -> Unit,
     onReconnect: () -> Unit,
     onCancelAuthorization: () -> Unit,
+    onCancelDeviceFlow: () -> Unit,
     onDisconnect: () -> Unit,
     onVerify: () -> Unit,
     onManage: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
         when {
+            // A device authorization is running: the code and URL are shown above,
+            // so here the user can only wait or cancel it.
+            deviceActive -> {
+                Text(
+                    text = "Enter the code shown above on GitHub, then this screen connects " +
+                        "automatically. You can leave it while the browser is open.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = ForgeInk,
+                )
+                IdeSpacer(8)
+                OutlinedButton(onClick = onCancelDeviceFlow, enabled = !busy) { Text("Cancel") }
+            }
+
             authorizing || status.isAuthorizing -> {
                 Text(
                     text = "Waiting for authorization — finish approving access in your browser, then " +
@@ -415,6 +469,65 @@ private fun statusLabel(status: ConnectionStatus, connected: Boolean): String = 
 }
 
 @Composable
+private fun DeviceAuthorizationCard(
+    authorization: DeviceAuthorization,
+    state: DeviceFlowState,
+    busy: Boolean,
+    onOpen: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    IdeSectionLabel("Authorization")
+    IdeSpacer(8)
+    IdeCard {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "Waiting for authorization",
+                style = MaterialTheme.typography.titleSmall,
+                color = ForgeInk,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f),
+            )
+            IdeStatusPill(
+                text = state.displayName,
+                color = if (state == DeviceFlowState.POLLING) ForgePeriwinkle else ForgeMint,
+            )
+        }
+        IdeSpacer(6)
+        Text(
+            text = "Enter this code on GitHub to authorize the app.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = ForgeMuted,
+        )
+        IdeSpacer(10)
+        Text(text = "Code", style = MaterialTheme.typography.labelSmall, color = ForgeMuted)
+        IdeSpacer(4)
+        SelectionContainer {
+            Text(
+                text = authorization.userCode,
+                style = MaterialTheme.typography.headlineSmall,
+                color = ForgeInk,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+        IdeSpacer(10)
+        Text(text = "Verification URL", style = MaterialTheme.typography.labelSmall, color = ForgeMuted)
+        IdeSpacer(4)
+        SelectionContainer {
+            Text(
+                text = authorization.verificationUri,
+                style = MaterialTheme.typography.bodyMedium,
+                color = ForgeInk,
+            )
+        }
+        IdeSpacer(10)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = onOpen, enabled = !busy) { Text("Open GitHub") }
+            OutlinedButton(onClick = onCancel, enabled = !busy) { Text("Cancel") }
+        }
+    }
+}
+
+@Composable
 private fun SetupCard(
     setup: ProviderSetupSnapshot,
     busy: Boolean,
@@ -528,6 +641,16 @@ private fun HowToCard(guide: ProviderSetupGuide) {
             )
         }
     }
+}
+
+/** Human-readable text for a settled device-flow failure. Never a credential. */
+private fun deviceErrorText(state: DeviceFlowState, statusMessage: String?): String = when (state) {
+    DeviceFlowState.EXPIRED -> statusMessage ?: "The authorization code expired. Start the connection again."
+    DeviceFlowState.RATE_LIMITED -> statusMessage ?: "The provider is rate limiting this app. Try again later."
+    DeviceFlowState.NETWORK_ERROR -> statusMessage
+        ?: "The provider could not be reached. Check your connection and try again."
+    DeviceFlowState.AUTH_ERROR -> statusMessage ?: "Authorization failed. Try again."
+    else -> statusMessage ?: state.displayName
 }
 
 private fun declaredCapabilities(type: ConnectionType): List<ProviderCapabilityInfo> =
