@@ -5,16 +5,19 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -24,6 +27,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
@@ -58,22 +62,28 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.agentx.app.ui.ide.components.IdeDivider
+import com.agentx.app.ui.ide.model.AgentActivity
 import com.agentx.app.ui.ide.model.AgentActivityStatus
 import com.agentx.app.ui.ide.model.AgentChatUiState
+import com.agentx.app.ui.ide.model.ChatMessageKind
 import com.agentx.app.ui.ide.model.GenerationPhase
 import com.agentx.app.ui.ide.model.GenerationState
 import com.agentx.app.ui.ide.model.PermissionPromptUi
 import com.agentx.app.ui.ide.screens.agent.AgentMessageItem
 import com.agentx.app.ui.ide.screens.agent.AgentSessionDrawerContent
 import com.agentx.app.ui.ide.screens.agent.copyToClipboard
-import com.agentx.app.ui.ide.model.AgentActivity
 import com.agentx.app.ui.ide.state.AgentChatPresentation
 import com.agentx.app.ui.ide.state.AgentViewModel
 import com.agentx.app.ui.theme.ForgeAmber
@@ -87,14 +97,18 @@ import com.agentx.app.ui.theme.ForgeSurface
 import com.agentx.app.ui.theme.ForgeSurfaceVariant
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 /**
- * The Agent page: a dedicated, full-screen agent workspace.
+ * The Agent page: header, conversation, permission card and composer.
  *
- * The global workspace top bar is not rendered for this tab; this screen's own
- * compact header is the top-level header of the whole Agent screen and carries
- * the controls the global header used to provide (back, workspace context,
- * session sidebar, model indicator and settings).
+ * Keyboard: the composer is lifted above the IME by exactly the part of the
+ * keyboard that overlaps this screen, so it never hides behind the keyboard
+ * and never double-pads when the shell already reserves space for a bottom bar.
+ *
+ * Scrolling: the list follows the newest content while the agent streams. A
+ * finger drag hands control to the user; reaching the bottom again (or tapping
+ * "Jump to latest") resumes following.
  */
 @Composable
 fun AgentScreen(
@@ -110,8 +124,6 @@ fun AgentScreen(
     val scope = rememberCoroutineScope()
     var nowMillis by remember { mutableStateOf(System.currentTimeMillis()) }
 
-    // The sidebar's relative timestamps are refreshed once per composition of a
-    // new session list, never on every streaming frame.
     LaunchedEffect(state.sessions) { nowMillis = System.currentTimeMillis() }
 
     ModalNavigationDrawer(
@@ -140,108 +152,149 @@ fun AgentScreen(
         },
         modifier = modifier.fillMaxSize(),
     ) {
+        val density = LocalDensity.current
+        val rootView = LocalView.current
+
+        // Keyboard handling. `bottomGapPx` is how far this screen's own bottom edge
+        // is from the window bottom (e.g. the shell's bottom tab bar). Only the part
+        // of the keyboard that actually overlaps the screen becomes padding.
+        val imeBottomPx = WindowInsets.ime.getBottom(density)
+        var bottomGapPx by remember { mutableStateOf(0) }
+        val imePadding = with(density) { (imeBottomPx - bottomGapPx).coerceAtLeast(0).toDp() }
+
         val listState = rememberLazyListState()
         var stickToBottom by remember { mutableStateOf(true) }
+        var userDriven by remember { mutableStateOf(false) }
+
+        val renderedMessages = state.messages.filterNot { it.kind == ChatMessageKind.TOOL }
+        // One extra tail item sits below the last message; scrolling to it always
+        // lands on the true bottom, even when the last reply is taller than the screen.
+        val tailIndex = renderedMessages.size
 
         val atBottom by remember {
             derivedStateOf {
                 val info = listState.layoutInfo
                 val last = info.visibleItemsInfo.lastOrNull()
-                last == null || last.index >= info.totalItemsCount - 1
+                info.totalItemsCount == 0 || (last != null && last.index >= info.totalItemsCount - 1)
             }
         }
 
-        // Only a user scroll gesture changes the follow decision; programmatic
-        // scrolling ends with the list at the bottom and keeps following.
+        // A finger drag takes control away from auto-follow immediately.
+        LaunchedEffect(listState) {
+            listState.interactionSource.interactions.collect { interaction ->
+                if (interaction is DragInteraction.Start) {
+                    userDriven = true
+                    stickToBottom = false
+                }
+            }
+        }
+        // When the user's own scroll/fling ends, follow again only if they are at the bottom.
         LaunchedEffect(listState) {
             snapshotFlow { listState.isScrollInProgress }.collect { scrolling ->
-                if (!scrolling) stickToBottom = atBottom
+                if (!scrolling && userDriven) {
+                    userDriven = false
+                    stickToBottom = atBottom
+                }
             }
         }
+        // A new turn or another session always follows the conversation again.
+        LaunchedEffect(state.generation.startedAtMillis, state.activeSessionId) {
+            stickToBottom = true
+        }
 
-        val renderedMessages = state.messages.filterNot { it.kind == com.agentx.app.ui.ide.model.ChatMessageKind.TOOL }
-        val contentSignature = renderedMessages.size to (
-            renderedMessages.lastOrNull()?.let { it.rawText.length + it.blocks.size * 31 + it.activities.size * 7 } ?: 0
-            )
+        val lastMessage = renderedMessages.lastOrNull()
+        val contentSignature = listOf(
+            renderedMessages.size,
+            lastMessage?.rawText?.length ?: 0,
+            lastMessage?.activities?.size ?: 0,
+            lastMessage?.activities?.lastOrNull()?.outputLines?.size ?: 0,
+            lastMessage?.planSteps?.size ?: 0,
+            lastMessage?.state,
+            state.pendingPermission != null,
+            imeBottomPx,
+        )
         LaunchedEffect(contentSignature, state.activeSessionId) {
             if (stickToBottom && renderedMessages.isNotEmpty()) {
-                listState.animateScrollToItem(renderedMessages.lastIndex)
+                listState.scrollToItem(tailIndex)
             }
         }
-        LaunchedEffect(state.activeSessionId) { stickToBottom = true }
 
-        // Tool calls are rendered inside the assistant's unified execution feed.
-        // Keeping the transient TOOL entries in state is useful for lifecycle
-        // updates, but showing them as separate cards creates the noisy double UI
-        // the activity stream is meant to replace.
-        Column(modifier = Modifier.fillMaxSize().background(ForgeCanvas)) {
-            AgentHeader(
-                workspaceName = workspaceName,
-                modelId = state.modelId,
-                activity = state.activity,
-                generation = state.generation,
-                currentAgent = state.currentAgent,
-                onBack = onBack,
-                onOpenDrawer = { scope.launch { drawerState.open() } },
-                onNewSession = { viewModel.newSession() },
-                onOpenSettings = onOpenSettings,
-            )
+        val lastAssistantId = renderedMessages.lastOrNull { it.kind == ChatMessageKind.ASSISTANT }?.id
 
-            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                if (renderedMessages.isEmpty()) {
-                    AgentEmptyState(onSuggestion = viewModel::onInputChange)
-                } else {
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        state = listState,
-                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
-                        verticalArrangement = Arrangement.spacedBy(14.dp),
-                    ) {
-                        items(renderedMessages, key = { it.id }) { message ->
-                            AgentMessageItem(
-                                message = message,
-                                onCopy = { copyToClipboard(context, "Agent message", message.copyText) },
-                                onRegenerate = { viewModel.regenerate(message.id) },
-                                onRetry = { viewModel.retry(message.id) },
-                                onEditSend = { text -> viewModel.editAndResend(message.id, text) },
-                            )
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(ForgeCanvas)
+                .onGloballyPositioned { coordinates ->
+                    val bottom = coordinates.positionInWindow().y + coordinates.size.height
+                    bottomGapPx = (rootView.rootView.height - bottom).roundToInt().coerceAtLeast(0)
+                },
+        ) {
+            Column(modifier = Modifier.fillMaxSize().padding(bottom = imePadding)) {
+                AgentHeader(
+                    workspaceName = workspaceName,
+                    modelId = state.modelId,
+                    activity = state.activity,
+                    generation = state.generation,
+                    currentAgent = state.currentAgent,
+                    onBack = onBack,
+                    onOpenDrawer = { scope.launch { drawerState.open() } },
+                    onNewSession = { viewModel.newSession() },
+                    onOpenSettings = onOpenSettings,
+                )
+
+                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    if (renderedMessages.isEmpty()) {
+                        AgentEmptyState(onSuggestion = viewModel::onInputChange)
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            state = listState,
+                            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(16.dp),
+                        ) {
+                            items(renderedMessages, key = { it.id }) { message ->
+                                AgentMessageItem(
+                                    message = message,
+                                    onCopy = { copyToClipboard(context, "Agent message", message.copyText) },
+                                    onRegenerate = { viewModel.regenerate(message.id) },
+                                    onRetry = { viewModel.retry(message.id) },
+                                    onEditSend = { text -> viewModel.editAndResend(message.id, text) },
+                                    awaitingPermission = state.pendingPermission != null && message.id == lastAssistantId,
+                                )
+                            }
+                            item(key = "tail-anchor") { Spacer(Modifier.height(24.dp)) }
                         }
+                    }
+
+                    if (!stickToBottom && !atBottom && renderedMessages.isNotEmpty()) {
+                        JumpToLatestPill(
+                            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp),
+                            onClick = {
+                                stickToBottom = true
+                                scope.launch { listState.animateScrollToItem(tailIndex) }
+                            },
+                        )
                     }
                 }
 
-                if (!stickToBottom && renderedMessages.isNotEmpty()) {
-                    JumpToLatestPill(
-                        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp),
-                        onClick = {
-                            stickToBottom = true
-                            scope.launch { listState.animateScrollToItem(renderedMessages.lastIndex) }
-                        },
-                    )
+                state.pendingPermission?.let { prompt ->
+                    PermissionPromptCard(prompt = prompt, onDecision = viewModel::respondToPermission)
                 }
-            }
 
-            state.pendingPermission?.let { prompt ->
-                PermissionPromptCard(prompt = prompt, onDecision = viewModel::respondToPermission)
+                AgentInputBar(
+                    state = state,
+                    onInputChange = viewModel::onInputChange,
+                    onSend = viewModel::send,
+                    onStop = viewModel::stop,
+                )
             }
-
-            AgentInputBar(
-                state = state,
-                onInputChange = viewModel::onInputChange,
-                onSend = viewModel::send,
-                onStop = viewModel::stop,
-            )
         }
     }
 }
 
 // ───────────────────────────── Header ─────────────────────────────
 
-/**
- * Compact top-level header of the dedicated Agent workspace: back, the live agent
- * name, a real status indicator, the active model as a subdued pill, and the
- * session drawer / settings controls. Session history lives in the drawer, so the
- * header keeps maximum room for the conversation itself.
- */
 @Composable
 private fun AgentHeader(
     workspaceName: String?,
@@ -257,6 +310,12 @@ private fun AgentHeader(
     val statusLabel = agentStatusLabel(generation, activity)
     val statusColor = agentStatusColor(generation)
     val agentName = remember(currentAgent) { displayAgentName(currentAgent) }
+    // The model sits on the second line, shortened and ellipsised, so a long id
+    // can never push the action buttons off screen.
+    val subtitle = listOfNotNull(
+        workspaceName?.takeIf { it.isNotBlank() },
+        modelId?.takeIf { it.isNotBlank() }?.substringAfterLast('/'),
+    ).joinToString(" · ")
 
     Column(modifier = Modifier.fillMaxWidth().background(ForgeSurface)) {
         Row(
@@ -273,18 +332,19 @@ private fun AgentHeader(
                     )
                 }
             }
-            Column(modifier = Modifier.weight(1f).padding(horizontal = 4.dp)) {
-                Text(
-                    text = agentName,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    color = ForgeInk,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+            Column(modifier = Modifier.weight(1f).padding(horizontal = 6.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    AgentStatusDot(color = statusColor)
-                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = agentName,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = ForgeInk,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Box(modifier = Modifier.size(7.dp).background(statusColor, CircleShape))
+                    Spacer(Modifier.width(5.dp))
                     Text(
                         text = statusLabel,
                         style = MaterialTheme.typography.labelSmall,
@@ -292,51 +352,27 @@ private fun AgentHeader(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    if (!workspaceName.isNullOrBlank()) {
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            text = "·",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = ForgeMuted,
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            text = workspaceName,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = ForgeMuted,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
+                }
+                if (subtitle.isNotEmpty()) {
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = ForgeMuted,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
             }
-            if (!modelId.isNullOrBlank()) {
-                ModelPill(modelId = modelId)
-            }
             IconButton(onClick = onNewSession, modifier = Modifier.size(40.dp)) {
-                Icon(
-                    Icons.Filled.Add,
-                    contentDescription = "New session",
-                    tint = ForgeInk,
-                    modifier = Modifier.size(20.dp),
-                )
+                Icon(Icons.Filled.Add, contentDescription = "New session", tint = ForgeInk, modifier = Modifier.size(20.dp))
             }
             IconButton(onClick = onOpenDrawer, modifier = Modifier.size(40.dp)) {
-                Icon(
-                    Icons.Filled.Menu,
-                    contentDescription = "Open sessions",
-                    tint = ForgeInk,
-                    modifier = Modifier.size(20.dp),
-                )
+                Icon(Icons.Filled.Menu, contentDescription = "Open sessions", tint = ForgeInk, modifier = Modifier.size(20.dp))
             }
             if (onOpenSettings != null) {
                 IconButton(onClick = onOpenSettings, modifier = Modifier.size(40.dp)) {
-                    Icon(
-                        Icons.Filled.Settings,
-                        contentDescription = "Settings",
-                        tint = ForgeInk,
-                        modifier = Modifier.size(20.dp),
-                    )
+                    Icon(Icons.Filled.Settings, contentDescription = "Settings", tint = ForgeInk, modifier = Modifier.size(20.dp))
                 }
             }
         }
@@ -344,20 +380,15 @@ private fun AgentHeader(
     }
 }
 
-/** The default parent agent reads as a proper name; a delegated specialist keeps its own. */
 private fun displayAgentName(currentAgent: String): String =
-    if (currentAgent.isBlank() || currentAgent.equals("Main", ignoreCase = true)) "Main Agent" else currentAgent
+    if (currentAgent.isBlank() || currentAgent.equals("Main", ignoreCase = true)) "AgentX" else currentAgent
 
-/**
- * A coarse, truthful status word derived only from the real generation phase and
- * activity. `Working · 12s` while the ticker is live; no invented states.
- */
 private fun agentStatusLabel(generation: GenerationState, activity: AgentActivity): String {
     val base = when {
         generation.phase == GenerationPhase.WAITING_PERMISSION -> "Waiting"
         generation.running && generation.phase == GenerationPhase.TOOL -> "Working"
         generation.running -> "Thinking"
-        generation.phase == GenerationPhase.COMPLETED -> "Completed"
+        generation.phase == GenerationPhase.COMPLETED -> "Done"
         generation.phase == GenerationPhase.STOPPED -> "Stopped"
         generation.phase == GenerationPhase.FAILED -> "Error"
         activity.status == AgentActivityStatus.IDLE -> "Idle"
@@ -371,7 +402,6 @@ private fun agentStatusLabel(generation: GenerationState, activity: AgentActivit
     return if (elapsed.isEmpty()) base else "$base · $elapsed"
 }
 
-/** Restrained status colour: mint while active, amber when waiting, danger on error. */
 private fun agentStatusColor(generation: GenerationState): Color = when {
     generation.phase == GenerationPhase.WAITING_PERMISSION -> ForgeAmber
     generation.running -> ForgeMint
@@ -381,38 +411,8 @@ private fun agentStatusColor(generation: GenerationState): Color = when {
     else -> ForgeMuted
 }
 
-/** A tiny live status dot, only coloured where it carries meaning. */
-@Composable
-private fun AgentStatusDot(color: Color) {
-    Box(
-        modifier = Modifier
-            .size(7.dp)
-            .background(color, CircleShape),
-    )
-}
+// ───────────────────────────── Empty state ─────────────────────────────
 
-/** Subdued model indicator; never the primary element of the header. */
-@Composable
-private fun ModelPill(modelId: String) {
-    Text(
-        text = modelId,
-        style = MaterialTheme.typography.labelSmall,
-        fontFamily = FontFamily.Monospace,
-        color = ForgeMuted,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
-        modifier = Modifier
-            .background(ForgeSurfaceVariant, RoundedCornerShape(8.dp))
-            .border(1.dp, ForgeBorder, RoundedCornerShape(8.dp))
-            .padding(horizontal = 7.dp, vertical = 4.dp),
-    )
-}
-
-/**
- * Workspace-oriented empty state. The suggestions are plain prompt templates
- * (no invented project statistics); tapping one fills the composer so the user
- * can edit before sending.
- */
 @Composable
 private fun AgentEmptyState(onSuggestion: (String) -> Unit) {
     Column(
@@ -496,7 +496,6 @@ private fun PermissionPromptCard(
     onDecision: (Boolean) -> Unit,
 ) {
     val destructive = isPotentiallyDestructive(prompt)
-    // Only terminal-style tools render as `$ command`; a file tool keeps its name.
     val command = if (prompt.toolName.lowercase() in TERMINAL_TOOLS) {
         AgentChatPresentation.terminalCommand(prompt.detail)
     } else {
@@ -527,9 +526,6 @@ private fun PermissionPromptCard(
             )
         }
         Spacer(Modifier.height(10.dp))
-        // Render the real command when one is extractable (`$ git status`), otherwise
-        // fall back to the tool name. The decision still flows through the same
-        // ALLOW / DENY security path — this card never creates local approval state.
         val commandText = if (command != null) "$ $command" else prompt.toolName
         Text(
             text = commandText,
@@ -579,10 +575,8 @@ private fun PermissionPromptCard(
     }
 }
 
-/** Terminal-style tools whose permission prompt renders as a `$ command` line. */
 private val TERMINAL_TOOLS = setOf("run_command", "execute", "execute_command", "shell", "terminal", "sh", "bash")
 
-/** Heuristic for a destructive variant, from the tool and its permission/reason text only. */
 private fun isPotentiallyDestructive(prompt: PermissionPromptUi): Boolean {
     val tool = prompt.toolName.lowercase()
     val writeTool = tool in setOf(
@@ -609,29 +603,29 @@ private fun AgentInputBar(
 ) {
     val awaitingPermission = state.pendingPermission != null
     val canSend = state.input.isNotBlank() && !awaitingPermission && !state.running
-    val shape = RoundedCornerShape(16.dp)
+    val shape = RoundedCornerShape(20.dp)
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .background(ForgeCanvas)
             .padding(horizontal = 12.dp)
-            .padding(top = 8.dp, bottom = 12.dp),
+            .padding(top = 8.dp, bottom = 10.dp),
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(shape)
                 .background(ForgeSurface)
-                .border(1.dp, ForgeBorder, shape)
-                .padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+                .border(1.dp, if (state.running) ForgeMint.copy(alpha = 0.45f) else ForgeBorder, shape)
+                .padding(start = 16.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
             verticalAlignment = Alignment.Bottom,
         ) {
             Box(
                 modifier = Modifier
                     .weight(1f)
-                    .heightIn(min = 38.dp)
-                    .padding(end = 8.dp),
+                    .heightIn(min = 40.dp)
+                    .padding(end = 8.dp, top = 2.dp, bottom = 2.dp),
                 contentAlignment = Alignment.CenterStart,
             ) {
                 BasicTextField(
@@ -639,6 +633,7 @@ private fun AgentInputBar(
                     onValueChange = onInputChange,
                     enabled = !awaitingPermission,
                     maxLines = 6,
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
                     textStyle = MaterialTheme.typography.bodyMedium.copy(
                         color = ForgeInk,
                         fontSize = 15.sp,
@@ -650,10 +645,10 @@ private fun AgentInputBar(
                         Box {
                             if (state.input.isEmpty()) {
                                 Text(
-                                    text = if (awaitingPermission) {
-                                        "Answer the permission request above…"
-                                    } else {
-                                        "Ask AgentX what to do…"
+                                    text = when {
+                                        awaitingPermission -> "Answer the permission request above…"
+                                        state.running -> "Working… type your next message"
+                                        else -> "Ask AgentX what to do…"
                                     },
                                     style = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp, lineHeight = 22.sp),
                                     color = ForgeMuted,
@@ -662,15 +657,6 @@ private fun AgentInputBar(
                             innerTextField()
                         }
                     },
-                )
-            }
-
-            if (state.running) {
-                Text(
-                    text = AgentChatPresentation.formatElapsedSeconds(state.generation.elapsedMillis),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = ForgeMuted,
-                    modifier = Modifier.padding(end = 8.dp, bottom = 10.dp),
                 )
             }
 
@@ -684,7 +670,6 @@ private fun AgentInputBar(
     }
 }
 
-/** Round icon button inside the input field: arrow-up to send, square to stop. */
 @Composable
 private fun SendStopButton(
     running: Boolean,
@@ -701,7 +686,7 @@ private fun SendStopButton(
 
     Box(
         modifier = Modifier
-            .size(38.dp)
+            .size(40.dp)
             .clip(CircleShape)
             .background(container)
             .clickable(enabled = active, onClick = if (running) onStop else onSend),
