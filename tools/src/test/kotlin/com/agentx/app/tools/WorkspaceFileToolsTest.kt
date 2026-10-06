@@ -96,7 +96,7 @@ class WorkspaceFileToolsTest {
             val failure = assertIs<ToolResult.Failure>(read(FileWorkspaceFileSystem(root), "src"))
 
             assertEquals(ToolErrorCode.INVALID_ARGUMENTS, failure.error.code)
-            assertTrue(failure.error.message.contains("directory"), failure.error.message)
+            assertTrue(failure.error.message.orEmpty().contains("directory"), failure.error.message)
         } finally {
             root.deleteRecursively()
         }
