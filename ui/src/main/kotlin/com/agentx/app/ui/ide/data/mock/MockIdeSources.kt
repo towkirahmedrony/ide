@@ -8,12 +8,14 @@ import com.agentx.app.ui.ide.data.WorkspacePicker
 import com.agentx.app.ui.ide.model.AgentActivity
 import com.agentx.app.ui.ide.model.AgentActivityStatus
 import com.agentx.app.workspace.DefaultWorkspaceManager
+import com.agentx.app.workspace.ManagedProjectDirectory
 import com.agentx.app.workspace.WorkspaceManager
 import com.agentx.app.workspace.memory.InMemoryWorkspaceBackend
 import com.agentx.app.workspace.memory.InMemoryWorkspaceMetadataStore
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import java.io.File
 
 /**
  * Stand-ins for layers that are not implemented yet (agent, git), plus
@@ -23,9 +25,12 @@ import kotlinx.coroutines.flow.StateFlow
  */
 
 /** An in-memory workspace manager used by previews and tests. */
-fun mockWorkspaceManager(): WorkspaceManager = DefaultWorkspaceManager(
+fun mockWorkspaceManager(
+    projectsRoot: File = File(System.getProperty("java.io.tmpdir") ?: ".", "agentx-demo-projects"),
+): WorkspaceManager = DefaultWorkspaceManager(
     backend = InMemoryWorkspaceBackend(),
     store = InMemoryWorkspaceMetadataStore(),
+    projects = ManagedProjectDirectory(projectsRoot),
 )
 
 /** A picker that fabricates a unique handle each time, for previews and tests. */

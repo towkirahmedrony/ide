@@ -32,6 +32,18 @@ interface WorkspaceManager {
     /** Reopens a remembered workspace by id. */
     suspend fun openRecent(id: WorkspaceId): WorkspaceResult<WorkspaceSession>
 
+    /**
+     * Creates a new empty project in AgentX-managed storage and makes it the current workspace.
+     *
+     * Nothing becomes active until the project directory has actually been created: a failure
+     * leaves the previously active workspace untouched, and a project that could not be opened is
+     * not registered or remembered. On success the project is exposed exactly like one that was
+     * opened or cloned, so the file browser, editor, Git and the terminal's `/workspace` all use
+     * it through the existing active-project mechanism. Only the project directory is created — no
+     * template, source files, README or Git repository.
+     */
+    suspend fun createProject(name: String): WorkspaceResult<WorkspaceSession>
+
     /** Reopens the last workspace, or returns `null` when none is remembered. */
     suspend fun restoreLastOpened(): WorkspaceResult<WorkspaceSession>?
 

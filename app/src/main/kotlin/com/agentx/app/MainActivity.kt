@@ -68,6 +68,7 @@ import com.agentx.app.ubuntu.LocalUbuntuRuntime
 import com.agentx.app.ui.theme.ForgeTheme
 import com.agentx.app.workspace.DefaultWorkspaceManager
 import com.agentx.app.workspace.FileWorkspaceBackend
+import com.agentx.app.workspace.ManagedProjectDirectory
 import com.agentx.app.git.DelegatingGitService
 import com.agentx.app.tools.DelegatingWorkspaceHostPathResolver
 import com.agentx.app.tools.WorkspaceHostPathResolver
@@ -258,6 +259,12 @@ class MainActivity : ComponentActivity() {
                 files = FileWorkspaceBackend(),
             ),
             store = SharedPreferencesWorkspaceMetadataStore(applicationContext),
+            // Manually created projects are empty directories in AgentX-managed storage — the same
+            // app-private location used for cloned repositories, outside the Ubuntu rootfs — and
+            // become the active project through the existing open/`/workspace` mechanism.
+            projects = ManagedProjectDirectory(
+                File(applicationContext.filesDir, ManagedProjectDirectory.DIRECTORY_NAME),
+            ),
         )
 
         // Git runs against the active workspace through the embedded runtime, so it sees the

@@ -46,6 +46,15 @@ enum class WorkspaceErrorCode {
     /** The backend does not support the requested operation. */
     UNSUPPORTED_OPERATION,
 
+    /** A manually entered project name is empty or not a single safe directory name. */
+    INVALID_PROJECT_NAME,
+
+    /** A project with the requested name already exists in managed storage. */
+    PROJECT_ALREADY_EXISTS,
+
+    /** AgentX-managed project storage could not be created or written to. */
+    PROJECT_STORAGE_UNAVAILABLE,
+
     /** Process execution is intentionally disabled until the security policy lands. */
     PROCESS_EXECUTION_UNAVAILABLE,
 
@@ -95,6 +104,12 @@ data class WorkspaceError(
                 "This file is not a text file, so it cannot be opened in the editor."
             WorkspaceErrorCode.IO_FAILED -> "The workspace could not be read or written."
             WorkspaceErrorCode.UNSUPPORTED_OPERATION -> "This operation is not supported here."
+            WorkspaceErrorCode.INVALID_PROJECT_NAME ->
+                message.ifBlank { "Enter a valid project name." }
+            WorkspaceErrorCode.PROJECT_ALREADY_EXISTS ->
+                message.ifBlank { "A project with that name already exists. Choose a different name." }
+            WorkspaceErrorCode.PROJECT_STORAGE_UNAVAILABLE ->
+                message.ifBlank { "Project storage is not available right now." }
             WorkspaceErrorCode.PROCESS_EXECUTION_UNAVAILABLE ->
                 "Command execution is not enabled yet."
             WorkspaceErrorCode.SHELL_UNAVAILABLE ->

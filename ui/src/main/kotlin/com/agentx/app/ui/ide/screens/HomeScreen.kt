@@ -16,19 +16,27 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
@@ -56,6 +64,26 @@ fun HomeScreen(
     modifier: Modifier = Modifier,
 ) {
     val state = viewModel.uiState
+    var showCreateDialog by remember { mutableStateOf(false) }
+
+    if (showCreateDialog) {
+        CreateProjectDialog(
+            creating = state.creating,
+            error = state.createError,
+            onDismiss = {
+                if (!state.creating) {
+                    showCreateDialog = false
+                    viewModel.clearCreateError()
+                }
+            },
+            onConfirm = { name ->
+                viewModel.createProject(name) { workspaceId ->
+                    showCreateDialog = false
+                    onOpenWorkspace(workspaceId)
+                }
+            },
+        )
+    }
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
@@ -83,6 +111,10 @@ fun HomeScreen(
                 appName = appName,
                 opening = state.opening,
                 onOpenProject = { viewModel.pickWorkspace(onOpenWorkspace) },
+                onCreateProject = {
+                    viewModel.clearCreateError()
+                    showCreateDialog = true
+                },
             )
 
             IdeSpacer(24)
@@ -120,7 +152,7 @@ fun HomeScreen(
                 state.isEmpty -> IdeEmptyState(
                     icon = Icons.Outlined.Folder,
                     title = "No projects yet",
-                    message = "Open a folder on this device to start using the IDE.",
+                    message = "Open a folder on this device or create a new project to start using the IDE.",
                     actionLabel = "Open Project",
                     onAction = { viewModel.pickWorkspace(onOpenWorkspace) },
                 )
@@ -146,6 +178,7 @@ private fun HeroCard(
     appName: String,
     opening: Boolean,
     onOpenProject: () -> Unit,
+    onCreateProject: () -> Unit,
 ) {
     IdeCard {
         Text(
@@ -161,12 +194,22 @@ private fun HeroCard(
         )
         IdeSpacer(8)
         Text(
-            text = "Open a project folder to reach the file explorer, editor, AI agent, git and terminal.",
+            text = "Open a project folder or create a new one to reach the file explorer, editor, AI agent, git and terminal.",
             style = MaterialTheme.typography.bodyMedium,
             color = ForgeMuted,
         )
         IdeSpacer(20)
         Button(
+            onClick = onCreateProject,
+            enabled = !opening,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("Create New Project")
+        }
+        IdeSpacer(10)
+        OutlinedButton(
             onClick = onOpenProject,
             enabled = !opening,
             modifier = Modifier.fillMaxWidth(),
@@ -176,6 +219,58 @@ private fun HeroCard(
             Text(if (opening) "Opening…" else "Open Project")
         }
     }
+}
+
+/**
+ * Asks only for a project name, then hands it to the workspace runtime. The directory is created
+ * in AgentX-managed storage and opened as the active project — no template, language or Git setup.
+ */
+@Composable
+private fun CreateProjectDialog(
+    creating: Boolean,
+    error: String?,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit,
+) {
+    var name by remember { mutableStateOf("") }
+    val errorText: (@Composable () -> Unit)? = error?.let { message -> { Text(message) } }
+
+    AlertDialog(
+        onDismissRequest = { if (!creating) onDismiss() },
+        title = { Text("Create New Project") },
+        text = {
+            Column {
+                Text(
+                    text = "Name your project. AgentX creates an empty folder in its managed " +
+                        "project storage and opens it as /workspace.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = ForgeMuted,
+                )
+                IdeSpacer(12)
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    singleLine = true,
+                    enabled = !creating,
+                    isError = error != null,
+                    label = { Text("Project name") },
+                    supportingText = errorText,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onConfirm(name) },
+                enabled = !creating && name.isNotBlank(),
+            ) {
+                Text(if (creating) "Creating…" else "Create")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !creating) { Text("Cancel") }
+        },
+    )
 }
 
 @Composable

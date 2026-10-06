@@ -13,6 +13,12 @@ import java.time.Clock
 class DefaultWorkspaceManager(
     private val backend: WorkspaceBackend,
     private val store: WorkspaceMetadataStore,
+    /**
+     * Where newly created projects are made. When absent, [createProject] reports that creating
+     * projects is unsupported instead of guessing a location — previews and tests that only need
+     * to open existing workspaces keep working unchanged.
+     */
+    private val projects: ManagedProjectDirectory? = null,
     private val clock: Clock = Clock.systemUTC(),
 ) : WorkspaceManager {
 
@@ -65,6 +71,32 @@ class DefaultWorkspaceManager(
         val record = store.find(id)
             ?: return failure(WorkspaceError(WorkspaceErrorCode.WORKSPACE_NOT_FOUND, "This workspace is not in your recent list."))
         return open(record.handle)
+    }
+
+    override suspend fun createProject(name: String): WorkspaceResult<WorkspaceSession> {
+        val projects = projects
+            ?: return failure(
+                WorkspaceError(
+                    WorkspaceErrorCode.UNSUPPORTED_OPERATION,
+                    "Creating projects is not supported in this environment.",
+                ),
+            )
+
+        val path = when (val created = projects.create(name)) {
+            is ForgeResult.Success -> created.value
+            is ForgeResult.Failure -> return created
+        }
+
+        // The project becomes active through the one existing mechanism: opening its path. If the
+        // directory cannot be opened, nothing is made active and the empty leftover is discarded
+        // so retrying the same name is not blocked.
+        return when (val opened = open(path)) {
+            is ForgeResult.Success -> opened
+            is ForgeResult.Failure -> {
+                projects.discard(path)
+                opened
+            }
+        }
     }
 
     override suspend fun restoreLastOpened(): WorkspaceResult<WorkspaceSession>? {

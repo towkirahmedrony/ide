@@ -18,6 +18,10 @@ data class HomeUiState(
     val projects: List<ProjectSummary> = emptyList(),
     val error: String? = null,
     val opening: Boolean = false,
+    /** A new project is being created; the create dialog stays open and disables its actions. */
+    val creating: Boolean = false,
+    /** Why the last create attempt failed, shown inside the dialog. Cleared on the next attempt. */
+    val createError: String? = null,
 ) {
     val isEmpty: Boolean get() = !loading && error == null && projects.isEmpty()
 }
@@ -78,6 +82,33 @@ class HomeViewModel(
                 }
             }
         }
+    }
+
+    /**
+     * Creates a new empty project in AgentX-managed storage and opens it as the active
+     * workspace. Nothing changes when creation fails: the failure is shown in the dialog and any
+     * previously open project stays active.
+     */
+    fun createProject(name: String, onCreated: (String) -> Unit) {
+        viewModelScope.launch {
+            uiState = uiState.copy(creating = true, createError = null)
+            when (val result = manager.createProject(name)) {
+                is ForgeResult.Success -> {
+                    uiState = uiState.copy(creating = false, createError = null)
+                    onCreated(result.value.workspace.id.value)
+                    loadRecents()
+                }
+
+                is ForgeResult.Failure -> {
+                    uiState = uiState.copy(creating = false, createError = result.error.userMessage)
+                }
+            }
+        }
+    }
+
+    /** Clears a previous create error, e.g. when the dialog is reopened. */
+    fun clearCreateError() {
+        if (uiState.createError != null) uiState = uiState.copy(createError = null)
     }
 
     /** Removes a workspace from the recent list. */
