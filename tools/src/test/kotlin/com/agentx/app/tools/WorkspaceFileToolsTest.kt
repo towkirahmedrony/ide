@@ -150,7 +150,8 @@ class WorkspaceFileToolsTest {
             val success = assertIs<ToolResult.Success>(read(FileWorkspaceFileSystem(root), "big.txt"))
 
             assertEquals(true, success.output.content.booleanOrNull("truncated"))
-            assertEquals(ReadFileTool.MAX_CONTENT_CHARS, success.output.content.stringOrNull("content")?.length)
+            val content = assertNotNull(success.output.content.stringOrNull("content"))
+            assertEquals(ReadFileTool.MAX_CONTENT_CHARS, content.length)
             assertEquals(big.length.toLong(), file.length(), "the file on disk is untouched")
         } finally {
             root.deleteRecursively()

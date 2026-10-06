@@ -94,7 +94,7 @@ class WriteFileTool(
         }
         return ToolOutput(
             content = mapOf(
-                "path" to normalized,
+                "path" to Json.of(normalized),
                 "bytes" to Json.of(content.length),
             ),
             displayText = "Wrote $normalized (${content.length} bytes)",
