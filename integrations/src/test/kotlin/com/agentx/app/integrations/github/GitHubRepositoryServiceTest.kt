@@ -63,8 +63,8 @@ class GitHubRepositoryServiceTest {
 
     @Test
     fun `a repository GitHubs default branch is used when none is reported`() = runBlocking {
-        val body = repositoryJson().replace("""  "default_branch": "main",""", "")
-        val (service, _) = newService { GitHubRestResponse(200, body) }
+        val withoutDefaultBranch = repositoryJson().replace("""  "default_branch": "main",""", "")
+        val (service, _) = newService { GitHubRestResponse(200, "[$withoutDefaultBranch]") }
 
         val page = assertNotNull(service.list(TEST_CONNECTION_ID).valueOrNull())
 
