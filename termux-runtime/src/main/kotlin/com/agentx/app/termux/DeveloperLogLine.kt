@@ -15,6 +15,7 @@ enum class DeveloperLogFilter(val label: String) {
     PTY("PTY"),
     SESSION("Session"),
     TERMINAL("Terminal"),
+    STORAGE("Storage"),
 }
 
 /**
@@ -54,6 +55,7 @@ data class DeveloperLogLine(
             DeveloperLogFilter.PTY -> category == DeveloperLogCategory.PTY
             DeveloperLogFilter.SESSION -> category == DeveloperLogCategory.SESSION
             DeveloperLogFilter.TERMINAL -> category == DeveloperLogCategory.TERMINAL
+            DeveloperLogFilter.STORAGE -> category == DeveloperLogCategory.STORAGE
         }
         if (!filterOk) return false
         if (query.isBlank()) return true

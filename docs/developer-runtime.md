@@ -46,6 +46,7 @@ references `TermuxBootstrapCatalog`, `TermuxBootstrapInstaller`, `TermuxPrefixPo
 | `UbuntuWorkspaceMaterializer.kt` | Optional: copies a SAF `content://` project into app storage for a caller that explicitly wants a private copy. The terminal does not use it — it binds the original folder. |
 | `AgentxExecution.kt` | The backend-agnostic `execute(command, workingDirectory)` seam for future agents. |
 | `LocalUbuntuRuntime.kt` | The runtime: status flow, provisioning + verification, project preparation, terminal spec, toolchain install, process execution. |
+| `AgentxStorageAudit.kt` | Read-only, labelled, bounded measurement of where app-private storage went, with a `StorageClass` per location and a per-project breakdown of the project copies. Backs the **Logs → Storage** action. |
 
 ## Rootfs extraction: the hard-link problem, and its fix
 
@@ -285,6 +286,71 @@ Active project  →  /workspace  →  terminal
 Nothing about this touches PRoot, the PTY, the emulator or the rootfs. The lifecycle decides *what*
 command is run and *where* it is rooted, and hands it to the existing terminal implementation
 unchanged.
+
+### The one place a project is copied
+
+`UbuntuWorkspaceMaterializer` is the exception to "nothing is copied", and it is opt-in: the
+terminal does not use it. It exists for a caller that needs a project at a **real** path when the
+project is a SAF tree with no derivable filesystem path, and it writes that copy to
+
+```
+<filesDir>/developer-runtime/workspaces/<mirrorSegment(handle)>
+```
+
+with a `.agentx-mirror.ok` marker and a per-process cache, plus `forget(handle)` for the caller. A
+directory there is duplicated project data: AgentX owns it, nothing else needs it, and it is
+therefore in scope for the cleanup below. The legacy Termux backend has the same idea at
+`<filesDir>/workspaces/<safeSegment(id)>`; both roots are cleaned.
+
+## Storage
+
+Two numbers are reported for this app and they are different things: the APK on disk (about 86 MB
+with the PRoot native libraries) and Android's app-info size, which adds the app's private data. The
+second one grows to roughly 1 GB once the developer runtime is installed. That growth is
+**intentional persistent runtime data**, and it is reported rather than removed:
+
+| Location | Class | Roughly | Why it is there |
+| --- | --- | --- | --- |
+| `developer-runtime/rootfs` | persistent runtime | ~110 MB extracted, more after the toolchain installs | The Ubuntu userland and the `apt`-installed toolchain. One runtime serves every project. |
+| `developer-runtime/downloads` | re-downloadable cache | ~30 MB | The Ubuntu Base archive, kept so a retry costs no download. |
+| `developer-runtime/tmp` | temporary | small | `PROOT_TMP_DIR`. |
+| `developer-runtime/rootfs.installing`, `rootfs-staging` | temporary | small | Staging that is promoted into `rootfs`, or left over from an older build. |
+| `developer-runtime/workspaces`, `workspaces` | project copies | project-sized | The materialiser copies above — the only duplicated project data. |
+| `diagnostics/terminal.log`, `terminal-diagnostics.log` | diagnostics | ≤ 5 MB + tail | The developer log and the terminal recorder, both rotated. |
+| `skills`, `agent-sessions` | app data | small | Imported skills and persisted agent sessions. |
+| `nativeLibraryDir` | APK | ~ tens of MB | `libproot.so`, the loader, `libtalloc`, `libandroid-shmem` — reinstalled with the app. |
+
+Opening a project does not move any of this: the project's own folder is bind-mounted at
+`/workspace` in place (a SAF tree resolved to the path it names). The runtime is installed once, per
+device, not per project.
+
+To check that on a device, **Settings → Logs → Storage** walks the tree and writes a `STORAGE` entry
+to the developer log: a total, a per-class summary, every measured location, and a per-project line
+for the project copies. It is read-only and runs off the main thread. A reading that hits
+`AgentxStorageAudit.MAX_ENTRIES` says so and is labelled a lower bound rather than being presented
+as a measurement.
+
+### What deleting a project removes
+
+Deleting a project from Home is the caller of `WorkspaceManager.delete(id)`, and the confirmation it
+requires is the only entry point. What it removes:
+
+- the project's record, so it stops appearing in the list;
+- the AgentX-owned directories that belong to it — `<root>/<name>` under the two project-copy roots
+  above, where `<name>` comes from the same `TermuxWorkspaceBindings` functions that created them.
+
+What it deliberately does **not** remove:
+
+- the folder the user opened, wherever it lives. A SAF tree is never physically deleted by a
+  managed-project cleanup, and no delete decision is taken about the user's own files;
+- the shared runtime: `rootfs`, `downloads`, `tmp`, the native libraries;
+- any other project, or the project-copy roots themselves.
+
+`OwnedWorkspaceProjectStorage` enforces that by construction: the roots are a constructor
+parameter, a candidate is only ever `<root>/<name>`, and a name that is empty, `.`, `..`, or
+contains a separator or NUL is refused rather than sanitised. The record is removed *after* the
+cleanup, so a cleanup that could not finish leaves the project visible and retryable instead of
+orphaning data the user can no longer reach.
 
 ## Networking
 

@@ -52,6 +52,36 @@ interface WorkspaceManager {
 
     /** Removes a workspace from the recent list. */
     suspend fun forget(id: WorkspaceId): WorkspaceResult<Unit>
+
+    /**
+     * Deletes a project from AgentX.
+     *
+     * This is [forget] plus the cleanup a delete owes the device: the AgentX-owned data that
+     * belongs to this project is removed through [WorkspaceProjectStorage], so the app keeps
+     * neither a duplicate of a project the user has thrown away nor a directory it created for a
+     * project that no longer exists. That is:
+     *
+     * - the project directory of a project AgentX itself created, under managed project storage
+     *   ([ManagedProjectDirectory]) — the project *is* that directory, and once the record is gone
+     *   nothing could reach it again;
+     * - a copy or mirror a runtime made of a project the user selected (a SAF tree with no
+     *   filesystem path, say), wherever that runtime keeps it.
+     *
+     * What it deliberately does **not** touch, because none of it is this project's data:
+     *
+     * - the folder the user selected, wherever it lives (a SAF tree, or a path in shared storage):
+     *   deleting it is not AgentX's decision, and a SAF folder must survive a managed-project
+     *   cleanup untouched;
+     * - the shared developer runtime: the Ubuntu rootfs, the downloaded archive, PRoot's scratch
+     *   space, the native libraries — one runtime serves every project;
+     * - any other project, including a project that happens to share this project's name;
+     * - the storage roots themselves.
+     *
+     * Idempotent: a project that is already gone is a success, not an error. A cleanup that could
+     * not remove everything fails and keeps the project in the list, so the user is told the delete
+     * did not happen instead of being shown a project that is half there.
+     */
+    suspend fun delete(id: WorkspaceId): WorkspaceResult<Unit>
 }
 
 /** A persisted pointer back to a workspace. [handle] is opaque to the domain. */

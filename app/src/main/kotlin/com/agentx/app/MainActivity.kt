@@ -11,6 +11,7 @@ import androidx.lifecycle.LifecycleOwner
 import com.agentx.app.agent.conversation.FilesystemConversationStore
 import com.agentx.app.agent.orchestrator.AgentOrchestrator
 import com.agentx.app.agent.ui.OrchestratorAgentSession
+import com.agentx.app.app.AgentxProjectStorage
 import com.agentx.app.codeintel.DelegatingSyntaxParserProvider
 import com.agentx.app.codeintel.android.TreeSitterParserProvider
 import com.agentx.app.app.AndroidModelRunnerBrowserHost
@@ -248,6 +249,14 @@ class MainActivity : ComponentActivity() {
             },
         )
 
+        // Manually created projects live in AgentX-managed storage. The same directory is what a
+        // project delete has to clean up, so both read it from one place rather than naming it
+        // twice and drifting.
+        val managedProjectsRoot = File(
+            applicationContext.filesDir,
+            ManagedProjectDirectory.DIRECTORY_NAME,
+        )
+
         // One live workspace for the process: Files, Context Engine and tools
         // must share this instance. Recreating it from Compose remember would
         // drop the open session and make the agent look at an empty project.
@@ -262,8 +271,14 @@ class MainActivity : ComponentActivity() {
             // Manually created projects are empty directories in AgentX-managed storage — the same
             // app-private location used for cloned repositories, outside the Ubuntu rootfs — and
             // become the active project through the existing open/`/workspace` mechanism.
-            projects = ManagedProjectDirectory(
-                File(applicationContext.filesDir, ManagedProjectDirectory.DIRECTORY_NAME),
+            projects = ManagedProjectDirectory(managedProjectsRoot),
+            // Deleting a project also removes the AgentX-owned data that belongs to it, and only
+            // that: the copy roots hold copies AgentX made, the managed root holds projects AgentX
+            // created, and the rootfs, the cached archive and the user's own folders are out of
+            // scope by construction. See AgentxProjectStorage.
+            projectStorage = AgentxProjectStorage.create(
+                copyRoots = AgentxProjectStorage.copyRoots(developerRuntime, termuxRuntime),
+                managedRoots = listOf(managedProjectsRoot.path),
             ),
         )
 

@@ -630,6 +630,30 @@ class LocalUbuntuRuntime(
     }
 
     /**
+     * Where this app's storage actually goes: the runtime tree, the caches, the project copies,
+     * the logs and the APK's native libraries, measured separately.
+     *
+     * It exists so an app-size report can be checked on the device instead of reasoned about: the
+     * installed runtime is large on purpose (an extracted Ubuntu rootfs plus the toolchain `apt`
+     * put inside it), while the cached archive and PRoot's scratch space are not, and only a
+     * reading tells them apart. Read-only — it changes nothing.
+     *
+     * Blocking: it walks the whole runtime tree, so call it off the main thread.
+     */
+    fun storageBreakdown(): StorageBreakdown = AgentxStorageAudit.measure(
+        filesDir = appContext.filesDir.absolutePath,
+        cacheDir = runCatching { appContext.cacheDir?.absolutePath }.getOrNull(),
+        nativeLibraryDir = layout.nativeLibraryDir,
+    )
+
+    /** [storageBreakdown], recorded in the developer log as a `STORAGE` entry. */
+    fun logStorageBreakdown(): StorageBreakdown = AgentxStorageAudit.log(
+        filesDir = appContext.filesDir.absolutePath,
+        cacheDir = runCatching { appContext.cacheDir?.absolutePath }.getOrNull(),
+        nativeLibraryDir = layout.nativeLibraryDir,
+    )
+
+    /**
      * The terminal spec for a workspace, or null when the runtime cannot start yet.
      *
      * The returned spec is a normal `TermuxShellSpec`: the existing vendored PTY/session

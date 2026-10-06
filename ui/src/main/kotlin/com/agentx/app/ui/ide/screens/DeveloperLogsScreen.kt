@@ -104,6 +104,9 @@ fun DeveloperLogsScreen(
                 TextButton(onClick = { copyLog(context, viewModel.fullLog()) }) { Text("Copy") }
                 TextButton(onClick = { shareLog(context, viewModel.fullLog()) }) { Text("Share") }
                 TextButton(onClick = viewModel::captureSnapshot) { Text("Capture Snapshot") }
+                // Where the app's private storage went, measured on this device. Kept separate from
+                // the snapshot because it has to walk the installed runtime.
+                TextButton(onClick = viewModel::captureStorageAudit) { Text("Storage") }
                 TextButton(onClick = viewModel::toggleAutoScroll) {
                     Text(
                         text = if (viewModel.autoScroll) "Auto-scroll on" else "Auto-scroll off",

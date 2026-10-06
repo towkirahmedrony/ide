@@ -5,6 +5,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import com.agentx.app.termux.DEVELOPER_LOGS_UI_LIMIT
 import com.agentx.app.termux.DeveloperLogCategory
 import com.agentx.app.termux.DeveloperLogFilter
@@ -17,7 +18,9 @@ import com.agentx.app.termux.lastLogValue
 import com.agentx.app.termux.visibleDeveloperLogs
 import com.agentx.app.ubuntu.LocalUbuntuRuntime
 import com.agentx.app.ubuntu.NativeRuntimeLayout
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 import java.io.File
 
 class DeveloperLogsViewModel(
@@ -68,6 +71,19 @@ class DeveloperLogsViewModel(
 
     fun captureSnapshot() {
         DeveloperLogger.captureSnapshot(buildSnapshot().render())
+    }
+
+    /**
+     * Records where the app's private storage actually went, as a `STORAGE` log entry.
+     *
+     * Deliberately not folded into [captureSnapshot]: this walks the runtime tree — tens of
+     * thousands of files for an installed rootfs — so it runs off the main thread and is an action
+     * the developer asks for, rather than a cost every snapshot pays. With no developer runtime
+     * wired in there is nothing to measure and nothing is logged.
+     */
+    fun captureStorageAudit() {
+        val runtime = developerRuntime ?: return
+        viewModelScope.launch(Dispatchers.IO) { runtime.logStorageBreakdown() }
     }
 
     fun buildSnapshot(): DeveloperRuntimeSnapshot {

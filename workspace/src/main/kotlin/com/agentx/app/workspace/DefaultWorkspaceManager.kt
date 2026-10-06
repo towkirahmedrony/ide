@@ -20,6 +20,12 @@ class DefaultWorkspaceManager(
      */
     private val projects: ManagedProjectDirectory? = null,
     private val clock: Clock = Clock.systemUTC(),
+    /**
+     * The AgentX-owned data a project can leave behind, so [delete] can remove it. Defaults to
+     * "none": a build with no runtime that copies a project owns nothing extra, and its delete is
+     * then exactly a forget plus the record's removal.
+     */
+    private val projectStorage: WorkspaceProjectStorage = NoWorkspaceProjectStorage,
 ) : WorkspaceManager {
 
     private var session: WorkspaceSession? = null
@@ -113,6 +119,65 @@ class DefaultWorkspaceManager(
     override suspend fun forget(id: WorkspaceId): WorkspaceResult<Unit> {
         runCatching { store.delete(id) }
             .onFailure { return failure(WorkspaceError(WorkspaceErrorCode.UNKNOWN, "Could not remove the workspace.", cause = it)) }
+        if (session?.workspace?.id == id) {
+            session?.close()
+            session = null
+            currentHandleValue = null
+        }
+        return success(Unit)
+    }
+
+    /**
+     * Removes the project: its AgentX-owned data first, its record second.
+     *
+     * That order is the point. The record is what makes a project reachable, so dropping it first
+     * would orphan whatever the cleanup then failed on — unreachable data, and no way for the user
+     * to ask for its removal again. Cleanup first means a failure leaves the project in the list,
+     * visible and retryable, and nothing was half-deleted: the storage layer reports what it could
+     * not remove instead of silently succeeding.
+     *
+     * Nothing here reaches outside AgentX's own storage. The folder the user picked is not touched
+     * — see [WorkspaceManager.delete] and [WorkspaceProjectStorage] for what is in scope.
+     */
+    override suspend fun delete(id: WorkspaceId): WorkspaceResult<Unit> {
+        val record = runCatching { store.find(id) }
+            .getOrElse {
+                return failure(
+                    WorkspaceError(WorkspaceErrorCode.UNKNOWN, "Could not read the project.", cause = it),
+                )
+            }
+            // Already removed (or never known): a delete is idempotent, and this is not an error.
+            ?: return success(Unit)
+
+        val report = runCatching { projectStorage.remove(record) }
+            .getOrElse {
+                return failure(
+                    WorkspaceError(
+                        WorkspaceErrorCode.UNKNOWN,
+                        "Could not remove the data AgentX created for this project.",
+                        cause = it,
+                    ),
+                )
+            }
+        if (!report.ok) {
+            // The project stays in the list on purpose: the user asked for it gone, it is not
+            // gone, and hiding it would be the one outcome they cannot act on.
+            return failure(
+                WorkspaceError(
+                    WorkspaceErrorCode.UNKNOWN,
+                    "Could not remove everything AgentX created for this project, so it has been " +
+                        "left in your list. Nothing else was deleted.",
+                    path = report.failed.first(),
+                ),
+            )
+        }
+
+        runCatching { store.delete(id) }
+            .onFailure { return failure(WorkspaceError(WorkspaceErrorCode.UNKNOWN, "Could not remove the workspace.", cause = it)) }
+
+        // The project is gone, so a session pointing at it is stale. Closing it releases the
+        // runtime resources and unmounts the project; it never deletes the project itself, which
+        // is what leaving the project normally does too.
         if (session?.workspace?.id == id) {
             session?.close()
             session = null

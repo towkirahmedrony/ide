@@ -32,6 +32,14 @@ enum class DeveloperLogCategory {
      * forwarded from the platform's structured logger by the app-level log sink.
      */
     MODEL,
+
+    /**
+     * Where the app's own storage went: a periodic on-device reading of the runtime directories,
+     * the caches, the project copies and the logs, so an app-size report can be answered from
+     * measurements instead of from a guess. See `AgentxStorageAudit`.
+     */
+    STORAGE,
+
     ERROR,
 }
 

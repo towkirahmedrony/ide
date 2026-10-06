@@ -162,7 +162,9 @@ fun HomeScreen(
                         ProjectCard(
                             project = project,
                             onClick = { viewModel.openRecent(project.id, onOpenWorkspace) },
-                            onForget = { viewModel.forget(project.id) },
+                            // Deleting is destructive and never happens on the tap itself: this only
+                            // raises the confirmation below.
+                            onDelete = { viewModel.requestDelete(project) },
                         )
                     }
                 }
@@ -170,6 +172,51 @@ fun HomeScreen(
 
             IdeSpacer(16)
         }
+    }
+
+    // The confirmation for a project delete. It shows the project's name so the user can see
+    // exactly what would go, and it stays up (with the reason) if the delete could not be
+    // completed, instead of the project silently staying in the list.
+    state.pendingDelete?.let { project ->
+        AlertDialog(
+            onDismissRequest = viewModel::cancelDelete,
+            title = { Text("Delete project?") },
+            text = {
+                Column {
+                    Text(
+                        text = "\"${project.name}\" will be removed from AgentX, along with the " +
+                            "data AgentX created for it.",
+                    )
+                    IdeSpacer(8)
+                    Text(
+                        text = "The folder you opened stays on your device, and other projects " +
+                            "are not affected.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = ForgeMuted,
+                    )
+                    state.deleteError?.let { message ->
+                        IdeSpacer(8)
+                        Text(
+                            text = message,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = viewModel::confirmDelete,
+                    enabled = !state.deleting,
+                ) { Text(if (state.deleting) "Deleting…" else "Delete") }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = viewModel::cancelDelete,
+                    enabled = !state.deleting,
+                ) { Text("Cancel") }
+            },
+        )
     }
 }
 
@@ -277,7 +324,7 @@ private fun CreateProjectDialog(
 private fun ProjectCard(
     project: ProjectSummary,
     onClick: () -> Unit,
-    onForget: () -> Unit,
+    onDelete: () -> Unit,
 ) {
     IdeCard(modifier = Modifier.clickable(onClick = onClick)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -307,10 +354,10 @@ private fun ProjectCard(
                 )
             }
             project.branch?.let { IdeStatusPill(it, ForgeMint) }
-            IconButton(onClick = onForget) {
+            IconButton(onClick = onDelete) {
                 Icon(
                     imageVector = Icons.Filled.Delete,
-                    contentDescription = "Remove from recent",
+                    contentDescription = "Delete project",
                     tint = ForgeMuted,
                 )
             }

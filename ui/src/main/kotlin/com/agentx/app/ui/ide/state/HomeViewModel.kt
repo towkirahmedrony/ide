@@ -22,6 +22,19 @@ data class HomeUiState(
     val creating: Boolean = false,
     /** Why the last create attempt failed, shown inside the dialog. Cleared on the next attempt. */
     val createError: String? = null,
+    /**
+     * The project the user asked to delete, while the confirmation is on screen. `null` when no
+     * confirmation is up; nothing is deleted until [HomeViewModel.confirmDelete] runs.
+     */
+    val pendingDelete: ProjectSummary? = null,
+    /** True while a confirmed delete is running, so the dialog cannot be submitted twice. */
+    val deleting: Boolean = false,
+    /**
+     * Why the last confirmed delete did not happen. Kept inside the confirmation dialog rather than
+     * in [error], so a failed cleanup explains itself without replacing the project list the user
+     * needs to retry from.
+     */
+    val deleteError: String? = null,
 ) {
     val isEmpty: Boolean get() = !loading && error == null && projects.isEmpty()
 }
@@ -116,6 +129,57 @@ class HomeViewModel(
         viewModelScope.launch {
             manager.forget(WorkspaceId(id))
             loadRecents()
+        }
+    }
+
+    /**
+     * Asks to delete [project] — the confirmation step, not the delete.
+     *
+     * Deleting a project is the one action on this screen that removes data, so it is never taken
+     * straight from a tap on the list. The request is held in [HomeUiState.pendingDelete] and the
+     * screen shows the project's name with a Cancel and a Delete; only [confirmDelete] proceeds.
+     * Until then the project and everything AgentX knows about it is untouched, which is what makes
+     * Cancel a no-op rather than an undo.
+     */
+    fun requestDelete(project: ProjectSummary) {
+        uiState = uiState.copy(pendingDelete = project, deleting = false, deleteError = null)
+    }
+
+    /**
+     * Dismisses the confirmation without deleting anything.
+     *
+     * The project keeps its place in the list, its stored record, and any data AgentX created for
+     * it: this only clears the pending request.
+     */
+    fun cancelDelete() {
+        uiState = uiState.copy(pendingDelete = null, deleting = false, deleteError = null)
+    }
+
+    /**
+     * Deletes the project the user confirmed, through the workspace runtime.
+     *
+     * The runtime removes the project's record and the data AgentX created for it — including the
+     * project directory of a project AgentX created itself. It never removes the folder the user
+     * opened, the shared runtime, or any other project. A failure leaves the project in the list and
+     * reports why in the dialog, so the user can retry or cancel — the app never claims a delete
+     * that did not happen.
+     */
+    fun confirmDelete() {
+        val project = uiState.pendingDelete ?: return
+        if (uiState.deleting) return
+        viewModelScope.launch {
+            uiState = uiState.copy(deleting = true, deleteError = null)
+            when (val result = manager.delete(WorkspaceId(project.id))) {
+                is ForgeResult.Success -> {
+                    uiState = uiState.copy(deleting = false, pendingDelete = null, deleteError = null)
+                    loadRecents()
+                }
+
+                is ForgeResult.Failure -> uiState = uiState.copy(
+                    deleting = false,
+                    deleteError = result.error.userMessage,
+                )
+            }
         }
     }
 
