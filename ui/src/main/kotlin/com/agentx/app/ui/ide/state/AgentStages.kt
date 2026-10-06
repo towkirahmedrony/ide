@@ -46,7 +46,7 @@ object AgentStages {
     fun isNoise(activity: AgentActivityUiModel): Boolean {
         if (activity.kind != AgentActivityKind.THINKING) return false
         val label = activity.label.trim().lowercase()
-        return label.isEmpty() || label.startsWith("starting") || label in NOISE_LABELS
+        return label.isEmpty() || label.startsWith("starting") || label.startsWith("running ") || label in NOISE_LABELS
     }
 
     fun visibleActivities(activities: List<AgentActivityUiModel>): List<AgentActivityUiModel> =
