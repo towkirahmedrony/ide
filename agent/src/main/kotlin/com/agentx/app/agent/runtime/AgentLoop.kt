@@ -1,5 +1,6 @@
 package com.agentx.app.agent.runtime
 
+import com.agentx.app.agent.domain.AgentActivity
 import com.agentx.app.agent.domain.AgentDefinition
 import com.agentx.app.agent.domain.AgentError
 import com.agentx.app.agent.domain.AgentErrorCode
@@ -289,6 +290,15 @@ class AgentLoop(
                 timestampMillis = clock(),
             ),
         )
+        sink.emit(
+            AgentEvent.ActivityChanged(
+                sessionId = request.sessionId,
+                role = request.definition.role,
+                activity = AgentActivity.INSPECTING,
+                detail = "Starting ${request.definition.name}",
+                timestampMillis = clock(),
+            ),
+        )
 
         // A delegation that finished while the parent was parked for the specialist's
         // permission: the child has now completed, so its result becomes the delegate
@@ -553,6 +563,15 @@ class AgentLoop(
                 ),
             )
             sink.emit(
+                AgentEvent.ActivityChanged(
+                    sessionId = request.sessionId,
+                    role = request.definition.role,
+                    activity = AgentActivity.PLANNING,
+                    detail = "Step $stepIndex",
+                    timestampMillis = clock(),
+                ),
+            )
+            sink.emit(
                 AgentEvent.StatsUpdated(
                     request.sessionId,
                     stats(startedAt, stepIndex, request.maxSteps, modelCalls, toolCalls, subAgentCalls),
@@ -787,6 +806,15 @@ class AgentLoop(
                 sessionId = request.sessionId,
             )
             errors += agentError
+            sink.emit(
+                AgentEvent.ActivityChanged(
+                    sessionId = request.sessionId,
+                    role = request.definition.role,
+                    activity = AgentActivity.BLOCKED,
+                    detail = "Step budget exhausted",
+                    timestampMillis = clock(),
+                ),
+            )
             sink.emit(AgentEvent.Failed(request.sessionId, agentError, clock()))
             finished = AgentResult(
                 sessionId = request.sessionId,
@@ -804,6 +832,14 @@ class AgentLoop(
         }
 
         if (finished.status == AgentStatus.COMPLETED) {
+            sink.emit(
+                AgentEvent.ActivityChanged(
+                    sessionId = request.sessionId,
+                    role = request.definition.role,
+                    activity = AgentActivity.COMPLETED,
+                    timestampMillis = clock(),
+                ),
+            )
             sink.emit(AgentEvent.Completed(request.sessionId, finished, clock()))
         }
         return finished
@@ -965,6 +1001,20 @@ class AgentLoop(
         errors: MutableList<AgentError>,
         forcedApproval: Boolean? = null,
     ): ToolOutcome {
+        // The safe, high-level activity the tool implies (reading, editing, reviewing,
+        // verifying, committing, pushing). Derived from the tool name only, so it never
+        // exposes reasoning or arguments.
+        activityForTool(call.name)?.let { activity ->
+            sink.emit(
+                AgentEvent.ActivityChanged(
+                    sessionId = request.sessionId,
+                    role = request.definition.role,
+                    activity = activity,
+                    detail = call.name,
+                    timestampMillis = clock(),
+                ),
+            )
+        }
         sink.emit(
             AgentEvent.ToolCallStarted(
                 sessionId = request.sessionId,
@@ -1367,6 +1417,32 @@ class AgentLoop(
     private fun statusOf(success: Boolean): ToolContextStatus =
         if (success) ToolContextStatus.SUCCESS else ToolContextStatus.FAILURE
 
+    /**
+     * The safe activity a tool call represents, or null for tools whose stage is
+     * not part of the coding workflow (delegation, finish, web research).
+     *
+     * This is intentionally a name-based mapping: it is deterministic, needs no new
+     * metadata on a tool, and cannot leak anything the tool itself does not declare.
+     */
+    private fun activityForTool(toolName: String): AgentActivity? = when {
+        toolName == "ci_verification" -> AgentActivity.VERIFYING
+        toolName.contains("git_commit", ignoreCase = true) -> AgentActivity.COMMITTING
+        toolName.contains("git_push", ignoreCase = true) -> AgentActivity.PUSHING
+        toolName.contains("git_diff", ignoreCase = true) ||
+            toolName.contains("git_status", ignoreCase = true) -> AgentActivity.REVIEWING_CHANGES
+        toolName.contains("write", ignoreCase = true) ||
+            toolName.contains("edit", ignoreCase = true) ||
+            toolName.contains("patch", ignoreCase = true) -> AgentActivity.EDITING
+        toolName.contains("read", ignoreCase = true) -> AgentActivity.READING
+        toolName.contains("list", ignoreCase = true) ||
+            toolName.contains("search", ignoreCase = true) ||
+            toolName.contains("symbols", ignoreCase = true) ||
+            toolName.contains("outline", ignoreCase = true) ||
+            toolName.contains("definition", ignoreCase = true) ||
+            toolName.contains("references", ignoreCase = true) -> AgentActivity.INSPECTING
+        else -> null
+    }
+
     private fun finishFromCall(
         request: AgentLoopRequest,
         call: ModelToolCall,
@@ -1424,6 +1500,15 @@ class AgentLoop(
             sessionId = request.sessionId,
         )
         errors += error
+        sink.emit(
+            AgentEvent.ActivityChanged(
+                sessionId = request.sessionId,
+                role = request.definition.role,
+                activity = AgentActivity.CANCELLED,
+                detail = "Cancelled",
+                timestampMillis = clock(),
+            ),
+        )
         // The plan's own terminal form, so a consumer never has to infer it: the step
         // that was running is cancelled together with the run.
         sink.emit(

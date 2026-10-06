@@ -22,6 +22,9 @@ import com.agentx.app.tools.git.GitStatusTool
 import com.agentx.app.tools.web.HttpGetClient
 import com.agentx.app.tools.web.WebFetchTool
 import com.agentx.app.tools.web.WebSearchProvider
+import com.agentx.app.tools.verification.CiVerificationTool
+import com.agentx.app.tools.verification.DelegatingCiRepositoryRefProvider
+import com.agentx.app.tools.verification.DelegatingCiVerificationService
 import com.agentx.app.tools.web.WebSearchTool
 import com.agentx.app.workspace.ProcessExecutor
 
@@ -79,6 +82,19 @@ object BuiltinTools {
     fun web(fetch: HttpGetClient, search: WebSearchProvider): List<Tool> = listOf(
         WebFetchTool(fetch),
         WebSearchTool(search),
+    )
+
+    /**
+     * CI verification: a read-only window onto GitHub Actions used by the
+     * autonomous verification loop. Both collaborators are bindable, so the tool
+     * is registered before the app has wired the real GitHub-backed services and
+     * fails closed until it does.
+     */
+    fun verification(
+        service: DelegatingCiVerificationService,
+        repository: DelegatingCiRepositoryRefProvider,
+    ): List<Tool> = listOf(
+        CiVerificationTool(service, repository),
     )
 }
 

@@ -430,7 +430,57 @@ internal fun mapEvent(event: AgentEvent): AgentStreamEvent? = when (event) {
 
     is AgentEvent.OutputDelta -> AgentStreamEvent.Chunk(event.text)
 
+    // The runtime's safe, high-level workflow stage — inspecting, planning, reading,
+    // editing, reviewing, verifying, fixing, committing, pushing, completed, blocked
+    // or cancelled. It carries no reasoning, prompt text or tool arguments.
+    is AgentEvent.ActivityChanged -> AgentStreamEvent.Activity(
+        AgentActivity(
+            status = activityStatusFor(event.activity),
+            label = event.detail ?: activityLabel(event.activity),
+        ),
+    )
+
     else -> null
+}
+
+/** Maps the runtime's workflow stage onto the UI's activity status. */
+private fun activityStatusFor(activity: com.agentx.app.agent.domain.AgentActivity): AgentActivityStatus =
+    when (activity) {
+        com.agentx.app.agent.domain.AgentActivity.COMPLETED -> AgentActivityStatus.COMPLETED
+        com.agentx.app.agent.domain.AgentActivity.BLOCKED -> AgentActivityStatus.ERROR
+        com.agentx.app.agent.domain.AgentActivity.CANCELLED -> AgentActivityStatus.IDLE
+        com.agentx.app.agent.domain.AgentActivity.VERIFICATION_FAILED -> AgentActivityStatus.TOOL_FAILURE
+        com.agentx.app.agent.domain.AgentActivity.VERIFYING,
+        com.agentx.app.agent.domain.AgentActivity.RE_VERIFYING,
+        com.agentx.app.agent.domain.AgentActivity.FIXING,
+        com.agentx.app.agent.domain.AgentActivity.REVIEWING_CHANGES,
+        com.agentx.app.agent.domain.AgentActivity.COMMITTING,
+        com.agentx.app.agent.domain.AgentActivity.PUSHING,
+        -> AgentActivityStatus.USING_TOOL
+
+        com.agentx.app.agent.domain.AgentActivity.INSPECTING,
+        com.agentx.app.agent.domain.AgentActivity.PLANNING,
+        com.agentx.app.agent.domain.AgentActivity.READING,
+        com.agentx.app.agent.domain.AgentActivity.EDITING,
+        -> AgentActivityStatus.THINKING
+    }
+
+/** A short, human label for a workflow stage, used when the event carries no detail. */
+private fun activityLabel(activity: com.agentx.app.agent.domain.AgentActivity): String = when (activity) {
+    com.agentx.app.agent.domain.AgentActivity.INSPECTING -> "Inspecting"
+    com.agentx.app.agent.domain.AgentActivity.PLANNING -> "Planning"
+    com.agentx.app.agent.domain.AgentActivity.READING -> "Reading"
+    com.agentx.app.agent.domain.AgentActivity.EDITING -> "Editing"
+    com.agentx.app.agent.domain.AgentActivity.REVIEWING_CHANGES -> "Reviewing changes"
+    com.agentx.app.agent.domain.AgentActivity.VERIFYING -> "Verifying"
+    com.agentx.app.agent.domain.AgentActivity.VERIFICATION_FAILED -> "Verification failed"
+    com.agentx.app.agent.domain.AgentActivity.FIXING -> "Fixing"
+    com.agentx.app.agent.domain.AgentActivity.RE_VERIFYING -> "Re-verifying"
+    com.agentx.app.agent.domain.AgentActivity.COMMITTING -> "Committing"
+    com.agentx.app.agent.domain.AgentActivity.PUSHING -> "Pushing"
+    com.agentx.app.agent.domain.AgentActivity.COMPLETED -> "Completed"
+    com.agentx.app.agent.domain.AgentActivity.BLOCKED -> "Blocked"
+    com.agentx.app.agent.domain.AgentActivity.CANCELLED -> "Cancelled"
 }
 
 /** `provider/model`, for an operator-readable fallback line. */

@@ -40,6 +40,22 @@ sealed interface AgentEvent {
         override val timestampMillis: Long,
     ) : AgentEvent
 
+    /**
+     * The safe, high-level activity the run has reached.
+     *
+     * Emitted as the workflow moves (inspecting, planning, editing, verifying,
+     * fixing, committing, pushing) so the UI can show progress without ever seeing
+     * the model's reasoning. [detail] is a short, non-sensitive summary such as the
+     * verification stage or a failure category — never prompt or secret material.
+     */
+    data class ActivityChanged(
+        override val sessionId: String,
+        val role: AgentRole,
+        val activity: AgentActivity,
+        val detail: String? = null,
+        override val timestampMillis: Long,
+    ) : AgentEvent
+
     data class PlanUpdated(
         override val sessionId: String,
         val plan: AgentPlan,

@@ -33,6 +33,7 @@ import com.agentx.app.tools.git.GitCommitTool
 import com.agentx.app.tools.git.GitDiffTool
 import com.agentx.app.tools.git.GitLogTool
 import com.agentx.app.tools.git.GitStatusTool
+import com.agentx.app.tools.verification.CiVerificationTool
 import com.agentx.app.tools.web.WebFetchTool
 import com.agentx.app.tools.web.WebSearchTool
 import com.agentx.app.tools.filesystem.ReadFileTool
@@ -147,6 +148,15 @@ class AgentToolPolicyTest {
                 ),
             )
         }
+        // CI verification is a real, registered tool family; register it under its
+        // real name so the policy-derived catalog is exercised end to end.
+        register(
+            ProbeTool(
+                name = CiVerificationTool.NAME,
+                capabilities = setOf(ToolCapability.READ_ONLY),
+                required = setOf(ToolPermissionLevel.READ_ONLY),
+            ),
+        )
     }
 
     private fun definitions(registry: DefaultToolRegistry): (String) -> ToolDefinition? =

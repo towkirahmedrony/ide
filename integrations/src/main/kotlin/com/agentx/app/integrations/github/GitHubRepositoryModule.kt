@@ -1,5 +1,6 @@
 package com.agentx.app.integrations.github
 
+import com.agentx.app.core.verification.CiVerificationService
 import com.agentx.app.git.DelegatingGitProjectProvider
 import com.agentx.app.git.GitProjectProvider
 import com.agentx.app.git.GitPushService
@@ -34,6 +35,7 @@ object GitHubRepositoryServiceKeys {
     const val REPOSITORY_SERVICE: String = "forge.integrations.github.repositoryService"
     const val CLONE_SERVICE: String = "forge.integrations.github.cloneService"
     const val PUSH_SERVICE: String = "forge.integrations.github.pushService"
+    const val CI_VERIFICATION_SERVICE: String = "forge.integrations.github.ciVerificationService"
     const val DESTINATION_VALIDATOR: String = "forge.integrations.github.cloneDestinationValidator"
 }
 
@@ -49,6 +51,7 @@ object GitHubRepositoryServices {
         restClient: GitHubRestClient = UrlConnectionGitHubRestClient(),
         gitProjects: GitProjectProvider = DelegatingGitProjectProvider(),
         connections: GitHubRepositoryConnectionResolver = GitHubRepositoryConnectionResolver { null },
+        actionsConnections: GitHubActionsConnectionResolver = GitHubActionsConnectionResolver { null },
     ): Services = Services(
         repositoryService = GitHubRepositoryServiceImpl(
             credentialGateway = credentialGateway,
@@ -60,6 +63,13 @@ object GitHubRepositoryServices {
             connections = connections,
             projects = gitProjects,
         ),
+        // Read-only CI verification shares the same credential gateway and transport
+        // as the rest of GitHub access, so it is never a second credential path.
+        ciVerificationService = GitHubActionsServiceImpl(
+            credentialGateway = credentialGateway,
+            connections = actionsConnections,
+            restClient = restClient,
+        ),
         destinationValidator = CloneDestinationValidator(),
     )
 
@@ -67,6 +77,7 @@ object GitHubRepositoryServices {
         val repositoryService: GitHubRepositoryService,
         val cloneService: GitHubRepositoryCloneService,
         val pushService: GitPushService,
+        val ciVerificationService: CiVerificationService,
         val destinationValidator: CloneDestinationValidator,
     )
 }

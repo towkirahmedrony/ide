@@ -27,6 +27,19 @@ object ServiceKeys {
      * repository from; the app attaches the workspace-backed provider after boot.
      */
     const val GIT_PROJECT_PROVIDER = "forge.git.projectProvider"
+
+    /**
+     * Bindable GitHub Actions verification service the agent's `ci_verification`
+     * tool reads through. Fail closed with "no connection" until the app binds the
+     * real, authenticated implementation.
+     */
+    const val CI_VERIFICATION_SERVICE = "forge.git.ciVerificationService"
+
+    /**
+     * Bindable resolver for the repository whose CI is observed; the app attaches
+     * one that reads the active project's GitHub remote.
+     */
+    const val CI_REPOSITORY_REF_PROVIDER = "forge.git.ciRepositoryRefProvider"
     const val CONTEXT_ENGINE = "forge.context.engine"
     const val MODEL_GATEWAY = "forge.model.gateway"
     const val MODEL_MANAGER = "forge.model.manager"

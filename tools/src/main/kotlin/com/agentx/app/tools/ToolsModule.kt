@@ -9,6 +9,8 @@ import com.agentx.app.git.DelegatingGitService
 import com.agentx.app.git.GitProjectProvider
 import com.agentx.app.git.GitPushService
 import com.agentx.app.git.GitService
+import com.agentx.app.tools.verification.DelegatingCiRepositoryRefProvider
+import com.agentx.app.tools.verification.DelegatingCiVerificationService
 import com.agentx.app.tools.web.DelegatingHttpGetClient
 import com.agentx.app.tools.web.DelegatingWebSearchProvider
 import com.agentx.app.tools.web.HttpGetClient
@@ -38,6 +40,8 @@ class ToolsModule(
     private val gitProjects: GitProjectProvider = DelegatingGitProjectProvider(),
     private val webFetch: HttpGetClient = DelegatingHttpGetClient(),
     private val webSearch: WebSearchProvider = DelegatingWebSearchProvider(),
+    private val ciVerification: DelegatingCiVerificationService = DelegatingCiVerificationService(),
+    private val ciRepository: DelegatingCiRepositoryRefProvider = DelegatingCiRepositoryRefProvider(),
 ) : ForgeModule {
 
     private val registry = DefaultToolRegistry()
@@ -54,6 +58,10 @@ class ToolsModule(
         }
         BuiltinTools.git(git, gitPush).forEach(registry::register)
         BuiltinTools.web(webFetch, webSearch).forEach(registry::register)
+        // CI verification is registered with bindable collaborators so it fails
+        // closed until the app attaches the GitHub-backed service and the active
+        // project's repository resolver.
+        BuiltinTools.verification(ciVerification, ciRepository).forEach(registry::register)
         tools.forEach(registry::register)
         context.services.register(ServiceKeys.TOOL_REGISTRY, registry)
         context.services.register(
@@ -69,6 +77,8 @@ class ToolsModule(
         // provider once the connection infrastructure and workspace runtime exist.
         context.services.register(ServiceKeys.GIT_PUSH_SERVICE, gitPush)
         context.services.register(ServiceKeys.GIT_PROJECT_PROVIDER, gitProjects)
+        context.services.register(ServiceKeys.CI_VERIFICATION_SERVICE, ciVerification)
+        context.services.register(ServiceKeys.CI_REPOSITORY_REF_PROVIDER, ciRepository)
         context.services.register(ServiceKeys.TOOL_CONNECTION_AUTHORIZER, connections)
     }
 }

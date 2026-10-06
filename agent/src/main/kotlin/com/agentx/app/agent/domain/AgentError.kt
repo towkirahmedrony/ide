@@ -27,6 +27,34 @@ enum class AgentErrorCode {
      * connection and whether an intentional fallback is configured.
      */
     MODEL_NOT_CONNECTED,
+
+    /** A verification stage ran and failed. */
+    VERIFICATION_FAILED,
+
+    /** No verification could be run (no CI, no connection). */
+    VERIFICATION_UNAVAILABLE,
+
+    /** A GitHub Actions run completed with a failing conclusion. */
+    CI_FAILURE,
+
+    /** A GitHub API call failed for a reason that is not authentication or transport. */
+    GITHUB_API_FAILURE,
+
+    /** A credential was rejected or is missing. */
+    AUTHENTICATION_FAILURE,
+
+    /** The remote could not be reached. */
+    NETWORK_FAILURE,
+
+    /** A workspace or path security rule refused the operation. */
+    WORKSPACE_SECURITY_FAILURE,
+
+    /** A likely secret was detected in the change set. */
+    SECRET_DETECTED,
+
+    /** The workflow stopped without a result (retry budget exhausted, verification blocked). */
+    BLOCKED,
+
     UNKNOWN,
 }
 

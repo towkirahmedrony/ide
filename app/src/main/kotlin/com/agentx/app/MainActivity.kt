@@ -74,7 +74,13 @@ import com.agentx.app.git.DelegatingGitProjectProvider
 import com.agentx.app.git.DelegatingGitPushService
 import com.agentx.app.git.DelegatingGitService
 import com.agentx.app.git.GitPushService
+import com.agentx.app.core.valueOrNull
+import com.agentx.app.core.verification.CiVerificationService
+import com.agentx.app.integrations.github.GitHubRepositoryRefs
 import com.agentx.app.integrations.github.GitHubRepositoryServiceKeys
+import com.agentx.app.tools.verification.CiRepositoryRefProvider
+import com.agentx.app.tools.verification.DelegatingCiRepositoryRefProvider
+import com.agentx.app.tools.verification.DelegatingCiVerificationService
 import com.agentx.app.tools.DelegatingWorkspaceHostPathResolver
 import com.agentx.app.tools.WorkspaceHostPathResolver
 import com.agentx.app.workspace.RoutingWorkspaceBackend
@@ -337,6 +343,27 @@ class MainActivity : ComponentActivity() {
                 (foundation.services.get<Any>(GitHubRepositoryServiceKeys.PUSH_SERVICE) as? GitPushService)
                     ?.let(holder::bind)
             }
+        }
+        // Read-only CI verification: the agent's `ci_verification` tool observes the
+        // same authenticated GitHub account, and the repository is resolved from the
+        // active project's credential-free origin remote. Both stay fail-closed until
+        // this binding runs.
+        when (val holder = foundation.services.get<Any>(ServiceKeys.CI_VERIFICATION_SERVICE)) {
+            is DelegatingCiVerificationService -> {
+                (foundation.services.get<Any>(GitHubRepositoryServiceKeys.CI_VERIFICATION_SERVICE)
+                    as? CiVerificationService)?.let(holder::bind)
+            }
+        }
+        when (val holder = foundation.services.get<Any>(ServiceKeys.CI_REPOSITORY_REF_PROVIDER)) {
+            is DelegatingCiRepositoryRefProvider -> holder.bind(
+                CiRepositoryRefProvider {
+                    val active = gitProjectProvider.active() ?: return@CiRepositoryRefProvider null
+                    if (!active.available) return@CiRepositoryRefProvider null
+                    val remotes = gitService.remotes(active.workspaceId).valueOrNull().orEmpty()
+                    val url = remotes.firstOrNull { it.name == "origin" }?.url ?: remotes.firstOrNull()?.url
+                    url?.let { GitHubRepositoryRefs.fromCloneUrl(it) }
+                },
+            )
         }
 
         setContent {

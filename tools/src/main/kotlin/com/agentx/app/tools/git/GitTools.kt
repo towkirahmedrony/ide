@@ -28,6 +28,7 @@ import com.agentx.app.tools.ToolPermissionDecision
 import com.agentx.app.tools.ToolPermissionLevel
 import com.agentx.app.tools.SecretRedactor
 import com.agentx.app.tools.stringOrNull
+import com.agentx.app.tools.verification.CommitSafetyGuard
 
 /**
  * Read-only git tools for the active workspace.
@@ -393,6 +394,22 @@ class GitCommitTool(private val git: GitService) : Tool {
                 code = ToolErrorCode.EXECUTION_FAILED,
                 message = "Nothing is staged to commit.",
                 toolName = NAME,
+            )
+        }
+        // Last gate before the commit object exists: a secret must never enter history.
+        // The staged diff is scanned and a finding blocks the commit; only the file and
+        // line are reported, never the value.
+        val stagedDiff = git.diff(workspaceId, staged = true, paths = paths).orThrowGit(NAME)
+        val findings = CommitSafetyGuard.scanForSecrets(stagedDiff)
+        if (findings.isNotEmpty()) {
+            throw ToolExecutionError(
+                code = ToolErrorCode.SECRET_DETECTED,
+                message = "Refusing to commit: a likely secret was detected in the staged changes. " +
+                    "Remove it and retry.",
+                toolName = NAME,
+                details = mapOf(
+                    "findings" to Json.array(findings.map { Json.of(it.location ?: "(unknown)") }),
+                ),
             )
         }
         val result = git.commit(workspaceId, message).orThrowGit(NAME)

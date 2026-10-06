@@ -20,6 +20,7 @@ import com.agentx.app.tools.git.GitDiffTool
 import com.agentx.app.tools.git.GitLogTool
 import com.agentx.app.tools.git.GitPushTool
 import com.agentx.app.tools.git.GitStatusTool
+import com.agentx.app.tools.verification.CiVerificationTool
 import com.agentx.app.tools.web.WebFetchTool
 import com.agentx.app.tools.web.WebSearchTool
 
@@ -110,6 +111,12 @@ object AgentToolPolicy {
          */
         GIT_WRITE(setOf(GitCommitTool.NAME, GitPushTool.NAME)),
 
+        /**
+         * Read-only CI verification: observing the GitHub Actions run that proves
+         * an Android build. Network-capability, no mutation, no secrets.
+         */
+        CI(setOf(CiVerificationTool.NAME)),
+
         /** Web research: search plus single-page retrieval. */
         WEB(setOf(WebSearchTool.NAME, WebFetchTool.NAME)),
 
@@ -148,6 +155,7 @@ object AgentToolPolicy {
             ToolGrant.CODE_INTELLIGENCE,
             ToolGrant.WRITE,
             ToolGrant.GIT_READ,
+            ToolGrant.CI,
             ToolGrant.DELEGATE,
             ToolGrant.FINISH,
         ),
@@ -206,6 +214,7 @@ object AgentToolPolicy {
             ToolGrant.WRITE,
             ToolGrant.EXECUTE,
             ToolGrant.GIT_READ,
+            ToolGrant.CI,
             ToolGrant.FINISH,
         ),
         AgentRole.TESTER to setOf(
@@ -213,6 +222,7 @@ object AgentToolPolicy {
             ToolGrant.CODE_INTELLIGENCE,
             ToolGrant.WRITE,
             ToolGrant.EXECUTE,
+            ToolGrant.CI,
             ToolGrant.FINISH,
         ),
         AgentRole.DOCS to setOf(
@@ -229,6 +239,7 @@ object AgentToolPolicy {
             ToolGrant.INSPECT,
             ToolGrant.CODE_INTELLIGENCE,
             ToolGrant.GIT_READ,
+            ToolGrant.CI,
             ToolGrant.GIT_WRITE,
             ToolGrant.FINISH,
         ),

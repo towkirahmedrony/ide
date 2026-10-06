@@ -18,6 +18,7 @@ import com.agentx.app.integrations.connection.DefaultConnectionManager
 import com.agentx.app.integrations.connection.DispatchingConnectionTester
 import com.agentx.app.integrations.connection.InMemoryConnectionSecretStore
 import com.agentx.app.integrations.connection.InMemoryConnectionStore
+import com.agentx.app.integrations.github.GitHubActionsConnectionResolver
 import com.agentx.app.integrations.github.GitHubRepositoryConnectionResolver
 import com.agentx.app.integrations.github.GitHubRepositoryServiceKeys
 import com.agentx.app.integrations.github.GitHubRepositoryServices
@@ -88,10 +89,22 @@ class IntegrationsModule(
                         capability = ConnectionCapabilities.REPOSITORY_WRITE,
                     ).valueOrNull()?.id
                 },
+                // CI verification only reads workflow results, so it needs the
+                // narrower repository_read capability, resolved the same way.
+                actionsConnections = GitHubActionsConnectionResolver {
+                    created.authorize(
+                        type = ConnectionType.GITHUB,
+                        capability = ConnectionCapabilities.REPOSITORY_READ,
+                    ).valueOrNull()?.id
+                },
             )
             context.services.register(GitHubRepositoryServiceKeys.REPOSITORY_SERVICE, github.repositoryService)
             context.services.register(GitHubRepositoryServiceKeys.CLONE_SERVICE, github.cloneService)
             context.services.register(GitHubRepositoryServiceKeys.PUSH_SERVICE, github.pushService)
+            context.services.register(
+                GitHubRepositoryServiceKeys.CI_VERIFICATION_SERVICE,
+                github.ciVerificationService,
+            )
             context.services.register(
                 GitHubRepositoryServiceKeys.DESTINATION_VALIDATOR,
                 github.destinationValidator,

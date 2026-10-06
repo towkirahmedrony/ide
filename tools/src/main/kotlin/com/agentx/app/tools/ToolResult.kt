@@ -15,6 +15,12 @@ enum class ToolErrorCode {
     CANCELLED,
     WORKSPACE_UNAVAILABLE,
     CONNECTION_UNAUTHORIZED,
+
+    /** A likely secret was detected in the change set; the write is refused. */
+    SECRET_DETECTED,
+
+    /** The change set is not safe to write under the current guard rails. */
+    UNSAFE_CHANGE,
 }
 
 /**
