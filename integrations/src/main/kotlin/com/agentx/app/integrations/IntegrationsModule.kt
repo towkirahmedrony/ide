@@ -13,9 +13,12 @@ import com.agentx.app.integrations.connection.DefaultConnectionManager
 import com.agentx.app.integrations.connection.DispatchingConnectionTester
 import com.agentx.app.integrations.connection.InMemoryConnectionSecretStore
 import com.agentx.app.integrations.connection.InMemoryConnectionStore
+import com.agentx.app.integrations.github.*
 import com.agentx.app.integrations.setup.IntegrationSetupManager
+import com.agentx.app.integrations.connection.ConnectionType
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import java.io.File
 
 /**
  * Wires the Connection Manager and the integration registry into the container.
@@ -47,44 +50,32 @@ class IntegrationsModule(
         val registry = DefaultIntegrationRegistry()
         context.services.register(ServiceKeys.CONNECTION_MANAGER, created)
         // The manager is also the credential gateway: service clients ask it for a
-        // credential and it lends one over without publishing it.
+        // credential and it lends one without publishing it.
         context.services.register(ServiceKeys.CONNECTION_CREDENTIAL_GATEWAY, created)
         context.services.register(ServiceKeys.CONNECTION_PROVIDER_REGISTRY, providers)
         context.services.register(ServiceKeys.INTEGRATION_REGISTRY, registry)
         setup?.let { context.services.register(ServiceKeys.INTEGRATION_SETUP, it) }
+
+        // GitHub repository service (Phase 2). Only wired when the GitHub provider
+        // is registered, because it needs the credential gateway.
+        if (providers.provider(ConnectionType.GITHUB) != null) {
+            val managedProjectsRoot = context.config.getString(
+                "managedProjectsRoot",
+                "${context.services.get<File>(com.agentx.app.workspace.ServiceKeys.WORKSPACE_MANAGER_FILES_DIR)}/projects",
+            )
+            val validator = CloneDestinationValidator(File(managedProjectsRoot))
+            val restClient = UrlConnectionGitHubRestClient()
+            val repositoryService = GitHubRepositoryServiceImpl(
+                credentialGateway = created,
+                restClient = restClient,
+            )
+            val cloneService = JGitGitHubRepositoryCloneService(
+                credentialGateway = created,
+                validator = validator,
+            )
+            context.services.register(ServiceKeys.GITHUB_REPOSITORY_SERVICE, repositoryService)
+            context.services.register(ServiceKeys.GITHUB_REPOSITORY_CLONE_SERVICE, cloneService)
+            context.services.register(ServiceKeys.GITHUB_REPOSITORY_VALIDATOR, validator)
+        }
     }
-}
-
-/** Assembles a [ConnectionManager] from its ports. Shared by the module and tests. */
-object ConnectionManagers {
-
-    fun create(
-        store: ConnectionStore = InMemoryConnectionStore(),
-        secrets: ConnectionSecretStore = InMemoryConnectionSecretStore(),
-        tester: ConnectionTester = com.agentx.app.integrations.connection.UnsupportedConnectionTester(),
-        clock: () -> Long = System::currentTimeMillis,
-        idFactory: () -> String = { java.util.UUID.randomUUID().toString() },
-        ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
-        providers: ConnectionProviderRegistry = ConnectionProviderRegistry.EMPTY,
-    ): ConnectionManager = DefaultConnectionManager(
-        store = store,
-        secrets = secrets,
-        tester = tester,
-        providers = providers,
-        clock = clock,
-        idFactory = idFactory,
-        ioDispatcher = ioDispatcher,
-    )
-}
-
-/** In-memory [IntegrationRegistry] used until later tasks register live integrations. */
-class DefaultIntegrationRegistry : IntegrationRegistry {
-
-    private val items = LinkedHashMap<String, Integration>()
-
-    override fun register(integration: Integration) {
-        items[integration.descriptor.id] = integration
-    }
-
-    override fun descriptors(): List<IntegrationDescriptor> = items.values.map { it.descriptor }
 }
