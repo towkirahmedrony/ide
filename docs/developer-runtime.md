@@ -316,7 +316,7 @@ second one grows to roughly 1 GB once the developer runtime is installed. That g
 | `developer-runtime/tmp` | temporary | small | `PROOT_TMP_DIR`. |
 | `developer-runtime/rootfs.installing`, `rootfs-staging` | temporary | small | Staging that is promoted into `rootfs`, or left over from an older build. |
 | `developer-runtime/workspaces`, `workspaces` | project copies | project-sized | The materialiser copies above and the legacy mirrors: app-owned copies of a project that lives somewhere else. Each is removed with its own project. |
-| `projects` | app files | project-sized | Projects AgentX created itself, one directory per project. Unlike a copy, the project *is* this directory — it is not a duplicate of anything, and it is removed with its own project. |
+| `projects` | app files (`App files: projects`) | project-sized | Projects AgentX created itself, one directory per project. Unlike a copy, the project *is* this directory — it is not a duplicate of anything, and it is removed with its own project. |
 | `diagnostics/terminal.log`, `terminal-diagnostics.log` | diagnostics | ≤ 5 MB + tail | The developer log and the terminal recorder, both rotated. |
 | `skills`, `agent-sessions` | app data | small | Imported skills and persisted agent sessions. |
 | `nativeLibraryDir` | APK | ~ tens of MB | `libproot.so`, the loader, `libtalloc`, `libandroid-shmem` — reinstalled with the app. |

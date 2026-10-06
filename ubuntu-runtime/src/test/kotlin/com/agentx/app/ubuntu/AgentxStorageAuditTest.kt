@@ -42,6 +42,10 @@ class AgentxStorageAuditTest {
         write("developer-runtime/workspaces/myproject-1a2b3c4d/README.md", 500)
         write("developer-runtime/workspaces/otherproject-9999/lib/util.kt", 700)
 
+        // The legacy Termux mirror root: the other place a project copy is written, and its own
+        // top-level directory, so both roots are measured and classified.
+        write("workspaces/saf-1a2b3c4d/notes.md", 900)
+
         // The app's own data and its diagnostics.
         write("skills/imported/SKILL.md", 800)
         write("agent-sessions/abc.json", 1_200)
@@ -137,7 +141,11 @@ class AgentxStorageAuditTest {
         val root = filesDir.path.trimEnd('/')
         val covered = breakdown.entries
             .filter { it.storageClass != StorageClass.APK }
-            .map { it.path.removePrefix("$root/").substringBefore('/') }
+            // Entries outside this tree (the Android cache, the native library directory) are not
+            // part of what filesDir contains.
+            .mapNotNull { entry ->
+                entry.path.removePrefix("$root/").takeIf { it != entry.path }?.substringBefore('/')
+            }
             .toSet()
         val topLevel = filesDir.listFiles().orEmpty().map { it.name }.toSet()
 
@@ -169,10 +177,12 @@ class AgentxStorageAuditTest {
     fun `the breakdown groups the totals by class`() {
         val byClass = measure().byClass
 
-        assertEquals(72_000L, byClass[StorageClass.PERSISTENT_RUNTIME])
+        // The rootfs, plus the two files beside it that belong to no other class: the
+        // verification marker and the app directory the audit does not recognise.
+        assertEquals(72_110L, byClass[StorageClass.PERSISTENT_RUNTIME])
         assertEquals(12_000L, byClass[StorageClass.RUNTIME_CACHE])
         assertEquals(1_840L, byClass[StorageClass.TEMPORARY])
-        assertEquals(2_700L, byClass[StorageClass.PROJECT_COPY])
+        assertEquals(3_600L, byClass[StorageClass.PROJECT_COPY])
         assertEquals(2_000L, byClass[StorageClass.APP_DATA])
         assertEquals(3_300L, byClass[StorageClass.DIAGNOSTICS])
         assertEquals(340_000L, byClass[StorageClass.APK])
@@ -188,15 +198,22 @@ class AgentxStorageAuditTest {
         assertEquals(2, copies.getValue("myproject-1a2b3c4d").usage.files)
         assertEquals(700L, copies.getValue("otherproject-9999").usage.bytes)
         assertEquals(StorageClass.PROJECT_COPY, copies.getValue("otherproject-9999").storageClass)
+        assertEquals(900L, copies.getValue("saf-1a2b3c4d").usage.bytes)
     }
 
     @Test
-    fun `a project copy total matches the per-project entries`() {
+    fun `every project-copy directory is explained by the per-project entries`() {
         val breakdown = measure()
         val copies = breakdown.projectCopies.sumOf { it.usage.bytes }
-        val root = entry(breakdown)("Project copies (materialiser)").usage.bytes
+        val roots = breakdown.entries
+            .filter { it.storageClass == StorageClass.PROJECT_COPY }
+            .sumOf { it.usage.bytes }
 
-        assertEquals(root, copies, "the per-project view must explain the directory it breaks down")
+        assertEquals(
+            roots,
+            copies,
+            "the per-project view must explain every directory it breaks down, under both roots",
+        )
     }
 
     @Test
