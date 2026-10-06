@@ -84,6 +84,7 @@ class RateLimitQuotaDimensionsTest {
         manager.reconcile(permit, actualInputTokens = null, actualOutputTokens = null, success = false)
 
         assertIs<RateLimitDecision.Allowed>(manager.decide(), "a failed request consumed nothing")
+        Unit
     }
 
     @Test
@@ -97,6 +98,7 @@ class RateLimitQuotaDimensionsTest {
         clock.sleep(DefaultRateLimitManager.HOUR_MILLIS)
 
         assertIs<RateLimitDecision.Allowed>(manager.decide(), "the hour window has rolled over")
+        Unit
     }
 
     // --- split token ceilings ----------------------------------------------
@@ -151,6 +153,7 @@ class RateLimitQuotaDimensionsTest {
         manager.reconcile(permit, actualInputTokens = 10, actualOutputTokens = 0, success = true)
 
         assertIs<RateLimitDecision.Allowed>(manager.decide(input = 60, output = 0))
+        Unit
     }
 
     @Test
@@ -180,6 +183,7 @@ class RateLimitQuotaDimensionsTest {
         // Nothing was reported, so the estimate stands: crediting the request as free
         // would let an unreported provider be used past its ceiling.
         assertIs<RateLimitDecision.Blocked>(manager.decide(input = 60, output = 0))
+        Unit
     }
 
     @Test
@@ -192,6 +196,7 @@ class RateLimitQuotaDimensionsTest {
         manager.reconcile(permit, actualInputTokens = 0, actualOutputTokens = 5, success = true)
 
         assertIs<RateLimitDecision.Allowed>(manager.decide(input = 0, output = 50))
+        Unit
     }
 
     // --- unknown dimensions -------------------------------------------------
@@ -206,6 +211,7 @@ class RateLimitQuotaDimensionsTest {
             manager.decide(input = 10_000_000, output = 10_000_000),
             "an unknown token ceiling must not be treated as zero",
         )
+        Unit
     }
 
     @Test
@@ -251,6 +257,7 @@ class RateLimitQuotaDimensionsTest {
 
         manager.reconcile(second, null, null, success = false)
         assertIs<RateLimitDecision.Allowed>(manager.decide())
+        Unit
     }
 
     @Test
@@ -266,6 +273,7 @@ class RateLimitQuotaDimensionsTest {
         manager.reconcile(permit, actualInputTokens = null, actualOutputTokens = null, success = false)
 
         assertIs<RateLimitDecision.Allowed>(manager.canRequest("provider", "model", 50, 50))
+        Unit
     }
 
     @Test
@@ -282,5 +290,6 @@ class RateLimitQuotaDimensionsTest {
 
         assertIs<RateLimitDecision.Allowed>(manager.decide(input = 90, output = 0))
         assertIs<RateLimitDecision.Blocked>(manager.decide(input = 91, output = 0))
+        Unit
     }
 }

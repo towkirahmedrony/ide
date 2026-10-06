@@ -60,6 +60,7 @@ class RateLimitProfilePersistenceTest {
         assertIs<RateLimitDecision.Blocked>(
             manager.canRequest("groq", "openai/gpt-oss-120b", 1, 1, accountId = "groq-a"),
         )
+        Unit
     }
 
     @Test
@@ -77,6 +78,7 @@ class RateLimitProfilePersistenceTest {
         manager.restore()
 
         assertNotNull(manager.profile("groq", "openai/gpt-oss-120b", "groq-a"))
+        Unit
     }
 
     @Test
@@ -102,5 +104,6 @@ class RateLimitProfilePersistenceTest {
             manager.canRequest("gemini", "gemini-3.5-flash", 10, 10, accountId = "gemini-a"),
             "a provider nobody configured is not throttled by another provider's limits",
         )
+        Unit
     }
 }

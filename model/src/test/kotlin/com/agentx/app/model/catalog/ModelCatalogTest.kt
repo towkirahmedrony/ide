@@ -207,6 +207,7 @@ class ModelCatalogTest {
 
         assertTrue(result is ForgeResult.Failure)
         assertNotNull(catalog.cached())
+        Unit
     }
 
     @Test

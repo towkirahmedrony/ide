@@ -266,11 +266,12 @@ class DefaultModelManager(
                     // Editing it is not a disconnection, and it has no runtime state
                     // that could go stale.
                     connectFromConfiguration(stored)
-                } else {
+                } else if (localConnectionConfigurationChanged(existing, stored)) {
                     // A local/custom endpoint may have changed address, so the old
                     // connection is invalidated; say so instead of silently keeping a
                     // stale endpoint. Only this preset's connection is dropped — a
-                    // different provider stays connected.
+                    // different provider stays connected. A label-only edit (display
+                    // name) is not a connection change and must not release it.
                     val wasActive = registry.activePresetId() == stored.id
                     registry.disconnect(stored.id)
                     if (wasActive) stopMonitor()
@@ -567,6 +568,20 @@ class DefaultModelManager(
     //
     // The shared pieces are unchanged: one ModelConnectionRegistry, one credential
     // store, one ModelConfig descriptor, one Model Gateway.
+
+    /**
+     * Whether a local/custom edit actually changed the live connection, as opposed
+     * to a label or bookkeeping field. Display name, timestamps and health polling
+     * are not the connection: releasing a live endpoint because it was renamed is
+     * how two independent connections used to collapse after a reload.
+     */
+    private fun localConnectionConfigurationChanged(before: ModelPreset, after: ModelPreset): Boolean =
+        before.copy(
+            displayName = after.displayName,
+            health = after.health,
+            createdAtMillis = after.createdAtMillis,
+            updatedAtMillis = after.updatedAtMillis,
+        ) != after
 
     /** The rules that own [preset]'s connection lifecycle. Always exactly one applies. */
     private fun connectionManager(preset: ModelPreset): ModelConnectionManager =

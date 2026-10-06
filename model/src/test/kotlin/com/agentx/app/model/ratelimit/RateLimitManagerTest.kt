@@ -171,6 +171,7 @@ class RateLimitManagerTest {
         assertTrue(reservation.bypassed)
         assertTrue(reservation.entries.isEmpty())
         assertIs<RateLimitDecision.Allowed>(manager.canRequest(request(rateLimited = false)))
+        Unit
     }
 
     @Test
@@ -184,6 +185,7 @@ class RateLimitManagerTest {
         val second = manager.reserve(request(inputTokens = 700, outputTokens = 100))
         assertTrue(second.entries.isNotEmpty())
         assertIs<RateLimitDecision.Allowed>(manager.canRequest(request(inputTokens = 100, outputTokens = 0)))
+        Unit
     }
 
     @Test

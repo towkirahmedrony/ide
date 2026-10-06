@@ -164,6 +164,7 @@ class RateLimitProfileWiringTest {
             "the quota belongs to this connection, not to the provider family",
         )
         assertNotNull(rateLimits.profile(ModelProviderIds.GROQ, documentedModel, "groq-a"))
+        Unit
     }
 
     @Test

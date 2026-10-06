@@ -451,6 +451,61 @@ class ApiLocalConnectionSeparationTest {
     }
 
     @Test
+    fun `stopping an API preset keeps the selection so refresh restores the same connection`() = runBlocking {
+        val manager = manager()
+        val api = apiPreset(manager)
+        assertNotNull(manager.selectModel(api.id).valueOrNull())
+        val before = assertNotNull(manager.connections()[api.id])
+
+        val status = assertNotNull(manager.stopModel(api.id).valueOrNull())
+
+        assertEquals(ModelLifecycleState.STOPPED, status.state)
+        assertNull(manager.connections()[api.id], "stop releases the live connection")
+        assertEquals(api.id, manager.state.value.activePresetId, "stop does not clear the selected preset")
+        assertEquals(api.id, store.activeId())
+        val saved = assertNotNull(manager.preset(api.id))
+        assertEquals(api.modelIdentifier, saved.modelIdentifier)
+        assertEquals(api.credentialRef, saved.credentialRef)
+        assertEquals(apiKey, secrets.get(assertNotNull(saved.credentialRef)))
+
+        manager.refresh()
+
+        val restored = assertNotNull(
+            manager.connections()[api.id],
+            "refresh re-registers the still-selected API preset from its saved configuration",
+        )
+        assertEquals(before.connectionId, restored.connectionId)
+        assertEquals(before.providerId, restored.providerId)
+        assertEquals(before.baseUrl, restored.baseUrl)
+        assertEquals(before.model, restored.model)
+        assertEquals(before.apiKey, restored.apiKey)
+        assertEquals(1, manager.connections().values.count { it.connectionId == api.id })
+        assertEquals(api.id, manager.state.value.activePresetId)
+        Unit
+    }
+
+    @Test
+    fun `stopping an API preset still lets onAppForeground restore the same connection`() = runBlocking {
+        val manager = manager()
+        val api = apiPreset(manager)
+        assertNotNull(manager.selectModel(api.id).valueOrNull())
+        val before = assertNotNull(manager.connections()[api.id])
+
+        assertNotNull(manager.stopModel(api.id).valueOrNull())
+        assertNull(manager.connections()[api.id])
+        assertEquals(api.id, manager.state.value.activePresetId)
+
+        manager.onAppForeground()
+
+        val restored = assertNotNull(manager.connections()[api.id])
+        assertEquals(before.connectionId, restored.connectionId)
+        assertEquals(before.baseUrl, restored.baseUrl)
+        assertEquals(before.model, restored.model)
+        assertEquals(1, manager.connections().values.count { it.connectionId == api.id })
+        Unit
+    }
+
+    @Test
     fun `an API provider is never polled or reconnected the way a runtime is`() = runBlocking {
         val pollingRunner = FakeModelRunner()
         val manager = manager(runner = pollingRunner, monitor = true)

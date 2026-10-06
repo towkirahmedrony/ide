@@ -193,6 +193,7 @@ class EndpointDiscoveryTest {
         assertTrue(!provider.createsTunnels)
         assertIs<TunnelDetection.Detected>(provider.validate("https://x.trycloudflare.com"))
         assertIs<TunnelDetection.NotFound>(provider.validate("https://x.ngrok.io"))
+        Unit
     }
 
     @Test

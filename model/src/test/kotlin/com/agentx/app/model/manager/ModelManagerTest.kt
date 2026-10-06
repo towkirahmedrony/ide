@@ -121,7 +121,7 @@ class ModelManagerTest {
 
         assertNull(secrets.get(ref))
         assertNull(manager.activeConfig())
-        assertNull(gateway.provider("openai-compatible"))
+        assertNull(gateway.provider("qwen"))
         assertEquals(ModelLifecycleState.NOT_CONFIGURED, manager.state.value.status("qwen").state)
     }
 
@@ -147,6 +147,7 @@ class ModelManagerTest {
                 "a stored ONLINE flag is not proof of a live connection",
             )
             assertNotNull(manager.activeConfig())
+        Unit
         }
 
     @Test
@@ -159,7 +160,7 @@ class ModelManagerTest {
 
         assertEquals(ModelLifecycleState.DISCONNECTED, manager.state.value.status("qwen").state)
         assertNull(manager.activeConfig())
-        assertNull(gateway.provider("openai-compatible"))
+        assertNull(gateway.provider("qwen"))
     }
 
     // --- connecting --------------------------------------------------------
@@ -178,6 +179,7 @@ class ModelManagerTest {
         assertEquals(created.modelIdentifier, config.model)
         assertEquals("qwen", config.metadata["modelPresetId"])
         assertNotNull(gateway.provider(config.connectionId), "the gateway received the connection")
+        Unit
     }
 
     @Test
@@ -211,6 +213,7 @@ class ModelManagerTest {
         assertEquals(1, runner.startCalls, "a healthy runtime is re-used, not restarted")
         assertEquals(0, runner.healthCalls, "selecting a usable model does not even re-probe it")
         assertNotNull(manager.activeConfig())
+        Unit
     }
 
     @Test
@@ -226,7 +229,7 @@ class ModelManagerTest {
         assertEquals(ModelLifecycleState.FAILED, manager.state.value.status("qwen").state)
         assertTrue(manager.state.value.status("qwen").awaitingRuntime)
         assertNull(manager.activeConfig())
-        assertNull(gateway.provider("openai-compatible"))
+        assertNull(gateway.provider("qwen"))
     }
 
     @Test
@@ -239,7 +242,7 @@ class ModelManagerTest {
 
         assertEquals(ModelLifecycleState.STOPPED, status.state)
         assertNull(manager.activeConfig())
-        assertNull(gateway.provider("openai-compatible"))
+        assertNull(gateway.provider("qwen"))
         assertEquals(1, runner.stopCalls)
     }
 
@@ -261,7 +264,8 @@ class ModelManagerTest {
 
         assertEquals(ModelLifecycleState.ONLINE, reconnected.state)
         assertNotNull(manager.activeConfig())
-        assertNotNull(gateway.provider("openai-compatible"))
+        assertNotNull(gateway.provider("qwen"))
+        Unit
     }
 
     @Test
@@ -280,6 +284,7 @@ class ModelManagerTest {
 
         assertEquals(ModelLifecycleState.ONLINE, runner.status("qwen").state)
         assertNotNull(manager.activeConfig())
+        Unit
     }
 
     // --- security and decoupling ------------------------------------------

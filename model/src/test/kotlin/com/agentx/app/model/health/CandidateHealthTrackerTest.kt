@@ -35,6 +35,7 @@ class CandidateHealthTrackerTest {
         assertEquals(CandidateHealthState.TEMPORARILY_UNAVAILABLE, second.state)
         assertFalse(health.isUsable("groq", "groq-y"))
         assertNotNull(health.cooldownRemainingMillis("groq", "groq-y"))
+        Unit
     }
 
     @Test

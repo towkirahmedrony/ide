@@ -525,6 +525,7 @@ class ProviderModelDiscoveryTest {
         assertEquals(2, failing.availableModels(ModelProviderIds.GEMINI).size)
         assertTrue(failing.lastDiscovery(ModelProviderIds.GEMINI) is ModelCatalogState.Failed)
         assertNotNull(store.load(ModelProviderIds.GEMINI))
+        Unit
     }
 
     @Test

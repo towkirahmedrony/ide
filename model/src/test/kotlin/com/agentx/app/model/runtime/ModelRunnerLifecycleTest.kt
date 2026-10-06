@@ -213,6 +213,7 @@ class ModelRunnerLifecycleTest {
 
         assertEquals(ModelLifecycleState.ONLINE, reconnected.status.state)
         assertNotNull(reconnected.status.endpoint)
+        Unit
     }
 
     @Test

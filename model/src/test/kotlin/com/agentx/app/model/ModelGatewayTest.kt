@@ -245,6 +245,7 @@ class ModelGatewayTest {
         assertTrue(events.any { it is ModelStreamEvent.Started })
         assertTrue(events.any { it is ModelStreamEvent.TextDelta })
         assertNotNull(events.filterIsInstance<ModelStreamEvent.Completed>().firstOrNull())
+        Unit
     }
 
     @Test

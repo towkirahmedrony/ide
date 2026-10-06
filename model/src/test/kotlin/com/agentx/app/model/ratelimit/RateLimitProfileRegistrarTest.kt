@@ -59,6 +59,7 @@ class RateLimitProfileRegistrarTest {
             manager.profile(ModelProviderIds.GROQ, documentedModel, "groq-conn-1"),
             "the profile must be readable at the scope requests are admitted under",
         )
+        Unit
     }
 
     @Test
@@ -147,6 +148,7 @@ class RateLimitProfileRegistrarTest {
                 local = true,
             ),
         )
+        Unit
     }
 
     @Test
@@ -160,6 +162,7 @@ class RateLimitProfileRegistrarTest {
         assertIs<RateLimitDecision.Allowed>(
             manager.canRequest(ModelProviderIds.OPENAI_COMPATIBLE, "devstral-24b", 100, 100, accountId = "custom-a"),
         )
+        Unit
     }
 
     @Test
@@ -182,6 +185,7 @@ class RateLimitProfileRegistrarTest {
         assertIs<RateLimitDecision.Allowed>(
             manager.canRequest(ModelProviderIds.GROQ, documentedModel, 10, 10, accountId = "groq-conn-2"),
         )
+        Unit
     }
 
     @Test
@@ -221,5 +225,6 @@ class RateLimitProfileRegistrarTest {
         assertEquals(RateLimitSource.PROVIDER_REPORTED, rpm.source)
         assertNull(rpm.used, "nothing has been used yet")
         assertIs<RateLimitDecision.Allowed>(headroom.decision)
+        Unit
     }
 }

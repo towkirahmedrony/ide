@@ -163,6 +163,7 @@ class ConnectionIdentityIsolationTest {
         assertNotNull(gateway.provider("custom-a"))
         assertNotNull(gateway.provider("custom-b"))
         assertNotNull(gateway.provider("ollama-c"))
+        Unit
     }
 
     @Test
@@ -210,6 +211,7 @@ class ConnectionIdentityIsolationTest {
         assertNull(manager.connections()[a.id])
         assertNotNull(manager.connections()[b.id])
         assertNotNull(manager.preset(b.id), "B's saved preset is untouched")
+        Unit
     }
 
     // --- health / reconnect isolation --------------------------------------
@@ -234,6 +236,7 @@ class ConnectionIdentityIsolationTest {
         assertEquals(ModelLifecycleState.ONLINE, manager.state.value.status("gemini-c").state)
         assertNotNull(manager.connections()["gemini-c"], "A failure must not touch another connection")
         assertNotNull(gateway.provider("gemini-c"))
+        Unit
     }
 
     @Test
@@ -257,6 +260,7 @@ class ConnectionIdentityIsolationTest {
 
         assertNull(manager.connections()["custom-a"])
         assertNotNull(manager.connections()["custom-b"], "B must be untouched by A's reconnect failure")
+        Unit
     }
 
     // --- update isolation --------------------------------------------------
@@ -324,15 +328,61 @@ class ConnectionIdentityIsolationTest {
         restarted.selectModel(a.id)
         restarted.selectModel(b.id)
 
-        // Editing B leaves A connected.
+        // Editing B's label leaves both connections registered. A display name is
+        // not the live endpoint, so renaming B must not release B (or A).
         assertNotNull(restarted.updatePreset(b.copy(displayName = "B renamed")).valueOrNull())
         assertNotNull(restarted.connections()[a.id], "A survives B's edit")
         assertEquals(a.id, assertNotNull(restarted.connections()[a.id]).metadata["modelPresetId"])
+        assertNotNull(restarted.connections()[b.id], "renaming B must not disconnect B")
+        assertEquals(b.id, assertNotNull(restarted.connections()[b.id]).connectionId)
 
         // Disconnecting A leaves B registered.
         assertNotNull(restarted.stopModel(a.id).valueOrNull())
         assertNull(restarted.connections()[a.id])
-        assertNotNull(restarted.connections()[b.id])
+        assertNotNull(restarted.connections()[b.id], "disconnecting A must not remove B")
+        assertEquals(1, restarted.connections().values.count { it.connectionId == b.id })
+        Unit
+    }
+
+    @Test
+    fun `an API connection keeps identity through degraded reconnect and never disturbs another`() = runBlocking {
+        val manager = manager()
+        val api = manager.save(geminiPreset(id = "gemini-a", name = "Gemini", model = "gemini-3.5-flash"))
+        val other = manager.save(custom("custom-b", "B", "qwen2.5-coder-14b", "https://b.example.dev"))
+        assertNotNull(manager.selectModel(api.id).valueOrNull())
+        assertNotNull(manager.selectModel(other.id).valueOrNull())
+        val apiBefore = assertNotNull(manager.connections()[api.id])
+        val otherBefore = assertNotNull(manager.connections()[other.id])
+        assertNotEquals(apiBefore.connectionId, otherBefore.connectionId)
+        assertEquals(api.id, apiBefore.connectionId)
+        assertEquals(other.id, otherBefore.connectionId)
+
+        runner.onHealth = { preset ->
+            if (preset.id == api.id) unhealthy("temporarily unavailable") else healthy()
+        }
+        assertNotNull(manager.checkModelHealth(api.id).valueOrNull())
+
+        assertEquals(ModelLifecycleState.DEGRADED, manager.state.value.status(api.id).state)
+        val degraded = assertNotNull(manager.connections()[api.id], "degraded health is not a lost connection")
+        assertEquals(apiBefore.connectionId, degraded.connectionId)
+        assertEquals(apiBefore.providerId, degraded.providerId)
+        assertEquals(apiBefore.model, degraded.model)
+        assertEquals(apiBefore.baseUrl, degraded.baseUrl)
+        assertEquals(otherBefore, manager.connections()[other.id], "B is untouched by A's outage")
+
+        runner.onHealth = { healthy() }
+        val reconnected = assertNotNull(manager.reconnectModel(api.id).valueOrNull())
+
+        assertEquals(ModelLifecycleState.ONLINE, reconnected.state)
+        val apiAfter = assertNotNull(manager.connections()[api.id])
+        assertEquals(apiBefore.connectionId, apiAfter.connectionId)
+        assertEquals(apiBefore.providerId, apiAfter.providerId)
+        assertEquals(apiBefore.model, apiAfter.model)
+        assertEquals(apiBefore.baseUrl, apiAfter.baseUrl)
+        assertEquals(1, manager.connections().values.count { it.connectionId == api.id }, "reconnect must not add a duplicate")
+        assertEquals(otherBefore, manager.connections()[other.id])
+        assertEquals(setOf(api.id, other.id), manager.connections().keys)
+        Unit
     }
 
     // --- sequential cross-mutation -----------------------------------------
