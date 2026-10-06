@@ -18,6 +18,7 @@ import com.agentx.app.tools.git.GitBranchesTool
 import com.agentx.app.tools.git.GitCommitTool
 import com.agentx.app.tools.git.GitDiffTool
 import com.agentx.app.tools.git.GitLogTool
+import com.agentx.app.tools.git.GitPushTool
 import com.agentx.app.tools.git.GitStatusTool
 import com.agentx.app.tools.web.WebFetchTool
 import com.agentx.app.tools.web.WebSearchTool
@@ -102,8 +103,12 @@ object AgentToolPolicy {
             ),
         ),
 
-        /** Controlled git write. Approval-gated and capability-gated. */
-        GIT_WRITE(setOf(GitCommitTool.NAME)),
+        /**
+         * Controlled git write: committing, and pushing the current branch to `main`.
+         * Approval-gated and capability-gated; the push is a high-impact remote
+         * operation, so it always goes through the same ASK gate as the commit.
+         */
+        GIT_WRITE(setOf(GitCommitTool.NAME, GitPushTool.NAME)),
 
         /** Web research: search plus single-page retrieval. */
         WEB(setOf(WebSearchTool.NAME, WebFetchTool.NAME)),
@@ -130,8 +135,8 @@ object AgentToolPolicy {
      *  - CODER / FAST_CODER / DOCS change code as well as read it;
      *  - DEBUGGER / TESTER change code and may execute commands, within their
      *    COMMAND_EXECUTION ceiling and approval gate;
-     *  - COMMIT_PR inspects git and performs the controlled git commit; GitHub
-     *    operations are withheld until a credential path for tools exists.
+     *  - COMMIT_PR inspects git, performs the controlled commit, and pushes the
+     *    current branch to `main` through the authenticated GitHub credential path.
      */
     private val ROLE_GRANTS: Map<AgentRole, Set<ToolGrant>> = mapOf(
         // MAIN orchestrates: it inspects, understands and edits code, reads git
@@ -216,8 +221,8 @@ object AgentToolPolicy {
             ToolGrant.WRITE,
             ToolGrant.FINISH,
         ),
-        // Commit/PR owns the repository writes: git inspection, git commit and
-        // (once a credential path exists) GitHub operations. It still holds no
+        // Commit/PR owns the repository writes: git inspection, git commit and the
+        // authenticated push to the configured GitHub remote. It still holds no
         // source-editing tool, so it commits what the coder changed rather than
         // rewriting it.
         AgentRole.COMMIT_PR to setOf(

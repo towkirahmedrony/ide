@@ -5,6 +5,7 @@ import com.agentx.app.git.GitBranch
 import com.agentx.app.git.GitChangeType
 import com.agentx.app.git.GitFileChange
 import com.agentx.app.git.GitLogEntry
+import com.agentx.app.git.GitPushService
 import com.agentx.app.git.GitService
 import com.agentx.app.git.GitStatus
 import com.agentx.app.tools.Json
@@ -26,10 +27,7 @@ import com.agentx.app.tools.ToolParameterType
 import com.agentx.app.tools.ToolPermissionDecision
 import com.agentx.app.tools.ToolPermissionLevel
 import com.agentx.app.tools.SecretRedactor
-import com.agentx.app.tools.isProtectedWorkspacePath
 import com.agentx.app.tools.stringOrNull
-import com.agentx.app.tools.toToolError
-import com.agentx.app.workspace.WorkspacePath
 
 /**
  * Read-only git tools for the active workspace.
@@ -159,7 +157,7 @@ class GitDiffTool(private val git: GitService) : Tool {
         val staged = input.boolean(ARG_STAGED) ?: false
         val paths = input.arrayValue(ARG_PATHS).orEmpty()
             .mapNotNull { it.stringOrNull() }
-            .map(::validatePath)
+            .map { validateRepositoryPath(it, NAME) }
             .distinct()
 
         val status = git.status(workspaceId).orThrowGit(NAME)
@@ -186,28 +184,6 @@ class GitDiffTool(private val git: GitService) : Tool {
             ),
             displayText = text,
         )
-    }
-
-    /**
-     * A pathspec is untrusted input. Absolute paths and `..` are refused by the
-     * shared workspace path rule; on top of that `.git` internals and git pathspec
-     * "magic" (a leading `:`) are refused, so a path can never be used to reach
-     * repository metadata the agent should not see.
-     */
-    private fun validatePath(raw: String): String {
-        val normalized = when (val result = WorkspacePath.normalize(raw)) {
-            is ForgeResult.Success -> result.value
-            is ForgeResult.Failure -> throw result.error.toToolError(NAME, raw)
-        }
-        if (normalized.isEmpty() || isProtectedWorkspacePath(normalized) || normalized.startsWith(':')) {
-            throw ToolExecutionError(
-                code = ToolErrorCode.INVALID_ARGUMENTS,
-                message = "Refusing to diff the protected path '$raw'",
-                toolName = NAME,
-                details = mapOf("path" to Json.of(raw)),
-            )
-        }
-        return normalized
     }
 
     private fun summarize(diff: String): DiffSummary {
@@ -400,24 +376,114 @@ class GitCommitTool(private val git: GitService) : Tool {
                 toolName = NAME,
             )
         }
-        val paths = input.arrayValue(ARG_PATHS).orEmpty().mapNotNull { it.stringOrNull() }
+        // The repository is resolved from the workspace context, so the model can
+        // never choose a different one. Every path it does supply is validated first.
+        val paths = input.arrayValue(ARG_PATHS).orEmpty()
+            .mapNotNull { it.stringOrNull() }
+            .map { validateRepositoryPath(it, NAME) }
+            .distinct()
         if (paths.isNotEmpty()) {
             git.add(workspaceId, paths).orThrowGit(NAME)
         }
+        // Reject an empty commit before Git runs: when no paths were staged implicitly
+        // and nothing is already staged, there is exactly nothing to commit.
+        val status = git.status(workspaceId).orThrowGit(NAME)
+        if (paths.isEmpty() && status.staged.isEmpty()) {
+            throw ToolExecutionError(
+                code = ToolErrorCode.EXECUTION_FAILED,
+                message = "Nothing is staged to commit.",
+                toolName = NAME,
+            )
+        }
         val result = git.commit(workspaceId, message).orThrowGit(NAME)
+        val parsed = parseCommitOutput(result.output)
         return ToolOutput(
             content = mapOf(
                 "success" to Json.of(result.success),
+                "branch" to (parsed.branch?.let { Json.of(it) } ?: JsonValue.Null),
+                "commitSha" to (parsed.sha?.let { Json.of(it) } ?: JsonValue.Null),
                 "stagedPaths" to Json.array(paths.map { Json.of(it) }),
+                "message" to Json.of(message),
                 "output" to Json.of(result.output),
             ),
             displayText = result.output.ifBlank { if (result.success) "Committed" else "Commit failed" },
         )
     }
 
+    /**
+     * Reads the branch and commit id out of git's own `[<branch> <sha>] <subject>`
+     * line. Pure, so the parsing is directly testable; a message git did not print in
+     * this shape simply yields nulls rather than a wrong id.
+     */
+    private fun parseCommitOutput(output: String): CommitSummary {
+        val match = COMMIT_LINE.find(output) ?: return CommitSummary(null, null)
+        return CommitSummary(branch = match.groupValues[1], sha = match.groupValues[2])
+    }
+
+    private data class CommitSummary(val branch: String?, val sha: String?)
+
     companion object {
         const val NAME = "git_commit"
         const val ARG_MESSAGE = "message"
         const val ARG_PATHS = "paths"
+
+        /** git prints `[main 1a2b3c4] subject` on a successful commit. */
+        private val COMMIT_LINE = Regex("""\[([^\]\s]+)\s+([0-9a-fA-F]{7,40})\]""")
+    }
+}
+
+/**
+ * The high-impact remote operation: push the current branch to the configured GitHub
+ * remote's `main`.
+ *
+ * It carries no arguments at all, so the model cannot choose a repository, a remote
+ * URL, a branch, a refspec, or a credential: the workspace is taken from context, the
+ * remote from the repository, the target is always `main`, and the token is obtained
+ * by the push service through the credential gateway. It declares ASK, so the router
+ * pauses for the user's approval before anything reaches the network, and the service
+ * underneath cannot force, delete a ref, or push a tag.
+ */
+class GitPushTool(private val push: GitPushService) : Tool {
+
+    override val definition = ToolDefinition(
+        name = NAME,
+        title = "Git push",
+        description = "Pushes the active workspace's current branch to the configured GitHub remote's " +
+            "'main' using the connected GitHub account. Never force-pushes, deletes a branch, or pushes tags.",
+        inputSchema = ToolInputSchema(),
+        output = ToolOutputSpec(description = "Success, remote, branch and the pushed commit SHA."),
+        permission = ToolPermissionDecision.ASK,
+        capabilities = setOf(ToolCapability.GIT, ToolCapability.MUTATING),
+        category = ToolCategory.GIT,
+        requiredPermissions = setOf(ToolPermissionLevel.GIT_WRITE),
+        metadata = mapOf("sideEffects" to "remote-write", "targetBranch" to GitPushService.MAIN_BRANCH),
+    )
+
+    override suspend fun execute(input: ToolInput, context: ToolExecutionContext): ToolOutput {
+        val workspaceId = context.requireWorkspaceId(NAME)
+        return when (val result = push.push(workspaceId)) {
+            is ForgeResult.Success -> {
+                val value = result.value
+                ToolOutput(
+                    content = mapOf(
+                        "success" to Json.of(true),
+                        "remote" to Json.of(value.remote),
+                        "branch" to Json.of(value.branch),
+                        "commitSha" to (value.commitSha?.let { Json.of(it) } ?: JsonValue.Null),
+                        "message" to Json.of(value.message),
+                    ),
+                    displayText = buildString {
+                        append("Pushed '").append(value.branch).append("' to '").append(value.remote).append('\'')
+                        value.commitSha?.let { append(" ($it)") }
+                    },
+                )
+            }
+
+            is ForgeResult.Failure -> throw result.error.toToolError(NAME)
+        }
+    }
+
+    companion object {
+        const val NAME = "git_push"
     }
 }

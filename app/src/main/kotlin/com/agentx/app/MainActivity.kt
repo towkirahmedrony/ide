@@ -70,7 +70,11 @@ import com.agentx.app.ui.theme.ForgeTheme
 import com.agentx.app.workspace.DefaultWorkspaceManager
 import com.agentx.app.workspace.FileWorkspaceBackend
 import com.agentx.app.workspace.ManagedProjectDirectory
+import com.agentx.app.git.DelegatingGitProjectProvider
+import com.agentx.app.git.DelegatingGitPushService
 import com.agentx.app.git.DelegatingGitService
+import com.agentx.app.git.GitPushService
+import com.agentx.app.integrations.github.GitHubRepositoryServiceKeys
 import com.agentx.app.tools.DelegatingWorkspaceHostPathResolver
 import com.agentx.app.tools.WorkspaceHostPathResolver
 import com.agentx.app.workspace.RoutingWorkspaceBackend
@@ -321,6 +325,18 @@ class MainActivity : ComponentActivity() {
         // The git tools operate through this same service the IDE uses.
         when (val holder = foundation.services.get<Any>(ServiceKeys.GIT_SERVICE)) {
             is DelegatingGitService -> holder.bind(gitService)
+        }
+        // The GitHub push service resolves the active project through this provider, and
+        // the agent's `git_push` tool reaches the same authenticated service. Both stay
+        // fail-closed until this binding runs.
+        when (val provider = foundation.services.get<Any>(ServiceKeys.GIT_PROJECT_PROVIDER)) {
+            is DelegatingGitProjectProvider -> provider.bind(gitProjectProvider)
+        }
+        when (val holder = foundation.services.get<Any>(ServiceKeys.GIT_PUSH_SERVICE)) {
+            is DelegatingGitPushService -> {
+                (foundation.services.get<Any>(GitHubRepositoryServiceKeys.PUSH_SERVICE) as? GitPushService)
+                    ?.let(holder::bind)
+            }
         }
 
         setContent {

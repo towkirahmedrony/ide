@@ -1,5 +1,8 @@
 package com.agentx.app.integrations.github
 
+import com.agentx.app.git.DelegatingGitProjectProvider
+import com.agentx.app.git.GitProjectProvider
+import com.agentx.app.git.GitPushService
 import com.agentx.app.integrations.connection.ConnectionCredentialGateway
 
 /**
@@ -30,6 +33,7 @@ internal object QuietGitHubRepositoryLogger : GitHubRepositoryLogger {
 object GitHubRepositoryServiceKeys {
     const val REPOSITORY_SERVICE: String = "forge.integrations.github.repositoryService"
     const val CLONE_SERVICE: String = "forge.integrations.github.cloneService"
+    const val PUSH_SERVICE: String = "forge.integrations.github.pushService"
     const val DESTINATION_VALIDATOR: String = "forge.integrations.github.cloneDestinationValidator"
 }
 
@@ -43,18 +47,26 @@ object GitHubRepositoryServices {
     fun create(
         credentialGateway: ConnectionCredentialGateway,
         restClient: GitHubRestClient = UrlConnectionGitHubRestClient(),
+        gitProjects: GitProjectProvider = DelegatingGitProjectProvider(),
+        connections: GitHubRepositoryConnectionResolver = GitHubRepositoryConnectionResolver { null },
     ): Services = Services(
         repositoryService = GitHubRepositoryServiceImpl(
             credentialGateway = credentialGateway,
             restClient = restClient,
         ),
         cloneService = JGitGitHubRepositoryCloneService(credentialGateway = credentialGateway),
+        pushService = JGitGitHubRepositoryPushService(
+            credentialGateway = credentialGateway,
+            connections = connections,
+            projects = gitProjects,
+        ),
         destinationValidator = CloneDestinationValidator(),
     )
 
     data class Services(
         val repositoryService: GitHubRepositoryService,
         val cloneService: GitHubRepositoryCloneService,
+        val pushService: GitPushService,
         val destinationValidator: CloneDestinationValidator,
     )
 }

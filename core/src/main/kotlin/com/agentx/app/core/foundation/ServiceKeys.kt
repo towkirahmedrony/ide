@@ -15,6 +15,18 @@ object ServiceKeys {
 
     /** Bindable Git service the git tools operate through. */
     const val GIT_SERVICE = "forge.git.service"
+
+    /**
+     * Bindable authenticated push service the agent's `git_push` tool operates
+     * through. Fail closed with "no connection" until the app binds the real one.
+     */
+    const val GIT_PUSH_SERVICE = "forge.git.pushService"
+
+    /**
+     * Bindable active-project provider the GitHub push service resolves the
+     * repository from; the app attaches the workspace-backed provider after boot.
+     */
+    const val GIT_PROJECT_PROVIDER = "forge.git.projectProvider"
     const val CONTEXT_ENGINE = "forge.context.engine"
     const val MODEL_GATEWAY = "forge.model.gateway"
     const val MODEL_MANAGER = "forge.model.manager"

@@ -76,6 +76,8 @@ import com.agentx.app.skills.SKILLS_LAYER
 import com.agentx.app.skills.SkillDiscoverySource
 import com.agentx.app.skills.SkillManager
 import com.agentx.app.skills.SkillStore
+import com.agentx.app.git.DelegatingGitProjectProvider
+import com.agentx.app.git.DelegatingGitPushService
 import com.agentx.app.git.DelegatingGitService
 import com.agentx.app.tools.BuiltinTools
 import com.agentx.app.tools.DelegatingWorkspaceFileSystemResolver
@@ -283,6 +285,13 @@ object Foundation {
         // path (for commands) and the live Git service (for the git tools).
         val toolHostPaths = DelegatingWorkspaceHostPathResolver()
         val gitService = DelegatingGitService()
+        // The authenticated push is the same bindable pattern: the tool system registers
+        // `git_push` now, and the app attaches the GitHub-backed service once the
+        // connection infrastructure and workspace runtime exist. The active-project
+        // provider is shared with the integrations module so the push resolves the same
+        // repository the IDE and Git do.
+        val gitPushService = DelegatingGitPushService()
+        val gitProjects = DelegatingGitProjectProvider()
         // Web research is real out of the box: a URL-connection transport backs
         // web_fetch, and a provider-agnostic search provider backs web_search.
         val webFetch: HttpGetClient = UrlConnectionHttpGetClient()
@@ -302,6 +311,8 @@ object Foundation {
                 hostPaths = toolHostPaths,
                 commandExecutor = processExecutor,
                 git = gitService,
+                gitPush = gitPushService,
+                gitProjects = gitProjects,
                 webFetch = webFetch,
                 webSearch = webSearch,
             ),
@@ -340,6 +351,7 @@ object Foundation {
                 secretStore = connectionSecretStore,
                 providers = connectionProviders,
                 setup = integrationSetup,
+                gitProjects = gitProjects,
             ),
         )
         modules.register(WorkspaceModule(runtime = processRuntime, executor = processExecutor))

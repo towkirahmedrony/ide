@@ -3,7 +3,11 @@ package com.agentx.app.tools
 import com.agentx.app.core.foundation.ServiceKeys
 import com.agentx.app.core.module.ForgeModule
 import com.agentx.app.core.module.ModuleContext
+import com.agentx.app.git.DelegatingGitProjectProvider
+import com.agentx.app.git.DelegatingGitPushService
 import com.agentx.app.git.DelegatingGitService
+import com.agentx.app.git.GitProjectProvider
+import com.agentx.app.git.GitPushService
 import com.agentx.app.git.GitService
 import com.agentx.app.tools.web.DelegatingHttpGetClient
 import com.agentx.app.tools.web.DelegatingWebSearchProvider
@@ -30,6 +34,8 @@ class ToolsModule(
     private val hostPaths: WorkspaceHostPathResolver = DelegatingWorkspaceHostPathResolver(),
     private val commandExecutor: ProcessExecutor? = null,
     private val git: GitService = DelegatingGitService(),
+    private val gitPush: GitPushService = DelegatingGitPushService(),
+    private val gitProjects: GitProjectProvider = DelegatingGitProjectProvider(),
     private val webFetch: HttpGetClient = DelegatingHttpGetClient(),
     private val webSearch: WebSearchProvider = DelegatingWebSearchProvider(),
 ) : ForgeModule {
@@ -46,7 +52,7 @@ class ToolsModule(
         commandExecutor?.let { executor ->
             BuiltinTools.execution(executor, hostPaths).forEach(registry::register)
         }
-        BuiltinTools.git(git).forEach(registry::register)
+        BuiltinTools.git(git, gitPush).forEach(registry::register)
         BuiltinTools.web(webFetch, webSearch).forEach(registry::register)
         tools.forEach(registry::register)
         context.services.register(ServiceKeys.TOOL_REGISTRY, registry)
@@ -58,6 +64,11 @@ class ToolsModule(
         context.services.register(ServiceKeys.TOOL_WORKSPACE_RESOLVER, resolver)
         context.services.register(ServiceKeys.TOOL_WORKSPACE_HOST_PATHS, hostPaths)
         context.services.register(ServiceKeys.GIT_SERVICE, git)
+        // The push service and the active-project provider it resolves are bindable:
+        // the app attaches the GitHub-backed implementation and the workspace-backed
+        // provider once the connection infrastructure and workspace runtime exist.
+        context.services.register(ServiceKeys.GIT_PUSH_SERVICE, gitPush)
+        context.services.register(ServiceKeys.GIT_PROJECT_PROVIDER, gitProjects)
         context.services.register(ServiceKeys.TOOL_CONNECTION_AUTHORIZER, connections)
     }
 }

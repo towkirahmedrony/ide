@@ -3,6 +3,10 @@ package com.agentx.app.integrations
 import com.agentx.app.core.foundation.ServiceKeys
 import com.agentx.app.core.module.ForgeModule
 import com.agentx.app.core.module.ModuleContext
+import com.agentx.app.core.valueOrNull
+import com.agentx.app.git.DelegatingGitProjectProvider
+import com.agentx.app.git.GitProjectProvider
+import com.agentx.app.integrations.connection.ConnectionCapabilities
 import com.agentx.app.integrations.connection.ConnectionCredentialGateway
 import com.agentx.app.integrations.connection.ConnectionManager
 import com.agentx.app.integrations.connection.ConnectionProviderRegistry
@@ -14,6 +18,7 @@ import com.agentx.app.integrations.connection.DefaultConnectionManager
 import com.agentx.app.integrations.connection.DispatchingConnectionTester
 import com.agentx.app.integrations.connection.InMemoryConnectionSecretStore
 import com.agentx.app.integrations.connection.InMemoryConnectionStore
+import com.agentx.app.integrations.github.GitHubRepositoryConnectionResolver
 import com.agentx.app.integrations.github.GitHubRepositoryServiceKeys
 import com.agentx.app.integrations.github.GitHubRepositoryServices
 import com.agentx.app.integrations.setup.IntegrationSetupManager
@@ -35,6 +40,12 @@ class IntegrationsModule(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val providers: ConnectionProviderRegistry = ConnectionProviderRegistry.EMPTY,
     private val setup: IntegrationSetupManager? = null,
+    /**
+     * The active project, supplied to the GitHub push service. The app binds the real
+     * workspace-backed provider after boot; until then no project is active and a push
+     * fails closed instead of inventing a repository.
+     */
+    private val gitProjects: GitProjectProvider = DelegatingGitProjectProvider(),
 ) : ForgeModule {
 
     override val id: String = "integrations"
@@ -64,9 +75,23 @@ class IntegrationsModule(
         val credentialGateway =
             context.services.get<ConnectionCredentialGateway>(ServiceKeys.CONNECTION_CREDENTIAL_GATEWAY)
         if (credentialGateway != null && providers.provider(ConnectionType.GITHUB) != null) {
-            val github = GitHubRepositoryServices.create(credentialGateway = credentialGateway)
+            val github = GitHubRepositoryServices.create(
+                credentialGateway = credentialGateway,
+                gitProjects = gitProjects,
+                // The push resolves its connection through the same manager that owns
+                // credentials, so enabled state, capability and status are all enforced
+                // before a credential is lent to the transport. The manager is read from
+                // the container so a later rebinding is picked up rather than captured.
+                connections = GitHubRepositoryConnectionResolver {
+                    created.authorize(
+                        type = ConnectionType.GITHUB,
+                        capability = ConnectionCapabilities.REPOSITORY_WRITE,
+                    ).valueOrNull()?.id
+                },
+            )
             context.services.register(GitHubRepositoryServiceKeys.REPOSITORY_SERVICE, github.repositoryService)
             context.services.register(GitHubRepositoryServiceKeys.CLONE_SERVICE, github.cloneService)
+            context.services.register(GitHubRepositoryServiceKeys.PUSH_SERVICE, github.pushService)
             context.services.register(
                 GitHubRepositoryServiceKeys.DESTINATION_VALIDATOR,
                 github.destinationValidator,

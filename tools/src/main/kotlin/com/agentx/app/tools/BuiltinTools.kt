@@ -1,7 +1,9 @@
 package com.agentx.app.tools
 
 import com.agentx.app.codeintel.CodeIntelligence
+import com.agentx.app.git.GitPushService
 import com.agentx.app.git.GitService
+import com.agentx.app.git.UnavailableGitPushService
 import com.agentx.app.tools.codeintel.FindDefinitionTool
 import com.agentx.app.tools.codeintel.FindReferencesTool
 import com.agentx.app.tools.codeintel.GetFileOutlineTool
@@ -15,6 +17,7 @@ import com.agentx.app.tools.git.GitBranchesTool
 import com.agentx.app.tools.git.GitCommitTool
 import com.agentx.app.tools.git.GitDiffTool
 import com.agentx.app.tools.git.GitLogTool
+import com.agentx.app.tools.git.GitPushTool
 import com.agentx.app.tools.git.GitStatusTool
 import com.agentx.app.tools.web.HttpGetClient
 import com.agentx.app.tools.web.WebFetchTool
@@ -54,13 +57,22 @@ object BuiltinTools {
         RunCommandTool(executor, hostPaths),
     )
 
-    /** Git, driven entirely through the project's existing [GitService]. */
-    fun git(git: GitService): List<Tool> = listOf(
+    /**
+     * Git, driven entirely through the project's existing [GitService]. The push goes
+     * through the authenticated [GitPushService]; until the app binds one it stays
+     * [UnavailableGitPushService], so `git_push` is registered but fails closed rather
+     * than inventing a connection.
+     */
+    fun git(
+        git: GitService,
+        push: GitPushService = UnavailableGitPushService,
+    ): List<Tool> = listOf(
         GitStatusTool(git),
         GitDiffTool(git),
         GitLogTool(git),
         GitBranchesTool(git),
         GitCommitTool(git),
+        GitPushTool(push),
     )
 
     /** Network research: page retrieval plus a provider-backed search. */
