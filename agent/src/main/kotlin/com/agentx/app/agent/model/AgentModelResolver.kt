@@ -13,6 +13,7 @@ import com.agentx.app.model.capability.ModelCapabilityErrors
 import com.agentx.app.model.capability.ModelCapabilityProfile
 import com.agentx.app.model.capability.ModelCapabilityRegistry
 import com.agentx.app.model.capability.capabilityProfile
+import com.agentx.app.model.manager.ModelConnectionKind
 import com.agentx.app.model.preset.ModelProviderIds
 import com.agentx.app.model.ratelimit.RateLimitManager
 
@@ -33,9 +34,10 @@ object AgentModelProviders {
     const val OPENROUTER = ModelProviderIds.OPENROUTER
     const val CLOUDFLARE = ModelProviderIds.CLOUDFLARE
     const val NVIDIA_NIM = ModelProviderIds.NVIDIA_NIM
+    const val FREELMAPI = ModelProviderIds.FREELMAPI
 
     /**
-     * The local model runtime (for example Qwen 2.5 Coder). It shares the
+     * The local model runtime (for example Devstral 24B). It shares the
      * [OPENAI_COMPATIBLE] identity: one provider family, distinguished per
      * connection by its endpoint and model. Kept as an alias so the Phase 1
      * role mapping and its tests keep compiling unchanged.
@@ -54,6 +56,15 @@ object AgentModelIds {
     const val GEMINI = "gemini-3.5-flash"
     const val GROQ = "llama-3.3-70b-versatile"
     const val QWEN_CODER = "qwen2.5-coder-14b"
+
+    /** The canonical local model MAIN/CODER/DEBUGGER target. */
+    const val DEVSTRAL_24B = "devstral-24b"
+
+    /** Gemini, reached through the FreeLLMAPI gateway. */
+    const val FREELLMAPI_GEMINI = "gemini-3.5-flash"
+
+    /** Groq's Llama model, reached through the FreeLLMAPI gateway. */
+    const val FREELLMAPI_GROQ = "llama-3.3-70b-versatile"
 }
 
 /**
@@ -79,6 +90,18 @@ data class RoleModelPreference(
      * keeps doing.
      */
     val connectionId: String? = null,
+    /**
+     * The execution domain ([ModelConnectionKind.LOCAL_CUSTOM] or [ModelConnectionKind.API])
+     * this preference is bound to.
+     *
+     * A non-null domain makes the preference domain-constrained and authoritative:
+     * resolution only ever selects a connection of that exact domain, and never
+     * falls back to a connection in the other domain. This is what guarantees
+     * MAIN/CODER/DEBUGGER stay on the local model even when a FreeLLMAPI/Gemini
+     * API connection exists, and what lets API roles target the API domain.
+     * Null preserves the legacy "match by provider family alone" behaviour.
+     */
+    val domain: ModelConnectionKind? = null,
     /**
      * Whether this preference is an explicit role assignment (the user's saved
      * Settings choice) rather than a policy default.
@@ -116,33 +139,58 @@ data class AgentModelPreferences(
         val EMPTY: AgentModelPreferences = AgentModelPreferences()
 
         /**
-         * The desired mapping:
+         * The desired mapping. Local roles are domain-constrained to
+         * [ModelConnectionKind.LOCAL_CUSTOM] and API roles to
+         * [ModelConnectionKind.API], so resolution is deterministic: adding an API
+         * connection can never move a local role onto an API model, and vice versa.
          *
          * ```
-         * MAIN       → Gemini
-         * EXPLORER   → Groq
-         * RESEARCHER → Gemini
-         * CODER      → Qwen 2.5 Coder 14B (openai-compatible-local)
-         * DEBUGGER   → Qwen 2.5 Coder 14B (openai-compatible-local)
-         * REVIEWER   → Groq
-         * TESTER     → Groq
+         * MAIN       → LOCAL  → Devstral 24B (openai-compatible local)
+         * CODER      → LOCAL  → Devstral 24B (openai-compatible local)
+         * DEBUGGER   → LOCAL  → Devstral 24B (openai-compatible local)
+         * REVIEWER   → API    → FreeLLMAPI → Gemini
+         * EXPLORER   → API    → FreeLLMAPI → Groq
+         * RESEARCHER → API    → FreeLLMAPI → Gemini (configured remote model)
+         * TESTER     → API    → Groq
          * ```
          */
         val DEFAULT: AgentModelPreferences = AgentModelPreferences(
             mapOf(
-                AgentRole.MAIN to RoleModelPreference(AgentModelProviders.GEMINI, AgentModelIds.GEMINI),
-                AgentRole.EXPLORER to RoleModelPreference(AgentModelProviders.GROQ, AgentModelIds.GROQ),
-                AgentRole.RESEARCHER to RoleModelPreference(AgentModelProviders.GEMINI, AgentModelIds.GEMINI),
+                AgentRole.MAIN to RoleModelPreference(
+                    AgentModelProviders.OPENAI_COMPATIBLE_LOCAL,
+                    AgentModelIds.DEVSTRAL_24B,
+                    domain = ModelConnectionKind.LOCAL_CUSTOM,
+                ),
                 AgentRole.CODER to RoleModelPreference(
                     AgentModelProviders.OPENAI_COMPATIBLE_LOCAL,
-                    AgentModelIds.QWEN_CODER,
+                    AgentModelIds.DEVSTRAL_24B,
+                    domain = ModelConnectionKind.LOCAL_CUSTOM,
                 ),
                 AgentRole.DEBUGGER to RoleModelPreference(
                     AgentModelProviders.OPENAI_COMPATIBLE_LOCAL,
-                    AgentModelIds.QWEN_CODER,
+                    AgentModelIds.DEVSTRAL_24B,
+                    domain = ModelConnectionKind.LOCAL_CUSTOM,
                 ),
-                AgentRole.REVIEWER to RoleModelPreference(AgentModelProviders.GROQ, AgentModelIds.GROQ),
-                AgentRole.TESTER to RoleModelPreference(AgentModelProviders.GROQ, AgentModelIds.GROQ),
+                AgentRole.REVIEWER to RoleModelPreference(
+                    AgentModelProviders.FREELMAPI,
+                    AgentModelIds.FREELLMAPI_GEMINI,
+                    domain = ModelConnectionKind.API,
+                ),
+                AgentRole.EXPLORER to RoleModelPreference(
+                    AgentModelProviders.FREELMAPI,
+                    AgentModelIds.FREELLMAPI_GROQ,
+                    domain = ModelConnectionKind.API,
+                ),
+                AgentRole.RESEARCHER to RoleModelPreference(
+                    AgentModelProviders.FREELMAPI,
+                    AgentModelIds.FREELLMAPI_GEMINI,
+                    domain = ModelConnectionKind.API,
+                ),
+                AgentRole.TESTER to RoleModelPreference(
+                    AgentModelProviders.GROQ,
+                    AgentModelIds.GROQ,
+                    domain = ModelConnectionKind.API,
+                ),
             ),
         )
     }
@@ -263,16 +311,18 @@ class AgentModelResolver(
     private fun select(role: AgentRole, preferredModel: String?, default: ModelConfig): Selection {
         val preference = currentPreferences()[role] ?: return Selection(default, fromRoleMapping = false)
         val providerId = preference.providerId
+        val domain = preference.domain
         // The role's own mapping (the user's Settings choice, or the built-in
         // default) wins over the agent definition's static model; the definition
         // is only consulted when the role names a provider but no model. That is
         // what makes a model picked in Settings take effect at run time.
         val model = preference.model?.takeIf { it.isNotBlank() }
             ?: preferredModel?.takeIf { it.isNotBlank() }
-        // An explicit assignment — the user's saved Settings choice, or any
-        // preference that names a specific saved connection — is authoritative. It
-        // is never silently answered by another connection or the active model.
-        val authoritative = preference.explicit || !preference.connectionId.isNullOrBlank()
+        // An explicit assignment — the user's saved Settings choice, any preference
+        // that names a specific saved connection, or a preference bound to an
+        // execution domain — is authoritative. It is never silently answered by
+        // another connection, another domain or the active model.
+        val authoritative = preference.explicit || !preference.connectionId.isNullOrBlank() || domain != null
 
         // A specific saved connection is addressed by its own identity, so a role
         // assigned to one custom endpoint never resolves to another endpoint of the
@@ -290,14 +340,20 @@ class AgentModelResolver(
             return Selection(withModel(named, model), fromRoleMapping = true)
         }
 
-        if (providerId == default.providerId) return Selection(withModel(default, model), fromRoleMapping = true)
+        // The active model is used only when it satisfies the preference's provider
+        // family *and* its execution domain, so a local role never picks up an API
+        // active model (and vice versa) just because the provider family matches.
+        if (providerId == default.providerId && matchesDomain(default, domain)) {
+            return Selection(withModel(default, model), fromRoleMapping = true)
+        }
 
-        val connection = connectionForProvider(providerId)
+        val connection = connectionForProvider(providerId, domain)
         if (connection != null) return Selection(withModel(connection, model), fromRoleMapping = true)
 
-        // The provider family is not connected. A policy default may still fall
-        // back to the active model (documented compatibility); an explicit
-        // assignment may not.
+        // The provider family is not connected in the required domain. A policy
+        // default may still fall back to the active model (documented compatibility);
+        // a domain-bound or explicit assignment may not, which is what keeps
+        // MAIN/CODER/DEBUGGER on the local model when only an API connection exists.
         if (authoritative) {
             return Selection(
                 config = null,
@@ -310,11 +366,16 @@ class AgentModelResolver(
 
     /**
      * The connection a preference with no explicit identity resolves to: any
-     * connected configuration of that provider family. Scans the values because
-     * the connection set is keyed by connection identity, not provider family.
+     * connected configuration of that provider family within [domain]. Scans the
+     * values because the connection set is keyed by connection identity, not
+     * provider family. A null domain matches any domain (legacy behaviour).
      */
-    private fun connectionForProvider(providerId: String): ModelConfig? =
-        connections().values.firstOrNull { it.providerId == providerId }
+    private fun connectionForProvider(providerId: String, domain: ModelConnectionKind? = null): ModelConfig? =
+        connections().values.firstOrNull { it.providerId == providerId && matchesDomain(it, domain) }
+
+    /** Whether [config] belongs to [domain]; a null domain matches everything. */
+    private fun matchesDomain(config: ModelConfig, domain: ModelConnectionKind?): Boolean =
+        domain == null || config.connectionKind == domain
 
     /**
      * The outcome of [select]: a resolved configuration, or a structured failure
@@ -382,6 +443,7 @@ class AgentModelResolver(
      */
     fun configFor(preference: RoleModelPreference, default: ModelConfig): ModelConfig? {
         val model = preference.model?.takeIf { it.isNotBlank() }
+        val domain = preference.domain
         // A named connection is addressed by its own identity: when it is not
         // connected the candidate is skipped, never swapped for a sibling
         // connection of the same provider family.
@@ -390,8 +452,10 @@ class AgentModelResolver(
             val named = connections()[namedId] ?: return null
             return withModel(named, model)
         }
-        if (preference.providerId == default.providerId) return withModel(default, model)
-        val connection = connectionForProvider(preference.providerId) ?: return null
+        if (preference.providerId == default.providerId && matchesDomain(default, domain)) {
+            return withModel(default, model)
+        }
+        val connection = connectionForProvider(preference.providerId, domain) ?: return null
         return withModel(connection, model)
     }
 

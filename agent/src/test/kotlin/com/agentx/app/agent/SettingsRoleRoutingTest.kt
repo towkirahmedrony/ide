@@ -31,6 +31,7 @@ class SettingsRoleRoutingTest {
         providerId = providerId,
         baseUrl = "https://$providerId.example/v1",
         model = model,
+        connectionKind = testDomain(providerId),
     )
 
     private fun delegate(role: AgentRole, task: String) = response(
@@ -102,29 +103,29 @@ class SettingsRoleRoutingTest {
 
     @Test
     fun `changing a role in settings changes the provider selected at run time`() = runAgent {
-        val groq = ScriptedModelProvider(
+        val local = ScriptedModelProvider(
             mapOf(
                 AgentRole.MAIN to mutableListOf(delegate(AgentRole.CODER, "Patch it"), finish("done")),
                 AgentRole.CODER to mutableListOf(finish("wrote the fix")),
             ),
-            id = AgentModelProviders.GROQ,
-        )
-        val local = ScriptedModelProvider(
-            mapOf(AgentRole.CODER to mutableListOf(finish("wrote the fix"))),
             id = AgentModelProviders.OPENAI_COMPATIBLE,
         )
+        val groq = ScriptedModelProvider(
+            mapOf(AgentRole.CODER to mutableListOf(finish("wrote the fix"))),
+            id = AgentModelProviders.GROQ,
+        )
         val gateway = DefaultModelGateway()
-        gateway.register(groq)
         gateway.register(local)
+        gateway.register(groq)
 
         val registry = AgentRoleModelRegistry(
             DefaultAgentRoleModelRepository(InMemoryAgentRoleModelStore()),
         )
         // Before the Settings change the Coder points at the local provider.
-        registry.save(AgentRole.CODER, AgentModelProviders.OPENAI_COMPATIBLE, "qwen2.5-coder-14b")
+        registry.save(AgentRole.CODER, AgentModelProviders.OPENAI_COMPATIBLE, "devstral-24b")
         val connections = mapOf(
             AgentModelProviders.OPENAI_COMPATIBLE to
-                config(AgentModelProviders.OPENAI_COMPATIBLE, "qwen2.5-coder-14b"),
+                config(AgentModelProviders.OPENAI_COMPATIBLE, "devstral-24b"),
             AgentModelProviders.GROQ to config(AgentModelProviders.GROQ, "llama-3.1-8b-instant"),
         )
         val resolver = AgentModelResolver(
@@ -139,7 +140,7 @@ class SettingsRoleRoutingTest {
             modelResolver = resolver,
         )
 
-        // The user reassigns the Coder in Settings before the run.
+        // The user reassigns the Coder to the API provider in Settings before the run.
         registry.save(AgentRole.CODER, AgentModelProviders.GROQ, "llama-3.1-8b-instant")
 
         val result = runtime.orchestrator.run(
@@ -149,9 +150,11 @@ class SettingsRoleRoutingTest {
         )
 
         assertEquals(AgentStatus.COMPLETED, result.status)
-        // The Coder now runs on Groq; the pre-change provider was never used.
-        assertTrue(local.requests.isEmpty(), "the previous provider must not receive the request")
-        assertEquals(3, groq.requests.size)
+        // MAIN stays on the local default; the reassigned Coder now runs on Groq.
+        assertEquals(2, local.requests.size)
+        assertTrue(local.requests.all { it.config.providerId == AgentModelProviders.OPENAI_COMPATIBLE })
+        assertEquals(1, groq.requests.size)
+        assertEquals("llama-3.1-8b-instant", groq.requests.single().config.model)
         assertTrue(groq.requests.all { it.config.providerId == AgentModelProviders.GROQ })
     }
 }

@@ -431,6 +431,7 @@ class DefaultModelManager(
             val url = preset.endpoint.explicitUrl?.takeIf { it.isNotBlank() } ?: return@forEach
             result[providerId] = ModelConfig(
                 providerId = providerId,
+                connectionKind = preset.connectionKind,
                 baseUrl = url.trimEnd('/') + preset.normalizedApiBasePath,
                 model = preset.modelIdentifier,
                 // The credential is read from the store, never from a logged field.

@@ -123,6 +123,7 @@ object RoleModelEvaluation {
         ModelProviderIds.GEMINI -> "Gemini"
         ModelProviderIds.GROQ -> "Groq"
         ModelProviderIds.OPENAI_COMPATIBLE -> "OpenAI-compatible"
+        ModelProviderIds.FREELMAPI -> "FreeLLMAPI"
         else -> providerId
     }
 

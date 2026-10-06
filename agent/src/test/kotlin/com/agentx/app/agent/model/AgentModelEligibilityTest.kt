@@ -2,6 +2,7 @@ package com.agentx.app.agent.model
 
 import com.agentx.app.agent.domain.AgentErrorCode
 import com.agentx.app.agent.domain.AgentRole
+import com.agentx.app.agent.testDomain
 import com.agentx.app.model.ModelCapabilities
 import com.agentx.app.model.ModelConfig
 import com.agentx.app.model.capability.CapabilitySupport
@@ -38,11 +39,12 @@ class AgentModelEligibilityTest {
         baseUrl = baseUrl,
         model = model,
         capabilities = capabilities,
+        connectionKind = testDomain(providerId),
     )
 
     private fun localConfig() = config(
         providerId = AgentModelProviders.OPENAI_COMPATIBLE_LOCAL,
-        model = AgentModelIds.QWEN_CODER,
+        model = AgentModelIds.DEVSTRAL_24B,
         baseUrl = "http://localhost:11434/v1",
     )
 
@@ -75,15 +77,13 @@ class AgentModelEligibilityTest {
 
     @Test
     fun `an eligible main model resolves with capability and quota information`() = runBlocking {
-        val connections = mapOf(
-            AgentModelProviders.GEMINI to config(AgentModelProviders.GEMINI, AgentModelIds.GEMINI),
-        )
+        val connections = mapOf(AgentModelProviders.OPENAI_COMPATIBLE_LOCAL to localConfig())
         val result = resolver(connections, manager()).resolveForRole(AgentRole.MAIN, active)
 
         assertTrue(result.eligible)
         assertEquals(ModelEligibilityState.AVAILABLE, result.eligibility.state)
-        assertEquals(AgentModelIds.GEMINI, result.config.model)
-        assertEquals(AgentModelProviders.GEMINI, result.config.providerId)
+        assertEquals(AgentModelIds.DEVSTRAL_24B, result.config.model)
+        assertEquals(AgentModelProviders.OPENAI_COMPATIBLE_LOCAL, result.config.providerId)
         assertTrue(result.eligibility.profile.supports(ModelCapability.TOOL_CALLING))
         assertTrue(result.eligibility.profile.supports(ModelCapability.STREAMING))
         assertTrue(result.explicit)
@@ -101,7 +101,7 @@ class AgentModelEligibilityTest {
 
         assertTrue(result.eligible)
         assertEquals(ModelEligibilityState.AVAILABLE, result.eligibility.state)
-        assertEquals(AgentModelIds.QWEN_CODER, result.config.model)
+        assertEquals(AgentModelIds.DEVSTRAL_24B, result.config.model)
         assertTrue(result.eligibility.local)
     }
 
@@ -158,9 +158,9 @@ class AgentModelEligibilityTest {
     @Test
     fun `a model without tool calling is rejected`() = runBlocking {
         val connections = mapOf(
-            AgentModelProviders.GROQ to config(
-                AgentModelProviders.GROQ,
-                "llama-3.3-70b-versatile",
+            AgentModelProviders.FREELMAPI to config(
+                AgentModelProviders.FREELMAPI,
+                AgentModelIds.FREELLMAPI_GEMINI,
                 capabilities = ModelCapabilities(toolCalling = false, streaming = true),
             ),
         )
@@ -180,7 +180,7 @@ class AgentModelEligibilityTest {
         val connections = mapOf(
             AgentModelProviders.GROQ to config(
                 AgentModelProviders.GROQ,
-                "llama-3.3-70b-versatile",
+                AgentModelIds.GROQ,
                 capabilities = ModelCapabilities(toolCalling = true, streaming = false),
             ),
         )
@@ -194,9 +194,9 @@ class AgentModelEligibilityTest {
 
     @Test
     fun `a rate-limited model is reported as unavailable`() = runBlocking {
-        val limits = manager(blocked(AgentModelProviders.GROQ))
+        val limits = manager(blocked(AgentModelProviders.FREELMAPI))
         val connections = mapOf(
-            AgentModelProviders.GROQ to config(AgentModelProviders.GROQ, AgentModelIds.GROQ),
+            AgentModelProviders.FREELMAPI to config(AgentModelProviders.FREELMAPI, AgentModelIds.FREELLMAPI_GROQ),
         )
         val result = resolver(connections, limits).resolveForRole(AgentRole.EXPLORER, active)
 
@@ -213,9 +213,7 @@ class AgentModelEligibilityTest {
 
     @Test
     fun `unknown rate-limit metadata does not block a capable model`() = runBlocking {
-        val connections = mapOf(
-            AgentModelProviders.GEMINI to config(AgentModelProviders.GEMINI, AgentModelIds.GEMINI),
-        )
+        val connections = mapOf(AgentModelProviders.OPENAI_COMPATIBLE_LOCAL to localConfig())
         // No profiles configured: the manager knows no limits, so it never guesses a block.
         val result = resolver(connections, manager()).resolveForRole(AgentRole.MAIN, active)
         assertTrue(result.eligible)
@@ -257,28 +255,28 @@ class AgentModelEligibilityTest {
 
     @Test
     fun `an explicit role assignment stays explicit and is never silently replaced`() = runBlocking {
-        val limits = manager(blocked(AgentModelProviders.GROQ))
+        val limits = manager(blocked(AgentModelProviders.FREELMAPI))
         val connections = mapOf(
-            AgentModelProviders.GROQ to config(AgentModelProviders.GROQ, AgentModelIds.GROQ),
-            AgentModelProviders.GEMINI to config(AgentModelProviders.GEMINI, AgentModelIds.GEMINI),
+            AgentModelProviders.FREELMAPI to config(AgentModelProviders.FREELMAPI, AgentModelIds.FREELLMAPI_GROQ),
+            AgentModelProviders.OPENAI_COMPATIBLE_LOCAL to localConfig(),
         )
         val result = resolver(connections, limits).resolveForRole(AgentRole.EXPLORER, active)
 
         assertFalse(result.eligible)
         assertEquals(ModelEligibilityState.RATE_LIMITED, result.eligibility.state)
-        // The explicit Groq assignment is retained (and explained), never swapped
-        // for the eligible Gemini connection.
-        assertEquals(AgentModelProviders.GROQ, result.config.providerId)
-        assertEquals(AgentModelIds.GROQ, result.config.model)
+        // The API assignment is retained (and explained), never swapped for the
+        // eligible local connection.
+        assertEquals(AgentModelProviders.FREELMAPI, result.config.providerId)
+        assertEquals(AgentModelIds.FREELLMAPI_GROQ, result.config.model)
         assertTrue(result.explicit)
     }
 
     @Test
     fun `multiple providers keep isolated eligibility`() = runBlocking {
-        val limits = manager(blocked(AgentModelProviders.GROQ))
+        val limits = manager(blocked(AgentModelProviders.FREELMAPI))
         val connections = mapOf(
-            AgentModelProviders.GEMINI to config(AgentModelProviders.GEMINI, AgentModelIds.GEMINI),
-            AgentModelProviders.GROQ to config(AgentModelProviders.GROQ, AgentModelIds.GROQ),
+            AgentModelProviders.FREELMAPI to config(AgentModelProviders.FREELMAPI, AgentModelIds.FREELLMAPI_GROQ),
+            AgentModelProviders.OPENAI_COMPATIBLE_LOCAL to localConfig(),
         )
         val live = resolver(connections, limits)
 
@@ -286,10 +284,10 @@ class AgentModelEligibilityTest {
         val explorer = live.resolveForRole(AgentRole.EXPLORER, active)
 
         assertTrue(main.eligible)
-        assertEquals(AgentModelProviders.GEMINI, main.config.providerId)
+        assertEquals(AgentModelProviders.OPENAI_COMPATIBLE_LOCAL, main.config.providerId)
         assertFalse(explorer.eligible)
         assertEquals(ModelEligibilityState.RATE_LIMITED, explorer.eligibility.state)
-        assertEquals(AgentModelProviders.GROQ, explorer.config.providerId)
+        assertEquals(AgentModelProviders.FREELMAPI, explorer.config.providerId)
     }
 
     @Test
@@ -314,9 +312,9 @@ class AgentModelEligibilityTest {
     @Test
     fun `every role resolves through the shared eligibility check`() = runBlocking {
         val connections = mapOf(
-            AgentModelProviders.GEMINI to config(AgentModelProviders.GEMINI, AgentModelIds.GEMINI),
-            AgentModelProviders.GROQ to config(AgentModelProviders.GROQ, AgentModelIds.GROQ),
             AgentModelProviders.OPENAI_COMPATIBLE_LOCAL to localConfig(),
+            AgentModelProviders.FREELMAPI to config(AgentModelProviders.FREELMAPI, AgentModelIds.FREELLMAPI_GEMINI),
+            AgentModelProviders.GROQ to config(AgentModelProviders.GROQ, AgentModelIds.GROQ),
         )
         val live = resolver(connections, manager())
         val capableDefault = config(

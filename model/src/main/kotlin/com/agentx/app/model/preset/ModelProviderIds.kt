@@ -43,6 +43,14 @@ object ModelProviderIds {
     const val NVIDIA_NIM: String = "nvidia-nim"
 
     /**
+     * FreeLLMAPI: a hosted OpenAI-compatible gateway that serves Gemini, Groq and
+     * other remote models behind one credential. Distinct from a user-run local
+     * OpenAI-compatible endpoint even though both speak the same wire protocol,
+     * so a local endpoint and a FreeLLMAPI connection are never confused.
+     */
+    const val FREELMAPI: String = "freellmapi"
+
+    /**
      * The identity a preset connects as. Gemini and Groq presets are separate
      * identities; everything else follows its wire protocol, which keeps a plain
      * OpenAI-compatible or Ollama connection on [OPENAI_COMPATIBLE].
@@ -56,6 +64,7 @@ object ModelProviderIds {
             OPENROUTER -> OPENROUTER
             CLOUDFLARE -> CLOUDFLARE
             NVIDIA_NIM -> NVIDIA_NIM
+            FREELMAPI -> FREELMAPI
             else -> protocol.providerId
         }
 }

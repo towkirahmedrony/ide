@@ -32,7 +32,41 @@ object KnownModelCapabilities {
         groq("llama-3.1-8b-instant", "Llama 3.1 8B Instant"),
     )
 
+    /**
+     * Models a FreeLLMAPI gateway serves, under its own provider identity
+     * ([ModelProviderIds.FREELMAPI]). They reuse the same underlying Gemini/Groq
+     * models and their documented capabilities, but are declared here rather than
+     * inferred from the OpenAI-compatible protocol: a FreeLLMAPI connection is
+     * never assumed tool-capable merely because it speaks OpenAI-compatible.
+     */
+    val FREELMAPI: List<ModelCapabilityProfile> = listOf(
+        remote("gemini-3.5-flash", "Gemini 3.5 Flash"),
+        remote("gemini-2.5-flash", "Gemini 2.5 Flash"),
+        remote("gemini-3-flash-preview", "Gemini 3 Flash Preview"),
+        remote("llama-3.3-70b-versatile", "Llama 3.3 70B Versatile"),
+        remote("llama-3.1-8b-instant", "Llama 3.1 8B Instant"),
+        remote("qwen/qwen3.8-27b", "Qwen 3.8 27B"),
+    )
+
     val LOCAL: List<ModelCapabilityProfile> = listOf(
+        // The canonical local coding model MAIN/CODER/DEBUGGER target. Devstral
+        // Small 2 is an agentic coding model whose card documents tool calling, so
+        // the capability is declared per model id rather than inherited from the
+        // OpenAI-compatible protocol. `local = true` marks it as an on-device/local
+        // runtime for rate-limit and endpoint classification, independent of where
+        // the serving endpoint happens to be reached from.
+        ModelCapabilityProfile(
+            providerId = ModelProviderIds.OPENAI_COMPATIBLE,
+            modelId = "devstral-24b",
+            displayName = "Devstral 24B",
+            toolCalling = CapabilitySupport.SUPPORTED,
+            streaming = CapabilitySupport.SUPPORTED,
+            vision = CapabilitySupport.UNKNOWN,
+            structuredOutput = CapabilitySupport.UNKNOWN,
+            reasoning = CapabilitySupport.UNKNOWN,
+            local = true,
+            enabled = true,
+        ),
         ModelCapabilityProfile(
             providerId = ModelProviderIds.OPENAI_COMPATIBLE,
             modelId = "qwen2.5-coder:14b",
@@ -99,7 +133,7 @@ object KnownModelCapabilities {
     )
 
     val ALL: List<ModelCapabilityProfile> =
-        GEMINI + GROQ + LOCAL + ADDITIONAL_PROVIDERS
+        GEMINI + GROQ + FREELMAPI + LOCAL + ADDITIONAL_PROVIDERS
 
     private fun gemini(modelId: String, displayName: String): ModelCapabilityProfile = ModelCapabilityProfile(
         providerId = ModelProviderIds.GEMINI,
@@ -122,6 +156,25 @@ object KnownModelCapabilities {
         streaming = CapabilitySupport.SUPPORTED,
         vision = CapabilitySupport.UNSUPPORTED,
         structuredOutput = CapabilitySupport.SUPPORTED,
+        reasoning = CapabilitySupport.UNKNOWN,
+        local = false,
+        enabled = true,
+    )
+
+    /**
+     * A model reached through FreeLLMAPI. Tool calling is declared per model id —
+     * the underlying Gemini/Groq models document it — never inherited from the
+     * OpenAI-compatible wire protocol. Vision and structured output relay through
+     * the gateway are not assumed, so they stay [CapabilitySupport.UNKNOWN].
+     */
+    private fun remote(modelId: String, displayName: String): ModelCapabilityProfile = ModelCapabilityProfile(
+        providerId = ModelProviderIds.FREELMAPI,
+        modelId = modelId,
+        displayName = displayName,
+        toolCalling = CapabilitySupport.SUPPORTED,
+        streaming = CapabilitySupport.SUPPORTED,
+        vision = CapabilitySupport.UNKNOWN,
+        structuredOutput = CapabilitySupport.UNKNOWN,
         reasoning = CapabilitySupport.UNKNOWN,
         local = false,
         enabled = true,

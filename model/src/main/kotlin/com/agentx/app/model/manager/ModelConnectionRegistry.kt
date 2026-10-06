@@ -150,6 +150,10 @@ class GatewayModelConnectionRegistry(
             // rate-limit lookups), while connectionId addresses this instance.
             providerId = preset.providerId,
             connectionId = connectionId,
+            // The connection declares its execution domain explicitly, so a local
+            // OpenAI-compatible endpoint and a remote FreeLLMAPI endpoint are never
+            // addressed as the same kind of backend just because they share a protocol.
+            connectionKind = preset.connectionKind,
             baseUrl = baseUrl,
             model = preset.modelIdentifier,
             apiKey = credential,

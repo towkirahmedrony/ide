@@ -74,14 +74,14 @@ class AgentModelsViewModelTest {
 
         assertEquals(AgentRole.entries.size, vm.rows.size)
         val main = vm.rows.first { it.role == AgentRole.MAIN }
-        assertEquals("Gemini", main.providerLabel)
-        assertEquals(AgentModelIds.GEMINI, main.model)
+        assertEquals("OpenAI-compatible", main.providerLabel)
+        assertEquals(AgentModelIds.DEVSTRAL_24B, main.model)
         // The built-in default is shown; no provider is connected in this test.
         assertEquals(RoleModelState.NOT_CONFIGURED, main.state)
 
         val coder = vm.rows.first { it.role == AgentRole.CODER }
         assertEquals("OpenAI-compatible", coder.providerLabel)
-        assertEquals(AgentModelIds.QWEN_CODER, coder.model)
+        assertEquals(AgentModelIds.DEVSTRAL_24B, coder.model)
     }
 
     @Test
@@ -235,7 +235,7 @@ class AgentModelsViewModelTest {
         assertEquals("llama-3.1-8b-instant", vm.rows.first { it.role == AgentRole.MAIN }.model)
 
         vm.reset(AgentRole.MAIN)
-        assertEquals(AgentModelIds.GEMINI, vm.rows.first { it.role == AgentRole.MAIN }.model)
-        assertEquals("Gemini", vm.rows.first { it.role == AgentRole.MAIN }.providerLabel)
+        assertEquals(AgentModelIds.DEVSTRAL_24B, vm.rows.first { it.role == AgentRole.MAIN }.model)
+        assertEquals("OpenAI-compatible", vm.rows.first { it.role == AgentRole.MAIN }.providerLabel)
     }
 }

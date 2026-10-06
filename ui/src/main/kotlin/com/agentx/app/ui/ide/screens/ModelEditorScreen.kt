@@ -162,6 +162,19 @@ fun ModelEditorScreen(
                 ProtocolSelector(state, onEdit)
                 ToolCallingDeclaration(state, onEdit)
             } else {
+                // FreeLLMAPI is the one API provider whose gateway address is
+                // user-specific, so it also asks for the server URL the Local flow does.
+                if (state.form.showsServerUrl) {
+                    FormField(
+                        label = "Server URL",
+                        value = state.form.serverUrl,
+                        onValueChange = { value -> onEdit { it.copy(serverUrl = value) } },
+                        keyboardType = KeyboardType.Uri,
+                        isError = state.issue(ModelSetupField.SERVER_URL) != null,
+                        supporting = state.issue(ModelSetupField.SERVER_URL)
+                            ?: "The FreeLLMAPI gateway address",
+                    )
+                }
                 ModelField(state, onEdit, onSelectModel, onToggleManualModel, onRetryCatalog)
                 CredentialField(
                     state = state,

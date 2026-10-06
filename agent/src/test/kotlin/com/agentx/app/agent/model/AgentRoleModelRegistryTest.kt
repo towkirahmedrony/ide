@@ -1,10 +1,12 @@
 package com.agentx.app.agent.model
 
 import com.agentx.app.agent.domain.AgentRole
+import com.agentx.app.agent.testDomain
 import com.agentx.app.model.ModelConfig
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -21,6 +23,7 @@ class AgentRoleModelRegistryTest {
         providerId = providerId,
         baseUrl = "https://$providerId.example/v1",
         model = model,
+        connectionKind = testDomain(providerId),
     )
 
     private fun registry(store: AgentRoleModelStore = InMemoryAgentRoleModelStore()) =
@@ -38,9 +41,12 @@ class AgentRoleModelRegistryTest {
     @Test
     fun `defaults match the target role mapping`() {
         val registry = registry()
-        assertEquals(AgentModelProviders.GEMINI, registry.selection(AgentRole.MAIN).providerId)
-        assertEquals(AgentModelProviders.GROQ, registry.selection(AgentRole.EXPLORER).providerId)
-        assertEquals(AgentModelProviders.GEMINI, registry.selection(AgentRole.RESEARCHER).providerId)
+        assertEquals(
+            AgentModelProviders.OPENAI_COMPATIBLE_LOCAL,
+            registry.selection(AgentRole.MAIN).providerId,
+        )
+        assertEquals(AgentModelProviders.FREELMAPI, registry.selection(AgentRole.EXPLORER).providerId)
+        assertEquals(AgentModelProviders.FREELMAPI, registry.selection(AgentRole.RESEARCHER).providerId)
         assertEquals(
             AgentModelProviders.OPENAI_COMPATIBLE_LOCAL,
             registry.selection(AgentRole.CODER).providerId,
@@ -49,9 +55,9 @@ class AgentRoleModelRegistryTest {
             AgentModelProviders.OPENAI_COMPATIBLE_LOCAL,
             registry.selection(AgentRole.DEBUGGER).providerId,
         )
-        assertEquals(AgentModelProviders.GROQ, registry.selection(AgentRole.REVIEWER).providerId)
+        assertEquals(AgentModelProviders.FREELMAPI, registry.selection(AgentRole.REVIEWER).providerId)
         assertEquals(AgentModelProviders.GROQ, registry.selection(AgentRole.TESTER).providerId)
-        assertEquals(AgentModelIds.QWEN_CODER, registry.selection(AgentRole.CODER).model)
+        assertEquals(AgentModelIds.DEVSTRAL_24B, registry.selection(AgentRole.CODER).model)
     }
 
     @Test
@@ -59,8 +65,11 @@ class AgentRoleModelRegistryTest {
         val registry = registry(InMemoryAgentRoleModelStore())
         runBlocking { registry.load() }
         assertNull(registry.override(AgentRole.CODER))
-        assertEquals(AgentModelIds.QWEN_CODER, registry.selection(AgentRole.CODER).model)
-        assertEquals(AgentModelProviders.GEMINI, registry.selection(AgentRole.MAIN).providerId)
+        assertEquals(AgentModelIds.DEVSTRAL_24B, registry.selection(AgentRole.CODER).model)
+        assertEquals(
+            AgentModelProviders.OPENAI_COMPATIBLE_LOCAL,
+            registry.selection(AgentRole.MAIN).providerId,
+        )
     }
 
     // --- persistence -------------------------------------------------------
@@ -70,14 +79,14 @@ class AgentRoleModelRegistryTest {
         val store = InMemoryAgentRoleModelStore()
         val first = registry(store)
         runBlocking {
-            first.save(AgentRole.CODER, AgentModelProviders.OPENAI_COMPATIBLE_LOCAL, "qwen2.5-coder-32b")
+            first.save(AgentRole.CODER, AgentModelProviders.OPENAI_COMPATIBLE_LOCAL, "devstral-24b")
         }
 
         val restored = registry(store)
         runBlocking { restored.load() }
 
         val selection = restored.selection(AgentRole.CODER)
-        assertEquals("qwen2.5-coder-32b", selection.model)
+        assertEquals("devstral-24b", selection.model)
         assertEquals(AgentModelProviders.OPENAI_COMPATIBLE_LOCAL, selection.providerId)
         assertTrue(selection.explicit)
     }
@@ -91,7 +100,10 @@ class AgentRoleModelRegistryTest {
             registry.reset(AgentRole.MAIN)
         }
         assertNull(registry.override(AgentRole.MAIN))
-        assertEquals(AgentModelProviders.GEMINI, registry.selection(AgentRole.MAIN).providerId)
+        assertEquals(
+            AgentModelProviders.OPENAI_COMPATIBLE_LOCAL,
+            registry.selection(AgentRole.MAIN).providerId,
+        )
     }
 
     // --- settings reach the resolver --------------------------------------
@@ -115,8 +127,8 @@ class AgentRoleModelRegistryTest {
     @Test
     fun `changing the coder model changes what the resolver selects`() {
         val registry = registry()
-        val local = connection(AgentModelProviders.OPENAI_COMPATIBLE_LOCAL, "qwen2.5-coder-14b")
-        val active = connection(AgentModelProviders.OPENAI_COMPATIBLE_LOCAL, "qwen2.5-coder-14b")
+        val local = connection(AgentModelProviders.OPENAI_COMPATIBLE_LOCAL, "devstral-24b")
+        val active = connection(AgentModelProviders.OPENAI_COMPATIBLE_LOCAL, "devstral-24b")
         val resolver = resolver(registry, mapOf(AgentModelProviders.OPENAI_COMPATIBLE_LOCAL to local))
 
         runBlocking {
@@ -126,50 +138,64 @@ class AgentRoleModelRegistryTest {
     }
 
     @Test
-    fun `main and coder resolve different models`() {
+    fun `a local role and an api role resolve different connections`() {
         val registry = registry()
         val connections = mapOf(
-            AgentModelProviders.GEMINI to connection(AgentModelProviders.GEMINI, "gemini-3.5-flash"),
+            AgentModelProviders.FREELMAPI to connection(AgentModelProviders.FREELMAPI, "gemini-3.5-flash"),
             AgentModelProviders.OPENAI_COMPATIBLE_LOCAL to
-                connection(AgentModelProviders.OPENAI_COMPATIBLE_LOCAL, "qwen2.5-coder-14b"),
+                connection(AgentModelProviders.OPENAI_COMPATIBLE_LOCAL, "devstral-24b"),
         )
         val resolver = resolver(registry, connections)
-        val active = connection(AgentModelProviders.GEMINI, "gemini-3.5-flash")
+        val active = connection(AgentModelProviders.OPENAI_COMPATIBLE_LOCAL, "devstral-24b")
 
-        val main = resolver.resolve(AgentRole.MAIN, active)
         val coder = resolver.resolve(AgentRole.CODER, active)
+        val reviewer = resolver.resolve(AgentRole.REVIEWER, active)
 
-        assertEquals(AgentModelProviders.GEMINI, main.providerId)
         assertEquals(AgentModelProviders.OPENAI_COMPATIBLE_LOCAL, coder.providerId)
-        assertNotEquals(main.model, coder.model)
+        assertEquals(AgentModelProviders.FREELMAPI, reviewer.providerId)
+        assertNotEquals(coder.providerId, reviewer.providerId)
     }
 
     @Test
     fun `explorer and reviewer resolve independently on the same provider`() {
         val registry = registry()
-        val groq = connection(AgentModelProviders.GROQ, "llama-3.3-70b-versatile")
-        val resolver = resolver(registry, mapOf(AgentModelProviders.GROQ to groq))
+        val freeLlm = connection(AgentModelProviders.FREELMAPI, "gemini-3.5-flash")
+        val resolver = resolver(registry, mapOf(AgentModelProviders.FREELMAPI to freeLlm))
 
-        runBlocking { registry.save(AgentRole.EXPLORER, AgentModelProviders.GROQ, "llama-3.1-8b-instant") }
+        runBlocking { registry.save(AgentRole.EXPLORER, AgentModelProviders.FREELMAPI, "llama-3.1-8b-instant") }
 
-        val active = connection(AgentModelProviders.GROQ, "llama-3.3-70b-versatile")
+        val active = connection(AgentModelProviders.FREELMAPI, "gemini-3.5-flash")
         val explorer = resolver.resolve(AgentRole.EXPLORER, active)
         val reviewer = resolver.resolve(AgentRole.REVIEWER, active)
         assertEquals("llama-3.1-8b-instant", explorer.model)
-        assertEquals(AgentModelIds.GROQ, reviewer.model)
+        assertEquals(AgentModelIds.FREELLMAPI_GEMINI, reviewer.model)
     }
 
     @Test
-    fun `a role whose provider is not connected keeps the active model as compatibility`() {
+    fun `a domain-bound role is not silently answered by an unrelated active model`() {
         val registry = registry()
         val resolver = resolver(registry, emptyMap())
         val active = connection(AgentModelProviders.GEMINI, "gemini-3.5-flash")
 
-        // Coder's provider is not in the connected set, so the run stays possible
-        // on the active model — the Phase 1 compatibility behaviour.
-        assertEquals(active, resolver.resolve(AgentRole.CODER, active))
+        // Coder's built-in mapping is bound to the local domain, so an unrelated
+        // API active model must not stand in for it; the run fails instead.
+        assertFailsWith<AgentModelResolutionException> { resolver.resolve(AgentRole.CODER, active) }
         // The role configuration itself is preserved, not substituted.
         assertNotNull(registry.selection(AgentRole.CODER))
+    }
+
+    @Test
+    fun `a legacy role preference without a domain keeps the active model as compatibility`() {
+        val resolver = AgentModelResolver(
+            preferences = AgentModelPreferences()
+                .with(AgentRole.CODER, RoleModelPreference(AgentModelProviders.CEREBRAS, "cerebras-1")),
+            connections = { emptyMap() },
+        )
+        val active = connection(AgentModelProviders.GEMINI, "gemini-3.5-flash")
+
+        // A preference with no execution domain and no explicit assignment keeps the
+        // documented compatibility fallback to the active model.
+        assertEquals(active, resolver.resolve(AgentRole.CODER, active))
     }
 
     // --- availability / validation ----------------------------------------
@@ -179,7 +205,7 @@ class AgentRoleModelRegistryTest {
         val selection = registry().selection(AgentRole.MAIN)
         val status = RoleModelEvaluation.evaluate(selection, options = emptyList())
         assertEquals(RoleModelState.NOT_CONFIGURED, status.state)
-        assertEquals("Gemini", status.providerLabel)
+        assertEquals("OpenAI-compatible", status.providerLabel)
     }
 
     @Test
@@ -187,15 +213,15 @@ class AgentRoleModelRegistryTest {
         val selection = registry().selection(AgentRole.MAIN)
         val options = listOf(
             ProviderModelOption(
-                providerId = AgentModelProviders.GEMINI,
-                providerLabel = "Gemini",
-                models = listOf(AgentModelIds.GEMINI),
+                providerId = AgentModelProviders.OPENAI_COMPATIBLE_LOCAL,
+                providerLabel = "OpenAI-compatible",
+                models = listOf(AgentModelIds.DEVSTRAL_24B),
                 connected = true,
             ),
         )
         val status = RoleModelEvaluation.evaluate(selection, options)
         assertEquals(RoleModelState.CONNECTED, status.state)
-        assertEquals(AgentModelIds.GEMINI, status.model)
+        assertEquals(AgentModelIds.DEVSTRAL_24B, status.model)
     }
 
     @Test
@@ -203,7 +229,7 @@ class AgentRoleModelRegistryTest {
         val selection = RoleModelSelection(
             role = AgentRole.CODER,
             providerId = AgentModelProviders.OPENAI_COMPATIBLE_LOCAL,
-            model = "qwen2.5-coder-14b",
+            model = "devstral-24b",
             connectionId = "preset-1",
             explicit = true,
         )
@@ -217,8 +243,8 @@ class AgentRoleModelRegistryTest {
         )
         val status = RoleModelEvaluation.evaluate(selection, options)
         assertEquals(RoleModelState.MODEL_UNAVAILABLE, status.state)
-        assertEquals("qwen2.5-coder-14b", status.model)
-        assertTrue(status.message.contains("qwen2.5-coder-14b"))
+        assertEquals("devstral-24b", status.model)
+        assertTrue(status.message.contains("devstral-24b"))
     }
 
     @Test
@@ -226,7 +252,7 @@ class AgentRoleModelRegistryTest {
         val store = InMemoryAgentRoleModelStore()
         val registry = registry(store)
         runBlocking {
-            registry.save(AgentRole.DEBUGGER, AgentModelProviders.OPENAI_COMPATIBLE_LOCAL, "qwen2.5-coder-14b")
+            registry.save(AgentRole.DEBUGGER, AgentModelProviders.OPENAI_COMPATIBLE_LOCAL, "devstral-24b")
             registry.load()
         }
         // The provider is gone from the catalog entirely.

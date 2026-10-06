@@ -43,6 +43,16 @@ enum class ModelSetupKind(
         requiresApiKey = true,
         showsEndpointField = false,
     ),
+    FREELLMAPI(
+        id = "freellmapi",
+        displayName = "FreeLLMAPI",
+        description = "A hosted OpenAI-compatible gateway that serves Gemini, Groq and other remote models.",
+        requiresApiKey = true,
+        // The FreeLLMAPI server address is user-specific, so the endpoint is
+        // configured rather than hardcoded here; the wire protocol stays the
+        // shared OpenAI-compatible one.
+        showsEndpointField = true,
+    ),
     ;
 
     /**
@@ -199,6 +209,10 @@ object KnownModelProviders {
         ModelSetupKind.CUSTOM -> null
         ModelSetupKind.GEMINI -> gemini
         ModelSetupKind.GROQ -> groq
+        // FreeLLMAPI is an API provider but has no fixed catalogue root: its gateway
+        // address is user-supplied, so it is discovered from the configured endpoint
+        // rather than from a hardcoded spec.
+        ModelSetupKind.FREELLMAPI -> null
     }
 }
 

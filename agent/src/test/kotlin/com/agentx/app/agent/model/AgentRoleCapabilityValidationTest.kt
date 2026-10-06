@@ -4,6 +4,7 @@ import com.agentx.app.agent.catalog.AgentCatalog
 import com.agentx.app.agent.domain.AgentErrorCode
 import com.agentx.app.agent.domain.AgentRole
 import com.agentx.app.agent.testConfig
+import com.agentx.app.agent.testDomain
 import com.agentx.app.model.ModelCapabilities
 import com.agentx.app.model.ModelConfig
 import com.agentx.app.model.capability.ModelCapability
@@ -29,6 +30,7 @@ class AgentRoleCapabilityValidationTest {
         baseUrl = baseUrl,
         model = model,
         capabilities = capabilities,
+        connectionKind = testDomain(providerId),
     )
 
     @Test
@@ -76,24 +78,29 @@ class AgentRoleCapabilityValidationTest {
     @Test
     fun `existing resolver selection remains compatible`() {
         val connections = mapOf(
-            AgentModelProviders.GEMINI to config(AgentModelProviders.GEMINI, "gemini-3.5-flash"),
-            AgentModelProviders.GROQ to config(AgentModelProviders.GROQ, "llama-3.3-70b-versatile"),
             AgentModelProviders.OPENAI_COMPATIBLE to config(
                 AgentModelProviders.OPENAI_COMPATIBLE,
-                "qwen2.5-coder-14b",
+                AgentModelIds.DEVSTRAL_24B,
                 baseUrl = "http://localhost:11434/v1",
             ),
+            AgentModelProviders.FREELMAPI to config(
+                AgentModelProviders.FREELMAPI,
+                AgentModelIds.FREELLMAPI_GROQ,
+            ),
+            AgentModelProviders.GROQ to config(AgentModelProviders.GROQ, "llama-3.3-70b-versatile"),
         )
         val live = AgentModelResolver(
             preferences = AgentModelPreferences.DEFAULT,
             connections = { connections },
         )
         val active = config(AgentModelProviders.GROQ, "llama-3.3-70b-versatile")
-        assertEquals(AgentModelIds.GEMINI, live.resolve(AgentCatalog.MAIN, active).model)
-        assertEquals(AgentModelProviders.GEMINI, live.resolve(AgentCatalog.MAIN, active).providerId)
-        assertEquals(AgentModelIds.QWEN_CODER, live.resolve(AgentCatalog.CODER, active).model)
+        // Local roles stay on the local model; the API role lands on the API gateway.
+        assertEquals(AgentModelIds.DEVSTRAL_24B, live.resolve(AgentCatalog.MAIN, active).model)
+        assertEquals(AgentModelProviders.OPENAI_COMPATIBLE, live.resolve(AgentCatalog.MAIN, active).providerId)
+        assertEquals(AgentModelIds.DEVSTRAL_24B, live.resolve(AgentCatalog.CODER, active).model)
         assertEquals(AgentModelProviders.OPENAI_COMPATIBLE, live.resolve(AgentCatalog.CODER, active).providerId)
-        assertEquals(AgentModelIds.GROQ, live.resolve(AgentCatalog.EXPLORER, active).model)
+        assertEquals(AgentModelIds.FREELLMAPI_GROQ, live.resolve(AgentCatalog.EXPLORER, active).model)
+        assertEquals(AgentModelProviders.FREELMAPI, live.resolve(AgentCatalog.EXPLORER, active).providerId)
         assertEquals(active, AgentModelResolver().resolve(AgentCatalog.CODER, active))
         assertEquals(testConfig(), AgentModelResolver().resolve(AgentCatalog.MAIN, testConfig()))
     }
@@ -117,9 +124,10 @@ class AgentRoleCapabilityValidationTest {
             AgentModelProviders.GROQ to config(AgentModelProviders.GROQ, "openai/gpt-oss-20b"),
             AgentModelProviders.OPENAI_COMPATIBLE to config(
                 AgentModelProviders.OPENAI_COMPATIBLE,
-                "qwen2.5-coder:14b",
+                "devstral-24b",
                 baseUrl = "http://127.0.0.1:8080/v1",
             ),
+            AgentModelProviders.FREELMAPI to config(AgentModelProviders.FREELMAPI, "gemini-3.5-flash"),
             AgentModelProviders.CEREBRAS to config(AgentModelProviders.CEREBRAS, "cerebras"),
             AgentModelProviders.MISTRAL to config(AgentModelProviders.MISTRAL, "mistral"),
             AgentModelProviders.OPENROUTER to config(AgentModelProviders.OPENROUTER, "openrouter"),
@@ -132,12 +140,12 @@ class AgentRoleCapabilityValidationTest {
         )
         val active = connections.getValue(AgentModelProviders.GROQ)
         val main = live.resolveChecked(AgentRole.MAIN, active)
-        val coder = live.resolveChecked(AgentRole.CODER, active)
         val explorer = live.resolveChecked(AgentRole.EXPLORER, active)
-        assertEquals(AgentModelProviders.GEMINI, main.providerId)
-        assertEquals(AgentModelProviders.OPENAI_COMPATIBLE, coder.providerId)
-        assertEquals(AgentModelProviders.GROQ, explorer.providerId)
-        assertTrue(setOf(main.providerId, coder.providerId, explorer.providerId).size == 3)
+        val tester = live.resolveChecked(AgentRole.TESTER, active)
+        assertEquals(AgentModelProviders.OPENAI_COMPATIBLE, main.providerId)
+        assertEquals(AgentModelProviders.FREELMAPI, explorer.providerId)
+        assertEquals(AgentModelProviders.GROQ, tester.providerId)
+        assertTrue(setOf(main.providerId, explorer.providerId, tester.providerId).size == 3)
         assertFalse(live.canSatisfy(AgentRole.MAIN, connections.getValue(AgentModelProviders.CEREBRAS)))
     }
 

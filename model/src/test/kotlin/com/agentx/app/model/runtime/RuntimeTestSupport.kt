@@ -98,6 +98,36 @@ internal fun customPreset(
     setupKind = CUSTOM_SETUP_KIND,
 )
 
+/**
+ * A saved FreeLLMAPI preset: a hosted OpenAI-compatible gateway that serves Gemini,
+ * Groq and other remote models behind one credential.
+ *
+ * It speaks the same wire protocol as [customPreset] but is a distinct provider
+ * identity ([ModelProviderIds.FREELMAPI]) in the API execution domain, so a local
+ * endpoint and a FreeLLMAPI gateway are never confused even though both are
+ * "OpenAI-compatible".
+ */
+internal fun freeLlmApiPreset(
+    id: String = "freellmapi-preset",
+    name: String = "FreeLLMAPI",
+    model: String = "gemini-3.5-flash",
+    endpoint: String? = "https://freellmapi.example",
+    credentialRef: String? = "model-credential-9",
+    requireModelInList: Boolean = false,
+): ModelPreset = ModelPreset(
+    id = id,
+    displayName = name,
+    providerType = ModelProviderType.REMOTE_OPENAI_COMPATIBLE,
+    modelIdentifier = model,
+    apiProtocol = ModelApiProtocol.OPENAI_COMPATIBLE,
+    apiBasePath = "/v1",
+    credentialRef = credentialRef,
+    endpoint = EndpointConfig(EndpointDiscoveryMode.CONFIGURED_ENDPOINT, endpoint),
+    tunnel = TunnelConfig(type = TunnelType.NONE),
+    health = HealthCheckConfig(requireModelInList = requireModelInList),
+    setupKind = ModelSetupKind.FREELLMAPI.id,
+)
+
 /** Discovery stub with a scripted outcome and a call count. */
 internal class FakeEndpointDiscovery(
     var outcome: (ModelPreset) -> DiscoveryOutcome = { DiscoveryOutcome.NotFound("nothing published yet") },

@@ -76,7 +76,11 @@ enum class ModelProtocolChoice(val displayName: String, val helper: String) {
 }
 
 /** Providers offered by the API flow, in presentation order. */
-val API_PROVIDER_KINDS: List<ModelSetupKind> = listOf(ModelSetupKind.GEMINI, ModelSetupKind.GROQ)
+val API_PROVIDER_KINDS: List<ModelSetupKind> = listOf(
+    ModelSetupKind.GEMINI,
+    ModelSetupKind.GROQ,
+    ModelSetupKind.FREELLMAPI,
+)
 
 /** Which input a validation issue belongs to, so the form can mark one field. */
 enum class ModelSetupField { NAME, MODEL, SERVER_URL, API_KEY }
@@ -146,6 +150,14 @@ data class ModelSetupForm(
     val requiresCredential: Boolean
         get() = setupKind.requiresApiKey && !hasStoredCredential && credential.isBlank()
 
+    /**
+     * Whether a server URL field is required: always for Local, and for an API
+     * provider that declares it needs one (FreeLLMAPI, whose gateway address is
+     * user-specific rather than a hardcoded catalogue root).
+     */
+    val showsServerUrl: Boolean
+        get() = connectionType == ModelConnectionType.LOCAL || setupKind.showsEndpointField
+
     /** The typed URL in the shape the provider abstraction stores it. */
     val normalizedServerUrl: String?
         get() = when (val outcome = EndpointResolver.resolve(serverUrl)) {
@@ -161,7 +173,7 @@ data class ModelSetupForm(
         }
 
     val serverUrlRequired: Boolean
-        get() = connectionType == ModelConnectionType.LOCAL && serverUrl.isBlank() && !inheritsEndpointDiscovery
+        get() = showsServerUrl && serverUrl.isBlank() && !inheritsEndpointDiscovery
 
     /**
      * The declaration this form states, or null when the form has nothing to say
@@ -236,7 +248,11 @@ data class ModelSetupForm(
         }
         val endpointUrl = when (connectionType) {
             ModelConnectionType.LOCAL -> normalizedServerUrl ?: inherit?.endpoint?.explicitUrl
-            ModelConnectionType.API -> inherit?.endpoint?.explicitUrl?.takeIf { it.isNotBlank() } ?: spec?.rootUrl
+            // A known provider's root URL wins; FreeLLMAPI (no catalogue root) falls
+            // back to the URL the user typed for its gateway.
+            ModelConnectionType.API -> inherit?.endpoint?.explicitUrl?.takeIf { it.isNotBlank() }
+                ?: spec?.rootUrl?.takeIf { it.isNotBlank() }
+                ?: normalizedServerUrl
         }
         val endpointMode = when {
             // A local preset that never had a typed URL keeps its discovery mode.
@@ -280,7 +296,7 @@ data class ModelSetupForm(
         presetId = presetId ?: duplicateOf?.id,
         displayName = name.trim(),
         setupKind = setupKind,
-        endpoint = if (connectionType == ModelConnectionType.LOCAL) serverUrl.trim() else "",
+        endpoint = if (showsServerUrl) serverUrl.trim() else "",
         credential = credential.takeIf { it.isNotBlank() },
         clearCredential = clearCredential,
         modelIdentifier = modelId.trim(),
@@ -301,7 +317,7 @@ data class ModelSetupForm(
         if (modelId.isBlank()) {
             issues += ModelSetupIssue(ModelSetupField.MODEL, "Choose or enter a model id")
         }
-        if (connectionType == ModelConnectionType.LOCAL) {
+        if (showsServerUrl) {
             if (serverUrlRequired) {
                 issues += ModelSetupIssue(ModelSetupField.SERVER_URL, "A server URL is required")
             } else if (serverUrl.isNotBlank()) {

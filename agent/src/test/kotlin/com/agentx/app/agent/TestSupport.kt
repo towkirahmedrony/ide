@@ -15,6 +15,8 @@ import com.agentx.app.model.ModelRole
 import com.agentx.app.model.ModelStreamEvent
 import com.agentx.app.model.ModelToolCall
 import com.agentx.app.model.json.JsonObject
+import com.agentx.app.model.manager.ModelConnectionKind
+import com.agentx.app.model.preset.ModelProviderIds
 import com.agentx.app.model.json.JsonValue
 import com.agentx.app.tools.Json
 import com.agentx.app.tools.Tool
@@ -38,6 +40,29 @@ internal fun testConfig(): ModelConfig = ModelConfig(
     model = "test-model",
     capabilities = ModelCapabilities(toolCalling = true, streaming = true),
 )
+
+/**
+ * The execution domain a provider family belongs to, for tests that build a
+ * [ModelConfig] directly.
+ *
+ * Production configs get this from the preset's setup kind through
+ * `GatewayModelConnectionRegistry`; tests state it explicitly so a domain-bound
+ * role preference (the built-in MAIN/CODER/DEBUGGER local binding, or an API
+ * role's remote binding) can be exercised against a connection of the right
+ * domain.
+ */
+internal fun testDomain(providerId: String): ModelConnectionKind = when (providerId) {
+    ModelProviderIds.GEMINI,
+    ModelProviderIds.GROQ,
+    ModelProviderIds.FREELMAPI,
+    ModelProviderIds.CEREBRAS,
+    ModelProviderIds.MISTRAL,
+    ModelProviderIds.OPENROUTER,
+    ModelProviderIds.CLOUDFLARE,
+    ModelProviderIds.NVIDIA_NIM,
+    -> ModelConnectionKind.API
+    else -> ModelConnectionKind.LOCAL_CUSTOM
+}
 
 internal fun jsonArgs(vararg pairs: Pair<String, String>): JsonObject =
     pairs.associate { (key, value) -> key to JsonValue.Str(value) }

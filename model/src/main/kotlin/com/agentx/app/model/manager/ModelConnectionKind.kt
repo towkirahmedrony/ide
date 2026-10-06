@@ -50,6 +50,7 @@ enum class ModelConnectionKind(val displayName: String) {
 private val API_SETUP_KINDS: Set<String> = setOf(
     ModelSetupKind.GEMINI.id,
     ModelSetupKind.GROQ.id,
+    ModelSetupKind.FREELLMAPI.id,
     ModelProviderIds.CEREBRAS,
     ModelProviderIds.MISTRAL,
     ModelProviderIds.OPENROUTER,

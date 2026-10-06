@@ -2,6 +2,7 @@ package com.agentx.app.model
 
 import com.agentx.app.model.capability.ModelCapabilityDeclaration
 import com.agentx.app.model.json.JsonObject
+import com.agentx.app.model.manager.ModelConnectionKind
 
 /**
  * Provider-independent generation settings shared by local and remote models.
@@ -63,6 +64,20 @@ data class ModelConfig(
      * preview, an ad-hoc request) keeps working unchanged.
      */
     val connectionId: String = providerId,
+
+    /**
+     * The execution domain this connection belongs to: [ModelConnectionKind.LOCAL_CUSTOM]
+     * for a local model endpoint the user runs, or [ModelConnectionKind.API] for a
+     * hosted remote provider (Gemini, Groq, FreeLLMAPI, …).
+     *
+     * Deliberately separate from [providerId], which names a provider *family/protocol*.
+     * A local OpenAI-compatible endpoint and a remote FreeLLMAPI OpenAI-compatible
+     * endpoint share one protocol but belong to different execution domains, so the
+     * role resolver routes on this together with [connectionId] rather than on the
+     * provider family alone. Null means "unspecified" and preserves the behaviour of
+     * configurations built before the domain existed (tests, ad-hoc requests).
+     */
+    val connectionKind: ModelConnectionKind? = null,
 ) {
     /** Returns every configuration problem found; an empty list means valid. */
     fun validate(): List<String> {

@@ -18,6 +18,7 @@ import com.agentx.app.model.runtime.ModelRuntimeFailure
 import com.agentx.app.model.runtime.ModelRunner
 import com.agentx.app.model.runtime.RecordingLogSink
 import com.agentx.app.model.runtime.customPreset
+import com.agentx.app.model.runtime.freeLlmApiPreset
 import com.agentx.app.model.runtime.geminiPreset
 import com.agentx.app.model.runtime.healthy
 import com.agentx.app.model.runtime.recordingLogger
@@ -127,12 +128,14 @@ class ApiLocalConnectionSeparationTest {
     fun `hosted providers are API connections and everything else is local or custom`() {
         assertEquals(ModelConnectionKind.API, ModelSetupKind.GEMINI.connectionKind)
         assertEquals(ModelConnectionKind.API, ModelSetupKind.GROQ.connectionKind)
+        assertEquals(ModelConnectionKind.API, ModelSetupKind.FREELLMAPI.connectionKind)
         assertEquals(ModelConnectionKind.LOCAL_CUSTOM, ModelSetupKind.CUSTOM.connectionKind)
 
         // The persisted setup kind decides, and an unknown one is never assumed to be
         // a hosted provider.
         assertEquals(ModelConnectionKind.API, "gemini".connectionKind)
         assertEquals(ModelConnectionKind.API, "groq".connectionKind)
+        assertEquals(ModelConnectionKind.API, "freellmapi".connectionKind)
         assertEquals(ModelConnectionKind.LOCAL_CUSTOM, "custom".connectionKind)
         assertEquals(ModelConnectionKind.LOCAL_CUSTOM, null.connectionKind)
         assertEquals(ModelConnectionKind.LOCAL_CUSTOM, "something-else".connectionKind)
@@ -168,11 +171,49 @@ class ApiLocalConnectionSeparationTest {
         assertEquals(ModelConnectionKind.API, ModelProviderIds.OPENROUTER.connectionKind)
         assertEquals(ModelConnectionKind.API, ModelProviderIds.CLOUDFLARE.connectionKind)
         assertEquals(ModelConnectionKind.API, ModelProviderIds.NVIDIA_NIM.connectionKind)
+        // FreeLLMAPI is a hosted gateway reached with a key, so it owns the API
+        // lifecycle even though it speaks the OpenAI-compatible protocol.
+        assertEquals(ModelConnectionKind.API, ModelProviderIds.FREELMAPI.connectionKind)
+        assertEquals(ModelConnectionKind.API, freeLlmApiPreset().connectionKind)
 
         // A user-defined custom endpoint stays local/custom, however remote its URL is.
         assertEquals(ModelConnectionKind.LOCAL_CUSTOM, ModelProviderIds.OPENAI_COMPATIBLE.connectionKind)
         assertEquals(ModelConnectionKind.LOCAL_CUSTOM, "custom".connectionKind)
         assertEquals(ModelConnectionKind.LOCAL_CUSTOM, customPreset().connectionKind)
+    }
+
+    @Test
+    fun `a local endpoint and a FreeLLMAPI gateway are never confused though both are openai compatible`() = runBlocking {
+        val manager = manager()
+        // Both connections speak the OpenAI-compatible protocol. They must nevertheless
+        // be distinct identities in distinct execution domains, so model resolution can
+        // tell "the local Devstral endpoint" from "the remote FreeLLMAPI gateway".
+        val local = customPreset(id = "devstral-local")
+        val freeLlm = freeLlmApiPreset(id = "freellmapi-gateway")
+
+        assertEquals(ModelProviderIds.OPENAI_COMPATIBLE, local.providerId)
+        assertEquals(ModelConnectionKind.LOCAL_CUSTOM, local.connectionKind)
+        assertEquals(ModelProviderIds.FREELMAPI, freeLlm.providerId)
+        assertEquals(ModelConnectionKind.API, freeLlm.connectionKind)
+        assertTrue(local.providerId != freeLlm.providerId)
+        assertTrue(local.connectionKind != freeLlm.connectionKind)
+
+        // The lifecycle follows the execution domain, not the wire protocol.
+        assertTrue(ApiModelConnectionManager().handles(freeLlm))
+        assertFalse(ApiModelConnectionManager().handles(local))
+        assertTrue(LocalModelConnectionManager().handles(local))
+        assertFalse(LocalModelConnectionManager().handles(freeLlm))
+
+        // The saved API gateway connection is addressable and carries its domain, so the
+        // gateway receives one config whose connectionKind identifies the API path.
+        val saved = assertNotNull(
+            manager.createPreset(freeLlm, credential = apiKey).valueOrNull(),
+        )
+        assertNotNull(manager.selectModel(saved.id).valueOrNull())
+        val freeConfig = assertNotNull(manager.connections()[saved.id])
+        assertEquals(ModelProviderIds.FREELMAPI, freeConfig.providerId)
+        assertEquals(ModelConnectionKind.API, freeConfig.connectionKind)
+        assertEquals(1, manager.connections().values.count { it.connectionId == saved.id })
     }
 
     // --- Test 1 ------------------------------------------------------------

@@ -37,7 +37,7 @@ object AgentCatalog {
         permissionLevel = PermissionLevel.WORKSPACE_WRITE,
         isReadOnly = false,
         maxSteps = DEFAULT_MAIN_MAX_STEPS,
-        modelPreference = AgentModelIds.GEMINI,
+        modelPreference = AgentModelIds.DEVSTRAL_24B,
     )
 
     val EXPLORER: AgentDefinition = AgentDefinition(
@@ -48,7 +48,7 @@ object AgentCatalog {
         permissionLevel = PermissionLevel.READ_ONLY,
         isReadOnly = true,
         maxSteps = DEFAULT_SUB_MAX_STEPS,
-        modelPreference = AgentModelIds.GROQ,
+        modelPreference = AgentModelIds.FREELLMAPI_GROQ,
     )
 
     val RESEARCHER: AgentDefinition = AgentDefinition(
@@ -59,7 +59,7 @@ object AgentCatalog {
         permissionLevel = PermissionLevel.NETWORK,
         isReadOnly = true,
         maxSteps = DEFAULT_SUB_MAX_STEPS,
-        modelPreference = AgentModelIds.GEMINI,
+        modelPreference = AgentModelIds.FREELLMAPI_GEMINI,
     )
 
     val CODER: AgentDefinition = AgentDefinition(
@@ -70,7 +70,7 @@ object AgentCatalog {
         permissionLevel = PermissionLevel.WORKSPACE_WRITE,
         isReadOnly = false,
         maxSteps = DEFAULT_SUB_MAX_STEPS,
-        modelPreference = AgentModelIds.QWEN_CODER,
+        modelPreference = AgentModelIds.DEVSTRAL_24B,
     )
 
     val DEBUGGER: AgentDefinition = AgentDefinition(
@@ -81,7 +81,7 @@ object AgentCatalog {
         permissionLevel = PermissionLevel.COMMAND_EXECUTION,
         isReadOnly = false,
         maxSteps = DEFAULT_SUB_MAX_STEPS,
-        modelPreference = AgentModelIds.QWEN_CODER,
+        modelPreference = AgentModelIds.DEVSTRAL_24B,
     )
 
     val REVIEWER: AgentDefinition = AgentDefinition(
@@ -92,7 +92,7 @@ object AgentCatalog {
         permissionLevel = PermissionLevel.READ_ONLY,
         isReadOnly = true,
         maxSteps = DEFAULT_SUB_MAX_STEPS,
-        modelPreference = AgentModelIds.GROQ,
+        modelPreference = AgentModelIds.FREELLMAPI_GEMINI,
     )
 
     val TESTER: AgentDefinition = AgentDefinition(

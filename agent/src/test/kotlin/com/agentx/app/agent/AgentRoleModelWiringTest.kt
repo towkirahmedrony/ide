@@ -1,6 +1,5 @@
 package com.agentx.app.agent
 
-import com.agentx.app.agent.catalog.AgentCatalog
 import com.agentx.app.agent.domain.AgentRole
 import com.agentx.app.agent.domain.AgentRunRequest
 import com.agentx.app.agent.domain.AgentStatus
@@ -62,13 +61,13 @@ class AgentRoleModelWiringTest {
 
         assertEquals(AgentStatus.COMPLETED, result.status)
         val request = provider.requests.single()
-        assertEquals(AgentModelIds.GEMINI, request.config.model)
+        assertEquals(AgentModelIds.DEVSTRAL_24B, request.config.model)
         assertEquals(testConfig().providerId, request.config.providerId)
         assertNotEquals(testConfig().model, request.config.model)
     }
 
     @Test
-    fun `a delegated coder receives the resolved coder configuration`() = runAgent {
+    fun `a delegated coder receives its own resolved configuration`() = runAgent {
         val provider = ScriptedModelProvider(
             mapOf(
                 AgentRole.MAIN to mutableListOf(
@@ -81,7 +80,7 @@ class AgentRoleModelWiringTest {
         val resolver = AgentModelResolver(
             AgentModelPreferences()
                 .with(AgentRole.MAIN, RoleModelPreference(testConfig().providerId))
-                .with(AgentRole.CODER, RoleModelPreference(testConfig().providerId)),
+                .with(AgentRole.CODER, RoleModelPreference(testConfig().providerId, "coder-model")),
         )
 
         val result = runtime(resolver, provider).orchestrator.run(
@@ -96,10 +95,11 @@ class AgentRoleModelWiringTest {
 
         val mainRequest = provider.requests[0]
         val coderRequest = provider.requests[1]
-        assertEquals(AgentModelIds.GEMINI, mainRequest.config.model)
-        assertEquals(AgentModelIds.QWEN_CODER, coderRequest.config.model)
+        // The Main Agent keeps the catalog's default; the delegated Coder picks up its
+        // own mapping, so the two roles are not collapsed onto one configuration.
+        assertEquals(AgentModelIds.DEVSTRAL_24B, mainRequest.config.model)
+        assertEquals("coder-model", coderRequest.config.model)
         assertNotEquals(mainRequest.config.model, coderRequest.config.model)
-        assertEquals(AgentCatalog.CODER.modelPreference, coderRequest.config.model)
         // Both roles still resolve through the single registered provider.
         assertTrue(provider.requests.all { it.config.providerId == testConfig().providerId })
     }

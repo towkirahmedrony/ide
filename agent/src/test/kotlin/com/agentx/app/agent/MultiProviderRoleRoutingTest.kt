@@ -18,9 +18,9 @@ import kotlin.test.assertTrue
 
 /**
  * The role → provider mapping resolved by [AgentModelResolver] must reach the
- * provider that actually serves it, with Gemini, Groq and a local
- * OpenAI-compatible model all registered in the same [DefaultModelGateway].
- * Each scripted provider records the requests it received, so the assertions are
+ * provider that actually serves it, with a local OpenAI-compatible model, an
+ * API gateway and Groq all registered in the same [DefaultModelGateway]. Each
+ * scripted provider records the requests it received, so the assertions are
  * about real routing, not about constructors.
  */
 class MultiProviderRoleRoutingTest {
@@ -29,6 +29,7 @@ class MultiProviderRoleRoutingTest {
         providerId = providerId,
         baseUrl = "https://$providerId.example/v1",
         model = model,
+        connectionKind = testDomain(providerId),
     )
 
     private fun delegate(role: AgentRole, task: String) = response(
@@ -47,43 +48,37 @@ class MultiProviderRoleRoutingTest {
     )
 
     @Test
-    fun `main and coder run on different simultaneously registered providers`() = runAgent {
-        val gemini = ScriptedModelProvider(
-            mapOf(AgentRole.MAIN to mutableListOf(delegate(AgentRole.CODER, "Patch the bug"), finish("patched"))),
-            id = AgentModelProviders.GEMINI,
-        )
+    fun `main and coder run on the local model while api providers stay idle`() = runAgent {
         val local = ScriptedModelProvider(
-            mapOf(AgentRole.CODER to mutableListOf(finish("wrote the fix"))),
+            mapOf(
+                AgentRole.MAIN to mutableListOf(delegate(AgentRole.CODER, "Patch the bug"), finish("patched")),
+                AgentRole.CODER to mutableListOf(finish("wrote the fix")),
+            ),
             id = AgentModelProviders.OPENAI_COMPATIBLE,
         )
-        val groq = ScriptedModelProvider(
+        val gemini = ScriptedModelProvider(mapOf(AgentRole.REVIEWER to mutableListOf(finish("reviewed"))), id = AgentModelProviders.GEMINI)
+        val freeLlm = ScriptedModelProvider(
             mapOf(AgentRole.EXPLORER to mutableListOf(finish("explored"))),
-            id = AgentModelProviders.GROQ,
+            id = AgentModelProviders.FREELMAPI,
         )
 
         val gateway = DefaultModelGateway()
-        gateway.register(gemini)
         gateway.register(local)
-        gateway.register(groq)
+        gateway.register(gemini)
+        gateway.register(freeLlm)
 
         val connections = mapOf(
-            AgentModelProviders.GEMINI to config(AgentModelProviders.GEMINI, "gemini-3.5-flash"),
-            AgentModelProviders.GROQ to config(
-                AgentModelProviders.GROQ,
-                "llama-3.3-70b-versatile",
-            ),
-            AgentModelProviders.OPENAI_COMPATIBLE to config(
-                AgentModelProviders.OPENAI_COMPATIBLE,
-                "qwen2.5-coder-14b",
-            ),
+            AgentModelProviders.OPENAI_COMPATIBLE to config(AgentModelProviders.OPENAI_COMPATIBLE, "devstral-24b"),
+            AgentModelProviders.FREELMAPI to config(AgentModelProviders.FREELMAPI, "gemini-3.5-flash"),
+            AgentModelProviders.GROQ to config(AgentModelProviders.GROQ, "llama-3.3-70b-versatile"),
         )
         val resolver = AgentModelResolver(
             preferences = AgentModelPreferences.DEFAULT,
             connections = { connections },
         )
 
-        // The default/active model is Groq; MAIN overrides it with Gemini and the
-        // delegated CODER overrides it with the local OpenAI-compatible model.
+        // The default/active model is Groq; both MAIN and the delegated CODER resolve
+        // to their own local Devstral connection regardless.
         val active = config(AgentModelProviders.GROQ, "llama-3.3-70b-versatile")
         val runtime = AgentModule.assemble(
             gateway = gateway,
@@ -100,33 +95,34 @@ class MultiProviderRoleRoutingTest {
 
         assertEquals(AgentStatus.COMPLETED, result.status)
         assertEquals("patched", result.summary)
-        assertEquals(2, gemini.requests.size)
-        assertEquals(1, local.requests.size)
-        assertTrue(gemini.requests.all { it.config.providerId == AgentModelProviders.GEMINI })
+        // MAIN delegates, CODER finishes, then MAIN finishes — all on the local model.
+        assertEquals(3, local.requests.size)
         assertTrue(local.requests.all { it.config.providerId == AgentModelProviders.OPENAI_COMPATIBLE })
-        assertEquals("qwen2.5-coder-14b", local.requests.single().config.model)
-        assertTrue(groq.requests.isEmpty(), "the active provider is not used when a role resolves its own")
+        assertTrue(local.requests.all { it.config.model == "devstral-24b" })
+        assertTrue(gemini.requests.isEmpty(), "an API provider is not used when a local role resolves locally")
+        assertTrue(freeLlm.requests.isEmpty(), "an API provider is not used when a local role resolves locally")
     }
 
     @Test
-    fun `an unconnected role provider falls back to the active provider`() = runAgent {
-        val gemini = ScriptedModelProvider(
+    fun `main stays on the local model even when an api provider is the active model`() = runAgent {
+        // The active model is a remote API model, and an API gateway is connected:
+        // MAIN is still bound to the local domain.
+        val local = ScriptedModelProvider(
             mapOf(AgentRole.MAIN to mutableListOf(finish("done"))),
-            id = AgentModelProviders.GEMINI,
+            id = AgentModelProviders.OPENAI_COMPATIBLE,
         )
         val gateway = DefaultModelGateway()
-        gateway.register(gemini)
+        gateway.register(local)
 
-        // Only Gemini is connected; MAIN's preference resolves to it.
         val connections = mapOf(
-            AgentModelProviders.GEMINI to config(AgentModelProviders.GEMINI, "gemini-3.5-flash"),
+            AgentModelProviders.OPENAI_COMPATIBLE to config(AgentModelProviders.OPENAI_COMPATIBLE, "devstral-24b"),
         )
         val resolver = AgentModelResolver(
             preferences = AgentModelPreferences.DEFAULT,
             connections = { connections },
         )
 
-        val active = config(AgentModelProviders.OPENAI_COMPATIBLE, "qwen2.5-coder-14b")
+        val active = config(AgentModelProviders.GEMINI, "gemini-3.5-flash")
         val result = AgentModule.assemble(
             gateway = gateway,
             registry = DefaultToolRegistry(),
@@ -139,7 +135,7 @@ class MultiProviderRoleRoutingTest {
         )
 
         assertEquals(AgentStatus.COMPLETED, result.status)
-        assertEquals(1, gemini.requests.size)
-        assertEquals(AgentModelProviders.GEMINI, gemini.requests.single().config.providerId)
+        assertEquals(1, local.requests.size)
+        assertTrue(local.requests.all { it.config.providerId == AgentModelProviders.OPENAI_COMPATIBLE })
     }
 }
