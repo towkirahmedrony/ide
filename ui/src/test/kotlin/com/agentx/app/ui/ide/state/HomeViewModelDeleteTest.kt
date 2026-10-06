@@ -72,6 +72,9 @@ class HomeViewModelDeleteTest {
 
         override suspend fun restoreLastOpened(): WorkspaceResult<WorkspaceSession>? = null
 
+        override suspend fun createProject(name: String): WorkspaceResult<WorkspaceSession> =
+            failure(WorkspaceError(WorkspaceErrorCode.UNKNOWN, "not used by this test"))
+
         override suspend fun close() = Unit
 
         override suspend fun forget(id: WorkspaceId): WorkspaceResult<Unit> {

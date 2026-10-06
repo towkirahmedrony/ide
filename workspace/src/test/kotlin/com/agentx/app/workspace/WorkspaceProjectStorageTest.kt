@@ -92,6 +92,15 @@ class WorkspaceProjectStorageTest {
     private fun naming(vararg names: String): ProjectDirectoryNaming =
         ProjectDirectoryNaming { names.toList() }
 
+    /**
+     * Names keyed by the project that owns them, which is what a runtime produces: the name of a
+     * copy is derived from *its own* record, so two projects never offer each other's directories.
+     */
+    private fun namingFor(vararg owners: Pair<String, String>): ProjectDirectoryNaming =
+        ProjectDirectoryNaming { record ->
+            owners.filter { (id, _) -> id == record.metadata.id.value }.map { (_, name) -> name }
+        }
+
     /** A real directory standing in for a project copy AgentX made. */
     private fun createCopy(name: String, vararg contents: String): File {
         val directory = File(developerWorkspaces, name)
@@ -504,7 +513,12 @@ class WorkspaceProjectStorageTest {
 
     @Test
     fun `deleting one project does not affect another`() = runBlocking {
-        val storage = storageOver(naming("myproject-1a2b3c4d", "otherproject-9999"))
+        // Each project names only its own copy, exactly as the runtime does. A naming function that
+        // offered both names to both records would make this delete remove both copies, which is
+        // the mistake the test is here to rule out.
+        val storage = storageOver(
+            namingFor(safId to "myproject-1a2b3c4d", "saf-9999" to "otherproject-9999"),
+        )
         val setup = managerWith(
             Triple(safId, "My Project", safHandle),
             Triple("saf-9999", "Other Project", "content://provider/tree/primary%3AOther"),
