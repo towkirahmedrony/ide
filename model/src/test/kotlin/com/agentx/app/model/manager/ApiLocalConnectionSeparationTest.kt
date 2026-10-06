@@ -157,6 +157,24 @@ class ApiLocalConnectionSeparationTest {
         assertEquals(ModelLifecycleState.DISCONNECTED, local.unreachableState())
     }
 
+    @Test
+    fun `declared hosted API providers resolve to API and custom stays local`() {
+        // Hosted providers already declared in the provider identity table, but not yet
+        // described by the connect catalogue, still own the API lifecycle: their saved
+        // configuration is the connection, never a live local endpoint. Nothing about
+        // the endpoint, scheme or hostname is inferred.
+        assertEquals(ModelConnectionKind.API, ModelProviderIds.CEREBRAS.connectionKind)
+        assertEquals(ModelConnectionKind.API, ModelProviderIds.MISTRAL.connectionKind)
+        assertEquals(ModelConnectionKind.API, ModelProviderIds.OPENROUTER.connectionKind)
+        assertEquals(ModelConnectionKind.API, ModelProviderIds.CLOUDFLARE.connectionKind)
+        assertEquals(ModelConnectionKind.API, ModelProviderIds.NVIDIA_NIM.connectionKind)
+
+        // A user-defined custom endpoint stays local/custom, however remote its URL is.
+        assertEquals(ModelConnectionKind.LOCAL_CUSTOM, ModelProviderIds.OPENAI_COMPATIBLE.connectionKind)
+        assertEquals(ModelConnectionKind.LOCAL_CUSTOM, "custom".connectionKind)
+        assertEquals(ModelConnectionKind.LOCAL_CUSTOM, customPreset().connectionKind)
+    }
+
     // --- Test 1 ------------------------------------------------------------
 
     @Test
@@ -387,6 +405,30 @@ class ApiLocalConnectionSeparationTest {
         assertEquals(before.model, after.model)
         assertEquals(apiKey, after.apiKey)
         assertEquals(api.id, manager.state.value.activePresetId)
+        assertNotNull(gateway.provider(ModelProviderIds.GEMINI))
+        Unit
+    }
+
+    @Test
+    fun `an API authentication failure leaves the saved connection and credential in place`() = runBlocking {
+        val manager = manager()
+        val api = apiPreset(manager)
+        assertNotNull(manager.selectModel(api.id).valueOrNull())
+        val before = assertNotNull(apiConnection(manager))
+        val apiRef = assertNotNull(api.credentialRef)
+
+        // A rejected credential is a health observation, not a lost connection: the user
+        // can replace the key without deleting and re-adding the connection.
+        runner.onHealth = { unhealthy("The model endpoint rejected the credential (HTTP 401)") }
+        val health = assertNotNull(manager.checkModelHealth(api.id).valueOrNull())
+
+        assertFalse(health.isReachable)
+        assertEquals(ModelLifecycleState.DEGRADED, manager.state.value.status(api.id).state)
+
+        val after = assertNotNull(apiConnection(manager), "an auth failure must not release the connection")
+        assertEquals(before.connectionId, after.connectionId)
+        assertEquals(apiKey, after.apiKey)
+        assertEquals(apiKey, secrets.get(apiRef), "the credential is still stored and replaceable")
         assertNotNull(gateway.provider(ModelProviderIds.GEMINI))
         Unit
     }
