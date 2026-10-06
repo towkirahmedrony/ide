@@ -1,7 +1,64 @@
 [versions]
+# Build tooling. AGP 9.4 requires Gradle >= 9.6 and JDK 17.
 agp = "9.4.1"
 kotlin = "2.4.20"
-jgit = "6.10.0.202503091348-r"
+
+# Jetpack / AndroidX.
+composeBom = "2026.09.00"
+coreKtx = "1.19.1"
+activityCompose = "1.13.0"
+lifecycle = "2.11.0"
+navigation = "2.10.2"
+coroutines = "1.11.0"
+documentfile = "1.1.0"
+# Android bindings for tree-sitter plus the grammars this build ships. The AARs
+# carry NDK-built libraries for every Android ABI; the desktop JVM bindings do
+# not, which is why this project uses the Android-native ones.
+androidTreeSitter = "4.3.1"
+
+# The vendored Termux terminal libraries. `annotation` is the only AndroidX artifact they
+# reference; `ndk` is the revision upstream termux-app builds its PTY JNI with.
+androidxAnnotation = "1.9.0"
+ndk = "29.0.14206865"
+
+# Authenticated Git clone of the repositories GitHub discovery selects. JGit 6.x
+# is built for Java 11, which the Android toolchain dexes without desugaring a
+# newer bytecode level than the platform already handles.
+jgit = "6.10.1.202505221210-r"
 
 [libraries]
-org-eclipse-jgit = { module = "org.eclipse.jgit:org.eclipse.jgit", version.ref = "jgit" }
+androidx-annotation = { group = "androidx.annotation", name = "annotation", version.ref = "androidxAnnotation" }
+androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
+androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
+androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycle" }
+androidx-lifecycle-viewmodel-ktx = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-ktx", version.ref = "lifecycle" }
+androidx-lifecycle-viewmodel-compose = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-compose", version.ref = "lifecycle" }
+androidx-navigation-compose = { group = "androidx.navigation", name = "navigation-compose", version.ref = "navigation" }
+androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
+androidx-compose-ui = { group = "androidx.compose.ui", name = "ui" }
+androidx-compose-ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics" }
+androidx-compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
+androidx-compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
+androidx-compose-material3 = { group = "androidx.compose.material3", name = "material3" }
+androidx-compose-material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended" }
+androidx-documentfile = { group = "androidx.documentfile", name = "documentfile", version.ref = "documentfile" }
+kotlinx-coroutines-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-core", version.ref = "coroutines" }
+kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
+# Test-only: drives viewModelScope in JVM unit tests.
+kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutines" }
+
+# Code intelligence: tree-sitter runtime and the grammars registered in this build.
+android-tree-sitter = { group = "com.itsaky.androidide.treesitter", name = "android-tree-sitter", version.ref = "androidTreeSitter" }
+android-tree-sitter-kotlin = { group = "com.itsaky.androidide.treesitter", name = "tree-sitter-kotlin", version.ref = "androidTreeSitter" }
+android-tree-sitter-java = { group = "com.itsaky.androidide.treesitter", name = "tree-sitter-java", version.ref = "androidTreeSitter" }
+android-tree-sitter-python = { group = "com.itsaky.androidide.treesitter", name = "tree-sitter-python", version.ref = "androidTreeSitter" }
+android-tree-sitter-json = { group = "com.itsaky.androidide.treesitter", name = "tree-sitter-json", version.ref = "androidTreeSitter" }
+android-tree-sitter-xml = { group = "com.itsaky.androidide.treesitter", name = "tree-sitter-xml", version.ref = "androidTreeSitter" }
+
+org-eclipse-jgit = { group = "org.eclipse.jgit", name = "org.eclipse.jgit", version.ref = "jgit" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+android-library = { id = "com.android.library", version.ref = "agp" }
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }

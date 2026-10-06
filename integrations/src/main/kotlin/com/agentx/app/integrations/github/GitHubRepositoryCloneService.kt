@@ -5,425 +5,266 @@ import com.agentx.app.core.failure
 import com.agentx.app.core.success
 import com.agentx.app.integrations.connection.ConnectionCredentialGateway
 import com.agentx.app.integrations.connection.ConnectionId
-import org.eclipse.jgit.api.CreateBranchCommand
-import org.eclipse.jgit.api.CloneCommand
+import kotlinx.coroutines.CancellationException
 import org.eclipse.jgit.api.Git
 import org.eclipse.jgit.api.errors.GitAPIException
-import org.eclipse.jgit.transport.CredentialItem
 import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider
 import java.io.File
 import java.io.IOException
-import java.nio.file.Files
-import java.nio.file.Path
-import java.nio.file.Paths
-import java.nio.file.StandardCopyOption
 
 /**
- * Secure authenticated GitHub repository clone service.
+ * Clones a selected GitHub repository into the managed AgentX workspace.
  *
- * Uses [ConnectionCredentialGateway.withCredential] to obtain the GitHub access
- * token on demand, then clones via JGit with an authenticated transport.
+ * The clone is authenticated with the connection's credential, lent through
+ * [ConnectionCredentialGateway] for the duration of the operation only. The
+ * token is passed to the transport as a password, so it is never part of the
+ * remote URL and never lands in `.git/config`.
  *
- * Security guarantees:
- * - Token is never written to .git/config as plaintext.
- * - Token is never logged, echoed, or exposed to the UI/model.
- * - Destination is validated against managed workspace root before clone.
- * - Repository-derived paths cannot escape the workspace root.
- * - On failure, only the partially-created clone is cleaned up.
- * - Connection credential is never deleted on clone failure.
+ * The destination is derived from repository metadata and validated against the
+ * managed root before anything is written, so a repository cannot be used to
+ * choose where AgentX clones to. On any failure the partial clone is removed and
+ * the connection itself is left untouched.
  */
 interface GitHubRepositoryCloneService {
+
     /**
-     * Clone a GitHub repository into the managed workspace directory.
+     * Clones [repository] under [managedRoot] and returns the cloned directory.
      *
-     * @param connectionId The GitHub connection to obtain the token from.
-     * @param repository The repository to clone.
-     * @param destinationDir The directory to clone into (must be under managed root).
-     * @param branch The branch to checkout. Defaults to repository's default branch.
-     * @param onProgress Optional progress callback (never receives token).
-     * @return ForgeResult with the workspace path on success.
+     * @param managedRoot the AgentX-managed directory clones live in; the target is
+     *        derived from the repository and must stay inside it.
+     * @param branch the branch to check out; defaults to the repository's default branch.
+     * @param onProgress human-readable phase messages. Never carries a credential.
      */
     suspend fun clone(
         connectionId: ConnectionId,
         repository: GitHubRepository,
-        destinationDir: File,
+        managedRoot: File,
         branch: String? = null,
-        onProgress: suspend (String) -> Unit = {},
+        onProgress: (String) -> Unit = {},
     ): ForgeResult<String, GitHubRepositoryError>
 }
 
-/**
- * Clone destination validator.
- *
- * Ensures:
- * - destinationDir is a File under the managed workspace root.
- * - Path does not contain ".." or traversal patterns.
- * - Path is absolute and normalized.
- * - Repository-derived directory names are safe.
- */
-class CloneDestinationValidator {
-    /**
-     * Validate and resolve a clone destination directory.
-     *
-     * @param managedRoot The managed workspace root (must be a directory).
-     * @param repository The repository being cloned (for path derivation).
-     * @param proposedDestination The proposed destination directory, or null to derive from repository.
-     * @return Validation result.
-     */
-    fun validate(
-        managedRoot: File,
-        repository: GitHubRepository,
-        proposedDestination: File? = null,
-    ): CloneDestinationValidation {
-        // Ensure managed root is a directory
-        if (!managedRoot.isDirectory) {
-            return CloneDestinationValidation.Invalid(
-                GitHubRepositoryError.InvalidDestination(
-                    "Managed workspace root is not a directory: ${managedRoot.absolutePath}"
-                )
-            )
-        }
-
-        // Derive destination directory name from repository metadata
-        val destName = proposedDestination?.name ?: sanitizeRepoDirName(repository.owner, repository.name)
-            ?: return CloneDestinationValidation.Invalid(
-                GitHubRepositoryError.InvalidDestination("Invalid repository-derived directory name")
-            )
-
-        // Construct destination path
-        val destination = File(managedRoot, destName)
-
-        // Resolve canonical paths
-        return try {
-            val canonicalManagedRoot = managedRoot.canonicalPath
-            val canonicalDestination = destination.canonicalFile
-
-            // Security checks
-            if (!canonicalDestination.path.startsWith(canonicalManagedRoot + File.separator) &&
-                canonicalDestination.path != canonicalManagedRoot) {
-                return CloneDestinationValidation.Invalid(
-                    GitHubRepositoryError.PathTraversal(
-                        "Clone destination would escape managed workspace root"
-                    )
-                )
-            }
-
-            // Check if destination already exists
-            if (destination.exists()) {
-                return if (destination.isDirectory && destination.list().isEmpty()) {
-                    CloneDestinationValidation.Valid(canonicalDestination.path, destination)
-                } else {
-                    CloneDestinationValidation.Invalid(
-                        GitHubRepositoryError.InvalidDestination(
-                            "Destination already exists: ${destination.absolutePath}"
-                        )
-                    )
-                }
-            }
-
-            CloneDestinationValidation.Valid(canonicalDestination.path, destination)
-        } catch (e: IOException) {
-            CloneDestinationValidation.Invalid(
-                GitHubRepositoryError.Unknown("Failed to resolve destination path: ${e.message}")
-            )
-        } catch (e: SecurityException) {
-            CloneDestinationValidation.Invalid(
-                GitHubRepositoryError.Unknown("Security exception checking destination: ${e.message}")
-            )
-        }
-    }
-
-    /**
-     * Sanitize a directory name derived from repository owner and name.
-     *
-     * Rejects:
-     * - Empty or blank names
-     * - Names containing path separators (/ or \)
-     * - Names containing ..
-     * - Names with control characters
-     * - Names that are too long
-     *
-     * Trims and limits length to a safe maximum.
-     */
-    fun sanitizeRepoDirName(owner: String, name: String): String? {
-        if (owner.isBlank() || name.isBlank()) return null
-
-        // Reject dangerous characters
-        val dangerousChars = Regex("[/\\\\\\u0000-\\u001F]")
-        if (owner.contains(dangerousChars) || name.contains(dangerousChars)) return null
-        if (owner == ".." || name == "..") return null
-
-        // Limit length
-        val maxLen = 100
-        val sanitizedOwner = owner.trim().take(maxLen)
-        val sanitizedName = name.trim().take(maxLen)
-
-        if (sanitizedOwner.isEmpty() || sanitizedName.isEmpty()) return null
-
-        return "${sanitizedOwner}-${sanitizedName}"
-    }
-
-    /**
-     * Check if a path is safely inside the managed root.
-     */
-    fun isPathInsideRoot(path: File, root: File): Boolean {
-        return try {
-            val canonicalPath = path.canonicalPath
-            val canonicalRoot = root.canonicalPath
-            canonicalPath.startsWith(canonicalRoot + File.separator) ||
-                canonicalPath == canonicalRoot
-        } catch (e: IOException) {
-            false
-        }
-    }
-}
-
-/**
- * Result of clone destination validation.
- */
+/** The outcome of resolving where a clone would go. */
 sealed interface CloneDestinationValidation {
-    data class Valid(val path: String, val directory: File) : CloneDestinationValidation
+    data class Valid(val directory: File) : CloneDestinationValidation
     data class Invalid(val error: GitHubRepositoryError) : CloneDestinationValidation
 }
 
 /**
- * Default implementation using JGit for authenticated cloning.
+ * Decides where a clone may be written.
  *
- * Token is provided transiently via [ConnectionCredentialGateway] and used
- * only during the clone operation. It is NOT stored in .git/config.
+ * Two independent guarantees, because a GitHub repository name is remote input:
+ * the directory name is built from validated segments (no separator, no `..`, no
+ * control character), and the resolved target is checked to be inside the
+ * managed root. The containment check compares canonical paths, so a symlink
+ * planted at the destination resolves outside the root and is refused rather
+ * than written through.
+ */
+class CloneDestinationValidator {
+
+    /**
+     * Builds the directory name for a repository, or null when [owner] or [name]
+     * is not usable as a single path segment.
+     */
+    fun directoryName(owner: String, name: String): String? {
+        if (!isSafeSegment(owner) || !isSafeSegment(name)) return null
+        val combined = "${owner.trim()}-${name.trim()}"
+        return if (combined.length > MAX_DIRECTORY_NAME_LENGTH) {
+            combined.take(MAX_DIRECTORY_NAME_LENGTH)
+        } else {
+            combined
+        }
+    }
+
+    /**
+     * Resolves the directory [repository] may be cloned into under [managedRoot].
+     *
+     * The root is created on first use; the target itself is not.
+     */
+    fun validate(managedRoot: File, repository: GitHubRepository): CloneDestinationValidation {
+        if (!managedRoot.exists() && !managedRoot.mkdirs()) {
+            return invalid("The AgentX projects folder could not be created")
+        }
+        if (!managedRoot.isDirectory) {
+            return invalid("The AgentX projects folder is not a directory")
+        }
+
+        val name = directoryName(repository.owner, repository.name)
+            ?: return invalid("\"${repository.owner}/${repository.name}\" cannot be used as a folder name")
+
+        val root = managedRoot.canonicalFile
+        val target = File(root, name).canonicalFile
+        if (target == root || !target.path.startsWith(root.path + File.separator)) {
+            return CloneDestinationValidation.Invalid(
+                GitHubRepositoryError.PathTraversal("A clone destination must stay inside the AgentX projects folder"),
+            )
+        }
+        if (target.exists()) {
+            return invalid("A folder named \"$name\" already exists in the AgentX projects folder")
+        }
+
+        return CloneDestinationValidation.Valid(target)
+    }
+
+    private fun invalid(detail: String): CloneDestinationValidation =
+        CloneDestinationValidation.Invalid(GitHubRepositoryError.InvalidDestination(detail))
+
+    private fun isSafeSegment(value: String): Boolean {
+        val trimmed = value.trim()
+        if (trimmed.isEmpty()) return false
+        if (trimmed == "." || trimmed == "..") return false
+        return trimmed.none { it == '/' || it == '\\' || it.isISOControl() }
+    }
+
+    companion object {
+        /** Long enough for real `owner-name` pairs, short enough for any filesystem. */
+        const val MAX_DIRECTORY_NAME_LENGTH: Int = 100
+    }
+}
+
+/**
+ * The production clone service, built on JGit.
  *
- * Instead, we use JGit's CredentialsProvider with the token, and after clone
- * we ensure the remote URL does NOT contain any credentials.
+ * JGit is the transport because it takes the credential as a
+ * [UsernamePasswordCredentialsProvider] rather than in the URL, which is what
+ * keeps the token out of `.git/config`. The remote URL is re-written from the
+ * repository's own credential-free URL after the clone as a second guarantee.
  */
 class JGitGitHubRepositoryCloneService(
     private val credentialGateway: ConnectionCredentialGateway,
-    private val validator: CloneDestinationValidator,
+    private val validator: CloneDestinationValidator = CloneDestinationValidator(),
     private val logger: GitHubRepositoryLogger = QuietGitHubRepositoryLogger,
 ) : GitHubRepositoryCloneService {
 
     override suspend fun clone(
         connectionId: ConnectionId,
         repository: GitHubRepository,
-        destinationDir: File,
+        managedRoot: File,
         branch: String?,
-        onProgress: suspend (String) -> Unit,
+        onProgress: (String) -> Unit,
     ): ForgeResult<String, GitHubRepositoryError> {
-        // Validate destination first
-        val validation = validator.validate(
-            managedRoot = destinationDir.parentFile ?: return failure(
-                GitHubRepositoryError.InvalidDestination("Destination has no parent directory")
-            ),
-            repository = repository,
-            proposedDestination = destinationDir,
-        )
-
-        if (validation !is CloneDestinationValidation.Valid) {
+        val validation = validator.validate(managedRoot, repository)
+        if (validation is CloneDestinationValidation.Invalid) {
+            logger.logCloneFailed(connectionId.value, repository, validation.error)
             return failure(validation.error)
         }
+        val destination = (validation as CloneDestinationValidation.Valid).directory
 
-        val destPath = validation.path
-        val destFile = validation.directory
+        logger.logCloneStarted(connectionId.value, repository)
+        onProgress("Cloning ${repository.fullName}")
 
-        logger.logCloneStart(connectionId.value, repository.owner, repository.name)
-
-        // Obtain the token transiently for this clone operation
-        return try {
+        val handed = try {
             credentialGateway.withCredential(connectionId) { token ->
-                cloneWithToken(repository, destFile, destPath, branch ?: repository.defaultBranch, onProgress, token)
+                cloneWithToken(repository, destination, branch ?: repository.defaultBranch, onProgress, token)
             }
-        } catch (cancelled: java.util.concurrent.CancellationException) {
+        } catch (cancelled: CancellationException) {
+            discard(destination)
             throw cancelled
-        } catch (e: GitAPIException) {
-            logger.logCloneError(connectionId.value, "GitAPIException: ${e.message}")
-            // Clean up partially-created clone
-            cleanupClone(destFile, destPath)
-            failure(mapGitException(e))
-        } catch (e: IOException) {
-            logger.logCloneError(connectionId.value, "IOException: ${e.message}")
-            cleanupClone(destFile, destPath)
-            failure(GitHubRepositoryError.NetworkFailure)
-        } catch (e: SecurityException) {
-            logger.logCloneError(connectionId.value, "SecurityException: ${e.message}")
-            cleanupClone(destFile, destPath)
-            failure(GitHubRepositoryError.Unknown("Security exception: ${e.message}"))
-        } catch (e: Throwable) {
-            logger.logCloneError(connectionId.value, "Unexpected: ${e.message}")
-            cleanupClone(destFile, destPath)
-            failure(GitHubRepositoryError.Unknown(e.message ?: "Unknown error"))
+        } catch (error: Exception) {
+            discard(destination)
+            logger.logCloneFailed(connectionId.value, repository, GitHubRepositoryError.Unknown(error.message.orEmpty()))
+            return failure(GitHubRepositoryError.Unknown(error.message ?: "The clone failed"))
+        }
+
+        return when (handed) {
+            is ForgeResult.Success -> when (val cloned = handed.value) {
+                is ForgeResult.Success -> {
+                    logger.logCloneFinished(connectionId.value, cloned.value)
+                    cloned
+                }
+                is ForgeResult.Failure -> {
+                    discard(destination)
+                    logger.logCloneFailed(connectionId.value, repository, cloned.error)
+                    cloned
+                }
+            }
+            is ForgeResult.Failure -> {
+                discard(destination)
+                val error = gitHubGatewayError(handed.error)
+                logger.logCloneFailed(connectionId.value, repository, error)
+                failure(error)
+            }
         }
     }
 
-    private suspend fun cloneWithToken(
+    private fun cloneWithToken(
         repository: GitHubRepository,
         destination: File,
-        destinationPath: String,
         branch: String,
-        onProgress: suspend (String) -> Unit,
+        onProgress: (String) -> Unit,
         token: String,
     ): ForgeResult<String, GitHubRepositoryError> {
         return try {
-            logger.logCloneProgress(connectionId.value, "Cloning branch: $branch")
-
-            // Create a credential provider that uses the token without persisting it
-            val credentialsProvider = object : UsernamePasswordCredentialsProvider {
-                init {
-                    // Provide credentials for authentication
-                    fetch() // This will use the username/password from the parent class
-                }
-
-                override fun get(uri: String?): CredentialItem? {
-                    return provide(CredentialItem.USERNAME, "x-access-token") { true }
-                        .then(provide(CredentialItem.PASSWORD, token) { true })
-                        .then(provide(CredentialItem.PASSWORD_PROTECTED, "true") { true })
-                        . result
-                }
-            }
-
-            // Actually, use a simpler approach: UsernamePasswordCredentialsProvider directly
-            val credProvider = UsernamePasswordCredentialsProvider("x-access-token", token)
-
-            val cloneCommand = Git.cloneRepository()
+            val git = Git.cloneRepository()
                 .setURI(repository.cloneUrl.url)
                 .setDirectory(destination)
                 .setBranch(branch)
-                .setCredentialsProvider(credProvider)
-                .setProgressMonitor(object : org.eclipse.jgit.transport.ProgressMonitor {
-                    private var lastPercent = -1
-                    override fun startTime(seconds: Long) {}
-                    override fun startTime(seconds: Long, nanos: Int) {}
-                    override fun startFetching(fileCount: Int, size: Long) {}
-                    override fun fetchProgress(current: Long, total: Long, currentObj: String?, message: String?) {
-                        val percent = if (total > 0) (current * 100 / total) else 0
-                        if (percent != lastPercent) {
-                            lastPercent = percent
-                            onProgress("Cloning... $percent%")
-                        }
-                    }
-                    override fun endFetch() {}
-                    override fun startBundling(count: Long, size: Long) {}
-                    override fun endBundling() {}
-                    override fun startUploading(count: Long, size: Long) {}
-                    override fun endUploading() {}
-                    override fun startProofReading() {}
-                    override fun endProofReading() {}
-                    override fun startResolving() {}
-                    override fun endResolving() {}
-                    override fun onTransfer(uri: String?) {}
-                    override fun onResume() {}
-                    override fun onCancel() {}
-                    override fun onSleep(ms: Long) {}
-                    override fun onRetry() {}
-                    override fun onTruncate() {}
-                })
-
-            logger.logCloneProgress(connectionId.value, "Starting clone operation")
-
-            val git = cloneCommand.call()
-
-            logger.logCloneProgress(connectionId.value, "Clone completed, verifying remote URL")
-
-            // After clone, ensure .git/config does NOT contain the token
-            // JGit may have set the remote URL with embedded credentials
-            // We need to reset it to the plain HTTPS URL
-            ensureCleanGitConfig(git, repository)
-
-            git.close()
-
-            logger.logCloneComplete(connectionId.value, destinationPath)
-
-            success(destinationPath)
-        } catch (e: GitAPIException) {
-            logger.logCloneError(connectionId.value, "Clone failed: ${e.message}")
-            failure(mapGitException(e))
-        } catch (e: IOException) {
-            logger.logCloneError(connectionId.value, "IO error during clone: ${e.message}")
+                .setCredentialsProvider(UsernamePasswordCredentialsProvider(CLONE_USERNAME, token))
+                .call()
+            try {
+                resetRemoteUrl(git, repository)
+            } finally {
+                git.close()
+            }
+            onProgress("Cloned ${repository.fullName} at $branch")
+            success(destination.path)
+        } catch (error: GitAPIException) {
+            failure(mapGitException(error))
+        } catch (error: IOException) {
             failure(GitHubRepositoryError.NetworkFailure)
-        } catch (e: Exception) {
-            logger.logCloneError(connectionId.value, "Unexpected error: ${e.message}")
-            failure(GitHubRepositoryError.Unknown(e.message ?: "Unknown error"))
         }
     }
 
     /**
-     * Ensure .git/config does not contain any credentials.
+     * Re-writes `remote.origin.url` from the repository's credential-free URL and
+     * drops anything that could make Git store or replay a credential.
      *
-     * After JGit clone, the remote URL might have embedded credentials.
-     * We reset it to the plain HTTPS URL.
+     * JGit is handed the token as a password rather than in the URL, so this is a
+     * guarantee rather than a repair: the token is absent from `.git/config`
+     * whether or not this runs.
      */
-    private fun ensureCleanGitConfig(git: Git, repository: GitHubRepository) {
-        try {
-            val config = git.getRepository().getConfig()
-            val remoteName = "origin"
-
-            // Check if remote exists
-            val remotes = git.remoteList().call()
-            if (remotes.contains(remoteName)) {
-                // Reset URL to plain HTTPS (no credentials)
-                config.setString("remote", remoteName, "url", repository.cloneUrl.url)
-
-                // Remove any credential helper settings
-                config.unset("remote", remoteName, "helper")
-                config.unset("credential", null, "helper")
-                config.unset("credential", null, "store")
-
-                config.save()
-            }
-        } catch (e: Exception) {
-            logger.logCloneError("Failed to clean git config: ${e.message}")
-            // Non-fatal: continue without config cleanup
-        }
+    internal fun resetRemoteUrl(git: Git, repository: GitHubRepository) {
+        val config = git.repository.config
+        config.setString("remote", REMOTE_NAME, "url", repository.cloneUrl.url)
+        config.unset("remote", REMOTE_NAME, "pushurl")
+        config.unset("remote", REMOTE_NAME, "helper")
+        config.unset("credential", null, "helper")
+        config.unset("credential", null, "username")
+        config.unset("credential", null, "store")
+        config.save()
     }
 
     /**
-     * Clean up a partially-created clone directory.
+     * Maps a JGit failure onto a typed repository error.
      *
-     * Only cleans the specific directory created by this clone operation.
-     * Does not touch other workspace directories.
+     * The transport's message is inspected because JGit reports a refused
+     * authentication as a transport exception rather than a status code; the
+     * message itself never carries the credential, which is a separate string.
      */
-    private fun cleanupClone(destination: File, destinationPath: String) {
-        try {
-            if (destination.exists()) {
-                destination.deleteRecursively()
-                logger.logCloneProgress("Cleaned up partial clone: $destinationPath")
-            }
-        } catch (e: Exception) {
-            logger.logCloneError("Failed to clean up clone at $destinationPath: ${e.message}")
-        }
-    }
-
-    /**
-     * Map JGit exceptions to domain errors.
-     */
-    private fun mapGitException(e: GitAPIException): GitHubRepositoryError {
-        val message = e.message ?: return GitHubRepositoryError.Unknown("Git error")
-
+    internal fun mapGitException(error: GitAPIException): GitHubRepositoryError {
+        val message = error.message.orEmpty()
         return when {
-            // Authentication errors
-            message.contains("Unauthorized", ignoreCase = true) ||
-            message.contains("401", ignoreCase = true) ||
-            message.contains("403 Forbidden", ignoreCase = true) ||
-            message.contains("Authentication failed", ignoreCase = true) ->
+            message.containsAny("not authorized", "authentication is required", "401", "authentication failed") ->
                 GitHubRepositoryError.Unauthenticated
-
-            // Network errors
-            message.contains("Connection refused", ignoreCase = true) ||
-            message.contains("Network is unreachable", ignoreCase = true) ||
-            message.contains("timeout", ignoreCase = true) ||
-            message.contains("UnknownHostException", ignoreCase = true) ->
+            message.containsAny("403", "forbidden") -> GitHubRepositoryError.Forbidden
+            message.containsAny("not found", "404") -> GitHubRepositoryError.NotFound
+            message.containsAny("rate limit", "429") -> GitHubRepositoryError.RateLimited
+            message.containsAny("unknownhost", "connection refused", "network", "timed out", "timeout", "unable to resolve") ->
                 GitHubRepositoryError.NetworkFailure
-
-            // Repository not found
-            message.contains("Repository not found", ignoreCase = true) ||
-            message.contains("404", ignoreCase = true) ->
-                GitHubRepositoryError.NotFound
-
-            // Rate limiting
-            message.contains("429", ignoreCase = true) ||
-            message.contains("rate limit", ignoreCase = true) ->
-                GitHubRepositoryError.RateLimited
-
-            // Other git errors
-            else -> GitHubRepositoryError.Unknown("Git clone failed: ${e.message}")
+            else -> GitHubRepositoryError.Unknown("The clone failed: $message")
         }
+    }
+
+    private fun String.containsAny(vararg needles: String): Boolean =
+        needles.any { contains(it, ignoreCase = true) }
+
+    /** Removes a partial clone, and only that directory. */
+    private fun discard(destination: File) {
+        runCatching { destination.deleteRecursively() }
+    }
+
+    private companion object {
+        const val CLONE_USERNAME: String = "x-access-token"
+        const val REMOTE_NAME: String = "origin"
     }
 }

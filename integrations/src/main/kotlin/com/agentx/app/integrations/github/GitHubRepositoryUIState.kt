@@ -1,45 +1,49 @@
 package com.agentx.app.integrations.github
 
-import com.agentx.app.integrations.github.GitHubRepository
-import com.agentx.app.integrations.github.GitHubRepositoryError
-
 /**
- * Current state of GitHub repository listing — separate from OAuth auth state.
- * Maps cleanly to the UI states required by the spec.
+ * What a GitHub repository picker renders: the repositories discovered so far,
+ * whether more can be loaded, and the one error worth showing.
+ *
+ * It is deliberately separate from OAuth authorization state — discovering a
+ * repository never changes whether the connection is authorized.
  */
 data class GitHubRepositoryUiState(
     val loading: Boolean = false,
     val repositories: List<GitHubRepository> = emptyList(),
-    val empty: Boolean = false,            // authenticated, no repos
+    /** True only after a successful listing that returned nothing. */
+    val empty: Boolean = false,
     val hasMore: Boolean = false,
     val nextPage: Int? = null,
     val error: GitHubRepositoryError? = null,
-    /** Count known (approximate). */
+    /** The most recent implied total; a lower bound, and 0 before any listing. */
     val totalCount: Int = 0,
-    /** When true, the underlying GitHub credential appears expired (401). */
+    /** The credential is no longer usable, so the connection must be re-authorized. */
     val authExpired: Boolean = false,
-    /** When true, the provider returned 429. */
+    /** GitHub is throttling this account. */
     val rateLimited: Boolean = false,
-    /** Last refresh timestamp. */
     val refreshedAtMillis: Long = 0L,
 ) {
-    /** True when there is a recoverable error the user can retry. */
-    val recoverableError: Boolean get() = error is GitHubRepositoryError.Forbidden
-        || error is GitHubRepositoryError.ServerError
-        || error is GitHubRepositoryError.NetworkFailure
-        || error is GitHubRepositoryError.MalformedResponse
+    /** True when retrying the same request could succeed. */
+    val recoverableError: Boolean
+        get() = error is GitHubRepositoryError.Forbidden ||
+            error is GitHubRepositoryError.ServerError ||
+            error is GitHubRepositoryError.NetworkFailure ||
+            error is GitHubRepositoryError.MalformedResponse
 
-    val displayError: String get() = when (error) {
-        is GitHubRepositoryError.Unauthenticated -> "GitHub access needs re-authorization"
-        is GitHubRepositoryError.Forbidden -> "GitHub access is forbidden"
-        is GitHubRepositoryError.NotFound -> "GitHub resource not found"
-        is GitHubRepositoryError.RateLimited -> "GitHub is rate limiting this request"
-        is GitHubRepositoryError.ServerError -> "GitHub returned an error"
-        is GitHubRepositoryError.NetworkFailure -> "Could not reach GitHub"
-        is GitHubRepositoryError.MalformedResponse -> "GitHub response could not be read"
-        is GitHubRepositoryError.NoCredential -> "No GitHub access available"
-        is GitHubRepositoryError.Cancelled -> "Cancelled"
-        is GitHubRepositoryError.Unknown -> "An unexpected error occurred"
-        null -> ""
-    }
+    /** The line to show for the current error, or empty when there is none. */
+    val displayError: String
+        get() = when (error) {
+            is GitHubRepositoryError.Unauthenticated -> "GitHub access needs re-authorization"
+            is GitHubRepositoryError.Forbidden -> "GitHub refused this request"
+            is GitHubRepositoryError.NotFound -> "GitHub could not find that repository"
+            is GitHubRepositoryError.RateLimited -> "GitHub is rate limiting this account"
+            is GitHubRepositoryError.ServerError -> "GitHub returned an error"
+            is GitHubRepositoryError.NetworkFailure -> "GitHub could not be reached"
+            is GitHubRepositoryError.MalformedResponse -> "GitHub's response could not be read"
+            is GitHubRepositoryError.NoCredential -> "No GitHub access is available"
+            is GitHubRepositoryError.InvalidDestination -> "That repository cannot be cloned here"
+            is GitHubRepositoryError.PathTraversal -> "That repository cannot be cloned here"
+            is GitHubRepositoryError.Unknown -> "An unexpected error occurred"
+            null -> ""
+        }
 }

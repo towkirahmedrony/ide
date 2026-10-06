@@ -5,52 +5,65 @@ import com.agentx.app.core.failure
 import com.agentx.app.core.success
 import com.agentx.app.integrations.connection.ConnectionCredentialGateway
 import com.agentx.app.integrations.connection.ConnectionId
-import com.agentx.app.integrations.github.GitHubRepository
-import com.agentx.app.integrations.github.GitHubRepositoryCloneUrl
-import com.agentx.app.integrations.github.GitHubRepositoryError
-import com.agentx.app.integrations.github.GitHubRepositoryPage
-import com.agentx.app.integrations.github.GitHubRepositoryVisibility
-import kotlinx.coroutines.cancellation.CancellationException
-import org.json.JSONObject
-import org.json.JSONArray
+import com.agentx.app.integrations.oauth.OAuthJson
+import com.agentx.app.integrations.oauth.OAuthJsonValue
+import kotlinx.coroutines.CancellationException
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Authenticated GitHub repository service.
+ * Authenticated GitHub repository discovery.
  *
- * Uses [ConnectionCredentialGateway.withCredential] to obtain the GitHub access
- * token on demand, then calls the GitHub REST API.
- *
- * The token is lent only into the HTTP call and never reaches the UI, the model,
- * logs, or tool arguments.
+ * The access token is obtained through the existing Phase-1
+ * [ConnectionCredentialGateway] — it is never requested, stored, or duplicated
+ * here, and it is lent only into the HTTP call, so it cannot reach the UI, the
+ * model, a tool argument, or a log.
  */
 interface GitHubRepositoryService {
+
     /**
-     * Lists repositories accessible to the authenticated GitHub account.
+     * Lists the repositories the authenticated account can see.
      *
-     * @return A page of repositories. [GitHubRepositoryPage.hasNextPage] is true
-     *         when the GitHub API returned a Link header with a next relation.
-     *         An empty list means the account has no repositories.
+     * An empty page means the account really has no matching repositories; it is
+     * never a stand-in for an error.
      */
     suspend fun list(
         connectionId: ConnectionId,
         visibility: GitHubRepositoryVisibility = GitHubRepositoryVisibility.PUBLIC,
         page: Int = 1,
-        perPage: Int = 30,
+        perPage: Int = DEFAULT_PER_PAGE,
     ): ForgeResult<GitHubRepositoryPage, GitHubRepositoryError>
 
-    /** Total count known from the most recent successful response, may be stale. */
+    /**
+     * How many repositories the most recent successful listing implies. Zero
+     * before anything has been listed successfully.
+     */
     suspend fun totalKnown(connectionId: ConnectionId): Int
+
+    companion object {
+        /** GitHub's own default for `per_page`. */
+        const val DEFAULT_PER_PAGE: Int = 30
+
+        /** GitHub's documented maximum for `per_page`. */
+        const val MAX_PER_PAGE: Int = 100
+    }
 }
 
 /**
- * One page of repository results from the GitHub API.
+ * One page of repository results, with the pagination state the UI needs to load
+ * more instead of pulling a whole account into memory at once.
  */
 data class GitHubRepositoryPage(
     val repositories: List<GitHubRepository>,
     val hasNextPage: Boolean,
     val nextPageNumber: Int?,
+    /**
+     * A lower bound on the number of repositories the account can see. When the
+     * page is the last one it is the exact total; earlier pages can only
+     * under-count, because GitHub does not report a total for this endpoint.
+     */
     val totalCount: Int,
 ) {
     companion object {
@@ -64,68 +77,12 @@ data class GitHubRepositoryPage(
 }
 
 /**
- * Errors from GitHub repository operations.
+ * A GitHub REST response, reduced to the status, the body, and the headers this
+ * client needs.
  *
- * Every error preserves the existing GitHub connection — none of these destroy
- * the credential, the connection record, or any other connection.
- */
-sealed interface GitHubRepositoryError {
-    /** 401: token invalid/expired — re-authentication may be required. */
-    data object Unauthenticated : GitHubRepositoryError {
-        override fun toString(): String = "Unauthenticated"
-    }
-
-    /** 403: forbidden or rate limited (core). */
-    data object Forbidden : GitHubRepositoryError {
-        override fun toString(): String = "Forbidden"
-    }
-
-    /** 404: user/repo not found. */
-    data object NotFound : GitHubRepositoryError {
-        override fun toString(): String = "NotFound"
-    }
-
-    /** 429: rate limited. */
-    data object RateLimited : GitHubRepositoryError {
-        override fun toString(): String = "RateLimited"
-    }
-
-    /** 5xx server error. */
-    data class ServerError(val code: Int) : GitHubRepositoryError {
-        override fun toString(): String = "ServerError($code)"
-    }
-
-    /** Network failure (DNS, TLS, timeout, no internet). */
-    data object NetworkFailure : GitHubRepositoryError {
-        override fun toString(): String = "NetworkFailure"
-    }
-
-    /** Malformed API response. */
-    data class MalformedResponse(val detail: String) : GitHubRepositoryError {
-        override fun toString(): String = "MalformedResponse($detail)"
-    }
-
-    /** The connection does not exist or has no usable credential. */
-    data object NoCredential : GitHubRepositoryError {
-        override fun toString(): String = "NoCredential"
-    }
-
-    /** Cancellation. */
-    data object Cancelled : GitHubRepositoryError {
-        override fun toString(): String = "Cancelled"
-    }
-
-    /** An unexpected failure. */
-    data class Unknown(val message: String) : GitHubRepositoryError {
-        override fun toString(): String = "Unknown($message)"
-    }
-}
-
-/**
- * Minimal typed HTTP response from the GitHub REST API.
- *
- * Body is treated as opaque by the transport; [GitHubRepositoryServiceImpl]
- * parses it into domain models without ever logging or echoing the token.
+ * The body is treated as opaque by the transport. [toString] deliberately prints
+ * neither the body nor the headers, because a header map can hold an echoed
+ * request.
  */
 data class GitHubRestResponse(
     val statusCode: Int,
@@ -133,13 +90,20 @@ data class GitHubRestResponse(
     val headers: Map<String, List<String>> = emptyMap(),
 ) {
     val isSuccess: Boolean get() = statusCode in 200..299
-    val isClientError: Boolean get() = statusCode in 400..499
-    val isServerError: Boolean get() = statusCode >= 500
+
+    /** Case-insensitive header lookup; the transport's own key casing is not a contract. */
+    fun header(name: String): String? =
+        headers.entries.firstOrNull { it.key.equals(name, ignoreCase = true) }
+            ?.value
+            ?.firstOrNull()
+
+    override fun toString(): String = "GitHubRestResponse(statusCode=$statusCode)"
 }
 
 /**
- * Port for GitHub REST calls. Implementations must not log or echo the
- * Authorization header value.
+ * Port for GitHub REST calls, so the service is testable without a network.
+ *
+ * Implementations must not log or echo the `Authorization` header value.
  */
 interface GitHubRestClient {
     suspend fun get(
@@ -148,23 +112,29 @@ interface GitHubRestClient {
     ): GitHubRestResponse
 }
 
+/** Raised when a GitHub REST call could not be performed at all. */
+class GitHubRestNetworkException(message: String, cause: Throwable? = null) : RuntimeException(message, cause)
+
 /**
- * Default [GitHubRestClient] built on `HttpURLConnection`.
+ * The production [GitHubRestClient], built on `HttpURLConnection`.
  *
- * The Authorization header value may contain a token inside this transport
- * only; it is never logged, echoed, or returned to callers.
+ * This is the only place an `Authorization` header value exists as a string, and
+ * it is never logged, never echoed into an exception, and never returned.
  */
 class UrlConnectionGitHubRestClient(
     private val connectTimeoutMillis: Int = 15_000,
     private val readTimeoutMillis: Int = 20_000,
 ) : GitHubRestClient {
 
-    @Throws(GitHubRestNetworkException::class)
     override suspend fun get(url: String, headers: Map<String, String>): GitHubRestResponse {
         val connection = try {
             URL(url).openConnection() as HttpURLConnection
-        } catch (error: Exception) {
-            throw GitHubRestNetworkException(error)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: IOException) {
+            // The message is built here rather than taken from the transport so it can
+            // never carry a header value.
+            throw GitHubRestNetworkException("Could not reach GitHub", error)
         }
 
         return try {
@@ -173,30 +143,26 @@ class UrlConnectionGitHubRestClient(
             connection.readTimeout = readTimeoutMillis
             connection.instanceFollowRedirects = false
             connection.doInput = true
-
-            headers.forEach { (name, value) ->
-                connection.setRequestProperty(name, value)
-            }
+            headers.forEach { (name, value) -> connection.setRequestProperty(name, value) }
 
             val statusCode = connection.responseCode
-            val stream = if (statusCode in 200..299) {
-                connection.inputStream
-            } else {
-                connection.errorStream
+            val stream = if (statusCode in 200..299) connection.inputStream else connection.errorStream
+            val body = stream?.use { it.readBytes().toString(Charsets.UTF_8) }.orEmpty()
+
+            // Copied rather than viewed, and the status line's keyless entry is dropped:
+            // the header map outlives the connection, which is disconnected below.
+            val responseHeaders = LinkedHashMap<String, List<String>>()
+            connection.headerFields?.forEach { (name, values) ->
+                if (name != null) responseHeaders[name] = values
             }
 
-            val body = stream?.bufferedReader(Charsets.UTF_8)?.readText().orEmpty()
-            val headerMap = connection.headerFields?.toMap().orEmpty()
-
-            GitHubRestResponse(statusCode, body, headerMap)
-        } catch (error: java.net.SocketTimeoutException) {
-            throw GitHubRestNetworkException(error)
-        } catch (error: java.io.IOException) {
-            throw GitHubRestNetworkException(error)
-        } catch (error: CancellationException) {
-            throw error
+            GitHubRestResponse(statusCode, body, responseHeaders)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: IOException) {
+            throw GitHubRestNetworkException("The GitHub request failed", error)
         } catch (error: Exception) {
-            throw GitHubRestNetworkException(error)
+            throw GitHubRestNetworkException("The GitHub request failed", error)
         } finally {
             connection.disconnect()
         }
@@ -204,38 +170,20 @@ class UrlConnectionGitHubRestClient(
 }
 
 /**
- * Raised when a GitHub REST call cannot be performed at all (DNS, TLS,
- * timeout, no route, cancellation swallowed incorrectly).
- */
-class GitHubRestNetworkException(message: String? = null, cause: Throwable? = null) :
-    RuntimeException(message, cause)
-
-/**
- * Authenticated GitHub repository service implementation.
+ * Authenticated GitHub repository service.
  *
- * Uses the existing [ConnectionCredentialGateway] to obtain the access token,
- * then calls GitHub's documented REST endpoint.
- *
- * Pagination: we parse the `Link` response header the GitHub API returns on
- * collection endpoints and expose [GitHubRepositoryPage.hasNextPage] plus a
- * concrete next page number, so callers can load incrementally instead of
- * pulling a large list into memory. When the header is absent we fall back to
- * a simple per-page heuristic and still surface explicit pagination state.
- *
- * Authentication errors (401) do **not** delete the connection; they indicate
- * the credential may be expired and the user should re-authorize.
+ * Authentication errors do **not** delete the connection: a 401 says the stored
+ * credential is no longer usable, which the Connections UI turns into a
+ * re-authorize prompt.
  */
 class GitHubRepositoryServiceImpl(
     private val credentialGateway: ConnectionCredentialGateway,
     private val restClient: GitHubRestClient = UrlConnectionGitHubRestClient(),
-    private val baseUrl: String = "https://api.github.com",
-    private val clock: () -> Long = System::currentTimeMillis,
+    private val baseUrl: String = DEFAULT_BASE_URL,
 ) : GitHubRepositoryService {
 
-    // Cached total count so the UI can show an approximate number even when
-    // loading pages incrementally. It is not authoritative and may be stale.
-    private val totalCountCache = mutableMapOf<String, Int>()
-    private val totalCountLock = java.util.concurrent.locks.ReentrantLock()
+    /** The implied total from the last successful listing, per connection. */
+    private val totals = ConcurrentHashMap<String, Int>()
 
     override suspend fun list(
         connectionId: ConnectionId,
@@ -243,225 +191,201 @@ class GitHubRepositoryServiceImpl(
         page: Int,
         perPage: Int,
     ): ForgeResult<GitHubRepositoryPage, GitHubRepositoryError> {
-        // Note: the actual token is obtained inside the retry-free call below.
-        // Cancellation must propagate.
-        return runCatching {
-            listPage(connectionId, visibility, page, perPage)
-        }.getOrElse { error ->
-            when (error) {
-                is CancellationException -> throw error
-                is GitHubRestNetworkException -> failure(GitHubRepositoryError.NetworkFailure)
-                is GitHubRestException -> map(restClientError = error)
-                else -> failure(GitHubRepositoryError.Unknown(error.message ?: "Unexpected error"))
-            }
-        }
-    }
-
-    override suspend fun totalKnown(connectionId: ConnectionId): Int {
-        return totalCountLock.read { totalCountCache[connectionId.value] ?: 0 }
-    }
-
-    private suspend fun listPage(
-        connectionId: ConnectionId,
-        visibility: GitHubRepositoryVisibility,
-        page: Int,
-        perPage: Int,
-    ): ForgeResult<GitHubRepositoryPage, GitHubRepositoryError> {
-        val tokenResult = credentialGateway.withCredential(connectionId) { token ->
-            callGitHubApi(token, visibility, page, perPage)
+        require(page >= 1) { "A page number starts at 1" }
+        require(perPage in 1..GitHubRepositoryService.MAX_PER_PAGE) {
+            "per_page must be between 1 and ${GitHubRepositoryService.MAX_PER_PAGE}"
         }
 
-        return when (val result = tokenResult) {
-            is ForgeResult.Success -> {
-                val page = parsePage(result.value, page)
-                totalCountLock.write {
-                    totalCountCache[connectionId.value] = page.totalCount
+        val handed = credentialGateway.withCredential(connectionId) { token ->
+            requestPage(token, visibility, page, perPage)
+        }
+
+        return when (handed) {
+            is ForgeResult.Success -> when (val requested = handed.value) {
+                is ForgeResult.Success -> {
+                    val parsed = parsePage(requested.value, page, perPage)
+                    when (parsed) {
+                        is ForgeResult.Success -> totals[connectionId.value] = parsed.value.totalCount
+                        is ForgeResult.Failure -> totals.remove(connectionId.value)
+                    }
+                    parsed
                 }
-                success(page)
+                is ForgeResult.Failure -> {
+                    totals.remove(connectionId.value)
+                    requested
+                }
             }
             is ForgeResult.Failure -> {
-                totalCountLock.write {
-                    totalCountCache.remove(connectionId.value)
-                }
-                failure(result.error)
+                totals.remove(connectionId.value)
+                failure(gitHubGatewayError(handed.error))
             }
         }
     }
 
-    private suspend fun callGitHubApi(
+    override suspend fun totalKnown(connectionId: ConnectionId): Int =
+        totals[connectionId.value] ?: 0
+
+    private suspend fun requestPage(
         token: String,
         visibility: GitHubRepositoryVisibility,
         page: Int,
         perPage: Int,
     ): ForgeResult<GitHubRestResponse, GitHubRepositoryError> {
-        // GitHub REST API: GET /user/repos
-        // Parameters: type (all|owner|member), sort, direction, since, visibility
-        // visibility param accepts: public, private, all
-        val visibilityParam = when (visibility) {
-            GitHubRepositoryVisibility.PUBLIC -> "visibility=public"
-            GitHubRepositoryVisibility.PRIVATE -> "visibility=private"
-        }
+        val url = "$baseUrl/user/repos" +
+            "?visibility=${visibility.apiParameter}" +
+            "&sort=full_name&direction=asc" +
+            "&per_page=$perPage&page=$page"
 
-        val encodedVisibility = visibilityParam
-        val url = "$baseUrl/user/repos?$encodedVisibility&per_page=$perPage&page=$page&sort=full_name&direction=asc"
-
-        // Headers: Accept for the REST API version, Bearer token, User-Agent
-        val headers = mapOf(
-            "Authorization" to "Bearer $token",
-            "Accept" to "application/vnd.github+json",
-            "X-GitHub-Api-Version" to "2022-11-28",
-            "User-Agent" to "AgentX-Android",
-        )
-
-        return try {
-            val response = restClient.get(url, headers)
-            when {
-                response.isSuccess -> success(response)
-                response.statusCode == 401 -> failure(GitHubRestException.Unauthenticated)
-                response.statusCode == 403 -> {
-                    // GitHub may return 403 with rate limit info; check header
-                    if (response.headers["x-ratelimit-remaining"]?.firstOrNull()?.toIntOrNull() == 0) {
-                        failure(GitHubRestException.RateLimited)
-                    } else {
-                        failure(GitHubRestException.Forbidden)
-                    }
-                }
-                response.statusCode == 404 -> failure(GitHubRestException.NotFound)
-                response.statusCode == 429 -> failure(GitHubRestException.RateLimited)
-                response.statusCode >= 500 -> failure(GitHubRestException.ServerError(response.statusCode))
-                else -> failure(GitHubRestException.Unknown(response.statusCode))
-            }
-        } catch (network: GitHubRestNetworkException) {
-            failure(GitHubRepositoryError.NetworkFailure)
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (error: Exception) {
-            failure(GitHubRepositoryError.Unknown(error.message ?: "Request failed"))
-        }
-    }
-
-    private fun parsePage(response: GitHubRestResponse, requestedPage: Int): GitHubRepositoryPage {
-        val json = try {
-            JSONObject(response.body)
-        } catch (error: Exception) {
-            // GitHub /user/repos returns a JSON array at the top level, not an object.
-            // Try parsing as array first.
-            try {
-                JSONArray(response.body)
-            } catch (arrayError: Exception) {
-                return GitHubRepositoryPage.empty().copy(
-                    totalCount = 0,
-                    hasNextPage = false,
-                    nextPageNumber = null,
-                )
-            }
-        }
-
-        val repos = mutableListOf<GitHubRepository>()
-        val array = if (json is JSONArray) json else {
-            // Maybe it's already an array
-            try {
-                JSONArray(response.body)
-            } catch (e: Exception) {
-                JSONArray()
-            }
-        }
-
-        for (i in 0 until array.length()) {
-            val obj = array.getJSONObject(i)
-            val repo = parseRepository(obj)
-            if (repo != null) repos.add(repo)
-        }
-
-        val totalCount = try {
-            // Some endpoints return total_count in the response; /user/repos returns array only.
-            // We'll use the array length as count for now, but also check if there's a total_count field.
-            array.length()
-        } catch (e: Exception) {
-            repos.size
-        }
-
-        val (hasNext, nextPage) = parseLinkHeader(response.headers["link"]?.joinToString(",") ?: "", requestedPage)
-
-        return GitHubRepositoryPage(
-            repositories = repos,
-            hasNextPage = hasNext,
-            nextPageNumber = nextPage,
-            totalCount = totalCount,
-        )
-    }
-
-    private fun parseRepository(json: JSONObject): GitHubRepository? {
-        return try {
-            val id = json.getString("id")
-            val ownerObj = json.getJSONObject("owner")
-            val owner = ownerObj.getString("login")
-            val name = json.getString("name")
-            val fullName = json.getString("full_name")
-            val isPrivate = json.getBoolean("private")
-            val defaultBranch = json.optString("default_branch", "main")
-            val cloneUrlRaw = json.getString("clone_url")
-            val webUrl = json.getString("html_url")
-
-            GitHubRepository(
-                id = RepositoryId(id),
-                owner = owner,
-                name = name,
-                fullName = fullName,
-                visibility = if (isPrivate) GitHubRepositoryVisibility.PRIVATE else GitHubRepositoryVisibility.PUBLIC,
-                defaultBranch = defaultBranch,
-                cloneUrl = GitHubRepositoryCloneUrl.parse(cloneUrlRaw),
-                webUrl = webUrl,
+        val response = try {
+            restClient.get(
+                url = url,
+                headers = mapOf(
+                    "Authorization" to "Bearer $token",
+                    "Accept" to "application/vnd.github+json",
+                    "X-GitHub-Api-Version" to GITHUB_API_VERSION,
+                    "User-Agent" to USER_AGENT,
+                ),
             )
-        } catch (error: Exception) {
-            null
+        } catch (network: GitHubRestNetworkException) {
+            return failure(GitHubRepositoryError.NetworkFailure)
+        } catch (offline: IOException) {
+            return failure(GitHubRepositoryError.NetworkFailure)
+        }
+
+        return when {
+            response.isSuccess -> success(response)
+            response.statusCode == 401 -> failure(GitHubRepositoryError.Unauthenticated)
+            response.statusCode == 403 -> failure(
+                if (response.header("x-ratelimit-remaining") == "0") {
+                    GitHubRepositoryError.RateLimited
+                } else {
+                    GitHubRepositoryError.Forbidden
+                },
+            )
+            response.statusCode == 404 -> failure(GitHubRepositoryError.NotFound)
+            response.statusCode == 429 -> failure(GitHubRepositoryError.RateLimited)
+            response.statusCode >= 500 -> failure(GitHubRepositoryError.ServerError(response.statusCode))
+            else -> failure(GitHubRepositoryError.Unknown("GitHub answered with status ${response.statusCode}"))
         }
     }
 
-    private fun parseLinkHeader(linkHeader: String, currentPage: Int): Pair<Boolean, Int?> {
-        if (linkHeader.isBlank()) {
-            // Fallback heuristic: if we got a full page, assume more exist
-            return False to null
+    private fun parsePage(
+        response: GitHubRestResponse,
+        requestedPage: Int,
+        perPage: Int,
+    ): ForgeResult<GitHubRepositoryPage, GitHubRepositoryError> {
+        if (response.body.isBlank()) {
+            return failure(GitHubRepositoryError.MalformedResponse("GitHub sent an empty body"))
+        }
+        val parsed = OAuthJson.parse(response.body)
+            ?: return failure(GitHubRepositoryError.MalformedResponse("GitHub sent a body that is not JSON"))
+        val items = (parsed as? OAuthJsonValue.Arr)?.items
+            ?: return failure(GitHubRepositoryError.MalformedResponse("Expected a JSON array of repositories"))
+
+        val repositories = items.mapNotNull { it.toRepository() }
+        if (repositories.isEmpty() && items.isNotEmpty()) {
+            return failure(
+                GitHubRepositoryError.MalformedResponse("No repository in the response could be read"),
+            )
         }
 
-        // Parse rel="next" URL
-        val nextPattern = Regex("""<([^>]+)>;\s*rel="next"""")
-        val nextMatch = nextPattern.find(linkHeader)
+        val links = paginationLinks(response.header("link"))
+        val totalCount = links.lastPage?.let { last -> (last - 1) * perPage + repositories.size }
+            ?: repositories.size
 
-        return if (nextMatch != null) {
-            val nextUrl = nextMatch.groupValues[1]
-            val pageParam = Regex("""page=(\d+)""").find(nextUrl)
-            val nextPageNum = pageParam?.groupValues?.getOrNull(1)?.toIntOrNull()
-            true to nextPageNum
-        } else {
-            false to null
+        return success(
+            GitHubRepositoryPage(
+                repositories = repositories,
+                hasNextPage = links.nextPage != null && links.nextPage > requestedPage,
+                nextPageNumber = links.nextPage,
+                totalCount = totalCount,
+            ),
+        )
+    }
+
+    private data class PaginationLinks(val nextPage: Int?, val lastPage: Int?)
+
+    /**
+     * Reads the `Link` header GitHub sends on collection endpoints, e.g.
+     * `<https://api.github.com/user/repos?...&page=2>; rel="next", ...; rel="last"`.
+     */
+    private fun paginationLinks(header: String?): PaginationLinks {
+        if (header.isNullOrBlank()) return PaginationLinks(null, null)
+
+        var next: Int? = null
+        var last: Int? = null
+        for (part in header.split(',')) {
+            val url = LINK_URL.find(part)?.groupValues?.getOrNull(1) ?: continue
+            val relation = LINK_RELATION.find(part)?.groupValues?.getOrNull(1) ?: continue
+            val number = PAGE_PARAMETER.find(url)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: continue
+            when (relation) {
+                "next" -> next = number
+                "last" -> last = number
+            }
         }
+        return PaginationLinks(next, last)
     }
 
-    private fun <T> Pair<T, T>.copy(first: T? = null, second: T? = null): Pair<T, T> {
-        return Pair(first ?: first, second ?: second)
-    }
-}
+    private companion object {
+        const val DEFAULT_BASE_URL: String = "https://api.github.com"
+        const val GITHUB_API_VERSION: String = "2022-11-28"
+        const val USER_AGENT: String = "AgentX-Android"
 
-// Internal sealed class for mapping HTTP errors from the rest client.
-private sealed class GitHubRestException {
-    data object Unauthenticated : GitHubRestException()
-    data object Forbidden : GitHubRestException()
-    data object NotFound : GitHubRestException()
-    data object RateLimited : GitHubRestException()
-    data class ServerError(val code: Int) : GitHubRestException()
-    data class Unknown(val code: Int) : GitHubRestException()
-}
-
-private fun map(restClientError: GitHubRestException): ForgeResult<GitHubRepositoryPage, GitHubRepositoryError> {
-    return when (restClientError) {
-        is GitHubRestException.Unauthenticated -> failure(GitHubRepositoryError.Unauthenticated)
-        is GitHubRestException.Forbidden -> failure(GitHubRepositoryError.Forbidden)
-        is GitHubRestException.NotFound -> failure(GitHubRepositoryError.NotFound)
-        is GitHubRestException.RateLimited -> failure(GitHubRepositoryError.RateLimited)
-        is GitHubRestException.ServerError -> failure(GitHubRepositoryError.ServerError(restClientError.code))
-        is GitHubRestException.Unknown -> failure(GitHubRepositoryError.Unknown("HTTP ${restClientError.code}"))
+        val LINK_URL = Regex("""<([^>]*)>""")
+        // The closing quote is left off the pattern on purpose: the negated class
+        // cannot cross it, and a trailing quote would end the raw string early.
+        val LINK_RELATION = Regex("""rel="([^"]*)""")
+        val PAGE_PARAMETER = Regex("""[?&]page=(\d+)""")
     }
 }
 
-private val False get() = false
+/**
+ * Reads one repository out of a GitHub payload.
+ *
+ * Returns null for anything that is not a complete repository, so one unreadable
+ * entry cannot fail the whole page.
+ */
+private fun OAuthJsonValue.toRepository(): GitHubRepository? {
+    val fields = (this as? OAuthJsonValue.Obj)?.fields ?: return null
+
+    val id = fields["id"].asIdString() ?: return null
+    val owner = fields["owner"].blankSafeString("login") ?: return null
+    val name = fields["name"].asString() ?: return null
+    val fullName = fields["full_name"].asString() ?: return null
+    val cloneUrl = fields["clone_url"].asString()?.let { raw -> GitHubRepositoryCloneUrl.parse(raw) }
+        ?: return null
+    val webUrl = fields["html_url"].asString() ?: return null
+
+    return GitHubRepository(
+        id = RepositoryId(id),
+        owner = owner,
+        name = name,
+        fullName = fullName,
+        visibility = GitHubRepositoryVisibility.fromPrivateFlag(fields["private"].asBoolean() ?: false),
+        defaultBranch = fields["default_branch"].asString() ?: GitHubRepository.DEFAULT_BRANCH,
+        cloneUrl = cloneUrl,
+        webUrl = webUrl,
+    )
+}
+
+private fun OAuthJsonValue?.asString(): String? = when (this) {
+    is OAuthJsonValue.Str -> value.takeIf { it.isNotBlank() }
+    is OAuthJsonValue.Num -> value.toLong().toString()
+    else -> null
+}
+
+/** Repository ids are numbers in JSON; keep them as the digits GitHub means. */
+private fun OAuthJsonValue?.asIdString(): String? = when (this) {
+    is OAuthJsonValue.Num -> value.toLong().toString()
+    is OAuthJsonValue.Str -> value.takeIf { it.isNotBlank() }
+    else -> null
+}
+
+private fun OAuthJsonValue?.asBoolean(): Boolean? = when (this) {
+    is OAuthJsonValue.Bool -> value
+    is OAuthJsonValue.Str -> value.equals("true", ignoreCase = true)
+    else -> null
+}
+
+private fun OAuthJsonValue?.blankSafeString(field: String): String? =
+    (this as? OAuthJsonValue.Obj)?.fields?.get(field)?.asString()

@@ -1,21 +1,12 @@
 package com.agentx.app.integrations.github
 
-import com.agentx.app.integrations.connection.ConnectionType
-import com.agentx.app.integrations.connection.ConnectionCapability
-import com.agentx.app.integrations.connection.ConnectionCapabilities
-import com.agentx.app.integrations.connection.ProviderCapabilityInfo
-import com.agentx.app.integrations.connection.ProviderDescriptor
-import com.agentx.app.integrations.connection.ProviderToolCatalog
-import com.agentx.app.integrations.connection.ProviderToolSpec
-import com.agentx.app.integrations.connection.ProviderToolCategory
-import com.agentx.app.integrations.connection.ConnectionAuthMethod
-import com.agentx.app.integrations.oauth.GitHubOAuthProvider
-import com.agentx.app.integrations.oauth.OAuthProviderDescriptor
-import com.agentx.app.integrations.oauth.OAuthProvider
-
 /**
- * A GitHub repository as AgentX needs it: just enough metadata to select,
- * authenticate clone, and open as a workspace. No access token ever lives here.
+ * A GitHub repository as AgentX needs it: just enough metadata to select it,
+ * clone it with an authenticated transport, and open the clone as a workspace.
+ *
+ * No access token ever lives here. [cloneUrl] is the plain HTTPS URL GitHub
+ * reports; the credential is injected by the clone transport at clone time and
+ * never written into `.git/config`.
  */
 data class GitHubRepository(
     val id: RepositoryId,
@@ -27,55 +18,34 @@ data class GitHubRepository(
     val cloneUrl: GitHubRepositoryCloneUrl,
     val webUrl: String,
 ) {
-    /** Never carries a token. The clone URL is a plain HTTPS template. */
+    /** The directory a clone of this repository gets under the managed workspace root. */
+    val directoryName: String get() = "$owner-$name"
+
+    /** Deliberately excludes [cloneUrl] so a log line can never carry a URL people copy. */
     override fun toString(): String =
-        "GitHubRepository(id=${id.value}, owner=$owner, name=$name, visibility=${visibility.name}, " +
-            "defaultBranch=$defaultBranch, cloneUrl=$cloneUrl, webUrl=$webUrl)"
+        "GitHubRepository(id=${id.value}, fullName=$fullName, visibility=${visibility.name}, " +
+            "defaultBranch=$defaultBranch)"
 
     companion object {
-        /** Public: owner/name read from the GitHub API response. */
-        fun parseFromGitHubResponse(json: Map<String, Any?>): GitHubRepository? {
-            val id = (json["id"] as? Number)?.toLong()?.toStringOrNull()
-                ?: return null
-            val owner = (json["owner"] as? Map<*, *>)?.get("login")?.toStringOrNull()
-                ?: return null
-            val name = json["name"]?.toStringOrNull()
-                ?: return null
-            val fullName = json["full_name"]?.toStringOrNull()
-                ?: return null
-            val privateFlag = (json["private"] as? Boolean) ?: false
-            val defaultBranch = json["default_branch"]?.toStringOrNull()
-                ?: "main"
-            val cloneUrl = json["clone_url"]?.toStringOrNull() ?: return null
-            val htmlUrl = json["html_url"]?.toStringOrNull() ?: return null
-            return GitHubRepository(
-                id = RepositoryId(id),
-                owner = owner,
-                name = name,
-                fullName = fullName,
-                visibility = if (privateFlag) GitHubRepositoryVisibility.PRIVATE else GitHubRepositoryVisibility.PUBLIC,
-                defaultBranch = defaultBranch,
-                cloneUrl = GitHubRepositoryCloneUrl.parse(cloneUrl),
-                webUrl = htmlUrl,
-            )
-        }
-
-        private fun Any?.toStringOrNull(): String? = (this as? String)?.takeIf { it.isNotBlank() }
+        /** Used when GitHub reports no default branch for a repository. */
+        const val DEFAULT_BRANCH: String = "main"
     }
 }
 
-/** Opaque repository identity. Present so future tooling can refer to one repo. */
+/** Opaque repository identity. Stable across renames, unlike the name. */
 @JvmInline
 value class RepositoryId(val value: String) {
     init {
         require(value.isNotBlank()) { "Repository id must not be blank" }
     }
+
     override fun toString(): String = value
 }
 
-enum class GitHubRepositoryVisibility {
-    PUBLIC,
-    PRIVATE,
+/** Whether a repository is visible to everyone or only to the account. */
+enum class GitHubRepositoryVisibility(val apiParameter: String) {
+    PUBLIC("public"),
+    PRIVATE("private"),
     ;
 
     companion object {
@@ -85,26 +55,29 @@ enum class GitHubRepositoryVisibility {
 }
 
 /**
- * A plain HTTPS clone URL. It contains no credentials.
+ * A plain HTTPS clone URL that carries no credentials.
  *
- * The GitHub access token is injected by the clone transport at clone time,
- * never embedded in this URL, never logged, and never stored in .git/config
- * as plaintext.
+ * Only `https://github.com/...` is accepted, and a URL with an `@` (which would
+ * embed a user name, a password, or a token) is rejected outright so a
+ * credential can never travel inside a clone URL.
  */
-data class GitHubRepositoryCloneUrl(val url: String) {
-    init {
-        require(url.startsWith("https://github.com/")) { "Clone url must be an https github.com URL: $url" }
-        require(!url.contains("@")) { "Clone url must not embed credentials: $url" }
-    }
+class GitHubRepositoryCloneUrl private constructor(val url: String) {
+
     override fun toString(): String = url
 
+    override fun equals(other: Any?): Boolean =
+        other is GitHubRepositoryCloneUrl && other.url == url
+
+    override fun hashCode(): Int = url.hashCode()
+
     companion object {
-        fun parse(raw: String): GitHubRepositoryCloneUrl {
+        const val PREFIX: String = "https://github.com/"
+
+        /** Returns null when [raw] is not a credential-free GitHub HTTPS clone URL. */
+        fun parse(raw: String): GitHubRepositoryCloneUrl? {
             val trimmed = raw.trim()
-            require(trimmed.startsWith("https://github.com/")) {
-                "Clone url must be an https github.com URL: $trimmed"
-            }
-            require(!trimmed.contains("@")) { "Clone url must not embed credentials: $trimmed" }
+            if (!trimmed.startsWith(PREFIX)) return null
+            if (trimmed.contains('@')) return null
             return GitHubRepositoryCloneUrl(trimmed)
         }
     }

@@ -2,326 +2,325 @@ package com.agentx.app.integrations.github
 
 import com.agentx.app.core.ForgeError
 import com.agentx.app.core.ForgeErrorCode
-import com.agentx.app.core.ForgeResult
-import com.agentx.app.integrations.connection.ConnectionId
-import com.agentx.app.integrations.connection.ConnectionCredentialGateway
-import com.agentx.app.integrations.github.GitHubRepository
-import com.agentx.app.integrations.github.GitHubRepositoryCloneUrl
-import com.agentx.app.integrations.github.GitHubRepositoryError
-import com.agentx.app.integrations.github.GitHubRepositoryPage
-import com.agentx.app.integrations.github.GitHubRepositoryService
-import com.agentx.app.integrations.github.GitHubRepositoryServiceImpl
-import com.agentx.app.integrations.github.GitHubRepositoryVisibility
-import com.agentx.app.integrations.github.GitHubRestClient
-import com.agentx.app.integrations.github.GitHubRestNetworkException
-import com.agentx.app.integrations.github.GitHubRestResponse
-import com.agentx.app.integrations.github.GitHubRestRequest
-import com.agentx.app.integrations.github.RepositoryId
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.test.runTest
-import org.junit.jupiter.api.BeforeEach
-import org.junit.jupiter.api.Test
-import java.util.UUID
+import com.agentx.app.core.errorOrNull
+import com.agentx.app.core.valueOrNull
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.runBlocking
+import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
-import kotlin.test.assertInstanceOf
+import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
-import kotlin.test.assertThrows
 
 /**
- * Tests for GitHub authenticated repository discovery.
- *
- * Tests use a fake HTTP client so no network calls are made.
+ * The GitHub repository client, driven entirely by a fake transport: no request
+ * in this file reaches GitHub, and nothing here holds a real credential.
  */
 class GitHubRepositoryServiceTest {
 
-    private lateinit var fakeHttpClient: FakeGitHubRestClient
-    private lateinit var fakeCredentialGateway: FakeConnectionCredentialGateway
-    private lateinit var service: GitHubRepositoryService
-    private val connectionId = ConnectionId(UUID.randomUUID().toString())
-
-    @BeforeEach
-    fun setUp() {
-        fakeHttpClient = FakeGitHubRestClient()
-        fakeCredentialGateway = FakeConnectionCredentialGateway()
-        service = GitHubRepositoryServiceImpl(
-            credentialGateway = fakeCredentialGateway,
-            restClient = fakeHttpClient,
-        )
+    private fun newService(
+        gateway: FakeCredentialGateway = FakeCredentialGateway(),
+        handler: (String) -> GitHubRestResponse,
+    ): Pair<GitHubRepositoryServiceImpl, RecordingGitHubRestClient> {
+        val client = RecordingGitHubRestClient(handler)
+        val service = GitHubRepositoryServiceImpl(credentialGateway = gateway, restClient = client)
+        return service to client
     }
 
-    // --- Successful repository parsing ---
+    // --- Parsing --------------------------------------------------------------
 
     @Test
-    fun `parses a successful repository response`() = runTest {
-        val body = """
-            [
-              {
-                "id": 123456,
-                "owner": {"login": "octocat"},
-                "name": "Hello-World",
-                "full_name": "octocat/Hello-World",
-                "private": false,
-                "default_branch": "main",
-                "clone_url": "https://github.com/octocat/Hello-World.git",
-                "html_url": "https://github.com/octocat/Hello-World"
-              }
-            ]
-        """.trimIndent()
-
-        fakeHttpClient.responses.add(
+    fun `a page of repositories is parsed into domain models`() = runBlocking {
+        val (service, client) = newService {
             GitHubRestResponse(
                 statusCode = 200,
-                body = body,
-                headers = mapOf("link" to listOf("")),
+                body = "[${repositoryJson()},${repositoryJson(id = 2, name = "secret", privateRepository = true)}]",
             )
-        )
+        }
 
-        fakeCredentialGateway.credentials[connectionId.value] = "fake-token-12345"
-        val result = service.list(connectionId)
+        val page = assertNotNull(service.list(TEST_CONNECTION_ID).valueOrNull())
 
-        assertTrue(result is ForgeResult.Success)
-        val page = (result as ForgeResult.Success).value
-        assertEquals(1, page.repositories.size)
-        assertEquals(RepositoryId("123456"), page.repositories[0].id)
-        assertEquals("octocat", page.repositories[0].owner)
-        assertEquals("Hello-World", page.repositories[0].name)
-        assertEquals("octocat/Hello-World", page.repositories[0].fullName)
-        assertEquals(GitHubRepositoryVisibility.PUBLIC, page.repositories[0].visibility)
-        assertEquals("main", page.repositories[0].defaultBranch)
-        assertEquals("https://github.com/octocat/Hello-World.git", page.repositories[0].cloneUrl.url)
-        assertEquals("https://github.com/octocat/Hello-World", page.repositories[0].webUrl)
+        assertEquals(2, page.repositories.size)
+        val first = page.repositories.first()
+        assertEquals("1", first.id.value)
+        assertEquals("octocat", first.owner)
+        assertEquals("hello-world", first.name)
+        assertEquals("octocat/hello-world", first.fullName)
+        assertEquals(GitHubRepositoryVisibility.PUBLIC, first.visibility)
+        assertEquals("main", first.defaultBranch)
+        assertEquals("https://github.com/octocat/hello-world.git", first.cloneUrl.url)
+        assertEquals("https://github.com/octocat/hello-world", first.webUrl)
+        assertEquals(GitHubRepositoryVisibility.PRIVATE, page.repositories[1].visibility)
+
+        assertFalse(page.hasNextPage)
+        assertNull(page.nextPageNumber)
+        assertEquals(2, page.totalCount)
+        assertEquals(1, client.requests.size)
     }
 
     @Test
-    fun `handles empty repository list`() = runTest {
-        fakeHttpClient.responses.add(
-            GitHubRestResponse(
-                statusCode = 200,
-                body = "[]",
-                headers = emptyMap(),
-            )
-        )
-        fakeCredentialGateway.credentials[connectionId.value] = "fake-token"
+    fun `a repository GitHubs default branch is used when none is reported`() = runBlocking {
+        val body = repositoryJson().replace("""  "default_branch": "main",""", "")
+        val (service, _) = newService { GitHubRestResponse(200, body) }
 
-        val result = service.list(connectionId)
-        assertTrue(result is ForgeResult.Success)
-        val page = (result as ForgeResult.Success).value
+        val page = assertNotNull(service.list(TEST_CONNECTION_ID).valueOrNull())
+
+        assertEquals(GitHubRepository.DEFAULT_BRANCH, page.repositories.single().defaultBranch)
+    }
+
+    @Test
+    fun `a repository with an unusable clone url is skipped rather than fatal`() = runBlocking {
+        val broken = repositoryJson(id = 2, name = "broken", cloneUrl = "git@github.com:octocat/broken.git")
+        val (service, _) = newService {
+            GitHubRestResponse(200, "[$broken,${repositoryJson()}]")
+        }
+
+        val page = assertNotNull(service.list(TEST_CONNECTION_ID).valueOrNull())
+
+        assertEquals(listOf("octocat/hello-world"), page.repositories.map { it.fullName })
+    }
+
+    // --- Request shape --------------------------------------------------------
+
+    @Test
+    fun `the request carries the documented query, the bearer token and no more`() = runBlocking {
+        val (service, client) = newService { GitHubRestResponse(200, "[]") }
+
+        service.list(TEST_CONNECTION_ID, GitHubRepositoryVisibility.PRIVATE, page = 3, perPage = 5)
+
+        val request = client.requests.single()
+        assertTrue(request.url.startsWith("https://api.github.com/user/repos?"), request.url)
+        assertTrue(request.url.contains("visibility=private"), request.url)
+        assertTrue(request.url.contains("per_page=5"), request.url)
+        assertTrue(request.url.contains("page=3"), request.url)
+        assertTrue(request.url.contains("sort=full_name"), request.url)
+        assertTrue(request.url.contains("direction=asc"), request.url)
+        assertEquals("Bearer $TEST_TOKEN", request.headers["Authorization"])
+        assertEquals("application/vnd.github+json", request.headers["Accept"])
+        assertEquals("2022-11-28", request.headers["X-GitHub-Api-Version"])
+        assertEquals("AgentX-Android", request.headers["User-Agent"])
+    }
+
+    @Test
+    fun `a public listing asks for public repositories`() = runBlocking {
+        val (service, client) = newService { GitHubRestResponse(200, "[]") }
+
+        service.list(TEST_CONNECTION_ID)
+
+        assertTrue(client.requests.single().url.contains("visibility=public"))
+    }
+
+    // --- Empty accounts -------------------------------------------------------
+
+    @Test
+    fun `an account with no repositories lists empty instead of failing`() = runBlocking {
+        val (service, _) = newService { GitHubRestResponse(200, "[]") }
+
+        val result = service.list(TEST_CONNECTION_ID)
+        val page = assertNotNull(result.valueOrNull())
+
         assertTrue(page.repositories.isEmpty())
+        assertFalse(page.hasNextPage)
+        assertNull(page.nextPageNumber)
+        assertEquals(0, page.totalCount)
+        assertNull(result.errorOrNull())
     }
 
+    // --- Pagination -----------------------------------------------------------
+
     @Test
-    fun `handles malformed JSON`() = runTest {
-        fakeHttpClient.responses.add(
+    fun `a next link decides there is another page`() = runBlocking {
+        val link = "<https://api.github.com/user/repos?per_page=2&page=2>; rel=\"next\", " +
+            "<https://api.github.com/user/repos?per_page=2&page=7>; rel=\"last\""
+        val (service, _) = newService {
             GitHubRestResponse(
                 statusCode = 200,
-                body = "not json at all",
-                headers = emptyMap(),
+                body = "[${repositoryJson()},${repositoryJson(id = 2, name = "second")}]",
+                headers = mapOf("link" to listOf(link)),
             )
-        )
-        fakeCredentialGateway.credentials[connectionId.value] = "fake-token"
-
-        val result = service.list(connectionId)
-        assertTrue(result is ForgeResult.Failure)
-        assertInstanceOf<GitHubRepositoryError.MalformedResponse>((result as ForgeResult.Failure).error)
-    }
-
-    // --- Authentication errors ---
-
-    @Test
-    fun `handles 401 unauthenticated`() = runTest {
-        fakeHttpClient.responses.add(
-            GitHubRestResponse(
-                statusCode = 401,
-                body = """{"message": "Bad credentials"}""",
-                headers = emptyMap(),
-            )
-        )
-        fakeCredentialGateway.credentials[connectionId.value] = "invalid-token"
-
-        val result = service.list(connectionId)
-        assertTrue(result is ForgeResult.Failure)
-        assertInstanceOf<GitHubRepositoryError.Unauthenticated>((result as ForgeResult.Failure).error)
-    }
-
-    @Test
-    fun `handles 403 forbidden`() = runTest {
-        fakeHttpClient.responses.add(
-            GitHubRestResponse(
-                statusCode = 403,
-                body = """{"message": "Forbidden"}""",
-                headers = emptyMap(),
-            )
-        )
-        fakeCredentialGateway.credentials[connectionId.value] = "fake-token"
-
-        val result = service.list(connectionId)
-        assertTrue(result is ForgeResult.Failure)
-        assertInstanceOf<GitHubRepositoryError.Forbidden>((result as ForgeResult.Failure).error)
-    }
-
-    @Test
-    fun `handles 404 not found`() = runTest {
-        fakeHttpClient.responses.add(
-            GitHubRestResponse(
-                statusCode = 404,
-                body = """{"message": "Not Found"}""",
-                headers = emptyMap(),
-            )
-        )
-        fakeCredentialGateway.credentials[connectionId.value] = "fake-token"
-
-        val result = service.list(connectionId)
-        assertTrue(result is ForgeResult.Failure)
-        assertInstanceOf<GitHubRepositoryError.NotFound>((result as ForgeResult.Failure).error)
-    }
-
-    @Test
-    fun `handles 429 rate limited`() = runTest {
-        fakeHttpClient.responses.add(
-            GitHubRestResponse(
-                statusCode = 429,
-                body = """{"message": "Rate limit exceeded"}""",
-                headers = emptyMap(),
-            )
-        )
-        fakeCredentialGateway.credentials[connectionId.value] = "fake-token"
-
-        val result = service.list(connectionId)
-        assertTrue(result is ForgeResult.Failure)
-        assertInstanceOf<GitHubRepositoryError.RateLimited>((result as ForgeResult.Failure).error)
-    }
-
-    @Test
-    fun `handles 500 server error`() = runTest {
-        fakeHttpClient.responses.add(
-            GitHubRestResponse(
-                statusCode = 500,
-                body = """{"message": "Server Error"}""",
-                headers = emptyMap(),
-            )
-        )
-        fakeCredentialGateway.credentials[connectionId.value] = "fake-token"
-
-        val result = service.list(connectionId)
-        assertTrue(result is ForgeResult.Failure)
-        val error = (result as ForgeResult.Failure).error
-        assertInstanceOf<GitHubRepositoryError.ServerError>(error)
-        assertEquals(500, (error as GitHubRepositoryError.ServerError).code)
-    }
-
-    @Test
-    fun `handles network failure`() = runTest {
-        fakeHttpClient.responses.add(null)
-        fakeCredentialGateway.credentials[connectionId.value] = "fake-token"
-
-        val result = service.list(connectionId)
-        assertTrue(result is ForgeResult.Failure)
-        assertInstanceOf<GitHubRepositoryError.NetworkFailure>((result as ForgeResult.Failure).error)
-    }
-
-    @Test
-    fun `propagates cancellation`() = runTest {
-        fakeHttpClient.responses.add {
-            delay(1000)
-            GitHubRestResponse(200, "[]", emptyMap())
-        }
-        fakeCredentialGateway.credentials[connectionId.value] = "fake-token"
-
-        val job = async(Dispatchers.Unconfined) {
-            service.list(connectionId)
         }
 
-        delay(10)
-        job.cancel()
-        job.join()
+        val page = assertNotNull(service.list(TEST_CONNECTION_ID, perPage = 2).valueOrNull())
 
-        val result = job.getCompleted()
-        assertTrue(result is ForgeResult.Failure)
+        assertTrue(page.hasNextPage)
+        assertEquals(2, page.nextPageNumber)
+        // Page 7 is the last one at two per page, so at least twelve came before it.
+        assertEquals(6 * 2 + 2, page.totalCount)
     }
 
     @Test
-    fun `handles missing credential`() = runTest {
-        fakeHttpClient.responses.add(
-            GitHubRestResponse(200, "[]", emptyMap())
-        )
-        // No credential set
-
-        val result = service.list(connectionId)
-        assertTrue(result is ForgeResult.Failure)
-        assertInstanceOf<GitHubRepositoryError.NoCredential>((result as ForgeResult.Failure).error)
-    }
-
-    @Test
-    fun `token is never exposed in response models`() = runTest {
-        val token = "ghp_secret_token_12345"
-        fakeCredentialGateway.credentials[connectionId.value] = token
-
-        fakeHttpClient.responses.add(
+    fun `the last page does not claim another one`() = runBlocking {
+        val link = "<https://api.github.com/user/repos?per_page=2&page=7>; rel=\"last\""
+        val (service, _) = newService {
             GitHubRestResponse(
                 statusCode = 200,
-                body = """[{"id":1,"owner":{"login":"test"},"name":"repo","full_name":"test/repo","private":false,"default_branch":"main","clone_url":"https://github.com/test/repo.git","html_url":"https://github.com/test/repo"}]""",
-                headers = emptyMap(),
+                body = "[${repositoryJson()}]",
+                headers = mapOf("link" to listOf(link)),
             )
+        }
+
+        val page = assertNotNull(service.list(TEST_CONNECTION_ID, perPage = 2).valueOrNull())
+
+        assertFalse(page.hasNextPage)
+        assertNull(page.nextPageNumber)
+    }
+
+    @Test
+    fun `an unreadable body is a malformed response`() = runBlocking {
+        val bodies = listOf(
+            "",
+            "not json",
+            """{"message":"Not Found"}""",
+            "[1,2]",
         )
 
-        val result = service.list(connectionId)
-        assertTrue(result is ForgeResult.Success)
-        val page = (result as ForgeResult.Success).value
+        for (body in bodies) {
+            val (service, _) = newService { GitHubRestResponse(200, body) }
+            val error = assertIs<GitHubRepositoryError.MalformedResponse>(
+                service.list(TEST_CONNECTION_ID).errorOrNull(),
+            )
+            assertTrue(error.detail.isNotBlank(), "a malformed response explains itself: $body")
+        }
+    }
 
-        val allStrings = listOf(
+    // --- Status mapping -------------------------------------------------------
+
+    @Test
+    fun `HTTP statuses map onto typed errors`() = runBlocking {
+        val cases = mapOf(
+            401 to GitHubRepositoryError.Unauthenticated,
+            403 to GitHubRepositoryError.Forbidden,
+            404 to GitHubRepositoryError.NotFound,
+            429 to GitHubRepositoryError.RateLimited,
+        )
+
+        for ((status, expected) in cases) {
+            val (service, _) = newService { GitHubRestResponse(status, "") }
+            assertEquals(expected, service.list(TEST_CONNECTION_ID).errorOrNull(), "status $status")
+        }
+
+        val (service, _) = newService { GitHubRestResponse(503, "") }
+        assertEquals(GitHubRepositoryError.ServerError(503), service.list(TEST_CONNECTION_ID).errorOrNull())
+    }
+
+    @Test
+    fun `a forbidden response with an exhausted quota is a rate limit`() = runBlocking {
+        val (service, _) = newService {
+            GitHubRestResponse(403, "", mapOf("X-RateLimit-Remaining" to listOf("0")))
+        }
+
+        assertEquals(GitHubRepositoryError.RateLimited, service.list(TEST_CONNECTION_ID).errorOrNull())
+    }
+
+    @Test
+    fun `a transport failure is a network error`() = runBlocking {
+        val (service, _) = newService { throw GitHubRestNetworkException("offline") }
+
+        assertEquals(GitHubRepositoryError.NetworkFailure, service.list(TEST_CONNECTION_ID).errorOrNull())
+    }
+
+    // --- Credentials ----------------------------------------------------------
+
+    @Test
+    fun `a connection with no usable credential never reaches GitHub`() = runBlocking {
+        val gateway = FakeCredentialGateway(token = null)
+        var requests = 0
+        val (service, _) = newService(gateway) {
+            requests++
+            GitHubRestResponse(200, "[]")
+        }
+
+        assertEquals(GitHubRepositoryError.NoCredential, service.list(TEST_CONNECTION_ID).errorOrNull())
+        assertEquals(1, gateway.calls)
+        assertEquals(0, requests, "no request is made without a credential")
+    }
+
+    @Test
+    fun `an expired grant asks for re-authorization instead of a network call`() = runBlocking {
+        val gateway = FakeCredentialGateway(
+            refusal = ForgeError(ForgeErrorCode.CONNECTION_CREDENTIAL_EXPIRED, "The grant expired"),
+        )
+        var requests = 0
+        val (service, _) = newService(gateway) {
+            requests++
+            GitHubRestResponse(200, "[]")
+        }
+
+        assertEquals(GitHubRepositoryError.Unauthenticated, service.list(TEST_CONNECTION_ID).errorOrNull())
+        assertEquals(0, requests)
+    }
+
+    @Test
+    fun `a refused listing preserves the connection for the next attempt`() = runBlocking {
+        var body = ""
+        val (service, _) = newService { GitHubRestResponse(if (body.isEmpty()) 401 else 200, body) }
+
+        assertEquals(GitHubRepositoryError.Unauthenticated, service.list(TEST_CONNECTION_ID).errorOrNull())
+
+        // Re-authorizing produced a usable credential; the same connection id works again.
+        body = "[${repositoryJson()}]"
+        val page = assertNotNull(service.list(TEST_CONNECTION_ID).valueOrNull())
+
+        assertEquals(1, page.repositories.size)
+    }
+
+    @Test
+    fun `cancellation propagates instead of becoming an error value`() {
+        val (service, _) = newService { throw CancellationException("cancelled") }
+
+        runBlocking {
+            assertFailsWith<CancellationException> { service.list(TEST_CONNECTION_ID) }
+        }
+    }
+
+    @Test
+    fun `an out-of-range page size is refused before any request`() = runBlocking {
+        val (service, client) = newService { GitHubRestResponse(200, "[]") }
+
+        assertFailsWith<IllegalArgumentException> { service.list(TEST_CONNECTION_ID, perPage = 1_000) }
+        assertFailsWith<IllegalArgumentException> { service.list(TEST_CONNECTION_ID, page = 0) }
+        assertTrue(client.requests.isEmpty())
+    }
+
+    // --- Totals ---------------------------------------------------------------
+
+    @Test
+    fun `the implied total is remembered per connection and cleared on failure`() = runBlocking {
+        var body = "[${repositoryJson()}]"
+        val (service, _) = newService { GitHubRestResponse(200, body) }
+
+        service.list(TEST_CONNECTION_ID)
+        assertEquals(1, service.totalKnown(TEST_CONNECTION_ID))
+
+        body = "not json"
+        assertIs<GitHubRepositoryError.MalformedResponse>(service.list(TEST_CONNECTION_ID).errorOrNull())
+        assertEquals(0, service.totalKnown(TEST_CONNECTION_ID))
+    }
+
+    // --- Token isolation ------------------------------------------------------
+
+    @Test
+    fun `the token exists only in the Authorization header`() = runBlocking {
+        val (service, client) = newService { GitHubRestResponse(200, "[${repositoryJson()}]") }
+
+        val page = assertNotNull(service.list(TEST_CONNECTION_ID).valueOrNull())
+
+        assertEquals("Bearer $TEST_TOKEN", client.requests.single().headers["Authorization"])
+
+        val repository = page.repositories.single()
+        // Everything that leaves the transport. The recorded request is deliberately
+        // not in this list: the Authorization header is where the token legitimately is.
+        val surfaces = listOf(
             page.toString(),
-            page.repositories.joinToString("") { it.toString() },
+            repository.toString(),
+            repository.cloneUrl.toString(),
+            repository.id.toString(),
+            GitHubRepositoryUiState(repositories = page.repositories).toString(),
         )
-
-        for (str in allStrings) {
-            assertFalse(str.contains(token), "Token leaked into model: $str")
-            assertFalse(str.contains("Bearer"), "Authorization header leaked into model: $str")
+        surfaces.forEach { surface ->
+            assertFalse(surface.contains(TEST_TOKEN), "no surface leaks the token: $surface")
         }
     }
-}
-
-// Fake implementations for testing
-
-class FakeGitHubRestClient : GitHubRestClient {
-    val responses = mutableListOf<GitHubRestResponse?>()
-    var throwOnNext: Throwable? = null
-    var lastRequest: GitHubRestRequest? = null
-
-    override suspend fun get(url: String, headers: Map<String, String>): GitHubRestResponse {
-        lastRequest = GitHubRestRequest(url, headers)
-        throwOnNext?.let { throw it }
-        return responses.removeAt(0) ?: throw GitHubRestNetworkException("No response configured")
-    }
-}
-
-data class GitHubRestRequest(val url: String, val headers: Map<String, String>)
-
-class FakeConnectionCredentialGateway : ConnectionCredentialGateway {
-    val credentials = mutableMapOf<String, String>()
-
-    override suspend fun <T> withCredential(
-        connectionId: ConnectionId,
-        block: suspend (String) -> T,
-    ): ForgeResult<T, ForgeError> {
-        val token = credentials[connectionId.value]
-        return if (token != null) {
-            try {
-                ForgeResult.Success(block(token))
-            } catch (e: Exception) {
-                ForgeResult.Failure(object : ForgeError(FakeForgeErrorCode, e.message ?: "Error") {})
-            }
-        } else {
-            ForgeResult.Failure(object : ForgeError(FakeForgeErrorCode, "No credential") {})
-        }
-    }
-}
-
-private object FakeForgeErrorCode : ForgeErrorCode {
-    override val name: String = "FAKE"
-    override val ordinal: Int = 999
-    override fun toString(): String = name
 }

@@ -1,349 +1,265 @@
 package com.agentx.app.integrations.github
 
-import com.agentx.app.core.ForgeError
-import com.agentx.app.core.ForgeErrorCode
-import com.agentx.app.core.ForgeResult
-import com.agentx.app.integrations.connection.ConnectionId
-import com.agentx.app.integrations.connection.ConnectionCredentialGateway
-import com.agentx.app.integrations.github.GitHubRepository
-import com.agentx.app.integrations.github.GitHubRepositoryCloneUrl
-import com.agentx.app.integrations.github.GitHubRepositoryError
-import com.agentx.app.integrations.github.GitHubRepositoryVisibility
-import com.agentx.app.integrations.github.CloneDestinationValidation
-import com.agentx.app.integrations.github.CloneDestinationValidator
-import com.agentx.app.integrations.github.JGitGitHubRepositoryCloneService
-import com.agentx.app.integrations.github.GitHubRepositoryCloneService
-import kotlinx.coroutines.test.runTest
-import org.junit.jupiter.api.BeforeEach
-import org.junit.jupiter.api.Test
+import com.agentx.app.core.errorOrNull
+import com.agentx.app.core.valueOrNull
+import kotlinx.coroutines.runBlocking
+import org.eclipse.jgit.api.Git
+import org.eclipse.jgit.api.errors.GitAPIException
 import java.io.File
 import java.nio.file.Files
-import java.util.UUID
+import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
-import kotlin.test.assertInstanceOf
+import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
-import kotlin.test.assertThrows
 
+/**
+ * Clone destination handling and clone failure modes.
+ *
+ * No test here clones over the network: repository payloads are fixed and the
+ * only real Git work is a local `git init`, which touches nothing outside a
+ * temporary directory.
+ */
 class GitHubRepositoryCloneServiceTest {
 
-    private lateinit var fakeGateway: FakeConnectionCredentialGateway
-    private lateinit var validator: CloneDestinationValidator
-    private lateinit var service: GitHubRepositoryCloneService
-    private val connectionId = ConnectionId(UUID.randomUUID().toString())
+    private val validator = CloneDestinationValidator()
 
-    @BeforeEach
-    fun setUp() {
-        fakeGateway = FakeConnectionCredentialGateway()
-        validator = CloneDestinationValidator()
-        service = JGitGitHubRepositoryCloneService(
-            credentialGateway = fakeGateway,
-            validator = validator,
-            logger = FakeLogger,
+    private fun newService(gateway: FakeCredentialGateway = FakeCredentialGateway()): JGitGitHubRepositoryCloneService =
+        JGitGitHubRepositoryCloneService(gateway)
+
+    private fun temporaryDirectory(): File = Files.createTempDirectory("agentx-clone-test").toFile()
+
+    /** A JGit failure, constructed through a subclass because JGit's own constructors are protected. */
+    private class TestGitApiException(message: String) : GitAPIException(message)
+
+    // --- Destination naming ---------------------------------------------------
+
+    @Test
+    fun `a repository becomes an owner-name folder`() {
+        assertEquals("octocat-hello-world", validator.directoryName("octocat", "hello-world"))
+    }
+
+    @Test
+    fun `a name that is not one path segment is refused`() {
+        val rejected = listOf(
+            "" to "repo",
+            "octocat" to "",
+            "   " to "repo",
+            "octocat" to "   ",
+            "." to "repo",
+            "octocat" to "..",
+            ".." to "repo",
+            "octocat" to "..",
+            "oct/cat" to "repo",
+            "octocat" to "hello/world",
+            "octocat" to "hello\\world",
+            "octocat" to "hello\u0000world",
+            "oc\u0007tocat" to "repo",
         )
+
+        rejected.forEach { (owner, name) ->
+            assertNull(validator.directoryName(owner, name), "\"$owner\"/\"$name\" must be refused")
+        }
     }
 
     @Test
-    fun `validates a valid repository clone destination`() {
-        val tempDir = Files.createTempDirectory("agentx-workspace").toFile()
-        tempDir.deleteOnExit()
-        val repo = createTestRepository("octocat", "Hello-World")
+    fun `an over-long name is truncated to a usable length`() {
+        val name = assertNotNull(validator.directoryName("a".repeat(200), "b".repeat(200)))
 
-        val result = validator.validate(managedRoot = tempDir, repository = repo)
-
-        assertTrue(result is CloneDestinationValidation.Valid)
-        val valid = result as CloneDestinationValidation.Valid
-        assertTrue(valid.path.startsWith(tempDir.absolutePath + File.separator))
-        assertTrue(valid.directory.name.contains("octocat-Hello-World"))
+        assertEquals(CloneDestinationValidator.MAX_DIRECTORY_NAME_LENGTH, name.length)
     }
 
-    @Test
-    fun `rejects path traversal with dot-dot-slash`() {
-        val tempDir = Files.createTempDirectory("agentx-workspace").toFile()
-        tempDir.deleteOnExit()
-        val repo = createTestRepository("evil", "../etc")
-
-        val result = validator.validate(managedRoot = tempDir, repository = repo)
-
-        assertTrue(result is CloneDestinationValidation.Invalid)
-        assertInstanceOf<GitHubRepositoryError.MalformedResponse>((result as CloneDestinationValidation.Invalid).error)
-    }
+    // --- Destination containment ---------------------------------------------
 
     @Test
-    fun `rejects absolute path in repository name`() {
-        val tempDir = Files.createTempDirectory("agentx-workspace").toFile()
-        tempDir.deleteOnExit()
-        val repo = createTestRepository("attacker", "/etc/passwd")
-
-        val result = validator.validate(managedRoot = tempDir, repository = repo)
-
-        assertTrue(result is CloneDestinationValidation.Invalid)
-    }
-
-    @Test
-    fun `rejects null bytes in repository name`() {
-        val tempDir = Files.createTempDirectory("agentx-workspace").toFile()
-        tempDir.deleteOnExit()
-        val repo = createTestRepository("bad", "test\u0000file")
-
-        val result = validator.validate(managedRoot = tempDir, repository = repo)
-
-        assertTrue(result is CloneDestinationValidation.Invalid)
-    }
-
-    @Test
-    fun `sanitizes repository name with special characters`() {
-        val result = validator.sanitizeRepoDirName("owner", "my repo With Spaces!")
-        assertNotNull(result)
-        assertTrue(result!!.contains("my-repo"))
-        assertFalse(result.contains(" "))
-    }
-
-    @Test
-    fun `sanitizes long names by truncating`() {
-        val longName = "a".repeat(200)
-        val result = validator.sanitizeRepoDirName("owner", longName)
-        assertNotNull(result)
-        assertTrue(result!!.length <= 100)
-    }
-
-    @Test
-    fun `rejects names with control characters`() {
-        val result = validator.sanitizeRepoDirName("owner", "test\u0001file")
-        assertNull(result)
-    }
-
-    @Test
-    fun `rejects names with backslashes`() {
-        val result = validator.sanitizeRepoDirName("owner", "test\\file")
-        assertNull(result)
-    }
-
-    @Test
-    fun `rejects destination outside managed root via symlink`() {
-        val tempDir = Files.createTempDirectory("agentx-workspace").toFile()
-        tempDir.deleteOnExit()
-        val outsideDir = Files.createTempDirectory("outside-workspace").toFile()
-        outsideDir.deleteOnExit()
-
-        val symlink = File(tempDir, "escape-link")
+    fun `a destination is derived under the managed root`() {
+        val root = temporaryDirectory()
         try {
-            Files.createSymbolicLink(symlink.toPath(), outsideDir.toPath())
-        } catch (e: Exception) {
-            return // Symlinks not supported
-        }
+            val valid = assertIs<CloneDestinationValidation.Valid>(validator.validate(root, githubRepository()))
 
-        val repo = createTestRepository("test", "repo")
-        val result = validator.validate(
-            managedRoot = tempDir,
-            repository = repo,
-            proposedDestination = symlink,
+            assertEquals(File(root, "octocat-hello-world").canonicalPath, valid.directory.path)
+            assertTrue(valid.directory.path.startsWith(root.canonicalPath + File.separator))
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `the managed root is created on first use`() {
+        val parent = temporaryDirectory()
+        val root = File(parent, "nested/projects")
+        try {
+            assertFalse(root.exists())
+
+            assertIs<CloneDestinationValidation.Valid>(validator.validate(root, githubRepository()))
+            assertTrue(root.isDirectory)
+        } finally {
+            parent.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `a destination that already exists is refused`() {
+        val root = temporaryDirectory()
+        try {
+            File(root, "octocat-hello-world").mkdirs()
+
+            val invalid = assertIs<CloneDestinationValidation.Invalid>(validator.validate(root, githubRepository()))
+
+            assertIs<GitHubRepositoryError.InvalidDestination>(invalid.error)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `a symlinked destination cannot escape the root`() {
+        val root = temporaryDirectory()
+        val outside = temporaryDirectory()
+        try {
+            Files.createSymbolicLink(File(root, "octocat-hello-world").toPath(), outside.toPath())
+
+            val invalid = assertIs<CloneDestinationValidation.Invalid>(validator.validate(root, githubRepository()))
+
+            assertIs<GitHubRepositoryError.PathTraversal>(invalid.error)
+        } finally {
+            root.deleteRecursively()
+            outside.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `a repository whose name tries to walk out of the root is refused`() {
+        val root = temporaryDirectory()
+        try {
+            val invalid = assertIs<CloneDestinationValidation.Invalid>(
+                validator.validate(root, githubRepository(name = "../escape")),
+            )
+
+            assertIs<GitHubRepositoryError.InvalidDestination>(invalid.error)
+            assertFalse(File(root.parentFile, "escape").exists())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    // --- Clone gating ---------------------------------------------------------
+
+    @Test
+    fun `an unusable destination is refused before the credential is asked for`() = runBlocking {
+        val root = temporaryDirectory()
+        try {
+            File(root, "octocat-hello-world").mkdirs()
+            val gateway = FakeCredentialGateway()
+            val service = newService(gateway)
+
+            val result = service.clone(TEST_CONNECTION_ID, githubRepository(), root)
+
+            assertIs<GitHubRepositoryError.InvalidDestination>(result.errorOrNull())
+            assertEquals(0, gateway.calls, "the credential is not touched for a refused destination")
+            assertNull(result.valueOrNull())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `a connection without a credential fails and leaves nothing behind`() = runBlocking {
+        val root = temporaryDirectory()
+        try {
+            File(root, "keep-me").mkdirs()
+            val service = newService(FakeCredentialGateway(token = null))
+
+            val result = service.clone(TEST_CONNECTION_ID, githubRepository(), root)
+
+            assertIs<GitHubRepositoryError.NoCredential>(result.errorOrNull())
+            assertFalse(File(root, "octocat-hello-world").exists(), "no partial clone is left behind")
+            assertTrue(File(root, "keep-me").isDirectory, "an unrelated folder is untouched")
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `a failed clone leaves the connection usable`() = runBlocking {
+        val root = temporaryDirectory()
+        try {
+            val gateway = FakeCredentialGateway(token = null)
+            val service = newService(gateway)
+
+            assertIs<GitHubRepositoryError.NoCredential>(
+                service.clone(TEST_CONNECTION_ID, githubRepository(), root).errorOrNull(),
+            )
+            // The connection was not disconnected or forgotten: the gateway still serves it.
+            assertIs<GitHubRepositoryError.NoCredential>(
+                service.clone(TEST_CONNECTION_ID, githubRepository(), root).errorOrNull(),
+            )
+            assertEquals(2, gateway.calls)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    // --- Failure mapping ------------------------------------------------------
+
+    @Test
+    fun `JGit failures map onto typed errors`() {
+        val service = newService()
+
+        val cases = listOf(
+            "https://github.com/octocat/hello-world.git: Authentication is required but no CredentialsProvider has been registered" to
+                GitHubRepositoryError.Unauthenticated,
+            "https://github.com/octocat/hello-world.git: not authorized" to GitHubRepositoryError.Unauthenticated,
+            "https://github.com/octocat/hello-world.git: 403 Forbidden" to GitHubRepositoryError.Forbidden,
+            "Repository not found: octocat/hello-world" to GitHubRepositoryError.NotFound,
+            "API rate limit exceeded for user ID 1" to GitHubRepositoryError.RateLimited,
+            "UnknownHostException: github.com" to GitHubRepositoryError.NetworkFailure,
+            "Connection refused: connect" to GitHubRepositoryError.NetworkFailure,
         )
 
-        assertTrue(result is CloneDestinationValidation.Invalid)
-    }
-
-    @Test
-    fun `rejects destination that already exists as file`() {
-        val tempDir = Files.createTempDirectory("agentx-workspace").toFile()
-        tempDir.deleteOnExit()
-        val existingFile = File(tempDir, "existing-file")
-        existingFile.createNewFile()
-        existingFile.deleteOnExit()
-
-        val repo = createTestRepository("test", "repo")
-        val result = validator.validate(
-            managedRoot = tempDir,
-            repository = repo,
-            proposedDestination = existingFile,
-        )
-
-        assertTrue(result is CloneDestinationValidation.Invalid)
-        assertInstanceOf<GitHubRepositoryError.InvalidDestination>((result as CloneDestinationValidation.Invalid).error)
-    }
-
-    @Test
-    fun `token is not present in domain models`() {
-        val repo = createTestRepository("octocat", "Hello-World")
-        val token = "ghp_super_secret_token_12345"
-
-        assertFalse(repo.toString().contains(token), "Token leaked into repository model")
-        assertFalse(repo.toString().contains("Bearer"), "Authorization header in model")
-        assertFalse(repo.cloneUrl.url.contains("ghp_"), "Token in clone URL")
-        assertFalse(repo.cloneUrl.url.contains("@"), "Credentials in clone URL")
-    }
-
-    @Test
-    fun `clone URL is always plain HTTPS`() {
-        val validUrl = GitHubRepositoryCloneUrl.parse("https://github.com/owner/repo.git")
-        assertEquals("https://github.com/owner/repo.git", validUrl.url)
-
-        assertThrows<IllegalArgumentException> {
-            GitHubRepositoryCloneUrl.parse("https://user:pass@github.com/owner/repo.git")
+        cases.forEach { (message, expected) ->
+            assertEquals(expected, service.mapGitException(TestGitApiException(message)), message)
         }
 
-        assertThrows<IllegalArgumentException> {
-            GitHubRepositoryCloneUrl.parse("https://ghp_token@github.com/owner/repo.git")
-        }
+        assertIs<GitHubRepositoryError.Unknown>(service.mapGitException(TestGitApiException("something odd")))
     }
+
+    // --- Config hygiene -------------------------------------------------------
 
     @Test
-    fun `authentication failure is mapped correctly`() {
-        val error = JGitGitHubRepositoryCloneService().mapGitException(
-            object : org.eclipse.jgit.api.errors.GitAPIException("Unauthorized") {
-                override val statusCode: Int get() = 401
-            }
-        )
-        assertInstanceOf<GitHubRepositoryError.Unauthenticated>(error)
-    }
-
-    @Test
-    fun `network failure is mapped correctly`() {
-        val error = JGitGitHubRepositoryCloneService().mapGitException(
-            object : org.eclipse.jgit.api.errors.GitAPIException("Connection refused") {
-                override val statusCode: Int get() = -1
-            }
-        )
-        assertInstanceOf<GitHubRepositoryError.NetworkFailure>(error)
-    }
-
-    @Test
-    fun `partial clone is cleaned up on failure`() {
-        val tempDir = Files.createTempDirectory("agentx-workspace").toFile()
-        tempDir.deleteOnExit()
-        val partialClone = File(tempDir, "partial-clone")
-        partialClone.mkdirs()
-        File(partialClone, "some-file.txt").writeText("partial data")
-        assertTrue(partialClone.exists())
-
-        JGitGitHubRepositoryCloneService().cleanupClone(partialClone, partialClone.absolutePath)
-
-        assertFalse(partialClone.exists())
-    }
-
-    @Test
-    fun `cleanup does not delete other directories`() {
-        val tempDir = Files.createTempDirectory("agentx-workspace").toFile()
-        tempDir.deleteOnExit()
-        val partialClone = File(tempDir, "partial-clone")
-        partialClone.mkdirs()
-        val otherDir = File(tempDir, "other-project")
-        otherDir.mkdirs()
-
-        JGitGitHubRepositoryCloneService().cleanupClone(partialClone, partialClone.absolutePath)
-
-        assertFalse(partialClone.exists())
-        assertTrue(otherDir.exists())
-    }
-
-    @Test
-    fun `credential gateway is used for authentication`() = runTest {
-        fakeGateway.credentials[connectionId.value] = "test-token-12345"
-        var capturedToken: String? = null
-        val result = fakeGateway.withCredential(connectionId) { t ->
-            capturedToken = t
-            "success"
-        }
-
-        assertTrue(result is ForgeResult.Success)
-        assertEquals("test-token-12345", capturedToken)
-    }
-
-    @Test
-    fun `credential is not returned from authorization`() = runTest {
-        fakeGateway.credentials[connectionId.value] = "test-token-12345"
-        var captured: String? = null
-        val result = fakeGateway.withCredential(connectionId) { t ->
-            captured = t
-            Unit
-        }
-
-        assertTrue(result is ForgeResult.Success)
-        assertEquals("test-token-12345", captured)
-        assertFalse(result.toString().contains("test-token-12345"))
-    }
-
-    @Test
-    fun `UI state reflects loading status`() {
-        var state = GitHubRepositoryUiState()
-        assertFalse(state.loading)
-        state = state.copy(loading = true)
-        assertTrue(state.loading)
-    }
-
-    @Test
-    fun `UI state reflects auth expired`() {
-        var state = GitHubRepositoryUiState()
-        assertFalse(state.authExpired)
-        state = state.copy(authExpired = true)
-        assertTrue(state.authExpired)
-    }
-
-    @Test
-    fun `UI state reflects rate limited`() {
-        var state = GitHubRepositoryUiState()
-        assertFalse(state.rateLimited)
-        state = state.copy(rateLimited = true)
-        assertTrue(state.rateLimited)
-    }
-
-    @Test
-    fun `UI state shows recoverable errors`() {
-        assertTrue(GitHubRepositoryUiState(error = GitHubRepositoryError.NetworkFailure).recoverableError)
-        assertFalse(GitHubRepositoryUiState(error = GitHubRepositoryError.Unauthenticated).recoverableError)
-        assertFalse(GitHubRepositoryUiState(error = GitHubRepositoryError.NotFound).recoverableError)
-        assertFalse(GitHubRepositoryUiState(error = null).recoverableError)
-    }
-
-    private fun createTestRepository(owner: String, name: String): GitHubRepository {
-        return GitHubRepository(
-            id = RepositoryId(UUID.randomUUID().toString()),
-            owner = owner,
-            name = name,
-            fullName = "$owner/$name",
-            visibility = GitHubRepositoryVisibility.PUBLIC,
-            defaultBranch = "main",
-            cloneUrl = GitHubRepositoryCloneUrl.parse("https://github.com/$owner/$name.git"),
-            webUrl = "https://github.com/$owner/$name",
-        )
-    }
-
-    companion object {
-        private val FakeLogger = object : GitHubRepositoryLogger {
-            override fun logError(connectionId: String, error: GitHubRepositoryError, repositoriesListed: Int) {}
-            override fun logNetworkFailure(connectionId: String) {}
-            override fun logCloneStart(connectionId: String, owner: String, repo: String) {}
-            override fun logCloneProgress(connectionId: String, progress: String) {}
-            override fun logCloneComplete(connectionId: String, workspacePath: String) {}
-            override fun logCloneError(connectionId: String, error: GitHubRepositoryError) {}
-        }
-    }
-}
-
-class FakeConnectionCredentialGateway : ConnectionCredentialGateway {
-    val credentials = mutableMapOf<String, String>()
-
-    override suspend fun <T> withCredential(
-        connectionId: ConnectionId,
-        block: suspend (String) -> T,
-    ): ForgeResult<T, ForgeError> {
-        val token = credentials[connectionId.value]
-        return if (token != null) {
+    fun `the remote url is reset and no credential reaches git config`() {
+        val directory = temporaryDirectory()
+        try {
+            val git = Git.init().setDirectory(directory).call()
             try {
-                ForgeResult.Success(block(token))
-            } catch (e: Exception) {
-                ForgeResult.Failure(object : ForgeError(FakeForgeErrorCode, e.message ?: "Error") {})
+                val config = git.repository.config
+                config.setString(
+                    "remote",
+                    "origin",
+                    "url",
+                    "https://x-access-token:$TEST_TOKEN@github.com/octocat/hello-world.git",
+                )
+                config.setString("credential", null, "helper", "store")
+                config.save()
+
+                assertTrue(File(directory, ".git/config").readText().contains(TEST_TOKEN))
+
+                newService().resetRemoteUrl(git, githubRepository())
+
+                val rewritten = File(directory, ".git/config").readText()
+                assertFalse(rewritten.contains(TEST_TOKEN), "the credential is gone from git config")
+                assertEquals(
+                    "https://github.com/octocat/hello-world.git",
+                    config.getString("remote", "origin", "url", ""),
+                )
+                assertNull(config.getString("credential", null, "helper"))
+            } finally {
+                git.close()
             }
-        } else {
-            ForgeResult.Failure(object : ForgeError(FakeForgeErrorCode, "No credential") {})
+        } finally {
+            directory.deleteRecursively()
         }
     }
-}
-
-private object FakeForgeErrorCode : ForgeErrorCode {
-    override val name: String = "FAKE"
-    override val ordinal: Int = 999
-    override fun toString(): String = name
 }
