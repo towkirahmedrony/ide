@@ -6,6 +6,7 @@ import com.agentx.app.tools.filesystem.ListDirectoryTool
 import com.agentx.app.tools.filesystem.ReadFileTool
 import com.agentx.app.tools.filesystem.SearchFilesTool
 import com.agentx.app.tools.filesystem.WriteFileTool
+import com.agentx.app.tools.planning.TodoWriteTool
 
 /**
  * The single source of truth for the built-in agent prompts.
@@ -39,6 +40,11 @@ object DefaultAgentPrompts {
         the Tool Router and the user's permission policy; never claim to have done work
         you did not do.
         Never assume a local APK build is available. Prefer lightweight checks.
+        For a task with three or more steps, first call ${TodoWriteTool.NAME} with the
+        full checklist, then call it again each time a step starts or finishes. Always
+        send the COMPLETE list, one step per line: "[ ] title" is pending, "[~] title" is
+        in progress, "[x] title" is done. Keep at most one step in progress. Do not use it
+        for conversation or for a simple one-step request.
         Call ${AgentProtocol.FINISH_TOOL} when the user-facing result is ready.
     """.trimIndent()
 

@@ -20,6 +20,7 @@ import com.agentx.app.tools.git.GitDiffTool
 import com.agentx.app.tools.git.GitLogTool
 import com.agentx.app.tools.git.GitPushTool
 import com.agentx.app.tools.git.GitStatusTool
+import com.agentx.app.tools.planning.TodoWriteTool
 import com.agentx.app.tools.verification.CiVerificationTool
 import com.agentx.app.tools.web.WebFetchTool
 import com.agentx.app.tools.web.WebSearchTool
@@ -120,6 +121,9 @@ object AgentToolPolicy {
         /** Web research: search plus single-page retrieval. */
         WEB(setOf(WebSearchTool.NAME, WebFetchTool.NAME)),
 
+        /** The visible to-do checklist for the current task. */
+        PLAN(setOf(TodoWriteTool.NAME)),
+
         /** Delegating a focused sub-task. Only the orchestrating role may. */
         DELEGATE(setOf(AgentProtocol.DELEGATE_TOOL)),
 
@@ -151,6 +155,7 @@ object AgentToolPolicy {
         // belong to the specialist roles, so a broad capability never leaks into
         // the orchestrator.
         AgentRole.MAIN to setOf(
+            ToolGrant.PLAN,
             ToolGrant.INSPECT,
             ToolGrant.CODE_INTELLIGENCE,
             ToolGrant.WRITE,

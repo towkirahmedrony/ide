@@ -15,6 +15,7 @@ import com.agentx.app.tools.web.DelegatingHttpGetClient
 import com.agentx.app.tools.web.DelegatingWebSearchProvider
 import com.agentx.app.tools.web.HttpGetClient
 import com.agentx.app.tools.web.WebSearchProvider
+import com.agentx.app.tools.planning.TodoWriteTool
 import com.agentx.app.workspace.ProcessExecutor
 
 /**
@@ -58,6 +59,7 @@ class ToolsModule(
         }
         BuiltinTools.git(git, gitPush).forEach(registry::register)
         BuiltinTools.web(webFetch, webSearch).forEach(registry::register)
+        registry.register(TodoWriteTool())
         // CI verification is registered with bindable collaborators so it fails
         // closed until the app attaches the GitHub-backed service and the active
         // project's repository resolver.

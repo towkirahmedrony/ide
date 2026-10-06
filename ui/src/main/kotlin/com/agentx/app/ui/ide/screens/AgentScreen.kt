@@ -82,10 +82,12 @@ import com.agentx.app.ui.ide.model.GenerationPhase
 import com.agentx.app.ui.ide.model.GenerationState
 import com.agentx.app.ui.ide.model.PermissionPromptUi
 import com.agentx.app.ui.ide.screens.agent.AgentMessageItem
+import com.agentx.app.ui.ide.screens.agent.AgentTodoCard
 import com.agentx.app.ui.ide.screens.agent.AgentSessionDrawerContent
 import com.agentx.app.ui.ide.screens.agent.copyToClipboard
 import com.agentx.app.ui.ide.state.AgentChatPresentation
 import com.agentx.app.ui.ide.state.AgentViewModel
+import com.agentx.app.ui.ide.state.AgentTodos
 import com.agentx.app.ui.theme.ForgeAmber
 import com.agentx.app.ui.theme.ForgeBorder
 import com.agentx.app.ui.theme.ForgeCanvas
@@ -278,6 +280,7 @@ fun AgentScreen(
                     }
                 }
 
+                AgentTodoCard(snapshot = AgentTodos.current(state.messages))
                 state.pendingPermission?.let { prompt ->
                     PermissionPromptCard(prompt = prompt, onDecision = viewModel::respondToPermission)
                 }

@@ -28,6 +28,9 @@ import com.agentx.app.ui.ide.data.AgentFailureKind
 import com.agentx.app.ui.ide.data.AgentSession
 import com.agentx.app.ui.ide.data.AgentSessionInfo
 import com.agentx.app.ui.ide.data.AgentStreamEvent
+import com.agentx.app.tools.planning.TodoList
+import com.agentx.app.tools.planning.TodoStatus
+import com.agentx.app.tools.planning.TodoWriteTool
 import com.agentx.app.ui.ide.data.PersistedAgentMessage
 import com.agentx.app.ui.ide.data.PersistedMessageKind
 import com.agentx.app.ui.ide.model.AgentActivity
@@ -337,7 +340,7 @@ private fun describeToolValue(value: JsonValue): String = when (value) {
     is JsonValue.Obj -> "{…}"
 }
 
-internal fun mapEvent(event: AgentEvent): AgentStreamEvent? = when (event) {
+private fun mapEventCore(event: AgentEvent): AgentStreamEvent? = when (event) {
     is AgentEvent.Thinking -> AgentStreamEvent.Activity(
         AgentActivity(AgentActivityStatus.THINKING, event.detail ?: "AI responding"),
     )
@@ -553,4 +556,31 @@ private fun displayName(role: AgentRole): String = when (role) {
     AgentRole.SECURITY_REVIEWER -> "Security Reviewer"
     AgentRole.DOCS -> "Docs"
     AgentRole.COMMIT_PR -> "Commit/PR"
+}
+
+/**
+ * Runtime -> UI mapping entry point. The model's `todo_write` checklist becomes the
+ * turn's plan (the same event the runtime plan uses); every other event maps as before.
+ */
+internal fun mapEvent(event: AgentEvent): AgentStreamEvent? =
+    todoPlanEvent(event) ?: mapEventCore(event)
+
+private fun todoPlanEvent(event: AgentEvent): AgentStreamEvent.Plan? {
+    if (event !is AgentEvent.ToolRequested || event.toolName != TodoWriteTool.NAME) return null
+    val text = (event.arguments["todos"] as? JsonValue.Str)?.value ?: return null
+    val items = TodoList.parse(text)
+    if (items.isEmpty()) return null
+    return AgentStreamEvent.Plan(
+        items.mapIndexed { index, item ->
+            AgentStreamEvent.PlanStep(
+                index = index,
+                title = item.title,
+                status = when (item.status) {
+                    TodoStatus.COMPLETED -> "COMPLETED"
+                    TodoStatus.IN_PROGRESS -> "RUNNING"
+                    TodoStatus.PENDING -> "IDLE"
+                },
+            )
+        },
+    )
 }
