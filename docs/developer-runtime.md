@@ -315,7 +315,8 @@ second one grows to roughly 1 GB once the developer runtime is installed. That g
 | `developer-runtime/downloads` | re-downloadable cache | ~30 MB | The Ubuntu Base archive, kept so a retry costs no download. |
 | `developer-runtime/tmp` | temporary | small | `PROOT_TMP_DIR`. |
 | `developer-runtime/rootfs.installing`, `rootfs-staging` | temporary | small | Staging that is promoted into `rootfs`, or left over from an older build. |
-| `developer-runtime/workspaces`, `workspaces` | project copies | project-sized | The materialiser copies above — the only duplicated project data. |
+| `developer-runtime/workspaces`, `workspaces` | project copies | project-sized | The materialiser copies above and the legacy mirrors: app-owned copies of a project that lives somewhere else. Each is removed with its own project. |
+| `projects` | app files | project-sized | Projects AgentX created itself, one directory per project. Unlike a copy, the project *is* this directory — it is not a duplicate of anything, and it is removed with its own project. |
 | `diagnostics/terminal.log`, `terminal-diagnostics.log` | diagnostics | ≤ 5 MB + tail | The developer log and the terminal recorder, both rotated. |
 | `skills`, `agent-sessions` | app data | small | Imported skills and persisted agent sessions. |
 | `nativeLibraryDir` | APK | ~ tens of MB | `libproot.so`, the loader, `libtalloc`, `libandroid-shmem` — reinstalled with the app. |
@@ -336,6 +337,9 @@ Deleting a project from Home is the caller of `WorkspaceManager.delete(id)`, and
 requires is the only entry point. What it removes:
 
 - the project's record, so it stops appearing in the list;
+- the project's own directory, when AgentX created the project itself: `<filesDir>/projects/<name>`
+  from the Create New Project flow. The project *is* that directory, and once the record is gone
+  nothing could reach it again;
 - the AgentX-owned directories that belong to it — `<root>/<name>` under the two project-copy roots
   above, where `<name>` comes from the same `TermuxWorkspaceBindings` functions that created them.
 
@@ -343,14 +347,27 @@ What it deliberately does **not** remove:
 
 - the folder the user opened, wherever it lives. A SAF tree is never physically deleted by a
   managed-project cleanup, and no delete decision is taken about the user's own files;
-- the shared runtime: `rootfs`, `downloads`, `tmp`, the native libraries;
-- any other project, or the project-copy roots themselves.
+- the shared runtime: `rootfs`, `downloads`, `tmp`, `rootfs.installing`, `rootfs-staging`, the
+  native libraries;
+- terminal sessions or any other runtime infrastructure;
+- any other project — including a project whose *name* matches one being deleted, and including a
+  managed project whose name matches another project's copy directory;
+- the storage roots themselves.
 
-`OwnedWorkspaceProjectStorage` enforces that by construction: the roots are a constructor
-parameter, a candidate is only ever `<root>/<name>`, and a name that is empty, `.`, `..`, or
-contains a separator or NUL is refused rather than sanitised. The record is removed *after* the
-cleanup, so a cleanup that could not finish leaves the project visible and retryable instead of
-orphaning data the user can no longer reach.
+`OwnedWorkspaceProjectStorage` enforces that by construction, with the two kinds of root kept
+apart:
+
+- a **copy root** (`developer-runtime/workspaces`, `workspaces`) is searched for
+  `<root>/<name>`, where `<name>` is derived from *this* record's handle and id;
+- a **managed root** (`projects`) is only ever reached through the record's own handle: the delete
+  removes `handle` only when `handle` is a path whose parent is exactly the managed root. A SAF
+  record's handle is a `content://` tree URI, which never matches, and a project in shared storage
+  called `MyApp` cannot delete `<projects>/MyApp` — its parent is not the managed root.
+
+A name in either case has to be a single safe path segment: empty, `.`, `..`, a separator or a NUL
+is refused rather than sanitised. The record is removed *after* the cleanup, so a cleanup that could
+not finish leaves the project visible and retryable instead of orphaning data the user can no longer
+reach — and a delete is never reported as complete when a directory could not be removed.
 
 ## Networking
 

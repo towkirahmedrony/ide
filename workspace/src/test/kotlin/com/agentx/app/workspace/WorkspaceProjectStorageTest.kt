@@ -47,11 +47,15 @@ class WorkspaceProjectStorageTest {
     /** The legacy Termux mirror root: the other place a project copy can appear. */
     private lateinit var termuxWorkspaces: File
 
+    /** Managed project storage: projects AgentX created itself, one directory each. */
+    private lateinit var managedProjects: File
+
     @BeforeTest
     fun setUp() {
         filesDir = Files.createTempDirectory("agentx-project-storage").toFile()
         developerWorkspaces = File(filesDir, "developer-runtime/workspaces").apply { mkdirs() }
         termuxWorkspaces = File(filesDir, "workspaces").apply { mkdirs() }
+        managedProjects = File(filesDir, "projects").apply { mkdirs() }
 
         // The shared developer runtime, next to the project copies. One runtime serves every
         // project, so no project delete may touch any of it.
@@ -99,12 +103,40 @@ class WorkspaceProjectStorageTest {
         return directory
     }
 
+    /**
+     * A record for a project AgentX created itself: its handle is the real path of the directory
+     * inside managed storage, exactly as `ManagedProjectDirectory` registers it.
+     */
+    private fun managedRecord(name: String, id: String = "managed-$name") = WorkspaceRecord(
+        metadata = WorkspaceMetadata(
+            id = WorkspaceId(id),
+            name = name,
+            displayLocation = File(managedProjects, name).canonicalPath,
+            persisted = true,
+        ),
+        handle = File(managedProjects, name).canonicalPath,
+    )
+
+    /** A real project directory in managed storage, as the Create New Project flow would leave it. */
+    private fun createManagedProject(name: String, vararg contents: String): File {
+        val directory = File(managedProjects, name)
+        directory.mkdirs()
+        for (file in contents) {
+            val target = File(directory, file)
+            target.parentFile?.mkdirs()
+            target.writeText("$name/$file")
+        }
+        return directory
+    }
+
     private fun storageOver(
         naming: ProjectDirectoryNaming,
         roots: List<String> = listOf(developerWorkspaces.path, termuxWorkspaces.path),
+        managedRoots: List<String> = listOf(managedProjects.path),
     ): OwnedWorkspaceProjectStorage = OwnedWorkspaceProjectStorage(
         ownedRoots = roots,
         naming = naming,
+        managedRoots = managedRoots,
     )
 
     // --- what a project delete removes -------------------------------------
@@ -265,6 +297,148 @@ class WorkspaceProjectStorageTest {
         assertTrue(File(developerWorkspaces, "myproject-1a2b3c4d").exists())
     }
 
+    // --- projects AgentX created itself ------------------------------------
+
+    @Test
+    fun `a project AgentX created is removed with the project`() {
+        val record = managedRecord("MyApp")
+        val directory = createManagedProject("MyApp", "src/Main.kt", "README.md")
+
+        val storage = storageOver(naming("no-copy-for-this-project"))
+        assertEquals(listOf(directory.canonicalPath), storage.ownedLocations(record))
+
+        val report = storage.remove(record)
+
+        assertTrue(report.ok, "a clean removal must not report failures: ${report.failed}")
+        assertEquals(listOf(directory.canonicalPath), report.removed)
+        assertFalse(directory.exists(), "the project directory AgentX created must be gone")
+    }
+
+    @Test
+    fun `inspecting what a delete would remove removes nothing`() {
+        // The confirmation dialog is the only thing between the user's tap and the delete, and it
+        // is read-only: the inspection a UI does before asking must not be the delete.
+        val record = managedRecord("MyApp")
+        val directory = createManagedProject("MyApp", "src/Main.kt")
+
+        val storage = storageOver(naming("no-copy-for-this-project"))
+        assertTrue(storage.ownedLocations(record).isNotEmpty())
+
+        assertTrue(directory.isDirectory, "inspecting is not deleting")
+        assertTrue(File(directory, "src/Main.kt").isFile)
+    }
+
+    @Test
+    fun `deleting one managed project leaves another untouched`() {
+        val mine = createManagedProject("MyApp", "src/Main.kt")
+        val theirs = createManagedProject("TheirApp", "src/Other.kt")
+
+        storageOver(naming("nothing")).remove(managedRecord("MyApp"))
+
+        assertFalse(mine.exists())
+        assertTrue(theirs.isDirectory, "another project's directory must survive")
+        assertEquals("TheirApp/src/Other.kt", File(theirs, "src/Other.kt").readText())
+    }
+
+    @Test
+    fun `a copy whose name matches a managed project directory does not delete that project`() {
+        // Project B is <projects>/app. Project A's copy of itself is named "app" in the copy root.
+        // The same name in two different roots is two different directories: deleting A removes A's
+        // copy, and B's managed directory is not in A's candidate set at all.
+        val projectB = createManagedProject("app", "src/Main.kt")
+        val copyOfA = createCopy("app", "src/Copy.kt")
+
+        storageOver(naming("app")).remove(safRecord(id = "saf-a", name = "A"))
+
+        assertFalse(copyOfA.exists(), "the copy belonging to the deleted project must go")
+        assertTrue(projectB.isDirectory, "another project's managed directory must survive")
+        assertEquals("app/src/Main.kt", File(projectB, "src/Main.kt").readText())
+    }
+
+    @Test
+    fun `a project with the same name as a managed project cannot reach it`() {
+        // A project in shared storage called "MyApp" is not <projects>/MyApp. Its handle's parent is
+        // not a managed root, so the managed root is never even a candidate.
+        val managed = createManagedProject("MyApp", "src/Main.kt")
+        val userFolder = File(filesDir, "storage/emulated/0/MyApp").apply { mkdirs() }
+        File(userFolder, "important.txt").writeText("the user's work")
+
+        val sameNameElsewhere = WorkspaceRecord(
+            metadata = WorkspaceMetadata(
+                id = WorkspaceId("saf-same-name"),
+                name = "MyApp",
+                displayLocation = userFolder.canonicalPath,
+                persisted = true,
+            ),
+            handle = userFolder.canonicalPath,
+        )
+
+        val storage = storageOver(naming("no-copy"))
+        assertEquals(emptyList(), storage.ownedLocations(sameNameElsewhere))
+
+        val report = storage.remove(sameNameElsewhere)
+        assertTrue(report.isEmpty, "nothing outside a managed root may be a candidate")
+        assertTrue(managed.isDirectory, "a same-named managed project must survive")
+        assertEquals("the user's work", File(userFolder, "important.txt").readText())
+    }
+
+    @Test
+    fun `a SAF project is never matched to a managed root`() {
+        // A SAF project's handle is a tree URI — it is never a path inside app-private storage, so
+        // even a managed project with the same name is out of reach.
+        val managed = createManagedProject("MyProject", "src/Main.kt")
+        val storage = storageOver(naming("no-copy"))
+
+        assertEquals(emptyList(), storage.ownedLocations(safRecord()))
+
+        val report = storage.remove(safRecord())
+        assertTrue(report.isEmpty)
+        assertTrue(managed.isDirectory, "a SAF delete must not reach managed project storage")
+    }
+
+    @Test
+    fun `a managed directory that cannot be removed is reported instead of assumed`() {
+        val directory = createManagedProject("MyApp", "src/Main.kt")
+        val refusing = OwnedWorkspaceProjectStorage(
+            ownedRoots = emptyList(),
+            naming = naming("nothing"),
+            managedRoots = listOf(managedProjects.path),
+            deleteRecursively = { false },
+        )
+
+        val report = refusing.remove(managedRecord("MyApp"))
+
+        assertFalse(report.ok, "a delete that did not happen must not report success")
+        assertEquals(listOf(directory.canonicalPath), report.failed)
+        assertTrue(report.removed.isEmpty())
+        assertTrue(directory.isDirectory, "the caller still has something to retry")
+    }
+
+    @Test
+    fun `a managed project delete leaves the shared runtime alone`() {
+        createManagedProject("MyApp", "src/Main.kt")
+
+        storageOver(naming("nothing")).remove(managedRecord("MyApp"))
+
+        val runtime = File(filesDir, "developer-runtime")
+        assertTrue(File(runtime, "rootfs/bin/bash").isFile, "the shared rootfs must survive")
+        assertTrue(File(runtime, "downloads/ubuntu.tar.gz").isFile, "the cached archive must survive")
+        assertTrue(File(runtime, "tmp/proot-scratch").isFile, "PRoot scratch must survive")
+        assertTrue(developerWorkspaces.isDirectory)
+        assertTrue(termuxWorkspaces.isDirectory)
+        assertTrue(managedProjects.isDirectory, "the managed root itself must survive")
+    }
+
+    @Test
+    fun `a directory that was never created is not reported as removed`() {
+        // The record survives a delete whose directory the user already removed by hand.
+        val report = storageOver(naming("nothing")).remove(managedRecord("NeverCreated"))
+
+        assertTrue(report.ok)
+        assertTrue(report.isEmpty)
+        assertTrue(managedProjects.isDirectory)
+    }
+
     // --- deleting a project through the manager ----------------------------
 
     private class FixedBackend(private val byHandle: Map<String, Workspace>) : WorkspaceBackend {
@@ -366,6 +540,59 @@ class WorkspaceProjectStorageTest {
         assertTrue(File(filesDir, "developer-runtime/rootfs/bin/bash").isFile)
         assertTrue(File(filesDir, "developer-runtime/downloads/ubuntu.tar.gz").isFile)
         assertTrue(File(filesDir, "developer-runtime/tmp/proot-scratch").isFile)
+    }
+
+    @Test
+    fun `a project created in managed storage is deleted together with its directory`() = runBlocking {
+        // End to end through the real path the app uses: Create New Project makes the directory,
+        // the manager registers it, and deleting the project removes both.
+        val manager = DefaultWorkspaceManager(
+            backend = FileWorkspaceBackend(),
+            store = InMemoryWorkspaceMetadataStore(),
+            projects = ManagedProjectDirectory(managedProjects),
+            clock = Clock.fixed(Instant.parse("2024-01-01T00:00:00Z"), ZoneOffset.UTC),
+            projectStorage = storageOver(naming("nothing"), roots = emptyList()),
+        )
+
+        val created = assertNotNull(manager.createProject("MyApp").valueOrNull())
+        val directory = File(managedProjects, "MyApp")
+        val id = created.workspace.id
+
+        assertTrue(directory.isDirectory, "creating a project must create its directory")
+        assertNotNull(manager.recent().valueOrNull()?.firstOrNull { it.id == id })
+
+        assertTrue(manager.delete(id).valueOrNull() == Unit)
+
+        assertFalse(directory.exists(), "the managed project directory must be gone")
+        assertTrue(
+            manager.recent().valueOrNull().orEmpty().none { it.id == id },
+            "the project must be gone from the list",
+        )
+        assertTrue(managedProjects.isDirectory, "the managed root must survive")
+    }
+
+    @Test
+    fun `a failed managed cleanup keeps the project visible and reports why`() = runBlocking {
+        val refusing = OwnedWorkspaceProjectStorage(
+            ownedRoots = emptyList(),
+            naming = naming("nothing"),
+            managedRoots = listOf(managedProjects.path),
+            deleteRecursively = { false },
+        )
+        val setup = managerWith(
+            Triple("managed-1", "MyApp", File(managedProjects, "MyApp").canonicalPath),
+            projectStorage = refusing,
+        )
+        setup.manager.open(File(managedProjects, "MyApp").canonicalPath)
+        val directory = createManagedProject("MyApp", "src/Main.kt")
+
+        val error = assertNotNull(
+            setup.manager.delete(WorkspaceId("managed-1")).errorOrNull(),
+        )
+
+        assertTrue(error.message.contains("left in your list"))
+        assertNotNull(setup.store.find(WorkspaceId("managed-1")), "the project stays retryable")
+        assertTrue(directory.isDirectory, "the directory is still there, unreported as deleted")
     }
 
     @Test

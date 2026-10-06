@@ -278,7 +278,7 @@ class MainActivity : ComponentActivity() {
             // scope by construction. See AgentxProjectStorage.
             projectStorage = AgentxProjectStorage.create(
                 copyRoots = AgentxProjectStorage.copyRoots(developerRuntime, termuxRuntime),
-                managedRoots = listOf(managedProjectsRoot.path),
+                managedRoots = AgentxProjectStorage.managedRoots(managedProjectsRoot.path),
             ),
         )
 
