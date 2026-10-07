@@ -75,6 +75,29 @@ class ConnectionsViewModel(
     var setupBusy by mutableStateOf(false)
         private set
 
+    // --- Device flow (GitHub) state -----------------------------------------
+    //
+    // Declared before `init` on purpose. `viewModelScope` runs on
+    // `Dispatchers.Main.immediate`, so the StateFlow collectors below can emit the
+    // current value synchronously while this constructor is still running. Every
+    // property `refreshDerived()` reads must therefore already hold its delegate
+    // before those collectors start, or the emission dereferences a null delegate.
+
+    /**
+     * The typed device-flow state for the service being connected. It is separate
+     * from the connection's saved status: a service can be AUTHORIZING while the
+     * attempt is WAITING_FOR_USER or POLLING. It never carries a token.
+     */
+    var deviceFlowState by mutableStateOf(DeviceFlowState.DISCONNECTED)
+        private set
+
+    /** The user code and verification URI to show while the user authorizes. */
+    var deviceAuthorization by mutableStateOf<DeviceAuthorization?>(null)
+        private set
+
+    private var deviceFlowJob: Job? = null
+    private var deviceFlowConnectionId: String? = null
+
     init {
         viewModelScope.launch { manager.refresh() }
         viewModelScope.launch { setup?.refresh() }
@@ -174,21 +197,6 @@ class ConnectionsViewModel(
     fun isBusy(key: String): Boolean = busyKey == key
 
     // --- Device flow (GitHub) -----------------------------------------------
-
-    /**
-     * The typed device-flow state for the service being connected. It is separate
-     * from the connection's saved status: a service can be AUTHORIZING while the
-     * attempt is WAITING_FOR_USER or POLLING. It never carries a token.
-     */
-    var deviceFlowState by mutableStateOf(DeviceFlowState.DISCONNECTED)
-        private set
-
-    /** The user code and verification URI to show while the user authorizes. */
-    var deviceAuthorization by mutableStateOf<DeviceAuthorization?>(null)
-        private set
-
-    private var deviceFlowJob: Job? = null
-    private var deviceFlowConnectionId: String? = null
 
     /** True when this service can be authorized with a device code. */
     fun supportsDeviceAuthorization(type: ConnectionType): Boolean =
