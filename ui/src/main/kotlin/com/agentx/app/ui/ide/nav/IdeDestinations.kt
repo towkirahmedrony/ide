@@ -28,6 +28,9 @@ object IdeDestinations {
     const val SKILL_DETAIL = "settings/skills/{skillId}"
     const val ARG_SKILL_ID = "skillId"
 
+    /** Settings → Permissions: the Android permissions and system access AgentX uses. */
+    const val PERMISSIONS = "settings/permissions"
+
     const val ABOUT = "about"
     const val DEVELOPER = "developer"
     const val DEVELOPER_LOGS = "developer/logs"

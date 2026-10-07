@@ -42,6 +42,7 @@ import com.agentx.app.ui.ide.screens.ModelDetailScreen
 import com.agentx.app.ui.ide.screens.ModelEditorScreen
 import com.agentx.app.ui.ide.screens.ModelRunnerScreen
 import com.agentx.app.ui.ide.screens.ModelsScreen
+import com.agentx.app.ui.ide.screens.PermissionsScreen
 import com.agentx.app.ui.ide.screens.SettingsDetailScreen
 import com.agentx.app.ui.ide.screens.ServiceDetailsScreen
 import com.agentx.app.ui.ide.screens.SettingsScreen
@@ -161,12 +162,17 @@ fun ForgeIdeApp(
                         SettingsSection.AGENT -> IdeDestinations.AGENT_PROMPTS
                         SettingsSection.AGENT_MODELS -> IdeDestinations.AGENT_MODELS
                         SettingsSection.SKILLS -> IdeDestinations.SKILLS
+                        SettingsSection.PERMISSIONS -> IdeDestinations.PERMISSIONS
                         SettingsSection.ABOUT -> IdeDestinations.ABOUT
                         else -> IdeDestinations.settingsDetail(section.id)
                     }
                     navController.navigate(route)
                 },
             )
+        }
+
+        composable(IdeDestinations.PERMISSIONS) {
+            PermissionsScreen(onBack = { navController.popBackStack() })
         }
 
         composable(IdeDestinations.AGENT_PROMPTS) {
