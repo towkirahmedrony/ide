@@ -42,9 +42,10 @@ class AppearanceControllerTest {
         val store = InMemoryThemeModeStore()
         AppearanceController(store).select(ThemeMode.SYSTEM)
 
-        // A restart is a fresh controller over the same persisted state.
+        // A restart is a fresh controller over the same persisted state: it
+        // starts at the default, then restores what was saved.
         val restarted = AppearanceController(store)
-        assertEquals(ThemeMode.SYSTEM, restarted.mode.value)
+        assertEquals(ThemeMode.DARK, restarted.mode.value)
         restarted.restore()
 
         assertEquals(ThemeMode.SYSTEM, restarted.mode.value)
