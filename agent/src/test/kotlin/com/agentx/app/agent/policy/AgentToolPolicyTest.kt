@@ -33,6 +33,7 @@ import com.agentx.app.tools.git.GitCommitTool
 import com.agentx.app.tools.git.GitDiffTool
 import com.agentx.app.tools.git.GitLogTool
 import com.agentx.app.tools.git.GitStatusTool
+import com.agentx.app.tools.planning.TodoWriteTool
 import com.agentx.app.tools.verification.CiVerificationTool
 import com.agentx.app.tools.web.WebFetchTool
 import com.agentx.app.tools.web.WebSearchTool
@@ -110,6 +111,7 @@ class AgentToolPolicyTest {
         register(ProbeTool(GetFileOutlineTool.NAME, readOnly))
         register(ProbeTool(FindDefinitionTool.NAME, readOnly))
         register(ProbeTool(FindReferencesTool.NAME, readOnly))
+        register(ProbeTool(TodoWriteTool.NAME, readOnly))
         register(
             ProbeTool(
                 name = WriteFileTool.NAME,
