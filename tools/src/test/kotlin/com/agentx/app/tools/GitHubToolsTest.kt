@@ -138,7 +138,8 @@ class GitHubToolsTest {
             ToolInput(mapOf("repo" to Json.of("octo/portfolio"), "branch" to Json.of("dev"))),
             context,
         )
-        assertEquals(listOf("octo/portfolio" to "dev"), catalog.cloneCalls)
+        val expectedCalls: List<Pair<String, String?>> = listOf("octo/portfolio" to "dev")
+        assertEquals(expectedCalls, catalog.cloneCalls.toList())
         assertEquals("octo/portfolio", output.content["repository"]?.stringOrNull())
         assertEquals(false, output.content["alreadyCloned"]?.booleanOrNull())
     }
