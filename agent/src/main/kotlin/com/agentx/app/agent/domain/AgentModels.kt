@@ -1,6 +1,7 @@
 package com.agentx.app.agent.domain
 
 import com.agentx.app.agent.prompt.PromptVariables
+import com.agentx.app.context.AgentAttachment
 import com.agentx.app.context.ContextBudget
 import com.agentx.app.model.ModelMessage
 import com.agentx.app.model.json.JsonObject
@@ -300,6 +301,24 @@ data class AgentRunRequest(
     val context: String = "",
     /** Files the user explicitly pointed at, most relevant first. */
     val mentionedFiles: List<String> = emptyList(),
+    /**
+     * Files the user attached to this message.
+     *
+     * Transient, exactly like [selectedFile]: an attachment is part of *this* turn's
+     * request, not part of the stored message. The Context Engine loads each one as a
+     * workspace file, so nothing here is a second copy of the file or a second reader.
+     */
+    val attachments: List<AgentAttachment> = emptyList(),
+    /**
+     * The skills the user picked for this message, or null for the role's own set.
+     *
+     * Null preserves the existing behaviour exactly. A set narrows what the role would
+     * contribute — it is intersected with the role's resolution inside
+     * [com.agentx.app.context.SkillContextResolver], so it can never add a skill the
+     * role was not entitled to, and validity, enablement and role assignment still
+     * decide first.
+     */
+    val skillIds: Set<String>? = null,
     /** The selected/open file in the editor. */
     val selectedFile: String? = null,
     /** Prior conversation turns, oldest first. */

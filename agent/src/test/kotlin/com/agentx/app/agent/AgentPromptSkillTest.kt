@@ -37,8 +37,11 @@ import kotlin.test.assertTrue
 class AgentPromptSkillTest {
 
     private val skillResolver = object : SkillContextResolver {
-        override suspend fun resolve(role: String, budget: ContextBudget): SkillContext =
-            SkillContext(rendered = "SKILL-FOR-$role: follow the skill instructions")
+        override suspend fun resolve(
+            role: String,
+            budget: ContextBudget,
+            skillIds: Set<String>?,
+        ): SkillContext = SkillContext(rendered = "SKILL-FOR-$role: follow the skill instructions")
     }
 
     private fun loop(provider: ScriptedModelProvider, prompts: PromptManager): AgentLoop {

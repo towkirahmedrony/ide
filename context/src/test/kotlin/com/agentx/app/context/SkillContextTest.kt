@@ -249,4 +249,127 @@ class SkillContextTest {
         assertTrue(fields.values.none { it.toString().contains("do the secret thing") })
         assertEquals(1, fields["skillsIncluded"])
     }
+    // --- Per-message selection --------------------------------------------
+
+    @Test
+    fun `no selection keeps the role's own skills`() = run {
+        val manager = manager(skill("a", roles = setOf("MAIN")), skill("b", roles = setOf("MAIN")))
+        listOf("a", "b").forEach { manager.setEnabled(it, true) }
+        val provider = SkillContextProvider(manager, DefaultContextEngine())
+
+        val implicit = provider.resolve("MAIN", ContextBudget.DEFAULT)
+        val explicitNull = provider.resolve("MAIN", ContextBudget.DEFAULT, null)
+
+        assertEquals(listOf("skill:a", "skill:b"), implicit.items.map { it.id })
+        assertEquals(implicit.items, explicitNull.items)
+        assertEquals(implicit.entries, explicitNull.entries)
+    }
+
+    @Test
+    fun `selecting a subset injects only the selected skills`() = run {
+        val manager = manager(
+            skill("a", roles = setOf("MAIN")),
+            skill("b", roles = setOf("MAIN")),
+            skill("c", roles = setOf("MAIN")),
+        )
+        listOf("a", "b", "c").forEach { manager.setEnabled(it, true) }
+        val provider = SkillContextProvider(manager, DefaultContextEngine())
+
+        val context = provider.resolve("MAIN", ContextBudget.DEFAULT, setOf("a", "c"))
+
+        assertEquals(listOf("skill:a", "skill:c"), context.items.map { it.id })
+        assertEquals(1, context.count(SkillContextStatus.NOT_SELECTED))
+        val withheld = context.entries.single { it.id == "b" }
+        assertEquals(SkillContextStatus.NOT_SELECTED, withheld.status)
+        assertEquals("not selected for this message", withheld.reason)
+    }
+
+    @Test
+    fun `multiple selected skills are all injected`() = run {
+        val manager = manager(
+            skill("a", roles = setOf("MAIN")),
+            skill("b", roles = setOf("MAIN")),
+        )
+        listOf("a", "b").forEach { manager.setEnabled(it, true) }
+        val provider = SkillContextProvider(manager, DefaultContextEngine())
+
+        val context = provider.resolve("MAIN", ContextBudget.DEFAULT, setOf("a", "b"))
+
+        assertEquals(2, context.items.size)
+        assertEquals(listOf(SkillContextStatus.INCLUDED, SkillContextStatus.INCLUDED), context.entries.map { it.status })
+        assertEquals("selected for this message", context.entries.first().reason)
+    }
+
+    @Test
+    fun `a disabled skill is rejected even when selected`() = run {
+        val manager = manager(skill("a", roles = setOf("MAIN")))
+        val provider = SkillContextProvider(manager, DefaultContextEngine())
+
+        val context = provider.resolve("MAIN", ContextBudget.DEFAULT, setOf("a"))
+
+        assertTrue(context.isEmpty)
+        assertEquals(SkillContextStatus.DISABLED, context.entries.single().status)
+    }
+
+    @Test
+    fun `an invalid skill is rejected even when selected`() = run {
+        val broken = skill("broken", roles = setOf("MAIN")).copy(problems = listOf("front matter is missing a 'name'"))
+        val manager = manager(broken)
+        manager.setEnabled("broken", true)
+        val provider = SkillContextProvider(manager, DefaultContextEngine())
+
+        val context = provider.resolve("MAIN", ContextBudget.DEFAULT, setOf("broken"))
+
+        assertTrue(context.isEmpty)
+        assertEquals(SkillContextStatus.INVALID, context.entries.single().status)
+    }
+
+    @Test
+    fun `a skill the role is not assigned cannot be added by selecting it`() = run {
+        val manager = manager(
+            skill("mine", roles = setOf("MAIN")),
+            skill("theirs", roles = setOf("REVIEWER")),
+        )
+        manager.setEnabled("mine", true)
+        manager.setEnabled("theirs", true)
+        val provider = SkillContextProvider(manager, DefaultContextEngine())
+
+        val context = provider.resolve("MAIN", ContextBudget.DEFAULT, setOf("mine", "theirs"))
+
+        assertEquals(listOf("skill:mine"), context.items.map { it.id })
+        assertEquals(SkillContextStatus.NOT_ASSIGNED, context.entries.single { it.id == "theirs" }.status)
+    }
+
+    @Test
+    fun `an unknown id selects nothing`() = run {
+        val manager = manager(skill("a", roles = setOf("MAIN")))
+        manager.setEnabled("a", true)
+        val provider = SkillContextProvider(manager, DefaultContextEngine())
+
+        val context = provider.resolve("MAIN", ContextBudget.DEFAULT, setOf("does-not-exist"))
+
+        assertTrue(context.isEmpty)
+        assertEquals(SkillContextStatus.NOT_SELECTED, context.entries.single().status)
+    }
+
+    @Test
+    fun `selection keeps the budget and the accounting intact`() = run {
+        val manager = manager(
+            skill("a", roles = setOf("MAIN")),
+            skill("b", roles = setOf("MAIN")),
+            skill("c", roles = setOf("MAIN")),
+        )
+        listOf("a", "b", "c").forEach { manager.setEnabled(it, true) }
+        val provider = SkillContextProvider(manager, DefaultContextEngine())
+
+        val context = provider.resolve("MAIN", ContextBudget(maxSkillItems = 1), setOf("a", "b"))
+
+        assertEquals(1, context.items.size, "the count limit still applies to a selection")
+        assertEquals(3, context.entries.size, "every installed skill is still accounted for")
+        assertEquals(1, context.count(SkillContextStatus.EXCLUDED_DUE_TO_LIMIT))
+        assertEquals(1, context.count(SkillContextStatus.NOT_SELECTED))
+        assertEquals(1, context.diagnosticFields()["skillsNotSelected"])
+        assertTrue(context.entries.all { it.reason.isNotBlank() })
+    }
 }
+

@@ -70,6 +70,9 @@ enum class ContextPriority(val rank: Int) {
 enum class ContextReason {
     CURRENT_REQUEST,
     MENTIONED_FILE,
+
+    /** A file the user attached to this message, rather than named in it. */
+    ATTACHMENT,
     SELECTED_FILE,
     RECENT_FILE,
     SEARCH_RESULT,
@@ -177,6 +180,12 @@ object ContextRelevance {
     const val AGENT_STATE = 100.0
 
     const val MENTIONED_FILE = 100.0
+
+    /**
+     * An attachment. The user chose the file for *this* message, so it ranks with an
+     * explicitly mentioned file and above whatever the editor happens to have open.
+     */
+    const val ATTACHMENT = 100.0
     const val SELECTED_FILE = 95.0
     const val RECENT_FILE_BASE = 90.0
     const val RECENT_FILE_STEP = 1.0

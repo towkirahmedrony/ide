@@ -116,6 +116,8 @@ class DefaultAgentOrchestrator(
         val contextBudget: ContextBudget,
         val promptVariables: PromptVariables,
         val requiresWorkspace: Boolean,
+        /** The skill selection of the turn that parked, so resuming keeps it. */
+        val skillIds: Set<String>?,
         /**
          * Set when this pause belongs to a delegated specialist. The parent run is
          * waiting because its child is waiting; the permission is the child's and
@@ -243,6 +245,7 @@ class DefaultAgentOrchestrator(
                         contextBudget = request.contextBudget,
                         promptVariables = variables,
                         requiresWorkspace = requiresWorkspace,
+                        skillIds = request.skillIds,
                     ),
                     sink = trackingSink(sink),
                     subAgentInvoker = SubAgentInvoker { child ->
@@ -262,6 +265,7 @@ class DefaultAgentOrchestrator(
                 contextBudget = request.contextBudget,
                 promptVariables = variables,
                 requiresWorkspace = requiresWorkspace,
+                skillIds = request.skillIds,
             )
             result
         } catch (error: TimeoutCancellationException) {
@@ -390,6 +394,7 @@ class DefaultAgentOrchestrator(
                         ),
                         promptVariables = paused.promptVariables,
                         requiresWorkspace = paused.requiresWorkspace,
+                        skillIds = paused.skillIds,
                     ),
                     sink = trackingSink(sink),
                     subAgentInvoker = SubAgentInvoker { child ->
@@ -409,6 +414,7 @@ class DefaultAgentOrchestrator(
                 contextBudget = paused.contextBudget,
                 promptVariables = paused.promptVariables,
                 requiresWorkspace = paused.requiresWorkspace,
+                skillIds = paused.skillIds,
             )
             result
         } catch (error: TimeoutCancellationException) {
@@ -740,6 +746,7 @@ class DefaultAgentOrchestrator(
                 contextBudget = paused.contextBudget,
                 promptVariables = paused.promptVariables,
                 requiresWorkspace = paused.requiresWorkspace,
+                skillIds = paused.skillIds,
                 delegated = reParked,
             )
             sink.emit(
@@ -793,6 +800,7 @@ class DefaultAgentOrchestrator(
                         ),
                         promptVariables = paused.promptVariables,
                         requiresWorkspace = paused.requiresWorkspace,
+                        skillIds = paused.skillIds,
                     ),
                     sink = trackingSink(sink),
                     subAgentInvoker = SubAgentInvoker { childRequest ->
@@ -814,6 +822,7 @@ class DefaultAgentOrchestrator(
                 contextBudget = paused.contextBudget,
                 promptVariables = paused.promptVariables,
                 requiresWorkspace = paused.requiresWorkspace,
+                skillIds = paused.skillIds,
             )
             result
         } catch (error: TimeoutCancellationException) {
@@ -947,6 +956,7 @@ class DefaultAgentOrchestrator(
         contextBudget: ContextBudget,
         promptVariables: PromptVariables,
         requiresWorkspace: Boolean,
+        skillIds: Set<String>?,
     ) {
         if (result.status != AgentStatus.WAITING_FOR_PERMISSION || result.pendingPermission == null) return
         pausedPermissions[sessionId] = PausedRun(
@@ -958,6 +968,7 @@ class DefaultAgentOrchestrator(
             contextBudget = contextBudget,
             promptVariables = promptVariables,
             requiresWorkspace = requiresWorkspace,
+            skillIds = skillIds,
             delegated = result.delegatedPermissionPause,
         )
     }
@@ -1027,6 +1038,7 @@ class DefaultAgentOrchestrator(
                 // results) still applies.
                 includeWorkspace = requiresWorkspace,
                 mentionedFiles = request.mentionedFiles,
+                attachments = request.attachments,
                 selectedFile = request.selectedFile,
                 conversation = conversation,
                 agentState = taskState,

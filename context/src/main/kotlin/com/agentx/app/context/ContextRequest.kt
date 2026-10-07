@@ -15,6 +15,15 @@ data class ContextRequest(
     val includeTask: Boolean = true,
     /** Paths the user or the UI explicitly pointed at, in priority order. */
     val mentionedFiles: List<String> = emptyList(),
+    /**
+     * Files the user attached to this message.
+     *
+     * An attachment is a reference into the workspace, so it is loaded by the same
+     * file loader as [mentionedFiles] — protected-path checked, redacted, truncated
+     * and cached identically. Attaching a file is a stronger statement than naming
+     * one, but it is not a different kind of context.
+     */
+    val attachments: List<AgentAttachment> = emptyList(),
     /** The file currently open in the editor. */
     val selectedFile: String? = null,
     /** Files open in editor tabs. */

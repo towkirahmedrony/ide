@@ -280,6 +280,9 @@ class SearchFilesTool(
             "node_modules", ".git", ".next", ".nuxt", ".svelte-kit", ".turbo", ".vercel", ".cache",
             ".parcel-cache", ".expo", ".gradle", ".idea", "build", "dist", "out", "coverage",
             "target", "__pycache__", ".venv", "venv", "Pods", ".dart_tool",
+            // AgentX's own attachment folder. Attachments are context the user handed the
+            // agent, not project source, so they never turn up as search results.
+            ".agentx",
         )
 
         private val SKIPPED_FILE_NAMES = setOf(

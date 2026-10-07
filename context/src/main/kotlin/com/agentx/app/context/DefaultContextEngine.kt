@@ -160,6 +160,17 @@ class DefaultContextEngine(
             request.searchResults.forEach { path ->
                 noteFile(path, ContextReason.SEARCH_RESULT, ContextPriority.NORMAL, ContextRelevance.SEARCH_RESULT)
             }
+            // Attachments are workspace paths the user chose for this message, so they enter
+            // through the same file loader as a mentioned path — no second reader, and the
+            // protected-path check, redaction, truncation and caching all still apply.
+            request.attachments.forEach { attachment ->
+                noteFile(
+                    path = attachment.path,
+                    reason = ContextReason.ATTACHMENT,
+                    priority = ContextPriority.HIGH,
+                    relevance = ContextRelevance.ATTACHMENT,
+                )
+            }
             request.mentionedFiles.forEach { path ->
                 noteFile(path, ContextReason.MENTIONED_FILE, ContextPriority.HIGH, ContextRelevance.MENTIONED_FILE)
             }

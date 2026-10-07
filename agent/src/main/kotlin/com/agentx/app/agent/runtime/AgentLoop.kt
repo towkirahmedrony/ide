@@ -83,6 +83,12 @@ data class AgentLoopRequest(
     val scopedContext: String,
     val workspaceId: String?,
     val modelConfig: ModelConfig,
+    /**
+     * The skills the user picked for this message, or null for the role's own set.
+     * Passed straight to the skill resolver, which intersects it with the role's
+     * resolution rather than trusting it.
+     */
+    val skillIds: Set<String>? = null,
     /** Limits applied to the run's conversation and tool-result context. */
     val contextBudget: ContextBudget = ContextBudget.DEFAULT,
     /** Conversation snapshot to restore when resuming a permission pause. */
@@ -1783,8 +1789,9 @@ class AgentLoop(
 
     private suspend fun resolveSkillContext(request: AgentLoopRequest): SkillContext {
         val resolver = skillContext ?: return SkillContext.EMPTY
-        return runCatching { resolver.resolve(request.definition.role.name, request.contextBudget) }
-            .getOrDefault(SkillContext.EMPTY)
+        return runCatching {
+            resolver.resolve(request.definition.role.name, request.contextBudget, request.skillIds)
+        }.getOrDefault(SkillContext.EMPTY)
     }
 
     /**

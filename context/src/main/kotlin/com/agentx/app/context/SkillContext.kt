@@ -29,6 +29,13 @@ enum class SkillContextStatus {
     /** Enabled, but not assigned to this role. */
     NOT_ASSIGNED,
 
+    /**
+     * Enabled and assigned, but the user asked for a different set of skills on this
+     * message. Selecting skills narrows what the role would normally contribute; it
+     * never adds a skill the role was not entitled to.
+     */
+    NOT_SELECTED,
+
     /** Failed validation, so it is never offered to any role. */
     INVALID,
 }
@@ -88,6 +95,7 @@ data class SkillContext(
         "skillsExcludedLimit" to count(SkillContextStatus.EXCLUDED_DUE_TO_LIMIT),
         "skillsDisabled" to count(SkillContextStatus.DISABLED),
         "skillsNotAssigned" to count(SkillContextStatus.NOT_ASSIGNED),
+        "skillsNotSelected" to count(SkillContextStatus.NOT_SELECTED),
         "skillsInvalid" to count(SkillContextStatus.INVALID),
         "skillChars" to usedChars,
         "skillBlockChars" to rendered.length,
@@ -111,7 +119,17 @@ data class SkillContext(
  * skill strings in more than one place.
  */
 interface SkillContextResolver {
-    suspend fun resolve(role: String, budget: ContextBudget): SkillContext
+    /**
+     * @param skillIds the skills the user picked for this message, or null to use
+     *   whatever the role would normally contribute. A non-null set narrows the
+     *   role's own resolution; it can never widen it, so a skill that is invalid,
+     *   disabled or not assigned to the role stays out even when named here.
+     */
+    suspend fun resolve(
+        role: String,
+        budget: ContextBudget,
+        skillIds: Set<String>? = null,
+    ): SkillContext
 }
 
 /**
@@ -130,9 +148,16 @@ class SkillContextProvider(
     private val engine: ContextEngine,
 ) : SkillContextResolver {
 
-    override suspend fun resolve(role: String, budget: ContextBudget): SkillContext {
+    override suspend fun resolve(
+        role: String,
+        budget: ContextBudget,
+        skillIds: Set<String>?,
+    ): SkillContext {
         val target = role.trim().uppercase()
         val applicable = skills.resolveForAgent(role).associateBy { it.id }
+        // Selection only ever narrows: it is applied to the role's own resolution rather than
+        // replacing it, so validity, enablement and role assignment keep deciding first.
+        val selected = skillIds?.let { ids -> applicable.filterKeys { it in ids } } ?: applicable
 
         val candidates = mutableListOf<ContextItem>()
         // Keyed by skill id, filled in installed order so the result is stable.
@@ -143,6 +168,7 @@ class SkillContextProvider(
                 !skill.valid -> SkillContextStatus.INVALID
                 !skills.isEnabled(skill.id) -> SkillContextStatus.DISABLED
                 skill.id !in applicable -> SkillContextStatus.NOT_ASSIGNED
+                skill.id !in selected -> SkillContextStatus.NOT_SELECTED
                 else -> null
             }
             if (withheldStatus != null) {
@@ -165,10 +191,13 @@ class SkillContextProvider(
                 id = skill.id,
                 name = skill.name,
                 status = if (bounded.truncated) SkillContextStatus.TRUNCATED else SkillContextStatus.INCLUDED,
-                reason = if (bounded.truncated) {
-                    "instructions shortened to fit the ${budget.maxSkillChars}-character skill limit"
-                } else {
-                    "assigned to $target"
+                reason = when {
+                    bounded.truncated ->
+                        "instructions shortened to fit the ${budget.maxSkillChars}-character skill limit"
+
+                    skillIds != null -> "selected for this message"
+
+                    else -> "assigned to $target"
                 },
                 keptChars = bounded.text.length,
                 originalChars = documented.length,
@@ -223,6 +252,8 @@ class SkillContextProvider(
             val roles = skill.roles.sorted().joinToString(", ").ifBlank { "no role" }
             "assigned to $roles, not to $target"
         }
+
+        SkillContextStatus.NOT_SELECTED -> "not selected for this message"
 
         else -> status.name.lowercase()
     }

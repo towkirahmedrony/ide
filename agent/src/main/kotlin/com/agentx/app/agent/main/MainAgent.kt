@@ -29,6 +29,8 @@ data class MainAgentRequest(
     val resolvedDelegation: ResolvedDelegation? = null,
     val promptVariables: PromptVariables = PromptVariables.EMPTY,
     val requiresWorkspace: Boolean = true,
+    /** Skills the user picked for this message; null keeps the role's own set. */
+    val skillIds: Set<String>? = null,
 )
 
 class MainAgent(
@@ -65,6 +67,7 @@ class MainAgent(
                 resolvedDelegation = request.resolvedDelegation,
                 promptVariables = request.promptVariables,
                 requiresWorkspace = request.requiresWorkspace,
+                skillIds = request.skillIds,
             ),
             sink = sink,
             subAgentInvoker = subAgentInvoker,
