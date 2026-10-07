@@ -20,6 +20,8 @@ import com.agentx.app.tools.git.GitDiffTool
 import com.agentx.app.tools.git.GitLogTool
 import com.agentx.app.tools.git.GitPushTool
 import com.agentx.app.tools.git.GitStatusTool
+import com.agentx.app.tools.github.GitHubCloneRepoTool
+import com.agentx.app.tools.github.GitHubListReposTool
 import com.agentx.app.tools.planning.TodoWriteTool
 import com.agentx.app.tools.pullrequest.CreatePullRequestTool
 import com.agentx.app.tools.verification.CiVerificationTool
@@ -125,6 +127,8 @@ object AgentToolPolicy {
          * the Tool Bus must authorize it before GitHub is touched.
          */
         PULL_REQUEST(setOf(CreatePullRequestTool.NAME)),
+        GITHUB_READ(setOf(GitHubListReposTool.NAME)),
+        GITHUB_CLONE(setOf(GitHubCloneRepoTool.NAME)),
 
         /** Web research: search plus single-page retrieval. */
         WEB(setOf(WebSearchTool.NAME, WebFetchTool.NAME)),
@@ -164,6 +168,8 @@ object AgentToolPolicy {
         // belong to the specialist roles, so a broad capability never leaks into
         // the orchestrator.
         AgentRole.MAIN to setOf(
+            ToolGrant.GITHUB_CLONE,
+            ToolGrant.GITHUB_READ,
             ToolGrant.PLAN,
             ToolGrant.INSPECT,
             ToolGrant.CODE_INTELLIGENCE,
@@ -250,6 +256,7 @@ object AgentToolPolicy {
         // source-editing tool, so it commits what the coder changed rather than
         // rewriting it.
         AgentRole.COMMIT_PR to setOf(
+            ToolGrant.GITHUB_READ,
             ToolGrant.INSPECT,
             ToolGrant.CODE_INTELLIGENCE,
             ToolGrant.GIT_READ,
