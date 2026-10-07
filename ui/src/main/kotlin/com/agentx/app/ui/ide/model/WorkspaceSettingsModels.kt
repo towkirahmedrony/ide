@@ -110,6 +110,7 @@ fun WorkspaceMetadata.toWorkspaceInfo(
 
 private const val SAF_SCHEME = "content://"
 private const val PATH_SEPARATOR = '/'
+private const val ROOT_PATH = "/"
 
 /**
  * A comparable absolute path, canonical where the platform can resolve it (`/data/data/…` versus
@@ -121,5 +122,5 @@ private fun normalizePath(path: String): String? {
     val file = File(trimmed)
     return runCatching { file.canonicalPath }.getOrElse { file.absolutePath }
         .trimEnd(PATH_SEPARATOR)
-        .ifEmpty { PATH_SEPARATOR }
+        .ifEmpty { ROOT_PATH }
 }

@@ -68,8 +68,11 @@ class WorkspaceSettingsViewModelTest {
 
     private val tempDirs = mutableListOf<File>()
 
-    private fun managedRoot(): File =
-        File(Files.createTempDirectory("agentx-ws").toFile(), "AgentX").also { tempDirs += it.parentFile }
+    private fun managedRoot(): File {
+        val base = Files.createTempDirectory("agentx-ws").toFile()
+        tempDirs += base
+        return File(base, "AgentX")
+    }
 
     /**
      * A remembered workspace. [location] is the runtime's own `displayLocation`: the same string as the
