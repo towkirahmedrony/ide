@@ -535,6 +535,7 @@ class MainActivity : ComponentActivity() {
                         agentPrompts = foundation.promptManager,
                         agentRoleModels = foundation.agentRoleModels,
                         skills = foundation.skillManager,
+                        githubRepositories = com.agentx.app.foundation.githubRepositoryBrowser(foundation.services.get<Any>(com.agentx.app.tools.github.GitHubToolServiceKeys.CATALOG)),
                         // Settings → Tools reads the live catalog and writes the
                         // same enablement the router and the agent core read.
                         tools = foundation.services.get<ToolRegistry>(ServiceKeys.TOOL_REGISTRY),

@@ -18,6 +18,7 @@ import com.agentx.app.model.manager.ModelManagers
 import com.agentx.app.model.ratelimit.RateLimitManager
 import com.agentx.app.model.runtime.RuntimeOutputBuffer
 import com.agentx.app.ui.ide.data.AgentSession
+import com.agentx.app.ui.ide.data.GitHubRepositoryBrowser
 import com.agentx.app.ui.ide.data.ModelRunnerBrowserHost
 import com.agentx.app.ui.ide.data.NoOpOAuthBrowserLauncher
 import com.agentx.app.ui.ide.data.OAuthBrowserLauncher
@@ -129,6 +130,7 @@ data class IdeDependencies(
     ),
     /** Central skills registry and manager. */
     val skills: SkillManager = DefaultSkillManager(),
+    val githubRepositories: GitHubRepositoryBrowser? = null,
     /**
      * The live tool catalog Settings → Tools reads. Optional so previews and tests
      * render the screen without a wired Tool System, in which case it reports that

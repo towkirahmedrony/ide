@@ -556,6 +556,7 @@ fun ForgeIdeApp(
                         manager = dependencies.connectionManager,
                         browser = dependencies.oauthBrowser,
                         setup = dependencies.integrationSetup,
+                        openVerificationAutomatically = false,
                     )
                 },
             )
@@ -610,6 +611,7 @@ fun ForgeIdeApp(
                         manager = dependencies.connectionManager,
                         browser = dependencies.oauthBrowser,
                         setup = dependencies.integrationSetup,
+                        openVerificationAutomatically = false,
                     )
                 },
             )
@@ -632,6 +634,7 @@ fun ForgeIdeApp(
                 onConnect = { detailsViewModel.connect(type) },
                 onReconnect = { connection?.let { detailsViewModel.reconnect(it.id.value) } },
                 onCancelAuthorization = { connection?.let { detailsViewModel.cancelAuthorization(it.id.value) } },
+                onBrowseRepositories = { navController.navigate(IdeDestinations.GITHUB_REPOS) },
                 onOpenDeviceVerification = { detailsViewModel.openDeviceVerificationPage() },
                 onCancelDeviceFlow = { detailsViewModel.cancelDeviceFlow() },
                 onDisconnect = { connection?.let { detailsViewModel.disconnect(it.id.value) } },
@@ -677,6 +680,7 @@ fun ForgeIdeApp(
             )
         }
 
+        com.agentx.app.ui.ide.screens.addGitHubReposRoute(this, dependencies, navController)
         composable(IdeDestinations.ABOUT) {
             AboutScreen(
                 appName = appName,

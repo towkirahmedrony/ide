@@ -25,6 +25,10 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
+import com.agentx.app.ui.ide.data.GitHubRepoItem
+import com.agentx.app.ui.ide.data.GitHubRepoLoad
+import com.agentx.app.ui.ide.data.GitHubRepoOpen
+import com.agentx.app.ui.ide.data.GitHubRepositoryBrowser
 
 /**
  * The agent's view of the connected GitHub account: which repositories exist,
@@ -110,6 +114,7 @@ class ConnectionGitHubRepositoryCatalog(
                 defaultBranch = repo.defaultBranch,
                 alreadyCloned = existed,
                 projectName = directoryName,
+                workspaceId = opened.value.workspace.id.value,
             )
 
             is ForgeResult.Failure -> GitHubCloneResult.Failure(
@@ -279,3 +284,36 @@ fun bindGitHubAgentTools(
         ),
     )
 }
+
+/** Feeds the repository browser from the same catalog the agent tools use. */
+class CatalogGitHubRepositoryBrowser(
+    private val catalog: GitHubRepositoryCatalog,
+) : GitHubRepositoryBrowser {
+
+    override suspend fun load(): GitHubRepoLoad = when (val result = catalog.listAll()) {
+        is GitHubCatalogResult.Success -> GitHubRepoLoad.Loaded(
+            items = result.repositories.map { GitHubRepoItem(it.fullName, it.isPrivate, it.defaultBranch) },
+            truncated = result.truncated,
+        )
+
+        is GitHubCatalogResult.Failure -> GitHubRepoLoad.Failed(
+            message = result.message,
+            needsReconnect = result.reason == GitHubCatalogFailure.NOT_CONNECTED ||
+                result.reason == GitHubCatalogFailure.AUTH_EXPIRED,
+        )
+    }
+
+    override suspend fun open(fullName: String): GitHubRepoOpen = when (val result = catalog.cloneAndOpen(fullName, null)) {
+        is GitHubCloneResult.Success -> GitHubRepoOpen.Opened(
+            fullName = result.fullName,
+            workspaceId = result.workspaceId,
+            alreadyCloned = result.alreadyCloned,
+        )
+
+        is GitHubCloneResult.Failure -> GitHubRepoOpen.Failed(result.message)
+    }
+}
+
+/** The browser for the app's UI, or null when the tool catalog is not the bindable one. */
+fun githubRepositoryBrowser(catalog: Any?): GitHubRepositoryBrowser? =
+    (catalog as? GitHubRepositoryCatalog)?.let { CatalogGitHubRepositoryBrowser(it) }

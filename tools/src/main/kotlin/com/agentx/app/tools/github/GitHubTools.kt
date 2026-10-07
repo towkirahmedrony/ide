@@ -57,6 +57,7 @@ sealed interface GitHubCloneResult {
         /** True when an earlier clone was opened instead of cloning again. */
         val alreadyCloned: Boolean,
         val projectName: String,
+        val workspaceId: String = "",
     ) : GitHubCloneResult
 
     data class Failure(

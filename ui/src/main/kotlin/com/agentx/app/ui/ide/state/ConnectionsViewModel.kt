@@ -42,6 +42,8 @@ class ConnectionsViewModel(
     private val manager: ConnectionManager,
     private val browser: OAuthBrowserLauncher,
     private val setup: IntegrationSetupManager? = null,
+    /** When false the screen shows the code first and the user opens the page. */
+    private val openVerificationAutomatically: Boolean = true,
 ) : ViewModel() {
 
     val state: StateFlow<ConnectionManagerState> = manager.state
@@ -359,7 +361,7 @@ class ConnectionsViewModel(
                         deviceFlowState = DeviceFlowState.WAITING_FOR_USER
                         // Best effort: point the user at GitHub's page. The code and
                         // URL stay on screen either way.
-                        browser.launch(authorization.verificationUri)
+                        if (openVerificationAutomatically) browser.launch(authorization.verificationUri)
                         busyKey = null
                         pollDeviceAuthorization(authorization.connectionId.value)
                     }

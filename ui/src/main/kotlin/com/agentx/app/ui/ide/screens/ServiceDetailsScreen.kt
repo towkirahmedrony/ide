@@ -1,5 +1,8 @@
 package com.agentx.app.ui.ide.screens
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -7,26 +10,35 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.agentx.app.integrations.connection.Connection
 import com.agentx.app.integrations.connection.ConnectionCapability
 import com.agentx.app.integrations.connection.ConnectionStatus
@@ -57,12 +69,13 @@ import com.agentx.app.ui.theme.ForgeMuted
 import com.agentx.app.ui.theme.ForgePeriwinkle
 
 /**
- * One service, in full: what the agent can do with it, how to connect it, and —
- * once connected — who it is connected as, which capabilities the provider really
- * granted and which tools are now available to the agent.
+ * One service, in full: how to connect it, what the agent can do with it, and —
+ * once connected — who it is connected as and which tools are available.
  *
- * Capabilities are always derived from the connection's granted scopes, so the
- * list can only ever show access the user approved. Nothing here renders a token.
+ * Layout is ordered by what the user needs next: the connect action sits right under
+ * the header, the device code stays pinned above the scrolling content while an
+ * authorization is running, and the one-time setup folds away once a Client ID is saved.
+ * Nothing here renders a token.
  */
 @Composable
 fun ServiceDetailsScreen(
@@ -89,8 +102,11 @@ fun ServiceDetailsScreen(
     onSaveSetup: (clientId: String, brokerUrl: String?) -> Unit = { _, _ -> },
     onClearSetup: () -> Unit = {},
     onManage: () -> Unit,
+    onBrowseRepositories: (() -> Unit)? = null,
 ) {
     var confirmDisconnect by remember { mutableStateOf(false) }
+    // The setup guide is only useful before the first connection.
+    var showGuide by remember(setup?.clientIdConfigured) { mutableStateOf(setup?.clientIdConfigured != true) }
     val status = connection?.status ?: ConnectionStatus.NOT_CONNECTED
     val connected = status == ConnectionStatus.CONNECTED
     val granted = connection?.capabilities.orEmpty()
@@ -105,9 +121,29 @@ fun ServiceDetailsScreen(
     ) {
         IdeTopBar(title = availability.displayName, onBack = onBack)
 
+        // Pinned outside the scroll area: the code must be visible the moment the
+        // user returns from the browser, wherever the page was scrolled to.
+        // Only the user code and the verification URI cross into the UI.
+        deviceAuthorization?.let { authorization ->
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 20.dp, end = 20.dp, top = 12.dp),
+            ) {
+                DeviceAuthorizationCard(
+                    authorization = authorization,
+                    state = deviceState,
+                    busy = busy,
+                    onOpen = onOpenDeviceVerification,
+                    onCancel = onCancelDeviceFlow,
+                )
+            }
+        }
+
         Column(
             modifier = Modifier
-                .fillMaxSize()
+                .weight(1f)
+                .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp, vertical = 16.dp),
         ) {
@@ -147,19 +183,6 @@ fun ServiceDetailsScreen(
                 }
             }
 
-            // Device authorization: only the user code and the verification URI
-            // cross into the UI. No token is ever shown or held here.
-            deviceAuthorization?.let { authorization ->
-                IdeSpacer(16)
-                DeviceAuthorizationCard(
-                    authorization = authorization,
-                    state = deviceState,
-                    busy = busy,
-                    onOpen = onOpenDeviceVerification,
-                    onCancel = onCancelDeviceFlow,
-                )
-            }
-
             // A settled device attempt that did not connect says why, so the user can
             // tell "authorize again" from "try again later".
             if (deviceAuthorization == null &&
@@ -177,8 +200,41 @@ fun ServiceDetailsScreen(
                 }
             }
 
+            // Recovery states: say what happened and offer the way out of it.
+            connection?.statusMessage?.let { detail ->
+                if (!connected && status != ConnectionStatus.NOT_CONNECTED) {
+                    IdeSpacer(16)
+                    IdeCard {
+                        Text(
+                            text = detail,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (status == ConnectionStatus.ERROR) ForgeDanger else ForgeAmber,
+                        )
+                    }
+                }
+            }
+
+            IdeSpacer(16)
+            ActionRow(
+                availability = availability,
+                status = status,
+                connected = connected,
+                busy = busy,
+                authorizing = authorizing,
+                deviceActive = deviceAuthorization != null && deviceState.isInProgress,
+                canConnect = setup?.canConnect != false &&
+                    lifecycle != IntegrationLifecycle.NOT_CONFIGURED,
+                onConnect = onConnect,
+                onReconnect = onReconnect,
+                onCancelAuthorization = onCancelAuthorization,
+                onDisconnect = { confirmDisconnect = true },
+                onVerify = onVerify,
+                onManage = onManage,
+                onBrowseRepositories = onBrowseRepositories,
+            )
+
             if (setup != null && type != ConnectionType.MCP_SERVER && type != ConnectionType.CUSTOM_API) {
-                IdeSpacer(16)
+                IdeSpacer(20)
                 SetupCard(
                     setup = setup,
                     busy = setupBusy,
@@ -188,8 +244,13 @@ fun ServiceDetailsScreen(
             }
 
             guide?.let { instructions ->
-                IdeSpacer(16)
-                HowToCard(guide = instructions)
+                IdeSpacer(12)
+                if (showGuide) {
+                    HowToCard(guide = instructions)
+                    TextButton(onClick = { showGuide = false }) { Text("Hide setup guide") }
+                } else {
+                    TextButton(onClick = { showGuide = true }) { Text("Show setup guide") }
+                }
             }
 
             IdeSpacer(16)
@@ -250,39 +311,6 @@ fun ServiceDetailsScreen(
                     }
                 }
             }
-
-            // Recovery states: say what happened and offer the way out of it.
-            connection?.statusMessage?.let { detail ->
-                if (!connected && status != ConnectionStatus.NOT_CONNECTED) {
-                    IdeSpacer(16)
-                    IdeCard {
-                        Text(
-                            text = detail,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = if (status == ConnectionStatus.ERROR) ForgeDanger else ForgeAmber,
-                        )
-                    }
-                }
-            }
-
-            IdeSpacer(20)
-            ActionRow(
-                availability = availability,
-                status = status,
-                connected = connected,
-                busy = busy,
-                authorizing = authorizing,
-                deviceActive = deviceAuthorization != null && deviceState.isInProgress,
-                canConnect = setup?.canConnect != false &&
-                    lifecycle != IntegrationLifecycle.NOT_CONFIGURED,
-                onConnect = onConnect,
-                onReconnect = onReconnect,
-                onCancelAuthorization = onCancelAuthorization,
-                onCancelDeviceFlow = onCancelDeviceFlow,
-                onDisconnect = { confirmDisconnect = true },
-                onVerify = onVerify,
-                onManage = onManage,
-            )
             IdeSpacer(24)
         }
     }
@@ -325,15 +353,15 @@ private fun ActionRow(
     onConnect: () -> Unit,
     onReconnect: () -> Unit,
     onCancelAuthorization: () -> Unit,
-    onCancelDeviceFlow: () -> Unit,
     onDisconnect: () -> Unit,
     onVerify: () -> Unit,
     onManage: () -> Unit,
+    onBrowseRepositories: (() -> Unit)?,
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
         when {
-            // A device authorization is running: the code and URL are shown above,
-            // so here the user can only wait or cancel it.
+            // A device authorization is running: the code card above has everything
+            // the user needs, so there is nothing more to press here.
             deviceActive -> {
                 Text(
                     text = "Enter the code shown above on GitHub, then this screen connects " +
@@ -341,8 +369,6 @@ private fun ActionRow(
                     style = MaterialTheme.typography.bodyMedium,
                     color = ForgeInk,
                 )
-                IdeSpacer(8)
-                OutlinedButton(onClick = onCancelDeviceFlow, enabled = !busy) { Text("Cancel") }
             }
 
             authorizing || status.isAuthorizing -> {
@@ -357,10 +383,24 @@ private fun ActionRow(
             }
 
             connected -> {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onManage, enabled = !busy) { Text("Manage Access") }
-                    OutlinedButton(onClick = onVerify, enabled = !busy) { Text("Verify") }
-                    OutlinedButton(onClick = onDisconnect, enabled = !busy) { Text("Disconnect") }
+                if (availability.type == ConnectionType.GITHUB && onBrowseRepositories != null) {
+                    Button(
+                        onClick = onBrowseRepositories,
+                        enabled = !busy,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("Browse repositories") }
+                    IdeSpacer(8)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = onManage, enabled = !busy) { Text("Manage Access") }
+                        OutlinedButton(onClick = onVerify, enabled = !busy) { Text("Verify") }
+                        OutlinedButton(onClick = onDisconnect, enabled = !busy) { Text("Disconnect") }
+                    }
+                } else {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = onManage, enabled = !busy) { Text("Manage Access") }
+                        OutlinedButton(onClick = onVerify, enabled = !busy) { Text("Verify") }
+                        OutlinedButton(onClick = onDisconnect, enabled = !busy) { Text("Disconnect") }
+                    }
                 }
             }
 
@@ -392,14 +432,18 @@ private fun ActionRow(
             !canConnect -> {
                 Text(
                     text = availability.unavailableReason
-                        ?: "Save a Client ID above, then connect ${availability.displayName}.",
+                        ?: "Save a Client ID below, then connect ${availability.displayName}.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = ForgeAmber,
                 )
             }
 
             else -> {
-                Button(onClick = onConnect, enabled = !busy) {
+                Button(
+                    onClick = onConnect,
+                    enabled = !busy,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
                     Text("Connect ${availability.displayName}")
                 }
             }
@@ -468,6 +512,10 @@ private fun statusLabel(status: ConnectionStatus, connected: Boolean): String = 
     else -> status.displayName
 }
 
+/**
+ * The device code, front and centre. It is copied to the clipboard the moment it
+ * exists, so the user can open GitHub and paste it without coming back to read it.
+ */
 @Composable
 private fun DeviceAuthorizationCard(
     authorization: DeviceAuthorization,
@@ -476,12 +524,16 @@ private fun DeviceAuthorizationCard(
     onOpen: () -> Unit,
     onCancel: () -> Unit,
 ) {
-    IdeSectionLabel("Authorization")
-    IdeSpacer(8)
+    val context = LocalContext.current
+    var copied by remember(authorization.userCode) { mutableStateOf(false) }
+    LaunchedEffect(authorization.userCode) {
+        copied = copyToClipboard(context, authorization.userCode)
+    }
+
     IdeCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                text = "Waiting for authorization",
+                text = "Authorize on GitHub",
                 style = MaterialTheme.typography.titleSmall,
                 color = ForgeInk,
                 fontWeight = FontWeight.SemiBold,
@@ -494,38 +546,64 @@ private fun DeviceAuthorizationCard(
         }
         IdeSpacer(6)
         Text(
-            text = "Enter this code on GitHub to authorize the app.",
+            text = if (copied) {
+                "Code copied. Tap Open GitHub, paste it, and approve access."
+            } else {
+                "Enter this code on GitHub to authorize the app."
+            },
             style = MaterialTheme.typography.bodyMedium,
-            color = ForgeMuted,
+            color = if (copied) ForgeMint else ForgeMuted,
         )
         IdeSpacer(10)
-        Text(text = "Code", style = MaterialTheme.typography.labelSmall, color = ForgeMuted)
-        IdeSpacer(4)
         SelectionContainer {
             Text(
                 text = authorization.userCode,
-                style = MaterialTheme.typography.headlineSmall,
+                style = MaterialTheme.typography.headlineMedium,
                 color = ForgeInk,
                 fontWeight = FontWeight.Bold,
+                fontFamily = FontFamily.Monospace,
+                letterSpacing = 4.sp,
             )
         }
-        IdeSpacer(10)
-        Text(text = "Verification URL", style = MaterialTheme.typography.labelSmall, color = ForgeMuted)
         IdeSpacer(4)
         SelectionContainer {
             Text(
                 text = authorization.verificationUri,
-                style = MaterialTheme.typography.bodyMedium,
-                color = ForgeInk,
+                style = MaterialTheme.typography.bodySmall,
+                color = ForgeMuted,
             )
         }
-        IdeSpacer(10)
+        IdeSpacer(12)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = onOpen, enabled = !busy) { Text("Open GitHub") }
-            OutlinedButton(onClick = onCancel, enabled = !busy) { Text("Cancel") }
+            Button(
+                onClick = onOpen,
+                enabled = !busy,
+                modifier = Modifier.weight(1f),
+            ) { Text("Open GitHub") }
+            OutlinedButton(
+                onClick = { copied = copyToClipboard(context, authorization.userCode) },
+                modifier = Modifier.weight(1f),
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.ContentCopy,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                IdeSpacerW(6)
+                Text("Copy code")
+            }
         }
+        IdeSpacer(4)
+        TextButton(onClick = onCancel, enabled = !busy) { Text("Cancel") }
     }
 }
+
+/** Puts [text] on the clipboard. Returns false when the platform refuses. */
+private fun copyToClipboard(context: Context, text: String): Boolean = runCatching {
+    val manager = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    manager.setPrimaryClip(ClipData.newPlainText("GitHub device code", text))
+    true
+}.getOrDefault(false)
 
 @Composable
 private fun SetupCard(
@@ -536,61 +614,92 @@ private fun SetupCard(
 ) {
     var clientId by remember(setup.clientId) { mutableStateOf(setup.clientId) }
     var broker by remember(setup.exchangeBrokerUrl) { mutableStateOf(setup.exchangeBrokerUrl.orEmpty()) }
+    // Folded once a Client ID is saved and the setup is complete: after that the
+    // user only needs the fields again to change them.
+    var expanded by remember(setup.clientIdConfigured, setup.validation.complete) {
+        mutableStateOf(!(setup.clientIdConfigured && setup.validation.complete))
+    }
+
     IdeSectionLabel("Integration setup")
     IdeSpacer(8)
     IdeCard {
-        Text(
-            text = "Client ID is a public value. A client secret is never stored here.",
-            style = MaterialTheme.typography.bodySmall,
-            color = ForgeMuted,
-        )
-        IdeSpacer(10)
-        Text(
-            text = "Callback URL",
-            style = MaterialTheme.typography.labelSmall,
-            color = ForgeMuted,
-        )
-        IdeSpacer(4)
-        SelectionContainer {
-            Text(
-                text = setup.callbackUri,
-                style = MaterialTheme.typography.bodyMedium,
-                color = ForgeInk,
-            )
-        }
-        IdeSpacer(10)
-        OutlinedTextField(
-            value = clientId,
-            onValueChange = { clientId = it },
-            label = { Text("Client ID") },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-        )
-        IdeSpacer(8)
-        OutlinedTextField(
-            value = broker,
-            onValueChange = { broker = it },
-            label = { Text("Exchange broker URL (optional)") },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-        )
-        IdeSpacer(10)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(
-                onClick = { onSave(clientId, broker.takeIf { it.isNotBlank() }) },
-                enabled = !busy && clientId.isNotBlank(),
-            ) { Text("Save Client ID") }
-            if (setup.clientIdConfigured) {
-                OutlinedButton(onClick = onClear, enabled = !busy) { Text("Clear") }
+        if (!expanded) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Filled.CheckCircle,
+                    contentDescription = null,
+                    tint = ForgeMint,
+                    modifier = Modifier.size(18.dp),
+                )
+                IdeSpacerW(8)
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Client ID saved",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = ForgeInk,
+                    )
+                    Text(
+                        text = "Tap Edit to change it.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = ForgeMuted,
+                    )
+                }
+                TextButton(onClick = { expanded = true }) { Text("Edit") }
             }
-        }
-        if (!setup.validation.complete) {
-            IdeSpacer(8)
+        } else {
             Text(
-                text = setup.validation.summary,
+                text = "Client ID is a public value. A client secret is never stored here.",
                 style = MaterialTheme.typography.bodySmall,
-                color = ForgeAmber,
+                color = ForgeMuted,
             )
+            IdeSpacer(10)
+            Text(
+                text = "Callback URL",
+                style = MaterialTheme.typography.labelSmall,
+                color = ForgeMuted,
+            )
+            IdeSpacer(4)
+            SelectionContainer {
+                Text(
+                    text = setup.callbackUri,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = ForgeInk,
+                )
+            }
+            IdeSpacer(10)
+            OutlinedTextField(
+                value = clientId,
+                onValueChange = { clientId = it },
+                label = { Text("Client ID") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+            )
+            IdeSpacer(8)
+            OutlinedTextField(
+                value = broker,
+                onValueChange = { broker = it },
+                label = { Text("Exchange broker URL (optional)") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+            )
+            IdeSpacer(10)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = { onSave(clientId, broker.takeIf { it.isNotBlank() }) },
+                    enabled = !busy && clientId.isNotBlank(),
+                ) { Text("Save Client ID") }
+                if (setup.clientIdConfigured) {
+                    OutlinedButton(onClick = onClear, enabled = !busy) { Text("Clear") }
+                }
+            }
+            if (!setup.validation.complete) {
+                IdeSpacer(8)
+                Text(
+                    text = setup.validation.summary,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = ForgeAmber,
+                )
+            }
         }
     }
 }

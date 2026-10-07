@@ -62,6 +62,7 @@ object IdeDestinations {
     /** One service, in full: capabilities, connect/manage and its agent tools. */
     const val SERVICE_DETAILS = "connections/service/{type}"
     const val ARG_SERVICE_TYPE = "type"
+    const val GITHUB_REPOS = "connections/github/repos"
 
     const val CONNECTION_EDITOR = "connections/editor/{connectionId}"
     const val ARG_CONNECTION_ID = "connectionId"
