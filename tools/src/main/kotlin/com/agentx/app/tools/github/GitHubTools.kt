@@ -358,3 +358,16 @@ class GitHubCloneRepoTool(
         private val BRANCH_PATTERN = Regex("^[A-Za-z0-9][A-Za-z0-9._/-]*$")
     }
 }
+
+/** Service-container key for the bindable catalog, so the app attaches the real one after boot. */
+object GitHubToolServiceKeys {
+    const val CATALOG: String = "forge.tools.github.catalog"
+}
+
+/** Factory for the GitHub tools, registered with the other builtin families. */
+object GitHubTools {
+    fun create(catalog: GitHubRepositoryCatalog): List<Tool> = listOf(
+        GitHubListReposTool(catalog),
+        GitHubCloneRepoTool(catalog),
+    )
+}

@@ -33,6 +33,8 @@ import com.agentx.app.tools.git.GitCommitTool
 import com.agentx.app.tools.git.GitDiffTool
 import com.agentx.app.tools.git.GitLogTool
 import com.agentx.app.tools.git.GitStatusTool
+import com.agentx.app.tools.github.GitHubListReposTool
+import com.agentx.app.tools.github.GitHubCloneRepoTool
 import com.agentx.app.tools.planning.TodoWriteTool
 import com.agentx.app.tools.verification.CiVerificationTool
 import com.agentx.app.tools.web.WebFetchTool
@@ -112,6 +114,8 @@ class AgentToolPolicyTest {
         register(ProbeTool(FindDefinitionTool.NAME, readOnly))
         register(ProbeTool(FindReferencesTool.NAME, readOnly))
         register(ProbeTool(TodoWriteTool.NAME, readOnly))
+        register(ProbeTool(name = GitHubCloneRepoTool.NAME, capabilities = setOf(ToolCapability.NETWORK, ToolCapability.MUTATING), required = setOf(ToolPermissionLevel.WORKSPACE_WRITE), permission = ToolPermissionDecision.ASK))
+        register(ProbeTool(GitHubListReposTool.NAME, setOf(ToolCapability.NETWORK, ToolCapability.READ_ONLY)))
         register(
             ProbeTool(
                 name = WriteFileTool.NAME,

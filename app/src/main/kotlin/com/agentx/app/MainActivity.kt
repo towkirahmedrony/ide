@@ -377,7 +377,7 @@ class MainActivity : ComponentActivity() {
             )
         }
 
-        com.agentx.app.foundation.installGitHubAgentTools(registry = registry, connectionManager = connectionManager, repositoryService = foundation.services.get<Any>(GitHubRepositoryServiceKeys.REPOSITORY_SERVICE), cloneService = foundation.services.get<Any>(GitHubRepositoryServiceKeys.CLONE_SERVICE), workspaceManager = workspaceManager, managedRoot = managedProjectsRoot)
+        com.agentx.app.foundation.bindGitHubAgentTools(catalog = foundation.services.get<Any>(com.agentx.app.tools.github.GitHubToolServiceKeys.CATALOG), connectionManager = connectionManager, repositoryService = foundation.services.get<Any>(GitHubRepositoryServiceKeys.REPOSITORY_SERVICE), cloneService = foundation.services.get<Any>(GitHubRepositoryServiceKeys.CLONE_SERVICE), workspaceManager = workspaceManager, managedRoot = managedProjectsRoot)
         val workspaceSelection = WorkspaceSelectionState()
         when (val resolver = foundation.services.get<Any>(ServiceKeys.TOOL_WORKSPACE_RESOLVER)) {
             is DelegatingWorkspaceFileSystemResolver ->

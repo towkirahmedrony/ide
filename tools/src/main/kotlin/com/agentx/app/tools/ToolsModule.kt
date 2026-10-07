@@ -18,6 +18,9 @@ import com.agentx.app.tools.web.DelegatingWebSearchProvider
 import com.agentx.app.tools.web.HttpGetClient
 import com.agentx.app.tools.web.WebSearchProvider
 import com.agentx.app.tools.planning.TodoWriteTool
+import com.agentx.app.tools.github.DelegatingGitHubRepositoryCatalog
+import com.agentx.app.tools.github.GitHubToolServiceKeys
+import com.agentx.app.tools.github.GitHubTools
 import com.agentx.app.workspace.ProcessExecutor
 
 /**
@@ -48,6 +51,7 @@ class ToolsModule(
     private val pullRequests: DelegatingPullRequestService = DelegatingPullRequestService(),
     private val pullRequestRepository: DelegatingPullRequestRepositoryProvider =
         DelegatingPullRequestRepositoryProvider(),
+    private val githubCatalog: DelegatingGitHubRepositoryCatalog = DelegatingGitHubRepositoryCatalog(),
     /**
      * The user-owned tool enablement. Created by the composition root (so it can
      * persist through a store) and registered here, where the router and the agent
@@ -78,6 +82,7 @@ class ToolsModule(
         // Optional, approval-gated pull-request creation. Same bindable pattern, so
         // `create_pr` is discoverable but fails closed until the app wires GitHub.
         BuiltinTools.pullRequests(pullRequests, pullRequestRepository).forEach(registry::register)
+        GitHubTools.create(githubCatalog).forEach(registry::register)
         // Declared-but-unimplemented categories are registered too, so the registry
         // is the complete catalog and Settings can show them as unavailable instead
         // of silently omitting them. None is ever granted to a role or run.
@@ -109,6 +114,7 @@ class ToolsModule(
         context.services.register(ServiceKeys.CI_REPOSITORY_REF_PROVIDER, ciRepository)
         context.services.register(ServiceKeys.PULL_REQUEST_SERVICE, pullRequests)
         context.services.register(ServiceKeys.PULL_REQUEST_REPOSITORY_PROVIDER, pullRequestRepository)
+        context.services.register(GitHubToolServiceKeys.CATALOG, githubCatalog)
         context.services.register(ServiceKeys.TOOL_CONNECTION_AUTHORIZER, connections)
     }
 }

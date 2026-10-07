@@ -13,13 +13,10 @@ import com.agentx.app.integrations.github.GitHubRepositoryCloneService
 import com.agentx.app.integrations.github.GitHubRepositoryError
 import com.agentx.app.integrations.github.GitHubRepositoryService
 import com.agentx.app.integrations.github.GitHubRepositoryVisibility
-import com.agentx.app.tools.ToolRegistry
 import com.agentx.app.tools.github.DelegatingGitHubRepositoryCatalog
 import com.agentx.app.tools.github.GitHubCatalogFailure
 import com.agentx.app.tools.github.GitHubCatalogResult
-import com.agentx.app.tools.github.GitHubCloneRepoTool
 import com.agentx.app.tools.github.GitHubCloneResult
-import com.agentx.app.tools.github.GitHubListReposTool
 import com.agentx.app.tools.github.GitHubRepoSummary
 import com.agentx.app.tools.github.GitHubRepositoryCatalog
 import com.agentx.app.workspace.WorkspaceManager
@@ -256,23 +253,23 @@ private fun GitHubRepositoryError.toFailure(): GitHubCatalogResult.Failure = whe
 }
 
 /**
- * Registers the GitHub tools once the connection and workspace layers exist.
- * The tools stay fail-closed until a GitHub connection is authorized, and a
- * build without the GitHub services installs nothing.
+ * Attaches the real catalog to the bindable one the tool system registered at boot.
+ * Until this runs (or in a build without the GitHub services) the tools exist but
+ * fail closed with a "connect GitHub" error, exactly like git_push and create_pr.
  */
-fun installGitHubAgentTools(
-    registry: ToolRegistry?,
+fun bindGitHubAgentTools(
+    catalog: Any?,
     connectionManager: ConnectionManager?,
     repositoryService: Any?,
     cloneService: Any?,
     workspaceManager: WorkspaceManager,
     managedRoot: File,
 ) {
+    val holder = catalog as? DelegatingGitHubRepositoryCatalog ?: return
     val repositories = repositoryService as? GitHubRepositoryService ?: return
     val cloner = cloneService as? GitHubRepositoryCloneService ?: return
-    if (registry == null || connectionManager == null) return
-    val catalog = DelegatingGitHubRepositoryCatalog()
-    catalog.bind(
+    if (connectionManager == null) return
+    holder.bind(
         ConnectionGitHubRepositoryCatalog(
             manager = connectionManager,
             repositories = repositories,
@@ -281,6 +278,4 @@ fun installGitHubAgentTools(
             managedRoot = managedRoot,
         ),
     )
-    runCatching { registry.register(GitHubListReposTool(catalog)) }
-    runCatching { registry.register(GitHubCloneRepoTool(catalog)) }
 }
