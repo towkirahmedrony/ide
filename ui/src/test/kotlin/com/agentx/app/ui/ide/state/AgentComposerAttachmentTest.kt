@@ -93,8 +93,15 @@ class AgentComposerAttachmentTest {
         }
     }
 
-    private fun skills(vararg definitions: SkillDefinition) =
-        DefaultSkillManager(builtins = definitions.toList(), store = InMemorySkillStore())
+    /**
+     * A manager that knows the given skills. `refresh()` is what discovers them — without it the
+     * registry is empty and nothing can be enabled or resolved.
+     */
+    private suspend fun skills(vararg definitions: SkillDefinition): DefaultSkillManager {
+        val manager = DefaultSkillManager(builtins = definitions.toList(), store = InMemorySkillStore())
+        manager.refresh()
+        return manager
+    }
 
     private fun skill(id: String, roles: Set<String> = setOf("MAIN")) = SkillDefinition(
         id = id,
