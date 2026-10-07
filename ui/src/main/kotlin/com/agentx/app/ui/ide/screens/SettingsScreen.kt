@@ -61,7 +61,7 @@ enum class SettingsSection(
     SKILLS("skills", "Skills", "Installed skills, enablement and agent assignment", Icons.Filled.Extension),
     TOOLS("tools", "Tools", "Manage the tools available to your agents", Icons.Filled.Handyman),
     PERMISSIONS("permissions", "Permissions", "Android access AgentX uses, and how to grant it", Icons.Filled.Security),
-    WORKSPACE("workspace", "Workspace", "Default workspace and runtime options", Icons.Filled.Folder),
+    WORKSPACE("workspace", "Workspace", "The active project, its storage and agent access", Icons.Filled.Folder),
     APPEARANCE("appearance", "Appearance", "Theme, editor font and layout", Icons.Filled.Palette),
     ABOUT("about", "About", "App version and developer information", Icons.Filled.Info);
 

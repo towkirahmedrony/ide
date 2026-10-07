@@ -61,6 +61,15 @@ data class IdeDependencies(
     val codeIntelligence: CodeIntelligence? = null,
     val workspacePicker: WorkspacePicker,
     /**
+     * The AgentX-managed project roots on this device, in priority order, resolved by the composition
+     * root from [com.agentx.app.workspace.AgentxProjectRoot] — the object project creation, GitHub
+     * clone and project deletion all use. It is the single source of truth Settings → Workspace reads,
+     * so that screen names where AgentX keeps its projects instead of hardcoding a path, and can tell
+     * an AgentX-created project from a folder the user selected. Empty in previews, where nothing owns
+     * a project folder.
+     */
+    val managedProjectRoots: List<String> = emptyList(),
+    /**
      * Picks a file and materialises it into the open workspace. Optional: a host without pickers
      * (previews, tests) leaves it null and the composer says so instead of failing on tap.
      */

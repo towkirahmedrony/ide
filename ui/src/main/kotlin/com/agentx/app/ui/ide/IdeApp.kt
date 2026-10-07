@@ -50,6 +50,7 @@ import com.agentx.app.ui.ide.screens.SettingsSection
 import com.agentx.app.ui.ide.screens.SkillDetailScreen
 import com.agentx.app.ui.ide.screens.SkillsScreen
 import com.agentx.app.ui.ide.screens.ToolsScreen
+import com.agentx.app.ui.ide.screens.WorkspaceSettingsScreen
 import com.agentx.app.ui.ide.screens.WorkspaceShell
 import com.agentx.app.ui.ide.state.AgentModelsViewModel
 import com.agentx.app.ui.ide.state.AgentPromptEditorViewModel
@@ -66,6 +67,7 @@ import com.agentx.app.ui.ide.state.ModelsViewModel
 import com.agentx.app.ui.ide.state.OAuthCallbackViewModel
 import com.agentx.app.ui.ide.state.SkillsViewModel
 import com.agentx.app.ui.ide.state.ToolsViewModel
+import com.agentx.app.ui.ide.state.WorkspaceSettingsViewModel
 import com.agentx.app.tools.DefaultToolPreferences
 import com.agentx.app.ui.theme.ForgeCanvas
 
@@ -167,6 +169,7 @@ fun ForgeIdeApp(
                         SettingsSection.SKILLS -> IdeDestinations.SKILLS
                         SettingsSection.TOOLS -> IdeDestinations.TOOLS
                         SettingsSection.PERMISSIONS -> IdeDestinations.PERMISSIONS
+                        SettingsSection.WORKSPACE -> IdeDestinations.WORKSPACE_SETTINGS
                         SettingsSection.ABOUT -> IdeDestinations.ABOUT
                         else -> IdeDestinations.settingsDetail(section.id)
                     }
@@ -177,6 +180,38 @@ fun ForgeIdeApp(
 
         composable(IdeDestinations.PERMISSIONS) {
             PermissionsScreen(onBack = { navController.popBackStack() })
+        }
+
+        composable(IdeDestinations.WORKSPACE_SETTINGS) {
+            val workspaceSettingsViewModel: WorkspaceSettingsViewModel = viewModel(
+                key = "workspace-settings",
+                factory = IdeViewModelFactory {
+                    WorkspaceSettingsViewModel(
+                        // The same runtime Home and the workspace shell use, so a switch here
+                        // changes the one active workspace and the agent's tools follow it.
+                        manager = dependencies.workspaceManager,
+                        picker = dependencies.workspacePicker,
+                        git = dependencies.git,
+                        skills = dependencies.skills,
+                        // The AgentX project folders, from the composition root: the single
+                        // source of truth for where AgentX keeps its projects.
+                        managedRoots = dependencies.managedProjectRoots,
+                    )
+                },
+            )
+            WorkspaceSettingsScreen(
+                viewModel = workspaceSettingsViewModel,
+                onBack = { navController.popBackStack() },
+                onOpenWorkspace = { workspaceId ->
+                    navController.navigate(IdeDestinations.workspace(workspaceId))
+                },
+                onOpenSkills = { navController.navigate(IdeDestinations.SKILLS) },
+                // The open project is gone, so its workspace route cannot be reopened; return to
+                // Home, where the remaining projects are listed.
+                onWorkspaceRemoved = {
+                    navController.popBackStack(IdeDestinations.HOME, inclusive = false)
+                },
+            )
         }
 
         composable(IdeDestinations.TOOLS) {

@@ -463,6 +463,13 @@ class MainActivity : ComponentActivity() {
                         workspaceSelection = workspaceSelection,
                         codeIntelligence = foundation.codeIntelligence,
                         workspacePicker = workspacePicker,
+                        // The same roots project creation, cloning and deletion use, so
+                        // Settings → Workspace classifies a project against the real layout
+                        // rather than a path the UI guessed.
+                        managedProjectRoots = listOf(
+                            agentxProjectRoot.path,
+                            legacyManagedProjectsRoot.path,
+                        ),
                         attachmentPicker = attachmentPicker,
                         agent = OrchestratorAgentSession(
                             orchestrator = checkNotNull(orchestrator) { "Agent orchestrator is not registered" },

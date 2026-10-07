@@ -31,6 +31,9 @@ object IdeDestinations {
     /** Settings → Permissions: the Android permissions and system access AgentX uses. */
     const val PERMISSIONS = "settings/permissions"
 
+    /** Settings → Workspace: the active project, its storage and its workspace operations. */
+    const val WORKSPACE_SETTINGS = "settings/workspace"
+
     /** Settings → Tools: the live tool catalog and per-tool enablement. */
     const val TOOLS = "settings/tools"
 
