@@ -1,5 +1,6 @@
 package com.agentx.app.ui.ide.state
 
+import com.agentx.app.context.AgentAttachment
 import com.agentx.app.ui.ide.data.AgentFailureKind
 import com.agentx.app.ui.ide.data.AgentSession
 import com.agentx.app.ui.ide.data.AgentSessionInfo
@@ -877,6 +878,8 @@ class AgentViewModelTest {
             onEvent: (AgentStreamEvent) -> Unit,
             workspaceId: String?,
             selectedFile: String?,
+            attachments: List<AgentAttachment>,
+            skillIds: Set<String>?,
         ) {
             runs += RunCall(null, input, workspaceId, selectedFile)
             block(input, onEvent)
@@ -888,6 +891,8 @@ class AgentViewModelTest {
             onEvent: (AgentStreamEvent) -> Unit,
             workspaceId: String?,
             selectedFile: String?,
+            attachments: List<AgentAttachment>,
+            skillIds: Set<String>?,
         ) {
             runs += RunCall(sessionId, input, workspaceId, selectedFile)
             block(input, onEvent)
@@ -949,6 +954,8 @@ class AgentViewModelTest {
             onEvent: (AgentStreamEvent) -> Unit,
             workspaceId: String?,
             selectedFile: String?,
+            attachments: List<AgentAttachment>,
+            skillIds: Set<String>?,
         ) {
             onEvent(AgentStreamEvent.Activity(AgentActivity(AgentActivityStatus.THINKING, "AI responding")))
             onEvent(

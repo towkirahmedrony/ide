@@ -6,10 +6,16 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.agentx.app.agent.domain.AgentRole
+import com.agentx.app.context.AgentAttachment
+import com.agentx.app.context.AgentAttachmentKind
+import com.agentx.app.skills.SkillManager
 import com.agentx.app.ui.ide.data.AgentFailureKind
 import com.agentx.app.ui.ide.data.AgentSession
 import com.agentx.app.ui.ide.data.AgentSessionInfo
 import com.agentx.app.ui.ide.data.AgentStreamEvent
+import com.agentx.app.ui.ide.data.AttachmentPickOutcome
+import com.agentx.app.ui.ide.data.AttachmentPicker
 import com.agentx.app.ui.ide.model.ActivityItemStatus
 import com.agentx.app.ui.ide.model.AgentActivity
 import com.agentx.app.ui.ide.model.AgentActivityKind
@@ -22,7 +28,9 @@ import com.agentx.app.ui.ide.model.ChatMessageUiModel
 import com.agentx.app.ui.ide.model.GenerationPhase
 import com.agentx.app.ui.ide.model.GenerationState
 import com.agentx.app.ui.ide.model.MessageState
+import com.agentx.app.ui.ide.model.AttachmentUiModel
 import com.agentx.app.ui.ide.model.PermissionPromptUi
+import com.agentx.app.ui.ide.model.SkillChoiceUiModel
 import com.agentx.app.ui.ide.model.ToolActivityUiModel
 import com.agentx.app.ui.ide.model.ToolRunStatus
 import kotlinx.coroutines.CancellationException
@@ -60,6 +68,15 @@ class AgentViewModel(
     private val tickMillis: Long = 1_000L,
     /** Backing model of the agent, surfaced as a compact header indicator. */
     private val modelId: () -> String? = { null },
+    /**
+     * Picks files and turns them into workspace attachments. Null when the host has no picker: the
+     * composer then says so instead of offering an action that cannot work.
+     */
+    private val attachmentPicker: AttachmentPicker? = null,
+    /** The skill registry, so the composer can offer the skills this chat could actually use. */
+    private val skills: SkillManager? = null,
+    /** The role this chat runs as, which is what decides the usable skills. */
+    private val skillRole: () -> String = { AgentRole.MAIN.name },
 ) : ViewModel() {
 
     var uiState by mutableStateOf(AgentChatUiState())
@@ -68,6 +85,13 @@ class AgentViewModel(
     private var job: Job? = null
     private var ticker: Job? = null
     private var stoppedByUser = false
+
+    /**
+     * What the current turn was sent with. Attachments are transient by design, so retrying a turn
+     * re-uses them rather than silently dropping the files the user attached to it.
+     */
+    private var turnAttachments: List<AgentAttachment> = emptyList()
+    private var turnSkillIds: Set<String>? = null
 
     /**
      * Monotonic token for session loads. Only the newest selection may publish,
@@ -102,9 +126,104 @@ class AgentViewModel(
 
     fun send() {
         val prompt = uiState.input.trim()
-        if (prompt.isEmpty() || uiState.running) return
-        uiState = uiState.copy(input = "", modelId = modelId() ?: uiState.modelId)
-        startTurn(prompt, base = uiState.messages, addUserMessage = true)
+        if (!uiState.hasContent || uiState.running || uiState.pendingPermission != null) return
+
+        val attachments = uiState.attachments.map { it.attachment }
+        val skillIds = uiState.selectedSkillIds
+        // The user chose these for this message; sending consumes them, exactly like the text.
+        uiState = uiState.copy(
+            input = "",
+            attachments = emptyList(),
+            attachmentMessage = null,
+            modelId = modelId() ?: uiState.modelId,
+        )
+        startTurn(
+            prompt = prompt,
+            base = uiState.messages,
+            addUserMessage = true,
+            attachments = attachments,
+            skillIds = skillIds,
+        )
+    }
+
+    // ───────────────────────── Attachments and skills ─────────────────────────
+
+    /**
+     * Opens the picker for [kind]. The picker reads the file and materialises it into the open
+     * workspace, so a successful pick arrives here as a workspace reference. Anything that goes
+     * wrong is reported above the composer — attaching never breaks the chat.
+     */
+    fun pickAttachment(kind: AgentAttachmentKind) {
+        val picker = attachmentPicker
+        if (picker == null) {
+            uiState = uiState.copy(attachmentMessage = "Attaching files is not available here.")
+            return
+        }
+        if (uiState.pickingAttachment || uiState.running) return
+
+        uiState = uiState.copy(pickingAttachment = true, attachmentMessage = null)
+        picker.pick(kind) { outcome ->
+            val current = uiState.attachments
+            uiState = when (outcome) {
+                is AttachmentPickOutcome.Attached -> uiState.copy(
+                    pickingAttachment = false,
+                    attachmentMessage = null,
+                    // One entry per workspace path: re-picking the same file does not double it.
+                    attachments = (current.filterNot { it.id == outcome.attachment.id } +
+                        AttachmentUiModel(outcome.attachment)).take(MAX_ATTACHMENTS),
+                )
+
+                is AttachmentPickOutcome.Failed -> uiState.copy(
+                    pickingAttachment = false,
+                    attachmentMessage = outcome.message,
+                )
+
+                AttachmentPickOutcome.Cancelled -> uiState.copy(
+                    pickingAttachment = false,
+                    attachmentMessage = null,
+                )
+            }
+        }
+    }
+
+    /** Removes an attachment the user no longer wants on this message. */
+    fun removeAttachment(id: String) {
+        uiState = uiState.copy(
+            attachments = uiState.attachments.filterNot { it.id == id },
+            attachmentMessage = null,
+        )
+    }
+
+    fun dismissAttachmentMessage() {
+        uiState = uiState.copy(attachmentMessage = null)
+    }
+
+    /** Turns one skill on or off for this message. */
+    fun toggleSkill(id: String) {
+        uiState = uiState.copy(
+            skills = uiState.skills.map { if (it.id == id) it.copy(selected = !it.selected) else it },
+        )
+    }
+
+    /**
+     * Loads the skills this chat could use. The list is the role's own resolution, so a disabled,
+     * invalid or unassigned skill is never offered — selecting skills narrows that set, never adds
+     * to it.
+     */
+    fun refreshSkills() {
+        val manager = skills ?: return
+        viewModelScope.launch {
+            val available = runCatching {
+                withContext(ioDispatcher) { manager.resolveForAgent(skillRole()) }
+            }.getOrDefault(emptyList())
+            val valid = available.filter { it.valid }.map { SkillChoiceUiModel(it.id, it.name, it.description) }
+            val byId = valid.associateBy { it.id }
+            uiState = uiState.copy(
+                // Keep the user's choices; drop any that are no longer offered.
+                skills = uiState.skills.mapNotNull { byId[it.id]?.copy(selected = it.selected) }
+                    .ifEmpty { valid },
+            )
+        }
     }
 
     /**
@@ -326,8 +445,16 @@ class AgentViewModel(
 
     // ───────────────────────────── Turn lifecycle ─────────────────────────────
 
-    private fun startTurn(prompt: String, base: List<ChatMessageUiModel>, addUserMessage: Boolean) {
+    private fun startTurn(
+        prompt: String,
+        base: List<ChatMessageUiModel>,
+        addUserMessage: Boolean,
+        attachments: List<AgentAttachment> = turnAttachments,
+        skillIds: Set<String>? = turnSkillIds,
+    ) {
         if (uiState.running) return
+        turnAttachments = attachments
+        turnSkillIds = skillIds
         val startedAt = now()
         stoppedByUser = false
         val assistantId = UUID.randomUUID().toString()
@@ -338,6 +465,7 @@ class AgentViewModel(
             rawText = prompt,
             blocks = AgentChatPresentation.userBlocks(prompt),
             timestampMillis = startedAt,
+            attachments = attachments.map { AttachmentUiModel(it) },
         )
         val messages = if (addUserMessage) {
             base + user + streamingPlaceholder(assistantId, startedAt)
@@ -362,6 +490,8 @@ class AgentViewModel(
                         onEvent = { event -> handleEvent(assistantId, event) },
                         workspaceId = projectId,
                         selectedFile = selectedFile(),
+                        attachments = attachments,
+                        skillIds = skillIds,
                     )
                 } else {
                     session.run(
@@ -369,6 +499,8 @@ class AgentViewModel(
                         onEvent = { event -> handleEvent(assistantId, event) },
                         workspaceId = projectId,
                         selectedFile = selectedFile(),
+                        attachments = attachments,
+                        skillIds = skillIds,
                     )
                 }
             } catch (cancelled: CancellationException) {
@@ -919,6 +1051,13 @@ class AgentViewModel(
 
     private companion object {
         const val TAG = "ForgeAgent"
+
+        /**
+         * How many files one message may carry. The agent's context is built from these and ranked
+         * against a limited budget, so a message that attached dozens would mostly be a list of
+         * files the agent never read.
+         */
+        const val MAX_ATTACHMENTS = 8
 
         val GENERIC_ACTIVITY_LABELS = setOf(
             "idle", "sending", "thinking", "ai responding", "waiting", "completed", "stopped", "error",

@@ -95,6 +95,10 @@ fun WorkspaceShell(
                 },
                 // The Agent header shows which model backs the agent.
                 modelId = { dependencies.modelManager.activeConfig()?.model?.takeIf { it.isNotBlank() } },
+                // Files the user attaches are materialised into this workspace, and the skills the
+                // composer offers are the ones this chat's role could actually use.
+                attachmentPicker = dependencies.attachmentPicker,
+                skills = dependencies.skills,
             )
         },
     )

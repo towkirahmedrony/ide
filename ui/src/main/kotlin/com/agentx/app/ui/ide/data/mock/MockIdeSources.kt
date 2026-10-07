@@ -1,5 +1,6 @@
 package com.agentx.app.ui.ide.data.mock
 
+import com.agentx.app.context.AgentAttachment
 import android.webkit.WebView
 import com.agentx.app.ui.ide.data.AgentSession
 import com.agentx.app.ui.ide.data.AgentStreamEvent
@@ -53,6 +54,8 @@ class MockAgentSession : AgentSession {
         onEvent: (AgentStreamEvent) -> Unit,
         workspaceId: String?,
         selectedFile: String?,
+        attachments: List<AgentAttachment>,
+        skillIds: Set<String>?,
     ) {
         onEvent(AgentStreamEvent.Activity(AgentActivity(AgentActivityStatus.THINKING, "Thinking")))
         delay(700)

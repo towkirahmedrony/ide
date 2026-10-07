@@ -1,5 +1,7 @@
 package com.agentx.app.ui.ide.data
 
+import com.agentx.app.context.AgentAttachment
+import com.agentx.app.context.AgentAttachmentKind
 import com.agentx.app.ui.ide.model.AgentActivity
 
 /**
@@ -164,6 +166,10 @@ interface AgentSession {
         onEvent: (AgentStreamEvent) -> Unit,
         workspaceId: String? = null,
         selectedFile: String? = null,
+        /** Files attached to this message, already materialised into the workspace. */
+        attachments: List<AgentAttachment> = emptyList(),
+        /** Skills the user picked for this message; null keeps the role's own set. */
+        skillIds: Set<String>? = null,
     )
 
     /**
@@ -186,8 +192,19 @@ interface AgentSession {
         onEvent: (AgentStreamEvent) -> Unit,
         workspaceId: String? = null,
         selectedFile: String? = null,
+        /** Files attached to this message, already materialised into the workspace. */
+        attachments: List<AgentAttachment> = emptyList(),
+        /** Skills the user picked for this message; null keeps the role's own set. */
+        skillIds: Set<String>? = null,
     ) {
-        run(input, onEvent, workspaceId, selectedFile)
+        run(
+            input = input,
+            onEvent = onEvent,
+            workspaceId = workspaceId,
+            selectedFile = selectedFile,
+            attachments = attachments,
+            skillIds = skillIds,
+        )
     }
 
     /**
@@ -229,4 +246,34 @@ interface AgentSession {
      * session belonging to another project is not touched.
      */
     suspend fun deleteSession(projectId: String, sessionId: String): Boolean = false
+}
+
+/** What came back from an attachment pick. */
+sealed interface AttachmentPickOutcome {
+    /**
+     * The file was attached. [attachment] is a reference into the open workspace, so the agent
+     * reads it with the same tools it reads any other file with.
+     */
+    data class Attached(val attachment: AgentAttachment) : AttachmentPickOutcome
+
+    /** The user backed out of the picker. Nothing to report and nothing to undo. */
+    data object Cancelled : AttachmentPickOutcome
+
+    /** The file could not be attached. [message] explains why, in the user's terms. */
+    data class Failed(val message: String) : AttachmentPickOutcome
+}
+
+/**
+ * Picks a file and turns it into an attachment the agent can read.
+ *
+ * The Android layer implements this: it opens the platform picker for [kind], reads the picked
+ * `content://` URI and materialises it into the open workspace through the existing
+ * [com.agentx.app.context.AttachmentMaterializer]. What comes back is a workspace reference, never a
+ * copy the chat holds on to — so there is one place attachments live, and the agent's own file tools
+ * can already read them.
+ *
+ * [onResult] is invoked exactly once per pick, on the main thread, including on cancellation.
+ */
+fun interface AttachmentPicker {
+    fun pick(kind: AgentAttachmentKind, onResult: (AttachmentPickOutcome) -> Unit)
 }

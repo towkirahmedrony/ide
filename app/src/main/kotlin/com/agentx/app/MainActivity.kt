@@ -78,6 +78,7 @@ import com.agentx.app.git.GitPushService
 import com.agentx.app.core.pullrequest.PullRequestRef
 import com.agentx.app.core.pullrequest.PullRequestService
 import com.agentx.app.core.valueOrNull
+import com.agentx.app.context.AttachmentMaterializer
 import com.agentx.app.core.verification.CiVerificationService
 import com.agentx.app.integrations.github.GitHubRepositoryCloneService
 import com.agentx.app.integrations.github.GitHubRepositoryProjectCloner
@@ -427,13 +428,23 @@ class MainActivity : ComponentActivity() {
                 // Workspace access is real: the Storage Access Framework opens the
                 // folder the user picks and only the minimum metadata is persisted.
                 val workspacePicker = rememberAndroidWorkspacePicker()
-                val dependencies = remember(workspacePicker, foundation) {
+                // Attaching a file reads it through the platform resolver and copies it once into
+                // the open workspace, so the chat holds a workspace reference and the agent's own
+                // file tools can already read it.
+                val attachmentPicker = rememberAndroidAttachmentPicker(
+                    workspaces = workspaceManager,
+                    materializer = AttachmentMaterializer(
+                        reader = AndroidExternalContentReader(applicationContext),
+                    ),
+                )
+                val dependencies = remember(workspacePicker, attachmentPicker, foundation) {
                     val orchestrator = foundation.services.get<AgentOrchestrator>(ServiceKeys.AGENT_ORCHESTRATOR)
                     IdeDependencies(
                         workspaceManager = workspaceManager,
                         workspaceSelection = workspaceSelection,
                         codeIntelligence = foundation.codeIntelligence,
                         workspacePicker = workspacePicker,
+                        attachmentPicker = attachmentPicker,
                         agent = OrchestratorAgentSession(
                             orchestrator = checkNotNull(orchestrator) { "Agent orchestrator is not registered" },
                             // The agent always uses whatever model the Model Manager

@@ -5,6 +5,9 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -21,6 +24,7 @@ import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -33,12 +37,22 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -47,6 +61,7 @@ import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -58,6 +73,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -76,7 +92,10 @@ import androidx.compose.ui.unit.sp
 import com.agentx.app.ui.ide.components.IdeDivider
 import com.agentx.app.ui.ide.model.AgentActivity
 import com.agentx.app.ui.ide.model.AgentActivityStatus
+import com.agentx.app.context.AgentAttachmentKind
 import com.agentx.app.ui.ide.model.AgentChatUiState
+import com.agentx.app.ui.ide.model.AttachmentUiModel
+import com.agentx.app.ui.ide.model.SkillChoiceUiModel
 import com.agentx.app.ui.ide.model.ChatMessageKind
 import com.agentx.app.ui.ide.model.GenerationPhase
 import com.agentx.app.ui.ide.model.GenerationState
@@ -290,6 +309,10 @@ fun AgentScreen(
                     onInputChange = viewModel::onInputChange,
                     onSend = viewModel::send,
                     onStop = viewModel::stop,
+                    onPickAttachment = viewModel::pickAttachment,
+                    onRemoveAttachment = viewModel::removeAttachment,
+                    onToggleSkill = viewModel::toggleSkill,
+                    onRefreshSkills = viewModel::refreshSkills,
                 )
             }
         }
@@ -603,10 +626,19 @@ private fun AgentInputBar(
     onInputChange: (String) -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
+    onPickAttachment: (AgentAttachmentKind) -> Unit,
+    onRemoveAttachment: (String) -> Unit,
+    onToggleSkill: (String) -> Unit,
+    onRefreshSkills: () -> Unit,
 ) {
     val awaitingPermission = state.pendingPermission != null
-    val canSend = state.input.isNotBlank() && !awaitingPermission && !state.running
+    // Send is available for text, for attachments, or both — but not for a skill selection alone,
+    // which says how to work rather than what to do.
+    val canSend = state.canSend
     val shape = RoundedCornerShape(20.dp)
+    var actionsOpen by remember { mutableStateOf(false) }
+    var skillsOpen by remember { mutableStateOf(false) }
+    val selectedSkills = state.skills.filter { it.selected }
 
     Column(
         modifier = Modifier
@@ -615,6 +647,26 @@ private fun AgentInputBar(
             .padding(horizontal = 12.dp)
             .padding(top = 8.dp, bottom = 10.dp),
     ) {
+        if (state.attachments.isNotEmpty() || selectedSkills.isNotEmpty()) {
+            ComposerChipsRow(
+                attachments = state.attachments,
+                skills = selectedSkills,
+                onRemoveAttachment = onRemoveAttachment,
+                onToggleSkill = onToggleSkill,
+            )
+            Spacer(Modifier.height(7.dp))
+        }
+
+        // A failed pick explains itself and clears on the next action; it never blocks the composer.
+        state.attachmentMessage?.let { message ->
+            Text(
+                text = message,
+                style = MaterialTheme.typography.labelSmall,
+                color = ForgeDanger,
+                modifier = Modifier.fillMaxWidth().padding(start = 6.dp, end = 6.dp, bottom = 7.dp),
+            )
+        }
+
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -624,6 +676,43 @@ private fun AgentInputBar(
                 .padding(start = 16.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
             verticalAlignment = Alignment.Bottom,
         ) {
+            Box {
+                IconButton(
+                    onClick = { actionsOpen = true },
+                    enabled = !awaitingPermission && !state.running,
+                    modifier = Modifier.size(38.dp),
+                ) {
+                    Icon(
+                        Icons.Filled.Add,
+                        contentDescription = "Add an attachment or a skill",
+                        tint = if (awaitingPermission || state.running) ForgeMuted else ForgeInk,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+                DropdownMenu(expanded = actionsOpen, onDismissRequest = { actionsOpen = false }) {
+                    AddAction("Image", Icons.Filled.Image) {
+                        actionsOpen = false
+                        onPickAttachment(AgentAttachmentKind.IMAGE)
+                    }
+                    AddAction("File", Icons.Filled.AttachFile) {
+                        actionsOpen = false
+                        onPickAttachment(AgentAttachmentKind.FILE)
+                    }
+                    AddAction("Document", Icons.Filled.Description) {
+                        actionsOpen = false
+                        onPickAttachment(AgentAttachmentKind.DOCUMENT)
+                    }
+                    HorizontalDivider()
+                    AddAction("Skill", Icons.Filled.AutoAwesome) {
+                        actionsOpen = false
+                        // The list is the agent's own resolution for this chat, so nothing that
+                        // could not actually be used is ever offered.
+                        onRefreshSkills()
+                        skillsOpen = true
+                    }
+                }
+            }
+
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -671,6 +760,183 @@ private fun AgentInputBar(
             )
         }
     }
+
+    if (skillsOpen) {
+        SkillPickerDialog(
+            skills = state.skills,
+            onToggle = onToggleSkill,
+            onDismiss = { skillsOpen = false },
+        )
+    }
+}
+
+/** One row of the `+` menu. */
+@Composable
+private fun AddAction(label: String, icon: ImageVector, onClick: () -> Unit) {
+    DropdownMenuItem(
+        text = {
+            Text(label, style = MaterialTheme.typography.bodyMedium, color = ForgeInk)
+        },
+        leadingIcon = {
+            Icon(icon, contentDescription = null, tint = ForgeMuted, modifier = Modifier.size(17.dp))
+        },
+        onClick = onClick,
+    )
+}
+
+/** The attachments and skills chosen for the message being composed. */
+@Composable
+private fun ComposerChipsRow(
+    attachments: List<AttachmentUiModel>,
+    skills: List<SkillChoiceUiModel>,
+    onRemoveAttachment: (String) -> Unit,
+    onToggleSkill: (String) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        attachments.forEach { attachment ->
+            ComposerChip(
+                icon = iconFor(attachment.kind),
+                label = attachment.displayName,
+                detail = attachment.sizeLabel,
+                removeDescription = "Remove ${attachment.displayName}",
+                onRemove = { onRemoveAttachment(attachment.id) },
+            )
+        }
+        skills.forEach { skill ->
+            ComposerChip(
+                icon = Icons.Filled.AutoAwesome,
+                label = skill.name,
+                detail = null,
+                removeDescription = "Remove ${skill.name}",
+                onRemove = { onToggleSkill(skill.id) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun ComposerChip(
+    icon: ImageVector,
+    label: String,
+    detail: String?,
+    removeDescription: String,
+    onRemove: () -> Unit,
+) {
+    val chipShape = RoundedCornerShape(14.dp)
+    Row(
+        modifier = Modifier
+            .clip(chipShape)
+            .background(ForgeSurfaceVariant)
+            .border(1.dp, ForgeBorder, chipShape)
+            .padding(start = 9.dp, end = 2.dp, top = 3.dp, bottom = 3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, contentDescription = null, tint = ForgeMuted, modifier = Modifier.size(13.dp))
+        Spacer(Modifier.width(6.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = ForgeInk,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.widthIn(max = 140.dp),
+        )
+        if (detail != null) {
+            Spacer(Modifier.width(6.dp))
+            Text(
+                text = detail,
+                style = MaterialTheme.typography.labelSmall,
+                color = ForgeMuted,
+                maxLines = 1,
+            )
+        }
+        IconButton(onClick = onRemove, modifier = Modifier.size(22.dp)) {
+            Icon(
+                Icons.Filled.Close,
+                contentDescription = removeDescription,
+                tint = ForgeMuted,
+                modifier = Modifier.size(13.dp),
+            )
+        }
+    }
+}
+
+/**
+ * The skills this chat can use on the next message.
+ *
+ * Deliberately the agent's own resolution rather than the whole registry: a skill that is disabled,
+ * invalid or not assigned to the role cannot take effect, so offering it would be a control that
+ * does nothing.
+ */
+@Composable
+private fun SkillPickerDialog(
+    skills: List<SkillChoiceUiModel>,
+    onToggle: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = ForgeSurface,
+        title = {
+            Text(
+                text = "Skills for this message",
+                style = MaterialTheme.typography.titleSmall,
+                color = ForgeInk,
+            )
+        },
+        text = {
+            if (skills.isEmpty()) {
+                Text(
+                    text = "No skills are available for this project yet. Add one in Settings → Skills.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = ForgeMuted,
+                )
+            } else {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                    skills.forEach { skill ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onToggle(skill.id) }
+                                .padding(vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Checkbox(checked = skill.selected, onCheckedChange = { onToggle(skill.id) })
+                            Column(modifier = Modifier.weight(1f).padding(start = 4.dp)) {
+                                Text(
+                                    text = skill.name,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = ForgeInk,
+                                )
+                                if (skill.description.isNotBlank()) {
+                                    Text(
+                                        text = skill.description,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = ForgeMuted,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Done", color = ForgeMint) }
+        },
+    )
+}
+
+private fun iconFor(kind: AgentAttachmentKind): ImageVector = when (kind) {
+    AgentAttachmentKind.IMAGE -> Icons.Filled.Image
+    AgentAttachmentKind.DOCUMENT -> Icons.Filled.Description
+    AgentAttachmentKind.FILE -> Icons.Filled.AttachFile
 }
 
 @Composable

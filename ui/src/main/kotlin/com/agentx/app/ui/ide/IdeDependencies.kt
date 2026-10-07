@@ -22,6 +22,7 @@ import com.agentx.app.ui.ide.data.ModelRunnerBrowserHost
 import com.agentx.app.ui.ide.data.NoOpOAuthBrowserLauncher
 import com.agentx.app.ui.ide.data.OAuthBrowserLauncher
 import com.agentx.app.ui.ide.data.OAuthCallbackInbox
+import com.agentx.app.ui.ide.data.AttachmentPicker
 import com.agentx.app.ui.ide.data.WorkspacePicker
 import com.agentx.app.ui.ide.data.mock.MockAgentSession
 import com.agentx.app.ui.ide.data.mock.MockModelRunnerBrowser
@@ -57,6 +58,11 @@ data class IdeDependencies(
      */
     val codeIntelligence: CodeIntelligence? = null,
     val workspacePicker: WorkspacePicker,
+    /**
+     * Picks a file and materialises it into the open workspace. Optional: a host without pickers
+     * (previews, tests) leaves it null and the composer says so instead of failing on tap.
+     */
+    val attachmentPicker: AttachmentPicker? = null,
     val agent: AgentSession,
     /**
      * The embedded Termux terminal runtime. Optional so previews render the Terminal tab

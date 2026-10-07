@@ -28,12 +28,15 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.CircularProgressIndicator
@@ -71,7 +74,9 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.agentx.app.context.AgentAttachmentKind
 import com.agentx.app.ui.ide.model.AgentActivityKind
+import com.agentx.app.ui.ide.model.AttachmentUiModel
 import com.agentx.app.ui.ide.model.AgentTurnOutcome
 import com.agentx.app.ui.ide.model.ChatMessageKind
 import com.agentx.app.ui.ide.model.ChatMessageUiModel
@@ -130,6 +135,20 @@ private fun AgentUserMessage(
     var draft by remember(message.id) { mutableStateOf(message.rawText) }
 
     Column(modifier = modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
+        // What the message was sent with, shown above it. Attachments are part of the turn's
+        // request rather than the stored transcript, so a restored conversation simply has none.
+        if (message.attachments.isNotEmpty()) {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.End,
+            ) {
+                message.attachments.forEach { attachment ->
+                    SentAttachmentCard(attachment)
+                    Spacer(Modifier.height(4.dp))
+                }
+                Spacer(Modifier.height(2.dp))
+            }
+        }
         if (editing) {
             Column(
                 modifier = Modifier
@@ -830,4 +849,51 @@ private fun StateChip(label: String, color: Color) {
             .background(color.copy(alpha = 0.12f), RoundedCornerShape(999.dp))
             .padding(horizontal = 7.dp, vertical = 3.dp),
     )
+}
+
+/**
+ * One file a sent message carried.
+ *
+ * Only the file's name and type are shown: the path is how AgentX finds it, not something the user
+ * needs to read, and the agent can be asked about the file by name.
+ */
+@Composable
+private fun SentAttachmentCard(attachment: AttachmentUiModel) {
+    val shape = RoundedCornerShape(10.dp)
+    Row(
+        modifier = Modifier
+            .widthIn(max = 340.dp)
+            .clip(shape)
+            .background(ForgeSurface)
+            .border(1.dp, ForgeBorder, shape)
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = when (attachment.kind) {
+                AgentAttachmentKind.IMAGE -> Icons.Filled.Image
+                AgentAttachmentKind.DOCUMENT -> Icons.Filled.Description
+                AgentAttachmentKind.FILE -> Icons.Filled.AttachFile
+            },
+            contentDescription = null,
+            tint = ForgeMuted,
+            modifier = Modifier.size(13.dp),
+        )
+        Spacer(Modifier.width(7.dp))
+        Text(
+            text = attachment.displayName,
+            style = MaterialTheme.typography.labelSmall,
+            color = ForgeInk,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.widthIn(max = 180.dp),
+        )
+        Spacer(Modifier.width(7.dp))
+        Text(
+            text = attachment.typeLabel,
+            style = MaterialTheme.typography.labelSmall,
+            color = ForgeMuted,
+            maxLines = 1,
+        )
+    }
 }

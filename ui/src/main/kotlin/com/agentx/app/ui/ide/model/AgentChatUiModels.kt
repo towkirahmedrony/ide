@@ -1,8 +1,12 @@
 package com.agentx.app.ui.ide.model
 
+import com.agentx.app.context.AgentAttachment
+import com.agentx.app.context.AgentAttachmentKind
+
 /**
  * Presentation models for the Agent chat. They are deliberately free of agent
- * core, model gateway and tool types: the backend's structured response is
+ * core, model gateway and tool types — an attachment is carried as the context layer's own value
+ * rather than as a second, lossy description of it: the backend's structured response is
  * mapped into these by [com.agentx.app.ui.ide.state.AgentChatPresentation]
  * before a Composable ever sees it, so no serialized JSON is rendered directly.
  */
@@ -156,6 +160,12 @@ data class ChatMessageUiModel(
     val filesChanged: List<String> = emptyList(),
     /** Real files the runtime inspected this turn; never fabricated. */
     val filesInspected: List<String> = emptyList(),
+    /**
+     * Files the user attached to this message. Live only for the current screen: attachments are
+     * part of the turn's request, not of the stored transcript, so a restored conversation shows
+     * the text it was sent with and no invented attachments.
+     */
+    val attachments: List<AttachmentUiModel> = emptyList(),
 ) {
     /** Plain text a copy action should place on the clipboard. */
     val copyText: String get() = rawText
@@ -195,6 +205,50 @@ data class GenerationState(
 }
 
 /** Everything the Agent screen renders. */
+/**
+ * A file attached to the message being composed, or shown on a sent one.
+ *
+ * It carries the domain [attachment] rather than a copy of its fields, so the composer can hand
+ * exactly what the picker produced straight to the request without a lossy round-trip through
+ * strings.
+ */
+data class AttachmentUiModel(val attachment: AgentAttachment) {
+    val id: String get() = attachment.id
+    val displayName: String get() = attachment.displayName
+    val kind: AgentAttachmentKind get() = attachment.kind
+    val sizeBytes: Long get() = attachment.sizeBytes
+
+    /** Short, human type label for the chip: what the file is, not its full path. */
+    val typeLabel: String
+        get() = when (kind) {
+            AgentAttachmentKind.IMAGE -> "Image"
+            AgentAttachmentKind.DOCUMENT -> "Document"
+            AgentAttachmentKind.FILE -> "File"
+        }
+
+    /** Compact size for a chip, or null when the size is not worth showing. */
+    val sizeLabel: String?
+        get() = when {
+            sizeBytes <= 0L -> null
+            sizeBytes < 1024L -> "$sizeBytes B"
+            sizeBytes < 1024L * 1024L -> "${sizeBytes / 1024L} KB"
+            else -> "${sizeBytes / (1024L * 1024L)} MB"
+        }
+}
+
+/**
+ * A skill the user can turn on for this message.
+ *
+ * Only skills the agent could actually use are listed: the chat asks the skill manager for the
+ * role's own resolution, so a disabled, invalid or unassigned skill is never offered.
+ */
+data class SkillChoiceUiModel(
+    val id: String,
+    val name: String,
+    val description: String,
+    val selected: Boolean = false,
+)
+
 data class AgentChatUiState(
     val messages: List<ChatMessageUiModel> = emptyList(),
     val input: String = "",
@@ -206,8 +260,29 @@ data class AgentChatUiState(
     val currentAgent: String = "Main",
     /** Model backing the agent, shown as a compact pill in the Agent header. */
     val modelId: String? = null,
+    /** Files attached to the message being composed. Cleared when it is sent. */
+    val attachments: List<AttachmentUiModel> = emptyList(),
+    /** Skills the agent could use on this message, and which the user turned on. */
+    val skills: List<SkillChoiceUiModel> = emptyList(),
+    /** Set when attaching failed; shown above the composer until the next action. */
+    val attachmentMessage: String? = null,
+    /** True while a picker is open, so the action cannot be started twice. */
+    val pickingAttachment: Boolean = false,
 ) {
     val running: Boolean get() = generation.running
+
+    /** The skills the user turned on, or null to let the agent use the role's own set. */
+    val selectedSkillIds: Set<String>?
+        get() = skills.filter { it.selected }.map { it.id }.toSet().takeIf { it.isNotEmpty() }
+
+    /**
+     * A turn needs something to work on: text, or at least one attachment. A skill selection on its
+     * own is not a request — choosing skills narrows how the agent works, it does not say what to do.
+     */
+    val hasContent: Boolean get() = input.isNotBlank() || attachments.isNotEmpty()
+
+    /** Whether Send is available: there is content, and nothing else owns the turn. */
+    val canSend: Boolean get() = hasContent && pendingPermission == null && !running
 
     /** Outcome of the latest turn, from real generation state only. */
     val turnOutcome: AgentTurnOutcome

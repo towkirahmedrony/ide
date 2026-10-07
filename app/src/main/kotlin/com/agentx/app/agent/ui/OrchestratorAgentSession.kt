@@ -14,6 +14,7 @@ import com.agentx.app.agent.domain.AgentResult
 import com.agentx.app.agent.domain.ModelFallbackReason
 import com.agentx.app.agent.domain.AgentRole
 import com.agentx.app.agent.domain.AgentRunRequest
+import com.agentx.app.context.AgentAttachment
 import com.agentx.app.agent.domain.AgentStatus
 import com.agentx.app.agent.domain.PendingPermission
 import com.agentx.app.agent.orchestrator.AgentOrchestrator
@@ -94,19 +95,21 @@ class OrchestratorAgentSession(
         onEvent: (AgentStreamEvent) -> Unit,
         workspaceId: String?,
         selectedFile: String?,
+        attachments: List<AgentAttachment>,
+        skillIds: Set<String>?,
     ) {
         val projectId = workspaceId ?: defaultProjectId
         if (projectId == null) {
             // A caller with no owning project runs without touching any project's
             // persisted history; the bounded in-memory fallback is used instead.
-            runTurn(null, input, onEvent, null, selectedFile)
+            runTurn(null, input, onEvent, null, selectedFile, attachments, skillIds)
             return
         }
         val sessionId = activeByProject[projectId]
             ?: history?.createSession(workspaceId = projectId)?.id?.also { created ->
                 activeByProject[projectId] = created
             }
-        runTurn(sessionId, input, onEvent, projectId, selectedFile)
+        runTurn(sessionId, input, onEvent, projectId, selectedFile, attachments, skillIds)
     }
 
     override suspend fun runInSession(
@@ -115,6 +118,8 @@ class OrchestratorAgentSession(
         onEvent: (AgentStreamEvent) -> Unit,
         workspaceId: String?,
         selectedFile: String?,
+        attachments: List<AgentAttachment>,
+        skillIds: Set<String>?,
     ) {
         val projectId = workspaceId ?: defaultProjectId
         // Refuse to run a project's turn inside another project's transcript: that
@@ -131,7 +136,7 @@ class OrchestratorAgentSession(
             return
         }
         if (projectId != null) activeByProject[projectId] = sessionId
-        runTurn(sessionId, input, onEvent, workspaceId ?: storedOwner, selectedFile)
+        runTurn(sessionId, input, onEvent, workspaceId ?: storedOwner, selectedFile, attachments, skillIds)
     }
 
     // ───────────────────────────── Session management ─────────────────────────────
@@ -190,6 +195,8 @@ class OrchestratorAgentSession(
         onEvent: (AgentStreamEvent) -> Unit,
         workspaceId: String?,
         selectedFile: String?,
+        attachments: List<AgentAttachment>,
+        skillIds: Set<String>?,
     ) {
         val config = modelConfig()
         if (config.validate().isNotEmpty()) {
@@ -207,7 +214,8 @@ class OrchestratorAgentSession(
         Log.d(
             TAG,
             "Agent run sessionId=${sessionId ?: "(none)"} workspaceId=${activeWorkspaceId ?: "(none)"} " +
-                "selectedFile=${selectedFile ?: "(none)"} promptChars=${input.length}",
+                "selectedFile=${selectedFile ?: "(none)"} promptChars=${input.length} " +
+                "attachments=${attachments.size} skills=${skillIds?.size ?: 0}",
         )
 
         val sink = AgentEventSink { event -> mapEvent(event)?.let(onEvent) }
@@ -217,6 +225,10 @@ class OrchestratorAgentSession(
                 sessionId = sessionId,
                 workspaceId = activeWorkspaceId,
                 selectedFile = selectedFile,
+                // Attachments are part of this turn's request, not of the stored transcript: the
+                // context engine loads each one from the workspace, like a mentioned path.
+                attachments = attachments,
+                skillIds = skillIds,
                 // With persistent history the core rebuilds the conversation from
                 // the stored transcript; the fallback list is only for no-history runs.
                 conversation = if (sessionId == null) conversation.toList() else emptyList(),

@@ -1,5 +1,6 @@
 package com.agentx.app.ui.ide.state
 
+import com.agentx.app.context.AgentAttachment
 import com.agentx.app.ui.ide.data.AgentSession
 import com.agentx.app.ui.ide.data.AgentStreamEvent
 import com.agentx.app.ui.ide.model.ActivityItemStatus
@@ -48,6 +49,8 @@ class AgentPlanActivityTest {
             onEvent: (AgentStreamEvent) -> Unit,
             workspaceId: String?,
             selectedFile: String?,
+            attachments: List<AgentAttachment>,
+            skillIds: Set<String>?,
         ) = block(input, onEvent)
     }
 
