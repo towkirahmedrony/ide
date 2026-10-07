@@ -75,28 +75,29 @@ class DefaultToolPreferences(
 
     /**
      * Restores the persisted set; a failed read leaves the previous set intact.
-     * `synchronized` is inline, so the suspend [store] read is still allowed here.
+     *
+     * The suspension point stays outside the lock: a `synchronized` block is a
+     * critical section, so the suspend [store] read happens first and only the
+     * in-memory swap is guarded.
      */
     suspend fun load() {
-        synchronized(lock) {
-            disabled = store.load()
-        }
+        val loaded = store.load()
+        synchronized(lock) { disabled = loaded }
     }
 
     /** Enables or disables [toolId] and persists the whole set. */
     suspend fun setEnabled(toolId: String, enabled: Boolean) {
-        synchronized(lock) {
-            val updated = if (enabled) disabled - toolId else disabled + toolId
-            disabled = updated
-            store.save(updated)
+        val updated = synchronized(lock) {
+            val next = if (enabled) disabled - toolId else disabled + toolId
+            disabled = next
+            next
         }
+        store.save(updated)
     }
 
     /** Turns every tool back on. */
     suspend fun reset() {
-        synchronized(lock) {
-            disabled = emptySet()
-            store.save(disabled)
-        }
+        synchronized(lock) { disabled = emptySet() }
+        store.save(emptySet())
     }
 }
