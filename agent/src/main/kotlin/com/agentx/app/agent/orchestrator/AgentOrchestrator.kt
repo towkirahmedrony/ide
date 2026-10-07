@@ -67,7 +67,11 @@ interface AgentOrchestrator {
 
     fun session(id: String): AgentSession?
 
-    fun sessions(): List<AgentSession>
+    /**
+     * Every session owned by [workspaceId]. Scoped like the conversation store so
+     * a caller can never enumerate (or leak) another project's sessions.
+     */
+    fun sessions(workspaceId: String): List<AgentSession>
 
     fun cancel(sessionId: String): Boolean
 
@@ -498,9 +502,9 @@ class DefaultAgentOrchestrator(
     override fun session(id: String): AgentSession? =
         history?.conversation(id)?.session ?: sessions.find(id)
 
-    override fun sessions(): List<AgentSession> {
-        val stored = history?.conversations()?.map { it.session }
-        return stored ?: sessions.all()
+    override fun sessions(workspaceId: String): List<AgentSession> {
+        val stored = history?.conversations(workspaceId)?.map { it.session }
+        return stored ?: sessions.all().filter { it.workspaceId == workspaceId }
     }
 
     override fun history(): ConversationHistory? = history

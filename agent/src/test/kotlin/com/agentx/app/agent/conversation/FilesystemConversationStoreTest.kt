@@ -110,6 +110,26 @@ class FilesystemConversationStoreTest {
     }
 
     @Test
+    fun `a legacy session with no owner is preserved and never surfaces in a project`() {
+        val store = FilesystemConversationStore(root)
+        // A session written before chat was project-scoped carries no workspace id.
+        // It is not assigned to any project, but it must not be destroyed either.
+        store.save(
+            conversationWith("legacy-a", "old global chat").copy(
+                session = session("legacy-a").copy(workspaceId = null),
+            ),
+        )
+        store.save(conversationWith("sess-a", "project chat"))
+
+        assertEquals(listOf("sess-a"), store.findByWorkspace("ws").map { it.id })
+
+        // Still on disk, reachable only by its own id, still unowned.
+        assertNotNull(store.find("legacy-a"))
+        assertNull(store.find("legacy-a")!!.workspaceId)
+        assertEquals("old global chat", store.find("legacy-a")!!.messages.single().content.text)
+    }
+
+    @Test
     fun `an unaddressable session id can never touch a file`() {
         val store = FilesystemConversationStore(root)
         store.save(conversationWith("sess-a", "keep me"))

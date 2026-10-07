@@ -191,23 +191,42 @@ interface AgentSession {
     }
 
     /**
-     * Persistent, newest-first session list for the current workspace. Defaults
-     * to empty so a session without history simply shows no sidebar entries.
+     * Persistent, newest-first session list owned by [projectId]. Defaults to
+     * empty so a session without history simply shows no sidebar entries.
+     *
+     * Chat is project-scoped: this returns only the sessions that belong to
+     * [projectId], never another project's.
      */
-    suspend fun listSessions(): List<AgentSessionInfo> = emptyList()
+    suspend fun listSessions(projectId: String): List<AgentSessionInfo> = emptyList()
 
-    /** The session the next turn belongs to, or null when none is selected yet. */
-    suspend fun activeSessionId(): String? = null
+    /**
+     * The session the next turn belongs to within [projectId], or null when none
+     * is selected yet. A selection in one project is never visible in another.
+     */
+    suspend fun activeSessionId(projectId: String): String? = null
 
-    /** Creates and selects an empty session, returning its metadata. */
-    suspend fun createSession(): AgentSessionInfo? = null
+    /**
+     * Creates and selects an empty session owned by [projectId], returning its
+     * metadata. A session must always have an owning project.
+     */
+    suspend fun createSession(projectId: String): AgentSessionInfo? = null
 
-    /** Loads a session's persisted transcript so it can be restored. */
-    suspend fun restoreSession(sessionId: String): List<PersistedAgentMessage> = emptyList()
+    /**
+     * Loads [sessionId]'s persisted transcript so it can be restored, but only
+     * when that session belongs to [projectId]. A session owned by another
+     * project is reported exactly like a missing one.
+     */
+    suspend fun restoreSession(projectId: String, sessionId: String): List<PersistedAgentMessage> = emptyList()
 
-    /** Renames a persisted session. Returns whether the title changed. */
-    suspend fun renameSession(sessionId: String, title: String): Boolean = false
+    /**
+     * Renames a persisted session owned by [projectId]. Returns whether the
+     * title changed; a session belonging to another project is not touched.
+     */
+    suspend fun renameSession(projectId: String, sessionId: String, title: String): Boolean = false
 
-    /** Deletes a persisted session and its transcript. */
-    suspend fun deleteSession(sessionId: String): Boolean = false
+    /**
+     * Deletes a persisted session owned by [projectId] and its transcript. A
+     * session belonging to another project is not touched.
+     */
+    suspend fun deleteSession(projectId: String, sessionId: String): Boolean = false
 }

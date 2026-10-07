@@ -47,14 +47,20 @@ import com.agentx.app.ui.ide.model.AgentActivityStatus
 class OrchestratorAgentSession(
     private val orchestrator: AgentOrchestrator,
     private val modelConfig: () -> ModelConfig,
-    private val workspaceId: String? = null,
+    /**
+     * Project used only when a caller does not name one. Production always names
+     * the active project explicitly, so this stays null there; it exists so a
+     * scripted or test caller without a project keeps working.
+     */
+    private val defaultProjectId: String? = null,
 ) : AgentSession {
 
     /**
-     * The session the next turn belongs to. Chosen by the user from the session
-     * sidebar, or created lazily on the first turn.
+     * The session selected per project, keyed by project id. Chat is
+     * project-scoped: selecting a session in one project never selects one in
+     * another, and this is the only mutable chat state the bridge keeps.
      */
-    private var activeSessionId: String? = null
+    private val activeByProject = LinkedHashMap<String, String>()
 
     /** The Agent Core's persistent history, when the orchestrator owns one. */
     private val history: ConversationHistory?
@@ -89,10 +95,18 @@ class OrchestratorAgentSession(
         workspaceId: String?,
         selectedFile: String?,
     ) {
-        val sessionId = activeSessionId
-            ?: history?.createSession(workspaceId = workspaceId ?: this.workspaceId)?.id
-        if (sessionId != null) activeSessionId = sessionId
-        runTurn(sessionId, input, onEvent, workspaceId, selectedFile)
+        val projectId = workspaceId ?: defaultProjectId
+        if (projectId == null) {
+            // A caller with no owning project runs without touching any project's
+            // persisted history; the bounded in-memory fallback is used instead.
+            runTurn(null, input, onEvent, null, selectedFile)
+            return
+        }
+        val sessionId = activeByProject[projectId]
+            ?: history?.createSession(workspaceId = projectId)?.id?.also { created ->
+                activeByProject[projectId] = created
+            }
+        runTurn(sessionId, input, onEvent, projectId, selectedFile)
     }
 
     override suspend fun runInSession(
@@ -102,48 +116,69 @@ class OrchestratorAgentSession(
         workspaceId: String?,
         selectedFile: String?,
     ) {
-        activeSessionId = sessionId
-        runTurn(sessionId, input, onEvent, workspaceId, selectedFile)
+        val projectId = workspaceId ?: defaultProjectId
+        // Refuse to run a project's turn inside another project's transcript: that
+        // would rebuild the agent context from the wrong conversation. A persisted
+        // session is owned by exactly one project, and only its owner may use it.
+        val storedOwner = history?.open(sessionId)?.workspaceId
+        if (projectId != null && storedOwner != null && storedOwner != projectId) {
+            onEvent(
+                AgentStreamEvent.Failed(
+                    "That chat session belongs to a different project.",
+                    AgentFailureKind.UNKNOWN,
+                ),
+            )
+            return
+        }
+        if (projectId != null) activeByProject[projectId] = sessionId
+        runTurn(sessionId, input, onEvent, workspaceId ?: storedOwner, selectedFile)
     }
 
     // ───────────────────────────── Session management ─────────────────────────────
 
-    override suspend fun listSessions(): List<AgentSessionInfo> {
+    override suspend fun listSessions(projectId: String): List<AgentSessionInfo> {
         val store = history ?: return emptyList()
-        return store.conversations(workspaceId).map { conversation -> conversation.toInfo(activeSessionId) }
+        val conversations = store.conversations(projectId)
+        val active = activeByProject[projectId] ?: conversations.firstOrNull()?.id
+        return conversations.map { conversation -> conversation.toInfo(active) }
     }
 
-    override suspend fun activeSessionId(): String? {
-        activeSessionId?.let { return it }
-        return history?.conversations(workspaceId)?.firstOrNull()?.id
+    override suspend fun activeSessionId(projectId: String): String? {
+        activeByProject[projectId]?.let { return it }
+        return history?.conversations(projectId)?.firstOrNull()?.id
     }
 
-    override suspend fun createSession(): AgentSessionInfo? {
+    override suspend fun createSession(projectId: String): AgentSessionInfo? {
         val store = history ?: return null
-        val created = store.createSession(workspaceId = workspaceId)
-        activeSessionId = created.id
+        val owner = projectId.trim()
+        // A session must have an owning project; without one nothing is persisted.
+        if (owner.isEmpty()) return null
+        val created = store.createSession(workspaceId = owner)
+        activeByProject[owner] = created.id
         return created.toInfo(created.id)
     }
 
-    override suspend fun restoreSession(sessionId: String): List<PersistedAgentMessage> {
+    override suspend fun restoreSession(projectId: String, sessionId: String): List<PersistedAgentMessage> {
         val store = history ?: return emptyList()
-        val conversation = store.open(sessionId) ?: return emptyList()
-        activeSessionId = sessionId
+        val conversation = store.owned(projectId, sessionId) ?: return emptyList()
+        activeByProject[projectId] = sessionId
         return conversation.messages.map { message -> message.toPersisted() }
     }
 
-    override suspend fun renameSession(sessionId: String, title: String): Boolean {
+    override suspend fun renameSession(projectId: String, sessionId: String, title: String): Boolean {
         val store = history ?: return false
         val trimmed = title.trim()
         if (trimmed.isEmpty()) return false
+        if (store.owned(projectId, sessionId) == null) return false
         val updated = store.rename(sessionId, trimmed) ?: return false
         return updated.session.title == trimmed
     }
 
-    override suspend fun deleteSession(sessionId: String): Boolean {
+    override suspend fun deleteSession(projectId: String, sessionId: String): Boolean {
         val store = history ?: return false
+        if (store.owned(projectId, sessionId) == null) return false
         val removed = store.delete(sessionId)
-        if (activeSessionId == sessionId) activeSessionId = null
+        if (removed) activeByProject.entries.removeAll { it.value == sessionId }
         return removed
     }
 
@@ -168,7 +203,7 @@ class OrchestratorAgentSession(
             ),
         )
 
-        val activeWorkspaceId = workspaceId ?: this.workspaceId
+        val activeWorkspaceId = workspaceId ?: defaultProjectId
         Log.d(
             TAG,
             "Agent run sessionId=${sessionId ?: "(none)"} workspaceId=${activeWorkspaceId ?: "(none)"} " +

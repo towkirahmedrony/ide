@@ -111,6 +111,37 @@ class ConversationHistoryTest {
         assertEquals(2, history.conversations().size)
     }
 
+    @Test
+    fun `a session is only reachable through its owning workspace`() {
+        val history = history()
+        history.createSession(workspaceId = "ws-a", sessionId = "sess-a")
+        history.createSession(workspaceId = "ws-b", sessionId = "sess-b")
+
+        assertNotNull(history.owned("ws-a", "sess-a"))
+        // A neighbour project cannot reach another project's session, exactly as if
+        // it did not exist.
+        assertNull(history.owned("ws-a", "sess-b"))
+        assertNull(history.owned("ws-b", "sess-a"))
+        assertNull(history.owned("ws-c", "sess-a"))
+    }
+
+    @Test
+    fun `a legacy session with no owner is preserved but invisible to every project`() {
+        val history = history()
+        // Sessions written before chat was project-scoped carry no workspace id and
+        // are never arbitrarily attributed to a project.
+        history.createSession(workspaceId = null, sessionId = "legacy-a")
+        history.recordUser("legacy-a", "old global chat")
+
+        // Not reachable through any project...
+        assertNull(history.owned("ws-a", "legacy-a"))
+        assertEquals(emptyList(), history.conversations("ws-a").map { it.id })
+
+        // ...and not deleted: it survives as an orphan, readable only by its own id.
+        assertNotNull(history.open("legacy-a"))
+        assertEquals("old global chat", history.open("legacy-a")!!.messages.single().content.text)
+    }
+
     // --- ordering and persistence -----------------------------------------
 
     @Test

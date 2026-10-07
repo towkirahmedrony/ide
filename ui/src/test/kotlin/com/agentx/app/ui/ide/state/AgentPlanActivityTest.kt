@@ -51,8 +51,13 @@ class AgentPlanActivityTest {
         ) = block(input, onEvent)
     }
 
-    private fun viewModel(session: AgentSession, now: () -> Long = { 0L }) = AgentViewModel(
+    private fun viewModel(
+        session: AgentSession,
+        projectId: String = "p1",
+        now: () -> Long = { 0L },
+    ) = AgentViewModel(
         session = session,
+        projectId = projectId,
         ioDispatcher = UnconfinedTestDispatcher(),
         now = now,
     )

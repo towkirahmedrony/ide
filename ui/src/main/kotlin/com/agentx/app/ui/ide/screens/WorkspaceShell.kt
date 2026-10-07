@@ -87,7 +87,8 @@ fun WorkspaceShell(
         factory = IdeViewModelFactory {
             AgentViewModel(
                 session = dependencies.agent,
-                workspaceId = workspaceId,
+                // Chat is project-scoped: this workspace is the chat's owning project.
+                projectId = workspaceId,
                 selectedFile = {
                     workspaceViewModel.editorState.file?.path
                         ?: dependencies.workspaceSelection.selectedFile()

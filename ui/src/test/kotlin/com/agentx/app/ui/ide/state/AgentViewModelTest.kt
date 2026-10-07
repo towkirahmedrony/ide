@@ -47,13 +47,13 @@ class AgentViewModelTest {
 
     private fun viewModel(
         session: AgentSession,
-        workspaceId: String? = null,
+        projectId: String = "p1",
         selectedFile: () -> String? = { null },
         now: () -> Long = { 0L },
         modelId: () -> String? = { null },
     ) = AgentViewModel(
         session = session,
-        workspaceId = workspaceId,
+        projectId = projectId,
         selectedFile = selectedFile,
         now = now,
         ioDispatcher = UnconfinedTestDispatcher(),
@@ -485,7 +485,7 @@ class AgentViewModelTest {
     fun `send forwards the live workspace id and selected file`() {
         var openFile: String? = "src/Main.kt"
         val session = RecordingSession { _, onEvent -> onEvent(AgentStreamEvent.Completed("ok")) }
-        val vm = viewModel(session, workspaceId = "saf-project", selectedFile = { openFile })
+        val vm = viewModel(session, projectId = "saf-project", selectedFile = { openFile })
 
         vm.onInputChange("What does this project do?")
         vm.send()
@@ -736,6 +736,87 @@ class AgentViewModelTest {
         assertTrue(session.sessions.containsKey(created))
     }
 
+    // ───────────────────────────── Project scoping ─────────────────────────────
+
+    @Test
+    fun `the sidebar lists only the active project's sessions and restores its own`() {
+        val session = RecordingSession { _, onEvent -> onEvent(AgentStreamEvent.Completed("ok")) }
+        session.seed(
+            "a1",
+            "Project A chat",
+            2_000L,
+            listOf(PersistedAgentMessage("am", PersistedMessageKind.USER, "a-only")),
+            projectId = "project-a",
+        )
+        session.seed(
+            "b1",
+            "Project B chat",
+            1_000L,
+            listOf(PersistedAgentMessage("bm", PersistedMessageKind.USER, "b-only")),
+            projectId = "project-b",
+        )
+
+        val projectA = viewModel(session, projectId = "project-a")
+
+        assertEquals(listOf("a1"), projectA.uiState.sessions.map { it.id })
+        assertEquals("a1", projectA.uiState.activeSessionId)
+        assertEquals("a-only", projectA.uiState.messages.single { it.kind == ChatMessageKind.USER }.rawText)
+    }
+
+    @Test
+    fun `another project's chat is never selected or restored`() {
+        val session = RecordingSession { _, onEvent -> onEvent(AgentStreamEvent.Completed("ok")) }
+        session.seed(
+            "b1",
+            "Project B chat",
+            1_000L,
+            listOf(PersistedAgentMessage("bm", PersistedMessageKind.USER, "b-only")),
+            projectId = "project-b",
+        )
+
+        val projectA = viewModel(session, projectId = "project-a")
+
+        assertTrue(projectA.uiState.sessions.isEmpty())
+        assertNull(projectA.uiState.activeSessionId)
+        assertTrue(projectA.uiState.messages.isEmpty())
+
+        // Even a direct open of B's session id cannot pull its transcript into A.
+        projectA.openSession("b1")
+        assertNull(projectA.uiState.activeSessionId)
+        assertTrue(projectA.uiState.messages.isEmpty())
+    }
+
+    @Test
+    fun `rename and delete never reach another project's session`() {
+        val session = RecordingSession { _, onEvent -> onEvent(AgentStreamEvent.Completed("ok")) }
+        session.seed("b1", "Project B chat", 1_000L, emptyList(), projectId = "project-b")
+
+        val projectA = viewModel(session, projectId = "project-a")
+        projectA.renameSession("b1", "hijacked")
+        projectA.deleteSession("b1")
+
+        val projectB = viewModel(session, projectId = "project-b")
+        assertEquals(listOf("b1"), projectB.uiState.sessions.map { it.id })
+        assertEquals("Project B chat", projectB.uiState.sessions.single().title)
+    }
+
+    @Test
+    fun `a new session is created in the active project only`() {
+        val session = RecordingSession { _, onEvent -> onEvent(AgentStreamEvent.Completed("ok")) }
+        session.seed("b1", "Project B chat", 1_000L, emptyList(), projectId = "project-b")
+
+        val projectA = viewModel(session, projectId = "project-a")
+        projectA.newSession()
+        val created = assertNotNull(projectA.uiState.activeSessionId)
+        assertNotEquals("b1", created)
+        assertEquals(listOf(created), projectA.uiState.sessions.map { it.id })
+
+        // B's own selection is unchanged by what A created.
+        val projectB = viewModel(session, projectId = "project-b")
+        assertEquals(listOf("b1"), projectB.uiState.sessions.map { it.id })
+        assertEquals("b1", projectB.uiState.activeSessionId)
+    }
+
     private fun failingViewModel(kind: AgentFailureKind, message: String): AgentViewModel {
         val session = RecordingSession { _, onEvent ->
             onEvent(AgentStreamEvent.Failed(message, kind))
@@ -743,7 +824,7 @@ class AgentViewModelTest {
         return viewModel(session)
     }
 
-    /** An in-memory [AgentSession] with a real session store and recorded runs. */
+    /** An in-memory [AgentSession] with a real, project-scoped session store and recorded runs. */
     private class RecordingSession(
         private val block: suspend (String, (AgentStreamEvent) -> Unit) -> Unit = { _, onEvent ->
             onEvent(AgentStreamEvent.Completed("ok"))
@@ -765,17 +846,31 @@ class AgentViewModelTest {
         override fun cancel(sessionId: String) {
             cancelled += sessionId
         }
+
+        /** Session transcripts by id, so tests can assert what a turn persisted. */
         val sessions = LinkedHashMap<String, MutableList<PersistedAgentMessage>>()
         private val titles = LinkedHashMap<String, String>()
         private val updated = LinkedHashMap<String, Long>()
-        private var active: String? = null
+
+        /** The single project that owns each session; a session never has two owners. */
+        private val owners = LinkedHashMap<String, String>()
+        private val activeByProject = LinkedHashMap<String, String>()
         private var counter = 0
 
-        fun seed(id: String, title: String, updatedAt: Long, messages: List<PersistedAgentMessage>) {
+        fun seed(
+            id: String,
+            title: String,
+            updatedAt: Long,
+            messages: List<PersistedAgentMessage>,
+            projectId: String = "p1",
+        ) {
             sessions[id] = messages.toMutableList()
             titles[id] = title
             updated[id] = updatedAt
+            owners[id] = projectId
         }
+
+        private fun owned(projectId: String, sessionId: String): Boolean = owners[sessionId] == projectId
 
         override suspend fun run(
             input: String,
@@ -798,45 +893,51 @@ class AgentViewModelTest {
             block(input, onEvent)
         }
 
-        override suspend fun listSessions(): List<AgentSessionInfo> =
-            sessions.keys.sortedByDescending { updated[it] ?: 0L }.map { id ->
-                AgentSessionInfo(
-                    id = id,
-                    title = titles[id] ?: "New session",
-                    updatedAtMillis = updated[id] ?: 0L,
-                    messageCount = sessions[id]?.size ?: 0,
-                    active = id == active,
-                )
-            }
+        override suspend fun listSessions(projectId: String): List<AgentSessionInfo> =
+            sessions.keys.filter { owners[it] == projectId }
+                .sortedByDescending { updated[it] ?: 0L }
+                .map { id ->
+                    AgentSessionInfo(
+                        id = id,
+                        title = titles[id] ?: "New session",
+                        updatedAtMillis = updated[id] ?: 0L,
+                        messageCount = sessions[id]?.size ?: 0,
+                        active = id == activeByProject[projectId],
+                    )
+                }
 
-        override suspend fun activeSessionId(): String? = active
+        override suspend fun activeSessionId(projectId: String): String? = activeByProject[projectId]
 
-        override suspend fun createSession(): AgentSessionInfo {
+        override suspend fun createSession(projectId: String): AgentSessionInfo {
             counter += 1
             val id = "created-$counter"
             sessions[id] = mutableListOf()
             titles[id] = "New session"
             updated[id] = 0L
-            active = id
+            owners[id] = projectId
+            activeByProject[projectId] = id
             return AgentSessionInfo(id, "New session", 0L, 0, true)
         }
 
-        override suspend fun restoreSession(sessionId: String): List<PersistedAgentMessage> {
-            active = sessionId
+        override suspend fun restoreSession(projectId: String, sessionId: String): List<PersistedAgentMessage> {
+            if (!owned(projectId, sessionId)) return emptyList()
+            activeByProject[projectId] = sessionId
             return sessions[sessionId].orEmpty().toList()
         }
 
-        override suspend fun renameSession(sessionId: String, title: String): Boolean {
-            if (!sessions.containsKey(sessionId)) return false
+        override suspend fun renameSession(projectId: String, sessionId: String, title: String): Boolean {
+            if (!owned(projectId, sessionId)) return false
             titles[sessionId] = title
             return true
         }
 
-        override suspend fun deleteSession(sessionId: String): Boolean {
+        override suspend fun deleteSession(projectId: String, sessionId: String): Boolean {
+            if (!owned(projectId, sessionId)) return false
             val removed = sessions.remove(sessionId) != null
             titles.remove(sessionId)
             updated.remove(sessionId)
-            if (active == sessionId) active = null
+            owners.remove(sessionId)
+            if (activeByProject[projectId] == sessionId) activeByProject.remove(projectId)
             return removed
         }
     }

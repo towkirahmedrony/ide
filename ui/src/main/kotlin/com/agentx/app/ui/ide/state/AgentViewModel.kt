@@ -45,7 +45,12 @@ import java.util.UUID
  */
 class AgentViewModel(
     private val session: AgentSession,
-    private val workspaceId: String? = null,
+    /**
+     * The project that owns this chat. Required, because chat is project-scoped:
+     * a ViewModel can only ever read, create and select sessions of one project,
+     * and its transcripts can never be mixed with another project's.
+     */
+    private val projectId: String,
     /** Live editor selection; read at send-time so the agent sees the open file. */
     private val selectedFile: () -> String? = { null },
     /** Clock used for timestamps and the elapsed timer; injectable for tests. */
@@ -64,14 +69,23 @@ class AgentViewModel(
     private var ticker: Job? = null
     private var stoppedByUser = false
 
+    /**
+     * Monotonic token for session loads. Only the newest selection may publish,
+     * so a slow restore that finishes after the user (or a project switch) has
+     * moved on can never overwrite the transcript on screen.
+     */
+    private var sessionRequest = 0
+
     init {
+        val request = ++sessionRequest
         viewModelScope.launch {
-            val sessions = withContext(ioDispatcher) { session.listSessions() }
-            val activeId = withContext(ioDispatcher) { session.activeSessionId() }
+            val sessions = withContext(ioDispatcher) { session.listSessions(projectId) }
+            val activeId = withContext(ioDispatcher) { session.activeSessionId(projectId) }
                 ?: sessions.firstOrNull()?.id
             val restored = activeId
-                ?.let { id -> withContext(ioDispatcher) { session.restoreSession(id) } }
+                ?.let { id -> withContext(ioDispatcher) { session.restoreSession(projectId, id) } }
                 .orEmpty()
+            if (request != sessionRequest) return@launch
             uiState = uiState.copy(
                 sessions = sessions.map { info -> info.toUiModel(activeId) },
                 activeSessionId = activeId,
@@ -189,8 +203,10 @@ class AgentViewModel(
 
     fun newSession() {
         if (uiState.running) return
+        val request = ++sessionRequest
         viewModelScope.launch {
-            val created = withContext(ioDispatcher) { session.createSession() }
+            val created = withContext(ioDispatcher) { session.createSession(projectId) }
+            if (request != sessionRequest) return@launch
             uiState = uiState.copy(
                 activeSessionId = created?.id,
                 messages = emptyList(),
@@ -204,8 +220,12 @@ class AgentViewModel(
 
     fun openSession(sessionId: String) {
         if (uiState.running || sessionId == uiState.activeSessionId) return
+        // Only a session this project owns may become the selection.
+        if (uiState.sessions.none { it.id == sessionId }) return
+        val request = ++sessionRequest
         viewModelScope.launch {
-            val restored = withContext(ioDispatcher) { session.restoreSession(sessionId) }
+            val restored = withContext(ioDispatcher) { session.restoreSession(projectId, sessionId) }
+            if (request != sessionRequest) return@launch
             uiState = uiState.copy(
                 activeSessionId = sessionId,
                 messages = AgentChatPresentation.persistedTranscriptToUi(restored),
@@ -221,17 +241,19 @@ class AgentViewModel(
         val trimmed = title.trim()
         if (trimmed.isEmpty()) return
         viewModelScope.launch {
-            withContext(ioDispatcher) { session.renameSession(sessionId, trimmed) }
+            withContext(ioDispatcher) { session.renameSession(projectId, sessionId, trimmed) }
             refreshSessions()
         }
     }
 
     fun deleteSession(sessionId: String) {
         if (uiState.running) return
+        val request = ++sessionRequest
         viewModelScope.launch {
-            val removed = withContext(ioDispatcher) { session.deleteSession(sessionId) }
+            val removed = withContext(ioDispatcher) { session.deleteSession(projectId, sessionId) }
+            if (request != sessionRequest) return@launch
             if (removed && sessionId == uiState.activeSessionId) {
-                val created = withContext(ioDispatcher) { session.createSession() }
+                val created = withContext(ioDispatcher) { session.createSession(projectId) }
                 uiState = uiState.copy(
                     activeSessionId = created?.id,
                     messages = emptyList(),
@@ -338,14 +360,14 @@ class AgentViewModel(
                         sessionId = sessionId,
                         input = prompt,
                         onEvent = { event -> handleEvent(assistantId, event) },
-                        workspaceId = workspaceId,
+                        workspaceId = projectId,
                         selectedFile = selectedFile(),
                     )
                 } else {
                     session.run(
                         input = prompt,
                         onEvent = { event -> handleEvent(assistantId, event) },
-                        workspaceId = workspaceId,
+                        workspaceId = projectId,
                         selectedFile = selectedFile(),
                     )
                 }
@@ -371,7 +393,7 @@ class AgentViewModel(
 
     private suspend fun ensureActiveSession(): String? {
         uiState.activeSessionId?.let { return it }
-        val created = withContext(ioDispatcher) { session.createSession() } ?: return null
+        val created = withContext(ioDispatcher) { session.createSession(projectId) } ?: return null
         uiState = uiState.copy(
             activeSessionId = created.id,
             sessions = listOf(created.toUiModel(created.id)) +
@@ -843,7 +865,7 @@ class AgentViewModel(
     }
 
     private suspend fun refreshSessions() {
-        val list = withContext(ioDispatcher) { session.listSessions() }
+        val list = withContext(ioDispatcher) { session.listSessions(projectId) }
         val activeId = uiState.activeSessionId
         uiState = uiState.copy(sessions = list.map { info -> info.toUiModel(activeId) })
     }

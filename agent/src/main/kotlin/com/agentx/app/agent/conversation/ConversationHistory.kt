@@ -70,6 +70,19 @@ class ConversationHistory(
 
     fun open(sessionId: String): AgentConversation? = conversations.find(sessionId)
 
+    /**
+     * The conversation for [sessionId] only when it is owned by [workspaceId].
+     *
+     * This is the ownership boundary for chat: a session that belongs to another
+     * project is reported exactly like a missing one, so no caller — the session
+     * registry, the agent bridge or the UI — can read, restore, rename or delete
+     * across a project boundary. A session with no owner (a legacy global session
+     * written before chat was project-scoped) is likewise invisible to every
+     * project and can only be reached by a caller that passes its own `null`.
+     */
+    fun owned(workspaceId: String, sessionId: String): AgentConversation? =
+        conversations.find(sessionId)?.takeIf { it.workspaceId == workspaceId }
+
     fun rename(sessionId: String, title: String): AgentConversation? {
         val current = conversations.find(sessionId) ?: return null
         val trimmed = title.trim()
