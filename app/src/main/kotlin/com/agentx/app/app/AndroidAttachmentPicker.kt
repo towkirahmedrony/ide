@@ -171,7 +171,6 @@ fun rememberAndroidAttachmentPicker(
 ): AttachmentPicker {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var pendingKind by remember { mutableStateOf(AgentAttachmentKind.FILE) }
     var pendingResult by remember { mutableStateOf<((AttachmentPickOutcome) -> Unit)?>(null) }
 
     fun deliver(outcome: AttachmentPickOutcome) {
@@ -216,7 +215,6 @@ fun rememberAndroidAttachmentPicker(
     return remember(documents, images, workspaces, materializer, context) {
         AttachmentPicker { kind, onResult ->
             pendingResult = onResult
-            pendingKind = kind
             when (kind) {
                 AgentAttachmentKind.IMAGE ->
                     images.launch(

@@ -16,6 +16,8 @@ import com.agentx.app.app.AgentxProjectStorage
 import com.agentx.app.codeintel.DelegatingSyntaxParserProvider
 import com.agentx.app.codeintel.android.TreeSitterParserProvider
 import com.agentx.app.app.AndroidModelRunnerBrowserHost
+import com.agentx.app.app.AndroidExternalContentReader
+import com.agentx.app.app.rememberAndroidAttachmentPicker
 import com.agentx.app.app.rememberAndroidWorkspacePicker
 import com.agentx.app.context.DelegatingWorkspaceContextProvider
 import com.agentx.app.context.WorkspaceRuntimeContextProvider
