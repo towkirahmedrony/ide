@@ -112,7 +112,7 @@ class AttachmentMaterializerTest {
         val error = assertNotNull(materializer.materialize("content://picked", "photo.png", files).errorOrNull())
 
         assertEquals(WorkspaceErrorCode.UNSUPPORTED_FILE_TYPE, error.code)
-        assertTrue(error.userMessage.contains("image"), error.userMessage)
+        assertTrue(error.message.contains("image"), error.message)
         assertFalse(files.exists(".agentx/attachments/photo.png"))
     }
 
@@ -124,7 +124,7 @@ class AttachmentMaterializerTest {
         val error = assertNotNull(materializer.materialize("content://picked", "report.pdf", files).errorOrNull())
 
         assertEquals(WorkspaceErrorCode.UNSUPPORTED_FILE_TYPE, error.code)
-        assertTrue(error.userMessage.contains("report.pdf"), error.userMessage)
+        assertTrue(error.message.contains("report.pdf"), error.message)
         assertEquals(0, files.list(".agentx/attachments").valueOrNull()?.size ?: 0)
     }
 
@@ -212,7 +212,7 @@ class AttachmentMaterializerTest {
         val error = assertNotNull(materializer.materialize("content://denied", "x.txt", workspace()).errorOrNull())
 
         assertEquals(WorkspaceErrorCode.PERMISSION_DENIED, error.code)
-        assertTrue(error.userMessage.contains("allow access"), error.userMessage)
+        assertTrue(error.message.contains("allow access"), error.message)
     }
 
     // --- files that are already in the workspace ---------------------------
