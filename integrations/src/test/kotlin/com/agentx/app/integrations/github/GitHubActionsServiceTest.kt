@@ -39,6 +39,16 @@ class GitHubActionsServiceTest {
             failure?.let { throw it }
             return responses(url)
         }
+
+        override suspend fun post(
+            url: String,
+            headers: Map<String, String>,
+            body: String,
+        ): GitHubRestResponse {
+            urls += url
+            failure?.let { throw it }
+            return responses(url)
+        }
     }
 
     private val gateway = object : ConnectionCredentialGateway {

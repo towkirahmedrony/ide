@@ -21,6 +21,7 @@ import com.agentx.app.tools.git.GitLogTool
 import com.agentx.app.tools.git.GitPushTool
 import com.agentx.app.tools.git.GitStatusTool
 import com.agentx.app.tools.planning.TodoWriteTool
+import com.agentx.app.tools.pullrequest.CreatePullRequestTool
 import com.agentx.app.tools.verification.CiVerificationTool
 import com.agentx.app.tools.web.WebFetchTool
 import com.agentx.app.tools.web.WebSearchTool
@@ -118,6 +119,13 @@ object AgentToolPolicy {
          */
         CI(setOf(CiVerificationTool.NAME)),
 
+        /**
+         * Optional, approval-gated GitHub pull-request creation. It is never part of
+         * the default push-to-`main` workflow: the agent must ask for it explicitly and
+         * the Tool Bus must authorize it before GitHub is touched.
+         */
+        PULL_REQUEST(setOf(CreatePullRequestTool.NAME)),
+
         /** Web research: search plus single-page retrieval. */
         WEB(setOf(WebSearchTool.NAME, WebFetchTool.NAME)),
 
@@ -146,8 +154,9 @@ object AgentToolPolicy {
      *  - CODER / FAST_CODER / DOCS change code as well as read it;
      *  - DEBUGGER / TESTER change code and may execute commands, within their
      *    COMMAND_EXECUTION ceiling and approval gate;
-     *  - COMMIT_PR inspects git, performs the controlled commit, and pushes the
-     *    current branch to `main` through the authenticated GitHub credential path.
+     *  - COMMIT_PR inspects git, performs the controlled commit, pushes the current
+     *    branch to `main` through the authenticated GitHub credential path, and may
+     *    optionally open a pull request when it is explicitly asked to.
      */
     private val ROLE_GRANTS: Map<AgentRole, Set<ToolGrant>> = mapOf(
         // MAIN orchestrates: it inspects, understands and edits code, reads git
@@ -246,6 +255,7 @@ object AgentToolPolicy {
             ToolGrant.GIT_READ,
             ToolGrant.CI,
             ToolGrant.GIT_WRITE,
+            ToolGrant.PULL_REQUEST,
             ToolGrant.FINISH,
         ),
     )

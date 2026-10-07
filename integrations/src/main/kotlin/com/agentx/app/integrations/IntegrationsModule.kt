@@ -19,6 +19,7 @@ import com.agentx.app.integrations.connection.DispatchingConnectionTester
 import com.agentx.app.integrations.connection.InMemoryConnectionSecretStore
 import com.agentx.app.integrations.connection.InMemoryConnectionStore
 import com.agentx.app.integrations.github.GitHubActionsConnectionResolver
+import com.agentx.app.integrations.github.GitHubPullRequestConnectionResolver
 import com.agentx.app.integrations.github.GitHubRepositoryConnectionResolver
 import com.agentx.app.integrations.github.GitHubRepositoryServiceKeys
 import com.agentx.app.integrations.github.GitHubRepositoryServices
@@ -97,6 +98,14 @@ class IntegrationsModule(
                         capability = ConnectionCapabilities.REPOSITORY_READ,
                     ).valueOrNull()?.id
                 },
+                // The optional pull-request write only needs the pull_request
+                // capability, resolved through the same manager that owns credentials.
+                pullRequestConnections = GitHubPullRequestConnectionResolver {
+                    created.authorize(
+                        type = ConnectionType.GITHUB,
+                        capability = ConnectionCapabilities.PULL_REQUEST,
+                    ).valueOrNull()?.id
+                },
             )
             context.services.register(GitHubRepositoryServiceKeys.REPOSITORY_SERVICE, github.repositoryService)
             context.services.register(GitHubRepositoryServiceKeys.CLONE_SERVICE, github.cloneService)
@@ -104,6 +113,10 @@ class IntegrationsModule(
             context.services.register(
                 GitHubRepositoryServiceKeys.CI_VERIFICATION_SERVICE,
                 github.ciVerificationService,
+            )
+            context.services.register(
+                GitHubRepositoryServiceKeys.PULL_REQUEST_SERVICE,
+                github.pullRequestService,
             )
             context.services.register(
                 GitHubRepositoryServiceKeys.DESTINATION_VALIDATOR,

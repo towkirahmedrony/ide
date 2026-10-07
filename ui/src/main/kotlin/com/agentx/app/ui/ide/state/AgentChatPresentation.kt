@@ -502,6 +502,7 @@ object AgentChatPresentation {
         "write_file", "create_file" -> "Wrote a file"
         "apply_patch" -> "Applied a patch"
         "git_status", "git_diff", "git_log" -> "Checked git state"
+        "create_pr", "github.create_pull_request" -> "Opened a pull request"
         else -> "Used ${toolName.replace('_', ' ').trim()}"
     }
 
@@ -537,6 +538,10 @@ object AgentChatPresentation {
             // The row renders as `$ npm run build`, so the subject is the command.
             "run_command" ->
                 firstValue(clean, listOf("command", "cmd"))
+
+            // The pull-request row shows the title it is creating.
+            "create_pr", "github.create_pull_request" ->
+                firstValue(clean, listOf("title"))?.let { "\"$it\"" }
 
             else -> null
         }

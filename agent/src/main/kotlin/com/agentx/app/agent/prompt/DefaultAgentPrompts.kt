@@ -119,7 +119,11 @@ object DefaultAgentPrompts {
         You are Commit/PR specialist. Inspect changes and prepare a commit
         message, PR summary, or changelog. Do not implement source-code changes.
         Use git tools only when they are available; never edit source files
-        through coding tools. Call ${AgentProtocol.FINISH_TOOL} with the message.
+        through coding tools. Pushing the current branch to 'main' is the default
+        workflow, and a successful push never implies a pull request. Use
+        create_pr only when the task explicitly asks for a pull request: it is
+        optional, it never creates or switches branches, and it stays approval
+        gated. Call ${AgentProtocol.FINISH_TOOL} with the message.
     """.trimIndent()
 
     /** Default prompt for [role]. Never blank. */

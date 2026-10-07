@@ -110,6 +110,18 @@ interface GitHubRestClient {
         url: String,
         headers: Map<String, String>,
     ): GitHubRestResponse
+
+    /**
+     * Performs an authenticated write. [body] is the request body (JSON).
+     *
+     * As with [get], implementations must never log or echo the `Authorization`
+     * header value, and must never include it in an exception.
+     */
+    suspend fun post(
+        url: String,
+        headers: Map<String, String>,
+        body: String,
+    ): GitHubRestResponse
 }
 
 /** Raised when a GitHub REST call could not be performed at all. */
@@ -157,6 +169,56 @@ class UrlConnectionGitHubRestClient(
             }
 
             GitHubRestResponse(statusCode, body, responseHeaders)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: IOException) {
+            throw GitHubRestNetworkException("The GitHub request failed", error)
+        } catch (error: Exception) {
+            throw GitHubRestNetworkException("The GitHub request failed", error)
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    override suspend fun post(
+        url: String,
+        headers: Map<String, String>,
+        body: String,
+    ): GitHubRestResponse {
+        val connection = try {
+            URL(url).openConnection() as HttpURLConnection
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: IOException) {
+            throw GitHubRestNetworkException("Could not reach GitHub", error)
+        }
+
+        return try {
+            connection.requestMethod = "POST"
+            connection.connectTimeout = connectTimeoutMillis
+            connection.readTimeout = readTimeoutMillis
+            connection.instanceFollowRedirects = false
+            connection.doOutput = true
+            // GitHub only reads the body when it is declared as JSON; the header
+            // carries no credential, so it is safe to set unconditionally.
+            connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            headers.forEach { (name, value) -> connection.setRequestProperty(name, value) }
+
+            connection.outputStream.use { stream ->
+                stream.write(body.toByteArray(Charsets.UTF_8))
+                stream.flush()
+            }
+
+            val statusCode = connection.responseCode
+            val stream = if (statusCode in 200..299) connection.inputStream else connection.errorStream
+            val responseBody = stream?.use { it.readBytes().toString(Charsets.UTF_8) }.orEmpty()
+
+            val responseHeaders = LinkedHashMap<String, List<String>>()
+            connection.headerFields?.forEach { (name, values) ->
+                if (name != null) responseHeaders[name] = values
+            }
+
+            GitHubRestResponse(statusCode, responseBody, responseHeaders)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: IOException) {

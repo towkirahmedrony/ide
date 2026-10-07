@@ -9,6 +9,8 @@ import com.agentx.app.git.DelegatingGitService
 import com.agentx.app.git.GitProjectProvider
 import com.agentx.app.git.GitPushService
 import com.agentx.app.git.GitService
+import com.agentx.app.tools.pullrequest.DelegatingPullRequestRepositoryProvider
+import com.agentx.app.tools.pullrequest.DelegatingPullRequestService
 import com.agentx.app.tools.verification.DelegatingCiRepositoryRefProvider
 import com.agentx.app.tools.verification.DelegatingCiVerificationService
 import com.agentx.app.tools.web.DelegatingHttpGetClient
@@ -43,6 +45,9 @@ class ToolsModule(
     private val webSearch: WebSearchProvider = DelegatingWebSearchProvider(),
     private val ciVerification: DelegatingCiVerificationService = DelegatingCiVerificationService(),
     private val ciRepository: DelegatingCiRepositoryRefProvider = DelegatingCiRepositoryRefProvider(),
+    private val pullRequests: DelegatingPullRequestService = DelegatingPullRequestService(),
+    private val pullRequestRepository: DelegatingPullRequestRepositoryProvider =
+        DelegatingPullRequestRepositoryProvider(),
 ) : ForgeModule {
 
     private val registry = DefaultToolRegistry()
@@ -64,6 +69,9 @@ class ToolsModule(
         // closed until the app attaches the GitHub-backed service and the active
         // project's repository resolver.
         BuiltinTools.verification(ciVerification, ciRepository).forEach(registry::register)
+        // Optional, approval-gated pull-request creation. Same bindable pattern, so
+        // `create_pr` is discoverable but fails closed until the app wires GitHub.
+        BuiltinTools.pullRequests(pullRequests, pullRequestRepository).forEach(registry::register)
         tools.forEach(registry::register)
         context.services.register(ServiceKeys.TOOL_REGISTRY, registry)
         context.services.register(
@@ -81,6 +89,8 @@ class ToolsModule(
         context.services.register(ServiceKeys.GIT_PROJECT_PROVIDER, gitProjects)
         context.services.register(ServiceKeys.CI_VERIFICATION_SERVICE, ciVerification)
         context.services.register(ServiceKeys.CI_REPOSITORY_REF_PROVIDER, ciRepository)
+        context.services.register(ServiceKeys.PULL_REQUEST_SERVICE, pullRequests)
+        context.services.register(ServiceKeys.PULL_REQUEST_REPOSITORY_PROVIDER, pullRequestRepository)
         context.services.register(ServiceKeys.TOOL_CONNECTION_AUTHORIZER, connections)
     }
 }

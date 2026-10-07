@@ -19,6 +19,9 @@ import com.agentx.app.tools.git.GitDiffTool
 import com.agentx.app.tools.git.GitLogTool
 import com.agentx.app.tools.git.GitPushTool
 import com.agentx.app.tools.git.GitStatusTool
+import com.agentx.app.tools.pullrequest.CreatePullRequestTool
+import com.agentx.app.tools.pullrequest.DelegatingPullRequestRepositoryProvider
+import com.agentx.app.tools.pullrequest.DelegatingPullRequestService
 import com.agentx.app.tools.web.HttpGetClient
 import com.agentx.app.tools.web.WebFetchTool
 import com.agentx.app.tools.web.WebSearchProvider
@@ -76,6 +79,18 @@ object BuiltinTools {
         GitBranchesTool(git),
         GitCommitTool(git),
         GitPushTool(push),
+    )
+
+    /**
+     * Optional, approval-gated GitHub pull-request creation. Registered with bindable
+     * collaborators, so `create_pr` fails closed until the app attaches the real
+     * GitHub-backed service and the active project's repository resolver.
+     */
+    fun pullRequests(
+        service: DelegatingPullRequestService,
+        repository: DelegatingPullRequestRepositoryProvider,
+    ): List<Tool> = listOf(
+        CreatePullRequestTool(service, repository),
     )
 
     /** Network research: page retrieval plus a provider-backed search. */

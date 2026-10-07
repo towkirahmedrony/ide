@@ -51,10 +51,23 @@ internal class RecordingGitHubRestClient(
 
     val requests: MutableList<Request> = mutableListOf()
 
+    /** Bodies handed to [post], so a test can assert what was sent. */
+    val bodies: MutableList<String> = mutableListOf()
+
     data class Request(val url: String, val headers: Map<String, String>)
 
     override suspend fun get(url: String, headers: Map<String, String>): GitHubRestResponse {
         requests += Request(url, headers)
+        return handler(url)
+    }
+
+    override suspend fun post(
+        url: String,
+        headers: Map<String, String>,
+        body: String,
+    ): GitHubRestResponse {
+        requests += Request(url, headers)
+        bodies += body
         return handler(url)
     }
 }

@@ -74,10 +74,15 @@ import com.agentx.app.git.DelegatingGitProjectProvider
 import com.agentx.app.git.DelegatingGitPushService
 import com.agentx.app.git.DelegatingGitService
 import com.agentx.app.git.GitPushService
+import com.agentx.app.core.pullrequest.PullRequestRef
+import com.agentx.app.core.pullrequest.PullRequestService
 import com.agentx.app.core.valueOrNull
 import com.agentx.app.core.verification.CiVerificationService
 import com.agentx.app.integrations.github.GitHubRepositoryRefs
 import com.agentx.app.integrations.github.GitHubRepositoryServiceKeys
+import com.agentx.app.tools.pullrequest.DelegatingPullRequestRepositoryProvider
+import com.agentx.app.tools.pullrequest.DelegatingPullRequestService
+import com.agentx.app.tools.pullrequest.PullRequestRepositoryProvider
 import com.agentx.app.tools.verification.CiRepositoryRefProvider
 import com.agentx.app.tools.verification.DelegatingCiRepositoryRefProvider
 import com.agentx.app.tools.verification.DelegatingCiVerificationService
@@ -362,6 +367,29 @@ class MainActivity : ComponentActivity() {
                     val remotes = gitService.remotes(active.workspaceId).valueOrNull().orEmpty()
                     val url = remotes.firstOrNull { it.name == "origin" }?.url ?: remotes.firstOrNull()?.url
                     url?.let { GitHubRepositoryRefs.fromCloneUrl(it) }
+                },
+            )
+        }
+        // Optional, approval-gated pull-request creation: the agent's `create_pr` tool
+        // reaches the same authenticated GitHub service, and the repository is resolved
+        // from the active project's credential-free origin remote. Both stay fail-closed
+        // until this binding runs, so nothing else changes for the normal push workflow.
+        when (val holder = foundation.services.get<Any>(ServiceKeys.PULL_REQUEST_SERVICE)) {
+            is DelegatingPullRequestService -> {
+                (foundation.services.get<Any>(GitHubRepositoryServiceKeys.PULL_REQUEST_SERVICE)
+                    as? PullRequestService)?.let(holder::bind)
+            }
+        }
+        when (val holder = foundation.services.get<Any>(ServiceKeys.PULL_REQUEST_REPOSITORY_PROVIDER)) {
+            is DelegatingPullRequestRepositoryProvider -> holder.bind(
+                PullRequestRepositoryProvider {
+                    val active = gitProjectProvider.active() ?: return@PullRequestRepositoryProvider null
+                    if (!active.available) return@PullRequestRepositoryProvider null
+                    val remotes = gitService.remotes(active.workspaceId).valueOrNull().orEmpty()
+                    val url = remotes.firstOrNull { it.name == "origin" }?.url ?: remotes.firstOrNull()?.url
+                    val ref = url?.let { GitHubRepositoryRefs.fromCloneUrl(it) }
+                        ?: return@PullRequestRepositoryProvider null
+                    PullRequestRef(ref.owner, ref.name)
                 },
             )
         }

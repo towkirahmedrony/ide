@@ -40,6 +40,19 @@ object ServiceKeys {
      * one that reads the active project's GitHub remote.
      */
     const val CI_REPOSITORY_REF_PROVIDER = "forge.git.ciRepositoryRefProvider"
+
+    /**
+     * Bindable GitHub pull-request service the agent's `create_pr` tool writes
+     * through. Fail closed with "no connection" until the app binds the real,
+     * authenticated implementation.
+     */
+    const val PULL_REQUEST_SERVICE = "forge.git.pullRequestService"
+
+    /**
+     * Bindable resolver for the repository a pull request targets; the app attaches
+     * one that reads the active project's GitHub remote.
+     */
+    const val PULL_REQUEST_REPOSITORY_PROVIDER = "forge.git.pullRequestRepositoryProvider"
     const val CONTEXT_ENGINE = "forge.context.engine"
     const val MODEL_GATEWAY = "forge.model.gateway"
     const val MODEL_MANAGER = "forge.model.manager"

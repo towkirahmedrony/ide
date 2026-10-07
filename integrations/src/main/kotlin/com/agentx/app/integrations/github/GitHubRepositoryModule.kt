@@ -1,5 +1,6 @@
 package com.agentx.app.integrations.github
 
+import com.agentx.app.core.pullrequest.PullRequestService
 import com.agentx.app.core.verification.CiVerificationService
 import com.agentx.app.git.DelegatingGitProjectProvider
 import com.agentx.app.git.GitProjectProvider
@@ -36,6 +37,7 @@ object GitHubRepositoryServiceKeys {
     const val CLONE_SERVICE: String = "forge.integrations.github.cloneService"
     const val PUSH_SERVICE: String = "forge.integrations.github.pushService"
     const val CI_VERIFICATION_SERVICE: String = "forge.integrations.github.ciVerificationService"
+    const val PULL_REQUEST_SERVICE: String = "forge.integrations.github.pullRequestService"
     const val DESTINATION_VALIDATOR: String = "forge.integrations.github.cloneDestinationValidator"
 }
 
@@ -52,6 +54,8 @@ object GitHubRepositoryServices {
         gitProjects: GitProjectProvider = DelegatingGitProjectProvider(),
         connections: GitHubRepositoryConnectionResolver = GitHubRepositoryConnectionResolver { null },
         actionsConnections: GitHubActionsConnectionResolver = GitHubActionsConnectionResolver { null },
+        pullRequestConnections: GitHubPullRequestConnectionResolver =
+            GitHubPullRequestConnectionResolver { null },
     ): Services = Services(
         repositoryService = GitHubRepositoryServiceImpl(
             credentialGateway = credentialGateway,
@@ -70,6 +74,13 @@ object GitHubRepositoryServices {
             connections = actionsConnections,
             restClient = restClient,
         ),
+        // The optional pull-request write shares the same credential gateway and
+        // transport, so it is never a second credential path either.
+        pullRequestService = GitHubPullRequestServiceImpl(
+            credentialGateway = credentialGateway,
+            connections = pullRequestConnections,
+            restClient = restClient,
+        ),
         destinationValidator = CloneDestinationValidator(),
     )
 
@@ -78,6 +89,7 @@ object GitHubRepositoryServices {
         val cloneService: GitHubRepositoryCloneService,
         val pushService: GitPushService,
         val ciVerificationService: CiVerificationService,
+        val pullRequestService: PullRequestService,
         val destinationValidator: CloneDestinationValidator,
     )
 }
