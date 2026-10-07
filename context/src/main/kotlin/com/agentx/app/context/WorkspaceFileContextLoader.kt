@@ -177,6 +177,7 @@ class WorkspaceFileContextLoader(
 
     private fun describe(reason: ContextReason): String = when (reason) {
         ContextReason.MENTIONED_FILE -> "File named in the current request"
+        ContextReason.ATTACHMENT -> "File attached to this message"
         ContextReason.SELECTED_FILE -> "File open in the editor"
         ContextReason.RECENT_FILE -> "Recently used file"
         ContextReason.SEARCH_RESULT -> "File found by search"
