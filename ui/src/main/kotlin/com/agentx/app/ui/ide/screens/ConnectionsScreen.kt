@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -35,6 +34,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.agentx.app.integrations.connection.Connection
 import com.agentx.app.integrations.connection.ConnectionManagerState
@@ -60,17 +60,16 @@ import com.agentx.app.ui.theme.ForgeInk
 import com.agentx.app.ui.theme.ForgeMint
 import com.agentx.app.ui.theme.ForgeMuted
 import com.agentx.app.ui.theme.ForgePeriwinkle
-import com.agentx.app.ui.theme.ForgeSurface
 import com.agentx.app.ui.theme.ForgeSurfaceVariant
 
 /**
  * The Connections page: the central place where a service is connected and the
  * agent gains its tools.
  *
- * It is a short list of services rather than a settings form. Each card states
- * what the service gives the agent, whether it is connected and who it is
- * connected as, and offers the single action that makes sense: Connect, Manage,
- * Reconnect or Add Server. Credentials are never rendered.
+ * Each card is compact: icon, name and status on top, a one-line capability
+ * summary, who it is connected as, and the single action that makes sense
+ * (Set Up, Connect, Manage, Reconnect or Add Server). Credentials are never
+ * rendered.
  */
 @Composable
 fun ConnectionsScreen(
@@ -98,7 +97,7 @@ fun ConnectionsScreen(
     ) {
         IdeTopBar(
             title = "Connections",
-            subtitle = "Connect services and give your AI agent access to the tools it needs.",
+            subtitle = "Services your AI agent can use",
             onBack = onBack,
             actions = {
                 IconButton(onClick = onRefresh) {
@@ -115,7 +114,7 @@ fun ConnectionsScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp, vertical = 16.dp),
+                .padding(horizontal = 16.dp, vertical = 16.dp),
         ) {
             if (!credentialsPersistent) {
                 IdeCard {
@@ -157,7 +156,11 @@ fun ConnectionsScreen(
                     connection = connection,
                     setup = setupOf(availability.type, connection),
                     enabledTools = tools.count { it.provider == availability.type && it.enabled },
-                    busy = busyKey == availability.type.name || busyKey == connection?.id?.value,
+                    // busyKey and the connection id are both null before anything is
+                    // connected; comparing them directly made every unconnected card
+                    // look busy and disabled its button.
+                    busy = busyKey != null &&
+                        (busyKey == availability.type.name || busyKey == connection?.id?.value),
                     onOpen = { onOpenService(availability.type) },
                     onPrimaryAction = {
                         val snapshot = setupOf(availability.type, connection)
@@ -189,6 +192,7 @@ fun ConnectionsScreen(
                 style = MaterialTheme.typography.bodySmall,
                 color = ForgeMuted,
             )
+            IdeSpacer(24)
         }
     }
 }
@@ -210,6 +214,7 @@ private fun ServiceCard(
     val lifecycle = setup?.lifecycle
     val pillText = lifecycle?.displayName ?: status.displayName
     val pillColor = lifecycle?.let { lifecycleColor(it) } ?: statusColor(status)
+    val labels = descriptor?.capabilities.orEmpty().map { it.label }
 
     IdeCard(modifier = Modifier.clickable(onClick = onOpen)) {
         Row(verticalAlignment = Alignment.Top) {
@@ -222,57 +227,78 @@ private fun ServiceCard(
                         style = MaterialTheme.typography.titleMedium,
                         color = ForgeInk,
                         fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
                     )
                     IdeSpacerW(8)
                     IdeStatusPill(text = pillText, color = pillColor)
                 }
-                IdeSpacer(4)
+                IdeSpacer(2)
                 Text(
                     text = descriptor?.description ?: availability.description,
-                    style = MaterialTheme.typography.bodyMedium,
+                    style = MaterialTheme.typography.bodySmall,
                     color = ForgeMuted,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                 )
-                val labels = descriptor?.capabilities.orEmpty().map { it.label }
-                if (labels.isNotEmpty()) {
-                    IdeSpacer(8)
-                    CapabilityStrip(labels = labels.take(MAX_CARD_CAPABILITIES), more = labels.size - MAX_CARD_CAPABILITIES)
-                }
-                accountLine(status, connection, enabledTools, setup)?.let { detail ->
-                    IdeSpacer(8)
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        when (status) {
-                            ConnectionStatus.CONNECTED -> Icon(
-                                imageVector = Icons.Filled.CheckCircle,
-                                contentDescription = null,
-                                tint = ForgeMint,
-                                modifier = Modifier.size(14.dp),
-                            )
+            }
+        }
 
-                            ConnectionStatus.ERROR, ConnectionStatus.EXPIRED -> Icon(
-                                imageVector = Icons.Filled.ErrorOutline,
-                                contentDescription = null,
-                                tint = ForgeDanger,
-                                modifier = Modifier.size(14.dp),
-                            )
+        if (labels.isNotEmpty()) {
+            IdeSpacer(10)
+            Text(
+                text = capabilitySummary(labels),
+                style = MaterialTheme.typography.bodySmall,
+                color = ForgeInk.copy(alpha = 0.8f),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
 
-                            else -> Unit
-                        }
-                        IdeSpacerW(6)
-                        Text(
-                            text = detail,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = if (connected) ForgeMint else ForgeMuted,
+        accountLine(status, connection, enabledTools, setup)?.let { detail ->
+            IdeSpacer(8)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                when (status) {
+                    ConnectionStatus.CONNECTED -> {
+                        Icon(
+                            imageVector = Icons.Filled.CheckCircle,
+                            contentDescription = null,
+                            tint = ForgeMint,
+                            modifier = Modifier.size(14.dp),
                         )
+                        IdeSpacerW(6)
                     }
+
+                    ConnectionStatus.ERROR, ConnectionStatus.EXPIRED -> {
+                        Icon(
+                            imageVector = Icons.Filled.ErrorOutline,
+                            contentDescription = null,
+                            tint = ForgeDanger,
+                            modifier = Modifier.size(14.dp),
+                        )
+                        IdeSpacerW(6)
+                    }
+
+                    else -> Unit
                 }
+                Text(
+                    text = detail,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (connected) ForgeMint else ForgeMuted,
+                )
             }
         }
 
         IdeSpacer(12)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             Button(
                 onClick = onPrimaryAction,
                 enabled = !busy && availability.registered,
+                modifier = Modifier.weight(1f),
             ) {
                 Text(primaryLabel(availability, status, connected, setup))
             }
@@ -306,7 +332,7 @@ private fun ServiceIcon(type: ConnectionType) {
     }
     Box(
         modifier = Modifier
-            .size(36.dp)
+            .size(40.dp)
             .background(ForgeSurfaceVariant, RoundedCornerShape(10.dp))
             .border(1.dp, ForgeBorder, RoundedCornerShape(10.dp)),
         contentAlignment = Alignment.Center,
@@ -315,32 +341,11 @@ private fun ServiceIcon(type: ConnectionType) {
     }
 }
 
-@Composable
-private fun CapabilityStrip(labels: List<String>, more: Int) {
-    if (labels.isEmpty()) return
-    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        labels.forEach { label ->
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelSmall,
-                color = ForgeInk,
-                modifier = Modifier
-                    .background(ForgeSurfaceVariant, RoundedCornerShape(6.dp))
-                    .border(1.dp, ForgeBorder, RoundedCornerShape(6.dp))
-                    .padding(horizontal = 6.dp, vertical = 3.dp),
-            )
-        }
-        if (more > 0) {
-            Text(
-                text = "+$more",
-                style = MaterialTheme.typography.labelSmall,
-                color = ForgeMuted,
-                modifier = Modifier
-                    .background(ForgeSurface, RoundedCornerShape(6.dp))
-                    .padding(horizontal = 6.dp, vertical = 3.dp),
-            )
-        }
-    }
+/** One line of what the service gives the agent, e.g. "Read repositories · Pull requests · +2". */
+private fun capabilitySummary(labels: List<String>): String {
+    val shown = labels.take(MAX_CARD_CAPABILITIES).joinToString(" · ")
+    val more = labels.size - MAX_CARD_CAPABILITIES
+    return if (more > 0) "$shown · +$more" else shown
 }
 
 /** Services in the order the product presents them. */
@@ -376,7 +381,7 @@ private fun accountLine(
     setup: ProviderSetupSnapshot? = null,
 ): String? = when {
     setup?.lifecycle == IntegrationLifecycle.NOT_CONFIGURED ->
-        "Client ID required. Open this service to set it up."
+        "Add your Client ID to enable sign-in."
     status == ConnectionStatus.CONNECTED -> listOfNotNull(
         connection?.accountLabel ?: "Connected",
         enabledTools.takeIf { it > 0 }?.let { "$it tools available to the agent" },
