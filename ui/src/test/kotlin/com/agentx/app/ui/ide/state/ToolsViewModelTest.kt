@@ -118,15 +118,15 @@ class ToolsViewModelTest {
     fun `search and filters narrow the list`() {
         val (vm, _) = viewModel()
 
-        vm.setQuery("web")
+        vm.updateQuery("web")
         assertEquals(listOf("web_search"), vm.filtered.map { it.id })
 
-        vm.setQuery("")
-        vm.setCategoryFilter(ToolCategory.FILESYSTEM)
+        vm.updateQuery("")
+        vm.updateCategoryFilter(ToolCategory.FILESYSTEM)
         assertEquals(listOf("read_file", "write_file"), vm.filtered.map { it.id })
 
-        vm.setCategoryFilter(null)
-        vm.setStatusFilter(ToolFilter.UNAVAILABLE)
+        vm.updateCategoryFilter(null)
+        vm.updateStatusFilter(ToolFilter.UNAVAILABLE)
         assertEquals(listOf("browser"), vm.filtered.map { it.id })
         assertEquals(1, vm.grouped.size)
     }

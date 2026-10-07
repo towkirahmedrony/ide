@@ -125,15 +125,15 @@ class ToolsViewModel(
         }
     }
 
-    fun setQuery(value: String) {
+    fun updateQuery(value: String) {
         query = value
     }
 
-    fun setStatusFilter(value: ToolFilter) {
+    fun updateStatusFilter(value: ToolFilter) {
         statusFilter = value
     }
 
-    fun setCategoryFilter(value: ToolCategory?) {
+    fun updateCategoryFilter(value: ToolCategory?) {
         categoryFilter = value
     }
 

@@ -119,7 +119,7 @@ fun ToolsScreen(
 
             OutlinedTextField(
                 value = viewModel.query,
-                onValueChange = viewModel::setQuery,
+                onValueChange = viewModel::updateQuery,
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 label = { Text("Search tools") },
@@ -129,14 +129,14 @@ fun ToolsScreen(
                 filters = ToolFilter.entries.toList(),
                 selected = viewModel.statusFilter,
                 labelOf = { it.label },
-                onSelect = { viewModel.setStatusFilter(it) },
+                onSelect = { viewModel.updateStatusFilter(it) },
             )
             if (viewModel.categories.size > 1) {
                 FilterRow(
                     filters = listOf<ToolCategory?>(null) + viewModel.categories,
                     selected = viewModel.categoryFilter,
                     labelOf = { it?.let { category -> viewModel.tools.first { entry -> entry.category == category }.categoryLabel } ?: "All categories" },
-                    onSelect = { viewModel.setCategoryFilter(it) },
+                    onSelect = { viewModel.updateCategoryFilter(it) },
                 )
             }
 
