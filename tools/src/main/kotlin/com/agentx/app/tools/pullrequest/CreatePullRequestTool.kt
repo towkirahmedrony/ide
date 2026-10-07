@@ -154,10 +154,13 @@ class CreatePullRequestTool(
         }
         val parsed = parseRepository(requested)
             ?: throw invalid("'$requested' must be a repository in owner/name form")
-        if (active != null && !parsed.sameRepository(active)) {
+        if (active == null) return parsed
+        if (!parsed.sameRepository(active)) {
             throw invalid("'$requested' does not match the active project '${active.fullName}'")
         }
-        return parsed
+        // The active project is the canonical owner/name; a differently-cased
+        // spelling that matches it never changes what the request targets.
+        return active
     }
 
     private fun parseRepository(raw: String): PullRequestRef? {
