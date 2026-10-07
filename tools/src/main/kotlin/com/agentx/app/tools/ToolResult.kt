@@ -10,6 +10,9 @@ enum class ToolErrorCode {
     APPROVAL_REQUIRED,
     /** Declared but not implemented, or implemented but not enabled in this build. */
     TOOL_UNAVAILABLE,
+
+    /** The user turned the tool off in Settings, so it must not run or be offered. */
+    TOOL_DISABLED,
     EXECUTION_FAILED,
     TIMEOUT,
     CANCELLED,

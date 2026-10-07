@@ -29,6 +29,12 @@ class DefaultToolRouter(
     private val policy: ToolPermissionPolicy = ToolPermissionPolicy.default(),
     private val executor: ToolExecutor = DefaultToolExecutor(),
     private val connections: ToolConnectionAuthorizer = MissingToolConnectionAuthorizer,
+    /**
+     * The user-owned enablement, read live so a tool turned off in Settings is
+     * refused here even if a caller assembled its own tool list. Defaults to
+     * "everything enabled", so a caller that passes nothing is unchanged.
+     */
+    private val preferences: ToolPreferences = AllowAllToolPreferences,
 ) : ToolRouter {
 
     override suspend fun invoke(
@@ -38,6 +44,21 @@ class DefaultToolRouter(
     ): ToolResult {
         val tool = registry.find(toolName)
             ?: return unknownTool(toolName)
+
+        // 0. The user's own switch, checked before anything else: a disabled tool
+        // must never run, regardless of who assembled the request. Reported with
+        // its own code so "turned off" is distinguishable from "not permitted".
+        if (!preferences.isEnabled(toolName)) {
+            return ToolResult.Failure(
+                toolName = toolName,
+                error = ToolExecutionError(
+                    code = ToolErrorCode.TOOL_DISABLED,
+                    message = "Tool '$toolName' is disabled in Settings",
+                    toolName = toolName,
+                    details = mapOf("toolId" to Json.of(toolName)),
+                ),
+            )
+        }
 
         val executionContext = context.copy(
             callId = context.callId ?: "tool-$toolName",

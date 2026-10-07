@@ -59,7 +59,7 @@ enum class SettingsSection(
     AGENT("agent", "Agents", "System prompts for the Main agent and each sub-agent", Icons.Filled.AutoAwesome),
     AGENT_MODELS("agent-models", "Agent Models", "Assign a provider and model to each agent", Icons.Filled.Tune),
     SKILLS("skills", "Skills", "Installed skills, enablement and agent assignment", Icons.Filled.Extension),
-    TOOLS("tools", "Tools", "Enable or disable agent tools", Icons.Filled.Handyman),
+    TOOLS("tools", "Tools", "Manage the tools available to your agents", Icons.Filled.Handyman),
     PERMISSIONS("permissions", "Permissions", "Android access AgentX uses, and how to grant it", Icons.Filled.Security),
     WORKSPACE("workspace", "Workspace", "Default workspace and runtime options", Icons.Filled.Folder),
     APPEARANCE("appearance", "Appearance", "Theme, editor font and layout", Icons.Filled.Palette),

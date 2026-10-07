@@ -46,7 +46,9 @@ import com.agentx.app.settings.SharedPreferencesAgentPromptStore
 import com.agentx.app.settings.SharedPreferencesAgentFallbackStore
 import com.agentx.app.settings.SharedPreferencesAgentRoleModelStore
 import com.agentx.app.settings.SharedPreferencesSkillConfigStore
+import com.agentx.app.settings.SharedPreferencesToolPreferenceStore
 import com.agentx.app.skills.CompositeSkillStore
+import com.agentx.app.tools.DefaultToolPreferences
 import com.agentx.app.tools.ToolRegistry
 import com.agentx.app.ui.ide.data.OAuthCallbackInbox
 import com.agentx.app.model.ModelConfig
@@ -180,6 +182,10 @@ class MainActivity : ComponentActivity() {
                 config = SharedPreferencesSkillConfigStore(applicationContext),
                 files = FilesystemSkillFileStore(File(applicationContext.filesDir, SKILLS_DIRECTORY)),
             ),
+            // Settings → Tools enable/disable choices persist here, so they survive
+            // a restart the same way the other settings do. Only disabled ids are
+            // stored; an empty set means every tool is on.
+            toolPreferenceStore = SharedPreferencesToolPreferenceStore(applicationContext),
             // Workspace skills come from the open workspace's `skills/<id>/SKILL.md`
             // folders, read through the Context Engine's workspace port. Built-in and
             // imported skills are unaffected; with no workspace open nothing is read.
@@ -204,6 +210,17 @@ class MainActivity : ComponentActivity() {
             runCatching {
                 foundation.services.get<ModelCatalogRegistry>(ServiceKeys.MODEL_CATALOG)?.restore()
             }
+        }
+
+        // The user's tool enablement is restored off the main thread; until this
+        // completes every tool stays enabled, which is the safe default. The Tool
+        // Router and the agent bridge read the same instance, so the restored set
+        // is in force for the next agent run.
+        backgroundScope.launch {
+            runCatching { (foundation.toolPreferences as? DefaultToolPreferences)?.load() }
+                .onFailure { error ->
+                    Log.e(TAG, "Could not restore tool preferences; keeping all tools enabled", error)
+                }
         }
 
         // Skills are discovered from the filesystem off the main thread; until
@@ -468,6 +485,10 @@ class MainActivity : ComponentActivity() {
                         agentPrompts = foundation.promptManager,
                         agentRoleModels = foundation.agentRoleModels,
                         skills = foundation.skillManager,
+                        // Settings → Tools reads the live catalog and writes the
+                        // same enablement the router and the agent core read.
+                        tools = foundation.services.get<ToolRegistry>(ServiceKeys.TOOL_REGISTRY),
+                        toolPreferences = foundation.toolPreferences,
                         oauthBrowser = IntentOAuthBrowserLauncher(applicationContext),
                         oauthCallbacks = oauthCallbacks,
                         modelRunnerBrowser = modelRunnerBrowser,

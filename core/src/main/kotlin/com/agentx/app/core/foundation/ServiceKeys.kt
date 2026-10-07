@@ -10,6 +10,12 @@ object ServiceKeys {
     const val TOOL_PERMISSION_POLICY = "forge.tools.permissionPolicy"
     const val TOOL_WORKSPACE_RESOLVER = "forge.tools.workspaceResolver"
 
+    /**
+     * The user-owned tool enablement. Settings writes it and the Tool Router and
+     * the agent tool bridge read it live, so one surface controls what is run.
+     */
+    const val TOOL_PREFERENCES = "forge.tools.preferences"
+
     /** Bindable host-directory resolver for agent-issued commands. */
     const val TOOL_WORKSPACE_HOST_PATHS = "forge.tools.workspaceHostPaths"
 

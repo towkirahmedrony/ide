@@ -13,17 +13,27 @@ import com.agentx.app.tools.JsonValue as ToolJsonValue
 import com.agentx.app.tools.ToolCapability
 import com.agentx.app.tools.ToolDefinition
 import com.agentx.app.tools.ToolParameterType
+import com.agentx.app.tools.ToolPreferences
+import com.agentx.app.tools.AllowAllToolPreferences
 import com.agentx.app.tools.ToolRegistry
 
 /**
  * Maps Tool System definitions onto Model Gateway tool specs, and Model
  * arguments onto Tool System JSON. Never executes a tool itself.
+ *
+ * A tool the user turned off in Settings is filtered here as well as at the
+ * router: this is the exposure side, so a disabled tool is never named to the
+ * model, counted against the context budget or offered as a schema. Both sides
+ * read the same [ToolPreferences] instance, so the two can never disagree.
  */
-class AgentToolBridge(private val registry: ToolRegistry) {
+class AgentToolBridge(
+    private val registry: ToolRegistry,
+    private val preferences: ToolPreferences = AllowAllToolPreferences,
+) {
 
     fun definitionsFor(names: Collection<String>): List<ToolDefinition> {
         val wanted = names.toSet()
-        return registry.definitions().filter { it.name in wanted }
+        return registry.definitions().filter { it.name in wanted && preferences.isEnabled(it.name) }
     }
 
     fun filterAllowed(
@@ -38,6 +48,9 @@ class AgentToolBridge(private val registry: ToolRegistry) {
                 allowed += name
                 continue
             }
+            // The loop-handled protocol tools have no definition; everything else
+            // must be a registered, enabled tool to be offered.
+            if (!preferences.isEnabled(name)) continue
             val definition = registry.find(name)?.definition ?: continue
             if (permission.allows(definition.capabilities)) {
                 allowed += name
@@ -57,6 +70,7 @@ class AgentToolBridge(private val registry: ToolRegistry) {
                 specs += finishSpec()
                 continue
             }
+            if (!preferences.isEnabled(name)) continue
             val definition = registry.find(name)?.definition ?: continue
             specs += definition.toModelSpec()
         }

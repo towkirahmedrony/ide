@@ -33,6 +33,8 @@ import com.agentx.app.skills.SkillManager
 import com.agentx.app.git.GitService
 import com.agentx.app.git.UnavailableGitService
 import com.agentx.app.termux.TermuxRuntime
+import com.agentx.app.tools.ToolPreferences
+import com.agentx.app.tools.ToolRegistry
 import com.agentx.app.ubuntu.LocalUbuntuRuntime
 import com.agentx.app.workspace.WorkspaceManager
 
@@ -117,6 +119,18 @@ data class IdeDependencies(
     ),
     /** Central skills registry and manager. */
     val skills: SkillManager = DefaultSkillManager(),
+    /**
+     * The live tool catalog Settings → Tools reads. Optional so previews and tests
+     * render the screen without a wired Tool System, in which case it reports that
+     * the tool system is unavailable instead of inventing tools.
+     */
+    val tools: ToolRegistry? = null,
+    /**
+     * The user-owned tool enablement Settings writes and the runtime reads. The same
+     * instance the Tool Router and the agent tool bridge use, so a change on the
+     * screen affects what the agent is offered and may run.
+     */
+    val toolPreferences: ToolPreferences? = null,
 ) {
     companion object {
         /** In-memory bindings for previews and tests. */

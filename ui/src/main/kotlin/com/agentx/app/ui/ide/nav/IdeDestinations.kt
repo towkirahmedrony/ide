@@ -31,6 +31,9 @@ object IdeDestinations {
     /** Settings → Permissions: the Android permissions and system access AgentX uses. */
     const val PERMISSIONS = "settings/permissions"
 
+    /** Settings → Tools: the live tool catalog and per-tool enablement. */
+    const val TOOLS = "settings/tools"
+
     const val ABOUT = "about"
     const val DEVELOPER = "developer"
     const val DEVELOPER_LOGS = "developer/logs"

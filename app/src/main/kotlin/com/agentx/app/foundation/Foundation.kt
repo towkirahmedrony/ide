@@ -80,9 +80,13 @@ import com.agentx.app.git.DelegatingGitProjectProvider
 import com.agentx.app.git.DelegatingGitPushService
 import com.agentx.app.git.DelegatingGitService
 import com.agentx.app.tools.BuiltinTools
+import com.agentx.app.tools.DefaultToolPreferences
 import com.agentx.app.tools.DelegatingWorkspaceFileSystemResolver
 import com.agentx.app.tools.DelegatingWorkspaceHostPathResolver
+import com.agentx.app.tools.InMemoryToolPreferenceStore
 import com.agentx.app.tools.TOOLS_LAYER
+import com.agentx.app.tools.ToolPreferenceStore
+import com.agentx.app.tools.ToolPreferences
 import com.agentx.app.tools.ToolsModule
 import com.agentx.app.tools.web.DuckDuckGoWebSearchProvider
 import com.agentx.app.tools.web.HttpGetClient
@@ -122,6 +126,11 @@ data class FoundationState(
     val agentRoleModels: AgentRoleModelRegistry,
     /** Central skills registry and manager. */
     val skillManager: SkillManager,
+    /**
+     * The user-owned tool enablement, shared by the Tool Router, the agent tool
+     * bridge and Settings. One instance, so a change is seen everywhere.
+     */
+    val toolPreferences: ToolPreferences,
     /** Per-operation execution budgets shared by every agent layer. */
     val timeouts: AgentTimeouts = AgentTimeouts.DEFAULT,
 )
@@ -167,6 +176,12 @@ object Foundation {
         rateLimitProfileStore: RateLimitProfileStore = InMemoryRateLimitProfileStore(),
         conversationStore: ConversationStore = InMemoryConversationStore(),
         skillStore: SkillStore = InMemorySkillStore(),
+        /**
+         * Where the user's per-tool enable/disable choices are kept between runs.
+         * Defaults to memory, so a build that passes nothing behaves exactly as it
+         * did before tool preferences existed.
+         */
+        toolPreferenceStore: ToolPreferenceStore = InMemoryToolPreferenceStore(),
         skillSources: List<SkillDiscoverySource> = emptyList(),
         runtimeOutput: RuntimeOutputBuffer = RuntimeOutputBuffer(),
         monitorModelConnections: Boolean = true,
@@ -300,6 +315,10 @@ object Foundation {
             parsers = codeIntelligenceParsers,
             limits = codeIntelligenceLimits,
         )
+        // The user-owned tool enablement is created here, before the tools module,
+        // so the Tool Router and the agent bridge are built over the same instance.
+        // Its persisted set is restored off the main thread by the app after boot.
+        val toolPreferences = DefaultToolPreferences(toolPreferenceStore)
 
         val modules = ModuleRegistry(logger)
         modules.register(ConfigModule(config))
@@ -315,6 +334,7 @@ object Foundation {
                 gitProjects = gitProjects,
                 webFetch = webFetch,
                 webSearch = webSearch,
+                preferences = toolPreferences,
             ),
         )
         modules.register(codeIntelligence)
@@ -388,6 +408,7 @@ object Foundation {
             promptManager = promptManager,
             skillManager = skillManager,
             agentRoleModels = roleModels,
+            toolPreferences = toolPreferences,
             timeouts = timeouts,
         )
     }

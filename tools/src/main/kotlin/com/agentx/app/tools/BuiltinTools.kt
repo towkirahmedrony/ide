@@ -9,6 +9,10 @@ import com.agentx.app.tools.codeintel.FindReferencesTool
 import com.agentx.app.tools.codeintel.GetFileOutlineTool
 import com.agentx.app.tools.codeintel.GetFileSymbolsTool
 import com.agentx.app.tools.execution.RunCommandTool
+import com.agentx.app.tools.extensions.BrowserToolStub
+import com.agentx.app.tools.extensions.GitHubToolStub
+import com.agentx.app.tools.extensions.McpToolStub
+import com.agentx.app.tools.extensions.SupabaseToolStub
 import com.agentx.app.tools.filesystem.ListDirectoryTool
 import com.agentx.app.tools.filesystem.ReadFileTool
 import com.agentx.app.tools.filesystem.SearchFilesTool
@@ -110,6 +114,21 @@ object BuiltinTools {
         repository: DelegatingCiRepositoryRefProvider,
     ): List<Tool> = listOf(
         CiVerificationTool(service, repository),
+    )
+
+    /**
+     * Categories this build declares but does not implement: browser automation,
+     * MCP servers, GitHub and Supabase. They are registered — not hidden — so the
+     * registry is the complete, honest catalog and Settings can show them as
+     * [ToolAvailability.UNAVAILABLE] rather than omitting them. Every one carries
+     * the `implemented=false` marker, has `DENY` permission, and is never part of
+     * a role's grant, so nothing about them is ever offered or executed.
+     */
+    fun declaredUnavailable(): List<Tool> = listOf(
+        BrowserToolStub(),
+        McpToolStub(),
+        GitHubToolStub(),
+        SupabaseToolStub(),
     )
 }
 

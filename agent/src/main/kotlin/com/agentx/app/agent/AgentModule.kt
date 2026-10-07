@@ -34,8 +34,10 @@ import com.agentx.app.model.capability.ModelCapabilityRegistry
 import com.agentx.app.model.manager.ModelManager
 import com.agentx.app.model.ratelimit.RateLimitManager
 import com.agentx.app.skills.SkillManager
+import com.agentx.app.tools.AllowAllToolPreferences
 import com.agentx.app.tools.DefaultToolRegistry
 import com.agentx.app.tools.DefaultToolRouter
+import com.agentx.app.tools.ToolPreferences
 import com.agentx.app.tools.ToolRegistry
 import com.agentx.app.tools.ToolRouter
 
@@ -74,6 +76,10 @@ class AgentModule(
         val gateway = context.services.get<ModelGateway>(ServiceKeys.MODEL_GATEWAY) ?: DefaultModelGateway()
         val registry = context.services.get<ToolRegistry>(ServiceKeys.TOOL_REGISTRY) ?: DefaultToolRegistry()
         val router = context.services.get<ToolRouter>(ServiceKeys.TOOL_ROUTER) ?: DefaultToolRouter(registry)
+        // The user-owned tool enablement, resolved from the container so the same
+        // instance the router checks is the one the bridge filters exposure with.
+        val toolPreferences = context.services.get<ToolPreferences>(ServiceKeys.TOOL_PREFERENCES)
+            ?: AllowAllToolPreferences
         val contextEngine = context.services.get<ContextEngine>(ServiceKeys.CONTEXT_ENGINE)
         val prompts = context.services.get<PromptManager>(ServiceKeys.AGENT_PROMPTS)
         val skills = context.services.get<SkillManager>(ServiceKeys.SKILLS)
@@ -141,6 +147,7 @@ class AgentModule(
             modelResolver = modelResolver,
             fallbackPolicy = fallbackPolicy,
             fallbackPolicyProvider = fallbackPolicyProvider,
+            toolPreferences = toolPreferences,
         )
         context.services.register(ServiceKeys.AGENT_ORCHESTRATOR, assembled.orchestrator)
         context.services.register(ServiceKeys.AGENT_REGISTRY, assembled.specialized)
@@ -179,9 +186,14 @@ class AgentModule(
              * layer records what happened and selection respects it.
              */
             healthTracker: CandidateHealthTracker? = null,
+            /**
+             * The user-owned tool enablement. Read live by the bridge, so a tool
+             * disabled in Settings is kept out of what every role is offered.
+             */
+            toolPreferences: ToolPreferences = AllowAllToolPreferences,
         ): AgentRuntime {
             val engine = contextEngine ?: DefaultContextEngine()
-            val bridge = AgentToolBridge(registry)
+            val bridge = AgentToolBridge(registry, toolPreferences)
             val loop = AgentLoop(
                 gateway = gateway,
                 toolRouter = router,

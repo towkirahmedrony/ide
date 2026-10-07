@@ -48,6 +48,12 @@ class ToolsModule(
     private val pullRequests: DelegatingPullRequestService = DelegatingPullRequestService(),
     private val pullRequestRepository: DelegatingPullRequestRepositoryProvider =
         DelegatingPullRequestRepositoryProvider(),
+    /**
+     * The user-owned tool enablement. Created by the composition root (so it can
+     * persist through a store) and registered here, where the router and the agent
+     * core both resolve it. Defaults to "all enabled".
+     */
+    private val preferences: DefaultToolPreferences = DefaultToolPreferences(),
 ) : ForgeModule {
 
     private val registry = DefaultToolRegistry()
@@ -72,12 +78,24 @@ class ToolsModule(
         // Optional, approval-gated pull-request creation. Same bindable pattern, so
         // `create_pr` is discoverable but fails closed until the app wires GitHub.
         BuiltinTools.pullRequests(pullRequests, pullRequestRepository).forEach(registry::register)
+        // Declared-but-unimplemented categories are registered too, so the registry
+        // is the complete catalog and Settings can show them as unavailable instead
+        // of silently omitting them. None is ever granted to a role or run.
+        BuiltinTools.declaredUnavailable().forEach(registry::register)
         tools.forEach(registry::register)
         context.services.register(ServiceKeys.TOOL_REGISTRY, registry)
         context.services.register(
             ServiceKeys.TOOL_ROUTER,
-            DefaultToolRouter(registry = registry, policy = policy, connections = connections),
+            DefaultToolRouter(
+                registry = registry,
+                policy = policy,
+                connections = connections,
+                preferences = preferences,
+            ),
         )
+        // The same enablement the router and the agent bridge read, so Settings has
+        // exactly one surface to write and the runtime has one to read.
+        context.services.register(ServiceKeys.TOOL_PREFERENCES, preferences)
         context.services.register(ServiceKeys.TOOL_PERMISSION_POLICY, policy)
         context.services.register(ServiceKeys.TOOL_WORKSPACE_RESOLVER, resolver)
         context.services.register(ServiceKeys.TOOL_WORKSPACE_HOST_PATHS, hostPaths)

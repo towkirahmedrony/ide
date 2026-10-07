@@ -49,6 +49,7 @@ import com.agentx.app.ui.ide.screens.SettingsScreen
 import com.agentx.app.ui.ide.screens.SettingsSection
 import com.agentx.app.ui.ide.screens.SkillDetailScreen
 import com.agentx.app.ui.ide.screens.SkillsScreen
+import com.agentx.app.ui.ide.screens.ToolsScreen
 import com.agentx.app.ui.ide.screens.WorkspaceShell
 import com.agentx.app.ui.ide.state.AgentModelsViewModel
 import com.agentx.app.ui.ide.state.AgentPromptEditorViewModel
@@ -64,6 +65,8 @@ import com.agentx.app.ui.ide.state.ModelRunnerViewModel
 import com.agentx.app.ui.ide.state.ModelsViewModel
 import com.agentx.app.ui.ide.state.OAuthCallbackViewModel
 import com.agentx.app.ui.ide.state.SkillsViewModel
+import com.agentx.app.ui.ide.state.ToolsViewModel
+import com.agentx.app.tools.DefaultToolPreferences
 import com.agentx.app.ui.theme.ForgeCanvas
 
 /**
@@ -162,6 +165,7 @@ fun ForgeIdeApp(
                         SettingsSection.AGENT -> IdeDestinations.AGENT_PROMPTS
                         SettingsSection.AGENT_MODELS -> IdeDestinations.AGENT_MODELS
                         SettingsSection.SKILLS -> IdeDestinations.SKILLS
+                        SettingsSection.TOOLS -> IdeDestinations.TOOLS
                         SettingsSection.PERMISSIONS -> IdeDestinations.PERMISSIONS
                         SettingsSection.ABOUT -> IdeDestinations.ABOUT
                         else -> IdeDestinations.settingsDetail(section.id)
@@ -173,6 +177,25 @@ fun ForgeIdeApp(
 
         composable(IdeDestinations.PERMISSIONS) {
             PermissionsScreen(onBack = { navController.popBackStack() })
+        }
+
+        composable(IdeDestinations.TOOLS) {
+            val toolsViewModel: ToolsViewModel = viewModel(
+                key = "tools-settings",
+                factory = IdeViewModelFactory {
+                    ToolsViewModel(
+                        registry = dependencies.tools,
+                        // The concrete, writable preference set; the Tool Router and
+                        // the agent tool bridge read the same instance. In a preview
+                        // there is none, and the screen reports that instead.
+                        preferences = dependencies.toolPreferences as? DefaultToolPreferences,
+                    )
+                },
+            )
+            ToolsScreen(
+                viewModel = toolsViewModel,
+                onBack = { navController.popBackStack() },
+            )
         }
 
         composable(IdeDestinations.AGENT_PROMPTS) {
