@@ -2,6 +2,7 @@ package com.agentx.app.integrations.github
 
 import com.agentx.app.core.errorOrNull
 import com.agentx.app.core.valueOrNull
+import com.agentx.app.workspace.AgentxProjectRoot
 import kotlinx.coroutines.runBlocking
 import org.eclipse.jgit.api.Git
 import org.eclipse.jgit.api.errors.GitAPIException
@@ -37,8 +38,10 @@ class GitHubRepositoryCloneServiceTest {
     // --- Destination naming ---------------------------------------------------
 
     @Test
-    fun `a repository becomes an owner-name folder`() {
-        assertEquals("octocat-hello-world", validator.directoryName("octocat", "hello-world"))
+    fun `a repository becomes a folder named after the repository`() {
+        // The user asked for hello-world, so hello-world is the folder — not octocat-hello-world.
+        assertEquals("hello-world", validator.directoryName("octocat", "hello-world"))
+        assertEquals("hello-world", validator.directoryName("another-owner", "hello-world"))
     }
 
     @Test
@@ -79,10 +82,27 @@ class GitHubRepositoryCloneServiceTest {
         try {
             val valid = assertIs<CloneDestinationValidation.Valid>(validator.validate(root, githubRepository()))
 
-            assertEquals(File(root, "octocat-hello-world").canonicalPath, valid.directory.path)
+            assertEquals(File(root, "hello-world").canonicalPath, valid.directory.path)
             assertTrue(valid.directory.path.startsWith(root.canonicalPath + File.separator))
         } finally {
             root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `a clone lands directly in the AgentX folder under its repository name`() {
+        val base = temporaryDirectory()
+        val root = AgentxProjectRoot.under(base)
+        try {
+            val valid = assertIs<CloneDestinationValidation.Valid>(validator.validate(root, githubRepository()))
+
+            assertEquals(File(root, "hello-world").canonicalPath, valid.directory.path)
+            assertEquals(root.canonicalFile, valid.directory.parentFile)
+            // The browsed folder gains exactly one child — the AgentX folder — and the clone is a
+            // direct child of it, never a nested or owner-prefixed path.
+            assertEquals(listOf(AgentxProjectRoot.DIRECTORY_NAME), base.list()?.toList())
+        } finally {
+            base.deleteRecursively()
         }
     }
 
@@ -104,7 +124,7 @@ class GitHubRepositoryCloneServiceTest {
     fun `a destination that already exists is refused`() {
         val root = temporaryDirectory()
         try {
-            File(root, "octocat-hello-world").mkdirs()
+            File(root, "hello-world").mkdirs()
 
             val invalid = assertIs<CloneDestinationValidation.Invalid>(validator.validate(root, githubRepository()))
 
@@ -119,7 +139,7 @@ class GitHubRepositoryCloneServiceTest {
         val root = temporaryDirectory()
         val outside = temporaryDirectory()
         try {
-            Files.createSymbolicLink(File(root, "octocat-hello-world").toPath(), outside.toPath())
+            Files.createSymbolicLink(File(root, "hello-world").toPath(), outside.toPath())
 
             val invalid = assertIs<CloneDestinationValidation.Invalid>(validator.validate(root, githubRepository()))
 
@@ -151,7 +171,7 @@ class GitHubRepositoryCloneServiceTest {
     fun `an unusable destination is refused before the credential is asked for`() = runBlocking {
         val root = temporaryDirectory()
         try {
-            File(root, "octocat-hello-world").mkdirs()
+            File(root, "hello-world").mkdirs()
             val gateway = FakeCredentialGateway()
             val service = newService(gateway)
 
@@ -175,7 +195,7 @@ class GitHubRepositoryCloneServiceTest {
             val result = service.clone(TEST_CONNECTION_ID, githubRepository(), root)
 
             assertIs<GitHubRepositoryError.NoCredential>(result.errorOrNull())
-            assertFalse(File(root, "octocat-hello-world").exists(), "no partial clone is left behind")
+            assertFalse(File(root, "hello-world").exists(), "no partial clone is left behind")
             assertTrue(File(root, "keep-me").isDirectory, "an unrelated folder is untouched")
         } finally {
             root.deleteRecursively()

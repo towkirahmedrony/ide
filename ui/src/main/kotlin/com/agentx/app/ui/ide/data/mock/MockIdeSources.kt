@@ -7,6 +7,7 @@ import com.agentx.app.ui.ide.data.ModelRunnerBrowserHost
 import com.agentx.app.ui.ide.data.WorkspacePicker
 import com.agentx.app.ui.ide.model.AgentActivity
 import com.agentx.app.ui.ide.model.AgentActivityStatus
+import com.agentx.app.workspace.AgentxProjectRoot
 import com.agentx.app.workspace.DefaultWorkspaceManager
 import com.agentx.app.workspace.ManagedProjectDirectory
 import com.agentx.app.workspace.WorkspaceManager
@@ -26,7 +27,9 @@ import java.io.File
 
 /** An in-memory workspace manager used by previews and tests. */
 fun mockWorkspaceManager(
-    projectsRoot: File = File(System.getProperty("java.io.tmpdir") ?: ".", "agentx-demo-projects"),
+    projectsRoot: File = AgentxProjectRoot.under(
+        File(System.getProperty("java.io.tmpdir") ?: ".", "agentx-demo"),
+    ),
 ): WorkspaceManager = DefaultWorkspaceManager(
     backend = InMemoryWorkspaceBackend(),
     store = InMemoryWorkspaceMetadataStore(),

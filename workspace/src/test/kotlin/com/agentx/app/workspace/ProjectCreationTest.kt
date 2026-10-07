@@ -43,12 +43,16 @@ class ProjectCreationTest {
     // --- valid creation ----------------------------------------------------
 
     @Test
-    fun `a created project is an empty directory in managed storage`() {
-        val root = freshDir("agentx-managed")
+    fun `a created project is an empty directory in the AgentX folder`() {
+        val root = AgentxProjectRoot.under(freshDir("agentx-managed"))
         val created = ManagedProjectDirectory(root).create("MyProject").valueOrNull()
 
         assertNotNull(created)
+        // The AgentX folder is the project root the user sees, and the project is its direct child.
+        assertEquals(AgentxProjectRoot.DIRECTORY_NAME, root.name)
         assertEquals(File(root.canonicalFile, "MyProject").path, created)
+        assertEquals(root.canonicalFile, File(created).parentFile)
+        assertTrue(root.isDirectory, "the AgentX folder is created on first use")
 
         val directory = File(created)
         assertTrue(directory.isDirectory)
@@ -56,6 +60,32 @@ class ProjectCreationTest {
         assertEquals(emptyList(), directory.list()?.toList())
         assertFalse(File(directory, ".git").exists())
         assertFalse(File(directory, "README.md").exists())
+    }
+
+    @Test
+    fun `projects AgentX creates are independent siblings in the AgentX folder`() = runBlocking {
+        val root = AgentxProjectRoot.under(freshDir("agentx-siblings"))
+        val manager = manager(root)
+
+        val first = assertNotNull(manager.createProject("A").valueOrNull())
+        val second = assertNotNull(manager.createProject("B").valueOrNull())
+
+        // Both live directly in the AgentX folder, side by side ...
+        assertEquals(File(root.canonicalFile, "A").path, first.workspace.metadata.displayLocation)
+        assertEquals(File(root.canonicalFile, "B").path, second.workspace.metadata.displayLocation)
+        assertEquals(setOf("A", "B"), root.list()?.toSet())
+
+        // ... each is its own root, and neither is the other.
+        assertFalse(File(File(root, "A"), "B").exists())
+        File(File(root, "A"), "only-in-a.txt").writeText("A")
+        assertTrue(File(File(root, "A"), "only-in-a.txt").isFile)
+        assertFalse(File(File(root, "B"), "only-in-a.txt").exists())
+
+        // And both are remembered as separate projects.
+        assertEquals(
+            setOf(first.workspace.id, second.workspace.id),
+            manager.recent().valueOrNull().orEmpty().map { it.id }.toSet(),
+        )
     }
 
     @Test
@@ -124,7 +154,7 @@ class ProjectCreationTest {
 
     @Test
     fun `creating a project registers it as active and persists it`() = runBlocking {
-        val root = freshDir("agentx-active")
+        val root = AgentxProjectRoot.under(freshDir("agentx-active"))
         val store = InMemoryWorkspaceMetadataStore()
         val manager = manager(root, store)
 

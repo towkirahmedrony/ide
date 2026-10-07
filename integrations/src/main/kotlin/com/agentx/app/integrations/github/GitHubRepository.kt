@@ -18,9 +18,6 @@ data class GitHubRepository(
     val cloneUrl: GitHubRepositoryCloneUrl,
     val webUrl: String,
 ) {
-    /** The directory a clone of this repository gets under the managed workspace root. */
-    val directoryName: String get() = "$owner-$name"
-
     /** Deliberately excludes [cloneUrl] so a log line can never carry a URL people copy. */
     override fun toString(): String =
         "GitHubRepository(id=${id.value}, fullName=$fullName, visibility=${visibility.name}, " +

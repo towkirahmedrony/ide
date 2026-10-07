@@ -5,8 +5,9 @@ package com.agentx.app.ui.ide.permissions
  *
  * This list is the whole of what the Permissions screen shows, and every entry maps to a real
  * declaration in this app's merged manifest and a real feature that exercises it. Nothing is
- * listed because an IDE could use it: AgentX does not request the camera, the microphone, or
- * broad storage access, so none of those appear here.
+ * listed because an IDE could use it: AgentX does not request the camera or the microphone. The one
+ * storage access it does declare — "All files access" — is here because projects and clones really
+ * live in shared storage, so a denial turns those features off and the row says which ones.
  */
 enum class AgentPermission(
     /** The manifest permission name, exactly as declared. */
@@ -83,14 +84,16 @@ enum class AgentPermission(
         settingsTarget = PermissionSettingsTarget.NOTIFICATIONS,
     ),
 
-    /** Binding a picked project folder into the guest at its real path. */
+    /** The AgentX project folder in shared storage, and binding a picked project into the guest. */
     ALL_FILES_ACCESS(
         androidName = "android.permission.MANAGE_EXTERNAL_STORAGE",
         label = "All files access",
-        feature = "Terminal project bind",
-        purpose = "Lets the embedded Ubuntu terminal bind-mount a project folder you picked at " +
-            "its real phone-storage path, so a change made in the terminal is the same file the " +
-            "IDE reads. Without it the shell runs in the guest home and nothing is copied.",
+        feature = "Projects, GitHub clones, terminal project bind",
+        purpose = "Lets AgentX create and manage its projects in the AgentX folder in your shared " +
+            "storage, clone GitHub repositories into that same folder, and bind a project folder " +
+            "at its real phone-storage path for the embedded terminal — so a change made in the " +
+            "terminal is the same file the IDE reads. Without it AgentX cannot create a project " +
+            "or clone a repository, and the shell runs in the guest home with nothing mounted.",
         category = PermissionCategory.SPECIAL,
         optional = true,
         minSdk = 30,

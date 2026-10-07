@@ -142,7 +142,7 @@ class GitHubRepositorySecurityTest {
     fun `a failed clone never reaches the network and never deletes a sibling`() = runBlocking {
         val root = temporaryDirectory()
         try {
-            val sibling = File(root, "octocat-hello-world").also { it.mkdirs() }
+            val sibling = File(root, "hello-world").also { it.mkdirs() }
             File(sibling, "notes.txt").writeText("keep me")
 
             val service = JGitGitHubRepositoryCloneService(FakeCredentialGateway())

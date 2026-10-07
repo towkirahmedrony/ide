@@ -586,6 +586,47 @@ class WorkspaceProjectStorageTest {
     }
 
     @Test
+    fun `projects in the AgentX root and in legacy managed storage are both deletable`() {
+        // The layout after the move to a user-visible root: new projects are created in the AgentX
+        // folder, projects created before it existed were never moved and are still in app-private
+        // storage, and *both* roots are registered — losing the legacy one would leave those
+        // projects openable but impossible to clean up through the existing abstraction.
+        val agentxRoot = File(filesDir, AgentxProjectRoot.DIRECTORY_NAME).apply { mkdirs() }
+        val storage = OwnedWorkspaceProjectStorage(
+            ownedRoots = emptyList(),
+            naming = naming("nothing"),
+            managedRoots = listOf(agentxRoot.path, managedProjects.path),
+        )
+
+        fun record(directory: File) = WorkspaceRecord(
+            metadata = WorkspaceMetadata(
+                id = WorkspaceId("managed-${directory.name}"),
+                name = directory.name,
+                displayLocation = directory.canonicalPath,
+                persisted = true,
+            ),
+            handle = directory.canonicalPath,
+        )
+
+        val current = File(agentxRoot, "NewApp")
+        File(current, "src/Main.kt").apply { parentFile?.mkdirs() }.writeText("new")
+        val currentReport = storage.remove(record(current))
+
+        assertTrue(currentReport.ok, "an AgentX-folder project must be deletable: ${currentReport.failed}")
+        assertEquals(listOf(current.canonicalPath), currentReport.removed)
+        assertFalse(current.exists())
+        assertTrue(agentxRoot.isDirectory, "the AgentX root itself must survive a project delete")
+
+        val legacy = createManagedProject("OldApp", "src/Main.kt")
+        val legacyReport = storage.remove(record(legacy))
+
+        assertTrue(legacyReport.ok, "a legacy project must still be deletable: ${legacyReport.failed}")
+        assertEquals(listOf(legacy.canonicalPath), legacyReport.removed)
+        assertFalse(legacy.exists())
+        assertTrue(managedProjects.isDirectory, "the legacy root itself must survive a project delete")
+    }
+
+    @Test
     fun `a failed managed cleanup keeps the project visible and reports why`() = runBlocking {
         val refusing = OwnedWorkspaceProjectStorage(
             ownedRoots = emptyList(),

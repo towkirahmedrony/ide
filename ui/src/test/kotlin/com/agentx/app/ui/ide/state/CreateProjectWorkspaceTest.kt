@@ -4,6 +4,7 @@ import com.agentx.app.core.valueOrNull
 import com.agentx.app.ubuntu.ProotCommand
 import com.agentx.app.ubuntu.UbuntuProjectBinding
 import com.agentx.app.ubuntu.UbuntuProjectBindings
+import com.agentx.app.workspace.AgentxProjectRoot
 import com.agentx.app.workspace.DefaultWorkspaceManager
 import com.agentx.app.workspace.FileWorkspaceBackend
 import com.agentx.app.workspace.ManagedProjectDirectory
@@ -34,7 +35,8 @@ class CreateProjectWorkspaceTest {
 
     @Test
     fun `a newly created project resolves as the terminal workspace`() = runBlocking {
-        val root = Files.createTempDirectory("agentx-create-ws").toFile().also { tempDirs += it }
+        val root = AgentxProjectRoot
+            .under(Files.createTempDirectory("agentx-create-ws").toFile().also { tempDirs += it })
         val manager = DefaultWorkspaceManager(
             backend = FileWorkspaceBackend(),
             store = InMemoryWorkspaceMetadataStore(),

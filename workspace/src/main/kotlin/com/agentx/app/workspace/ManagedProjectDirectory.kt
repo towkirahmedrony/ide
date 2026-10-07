@@ -8,11 +8,16 @@ import java.io.File
 /**
  * Creates empty projects inside AgentX-managed storage.
  *
- * Projects live as plain directories under one app-private root
- * (`<filesDir>/projects/<name>`), the same place AgentX keeps the repositories it clones: outside
- * the Ubuntu rootfs and outside any temporary runtime scratch space. Because it is a real host
- * path, the terminal's existing project binding can mount it at `/workspace` in place — nothing
- * is copied into the guest.
+ * A project is a plain directory that is a direct child of one AgentX-owned root — `<root>/<name>`
+ * — which by default is the user-visible `AgentX` folder in shared storage that [AgentxProjectRoot]
+ * names, and the same root the repositories AgentX clones are put in. So projects stay outside the
+ * Ubuntu rootfs and outside any temporary runtime scratch space, and because the root is a real host
+ * path the terminal's existing project binding can mount a project at `/workspace` in place —
+ * nothing is copied into the guest.
+ *
+ * The root is injected rather than resolved here: which directory holds AgentX projects is a
+ * deployment decision the composition root makes once, and this class only ever writes inside
+ * whatever it is given.
  *
  * Only the container is created here. No template, language file, Gradle/Kotlin/Node/Python file,
  * README or Git repository is generated: this is project creation, not scaffolding.
@@ -40,7 +45,7 @@ class ManagedProjectDirectory(private val root: File) {
             return failure(
                 WorkspaceError(
                     code = WorkspaceErrorCode.INVALID_PROJECT_NAME,
-                    message = "A project name cannot point outside the projects folder.",
+                    message = "A project name cannot point outside the project folder.",
                 ),
             )
         }
@@ -76,19 +81,19 @@ class ManagedProjectDirectory(private val root: File) {
             ),
         )
 
+    /**
+     * The root is unusable — it could not be created, or it is not a directory. The message names
+     * what to do about it rather than only what failed, because the usual cause is storage access
+     * AgentX has not been granted, and the app's own Permissions page is where that is fixed.
+     */
     private fun storageUnavailable(name: String): WorkspaceResult<Nothing> =
         failure(
             WorkspaceError(
                 code = WorkspaceErrorCode.PROJECT_STORAGE_UNAVAILABLE,
-                message = "Could not create \"$name\" because project storage is not available.",
+                message = "Could not create \"$name\" because AgentX cannot write to its project " +
+                    "folder. Check the storage access AgentX needs in Settings → Permissions, " +
+                    "then try again.",
+                path = root.path,
             ),
         )
-
-    companion object {
-        /**
-         * Directory under the app's private `filesDir` that holds managed projects — the same
-         * location AgentX uses for the repositories it clones.
-         */
-        const val DIRECTORY_NAME: String = "projects"
-    }
 }

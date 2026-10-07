@@ -2,6 +2,7 @@ package com.agentx.app
 
 import android.content.Intent
 import android.os.Bundle
+import android.os.Environment
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -78,6 +79,8 @@ import com.agentx.app.core.pullrequest.PullRequestRef
 import com.agentx.app.core.pullrequest.PullRequestService
 import com.agentx.app.core.valueOrNull
 import com.agentx.app.core.verification.CiVerificationService
+import com.agentx.app.integrations.github.GitHubRepositoryCloneService
+import com.agentx.app.integrations.github.GitHubRepositoryProjectCloner
 import com.agentx.app.integrations.github.GitHubRepositoryRefs
 import com.agentx.app.integrations.github.GitHubRepositoryServiceKeys
 import com.agentx.app.tools.pullrequest.DelegatingPullRequestRepositoryProvider
@@ -88,6 +91,7 @@ import com.agentx.app.tools.verification.DelegatingCiRepositoryRefProvider
 import com.agentx.app.tools.verification.DelegatingCiVerificationService
 import com.agentx.app.tools.DelegatingWorkspaceHostPathResolver
 import com.agentx.app.tools.WorkspaceHostPathResolver
+import com.agentx.app.workspace.AgentxProjectRoot
 import com.agentx.app.workspace.RoutingWorkspaceBackend
 import com.agentx.app.workspace.android.SafWorkspaceBackend
 import com.agentx.app.workspace.android.SharedPreferencesWorkspaceMetadataStore
@@ -264,36 +268,46 @@ class MainActivity : ComponentActivity() {
             },
         )
 
-        // Manually created projects live in AgentX-managed storage. The same directory is what a
-        // project delete has to clean up, so both read it from one place rather than naming it
-        // twice and drifting.
-        val managedProjectsRoot = File(
-            applicationContext.filesDir,
-            ManagedProjectDirectory.DIRECTORY_NAME,
-        )
+        // Every project AgentX owns lives in one user-visible folder in shared storage:
+        // <shared storage>/AgentX/<name>. The base is resolved here, from Android's own API, so the
+        // absolute prefix is never written into code; the folder name comes from AgentxProjectRoot,
+        // so there is one statement of where a project lives. Projects AgentX creates and
+        // repositories it clones both land directly in this folder.
+        val agentxProjectRoot = AgentxProjectRoot.under(Environment.getExternalStorageDirectory())
+
+        // Projects created before the AgentX folder existed are still directories in app-private
+        // storage: they were never moved or copied. That root therefore stays registered as a
+        // managed root, because it is what lets the existing deletion abstraction keep cleaning
+        // those projects up — losing it would leave them openable but undeletable.
+        val legacyManagedProjectsRoot = File(applicationContext.filesDir, LEGACY_PROJECTS_DIRECTORY)
 
         // One live workspace for the process: Files, Context Engine and tools
         // must share this instance. Recreating it from Compose remember would
         // drop the open session and make the agent look at an empty project.
         val workspaceManager = DefaultWorkspaceManager(
             // One backend per project source behind one port: a SAF tree is opened through the
-            // document provider, a real path (an AgentX-managed Git clone) through the filesystem.
+            // document provider, a real path (an AgentX project, or a repository AgentX cloned)
+            // through the filesystem.
             backend = RoutingWorkspaceBackend.contentAndPath(
                 saf = SafWorkspaceBackend(applicationContext),
                 files = FileWorkspaceBackend(),
             ),
             store = SharedPreferencesWorkspaceMetadataStore(applicationContext),
-            // Manually created projects are empty directories in AgentX-managed storage — the same
-            // app-private location used for cloned repositories, outside the Ubuntu rootfs — and
-            // become the active project through the existing open/`/workspace` mechanism.
-            projects = ManagedProjectDirectory(managedProjectsRoot),
+            // New projects are empty directories directly inside the AgentX folder — beside the
+            // repositories AgentX clones into the same place, and outside the Ubuntu rootfs — and
+            // become the active project through the existing open/`/workspace` mechanism. Nothing
+            // falls back to app-private storage: the root is the project-location contract.
+            projects = ManagedProjectDirectory(agentxProjectRoot),
             // Deleting a project also removes the AgentX-owned data that belongs to it, and only
-            // that: the copy roots hold copies AgentX made, the managed root holds projects AgentX
-            // created, and the rootfs, the cached archive and the user's own folders are out of
-            // scope by construction. See AgentxProjectStorage.
+            // that: the copy roots hold copies AgentX made, the managed roots hold projects AgentX
+            // created — in the AgentX folder, and in the app-private storage older projects stayed
+            // in — and the rootfs, the cached archive and the user's own folders are out of scope by
+            // construction. See AgentxProjectStorage.
             projectStorage = AgentxProjectStorage.create(
                 copyRoots = AgentxProjectStorage.copyRoots(developerRuntime, termuxRuntime),
-                managedRoots = AgentxProjectStorage.managedRoots(managedProjectsRoot.path),
+                managedRoots = AgentxProjectStorage.managedRoots(
+                    listOf(agentxProjectRoot.path, legacyManagedProjectsRoot.path),
+                ),
             ),
         )
 
@@ -303,6 +317,20 @@ class MainActivity : ComponentActivity() {
             projects = ActiveGitProjectProvider(workspaceManager),
             runner = UbuntuGitCommandRunner(developerRuntime),
         )
+
+        // A cloned repository becomes a project the same way a created one does: it is cloned into
+        // the same AgentX folder and then opened through the workspace runtime, which persists it,
+        // makes it current and puts it in Recent Projects. The clone transport is the one the
+        // GitHub module already registered, so authentication and containment validation are
+        // unchanged; only the destination and the registration step are added.
+        val projectCloner = (foundation.services.get<Any>(GitHubRepositoryServiceKeys.CLONE_SERVICE)
+            as? GitHubRepositoryCloneService)?.let { cloneService ->
+            GitHubRepositoryProjectCloner(
+                cloner = cloneService,
+                workspaces = workspaceManager,
+                projectRoot = agentxProjectRoot,
+            )
+        }
 
         val workspaceSelection = WorkspaceSelectionState()
         when (val resolver = foundation.services.get<Any>(ServiceKeys.TOOL_WORKSPACE_RESOLVER)) {
@@ -431,6 +459,7 @@ class MainActivity : ComponentActivity() {
                         oauthCallbacks = oauthCallbacks,
                         modelRunnerBrowser = modelRunnerBrowser,
                         modelRuntimeOutput = runtimeOutput,
+                        projectCloner = projectCloner,
                     )
                 }
 
@@ -500,6 +529,12 @@ class MainActivity : ComponentActivity() {
         const val KEY_RUNNER_STATE = "forge.modelRunner.state"
         const val SKILLS_DIRECTORY = "skills"
         const val AGENT_SESSIONS_DIRECTORY = "agent-sessions"
+
+        /**
+         * Where projects AgentX created before the AgentX folder existed still live, under
+         * `filesDir`. Kept only so those projects stay deletable; nothing is created here any more.
+         */
+        const val LEGACY_PROJECTS_DIRECTORY = "projects"
     }
 }
 

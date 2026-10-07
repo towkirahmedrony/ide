@@ -8,6 +8,7 @@ import com.agentx.app.codeintel.CodeIntelligence
 import com.agentx.app.context.WorkspaceSelectionState
 import com.agentx.app.integrations.ConnectionManagers
 import com.agentx.app.integrations.connection.ConnectionManager
+import com.agentx.app.integrations.github.GitHubRepositoryProjectCloner
 import com.agentx.app.integrations.setup.InMemoryIntegrationSetupStore
 import com.agentx.app.integrations.setup.IntegrationSetupManager
 import com.agentx.app.model.capability.ModelCapabilityRegistry
@@ -83,6 +84,12 @@ data class IdeDependencies(
     val connectionManager: ConnectionManager,
     /** Personal Client ID / callback setup for this IDE. Optional in previews. */
     val integrationSetup: IntegrationSetupManager? = null,
+    /**
+     * Clones a GitHub repository into the AgentX project folder and opens the clone as the active
+     * project. Optional: a preview has no GitHub connection, so a surface that offers the clone
+     * action omits it rather than offering one that cannot work.
+     */
+    val projectCloner: GitHubRepositoryProjectCloner? = null,
     /** Opens the provider's authorization page for OAuth-first connections. */
     val oauthBrowser: OAuthBrowserLauncher = NoOpOAuthBrowserLauncher,
     /**

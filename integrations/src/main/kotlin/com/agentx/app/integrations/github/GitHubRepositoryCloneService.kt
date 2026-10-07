@@ -63,16 +63,23 @@ sealed interface CloneDestinationValidation {
 class CloneDestinationValidator {
 
     /**
-     * Builds the directory name for a repository, or null when [owner] or [name]
-     * is not usable as a single path segment.
+     * The folder a clone of this repository gets, or null when its metadata is not usable.
+     *
+     * The folder is named after the repository itself: cloning `octocat/hello-world` produces
+     * `hello-world`, which is the name the user recognizes and the name a project AgentX creates by
+     * hand would have.
+     *
+     * The owner still has to be a single safe segment even though it no longer appears in the path.
+     * It is remote input, and repository metadata AgentX cannot trust is refused rather than
+     * silently ignored — a name is only ever built from values that were checked.
      */
     fun directoryName(owner: String, name: String): String? {
         if (!isSafeSegment(owner) || !isSafeSegment(name)) return null
-        val combined = "${owner.trim()}-${name.trim()}"
-        return if (combined.length > MAX_DIRECTORY_NAME_LENGTH) {
-            combined.take(MAX_DIRECTORY_NAME_LENGTH)
+        val repositoryName = name.trim()
+        return if (repositoryName.length > MAX_DIRECTORY_NAME_LENGTH) {
+            repositoryName.take(MAX_DIRECTORY_NAME_LENGTH)
         } else {
-            combined
+            repositoryName
         }
     }
 
@@ -83,10 +90,15 @@ class CloneDestinationValidator {
      */
     fun validate(managedRoot: File, repository: GitHubRepository): CloneDestinationValidation {
         if (!managedRoot.exists() && !managedRoot.mkdirs()) {
-            return invalid("The AgentX projects folder could not be created")
+            // The usual cause is storage access AgentX has not been granted, so the message names
+            // where that is fixed instead of only what failed.
+            return invalid(
+                "The AgentX project folder could not be created. Check the storage access AgentX " +
+                    "needs in Settings → Permissions, then try again.",
+            )
         }
         if (!managedRoot.isDirectory) {
-            return invalid("The AgentX projects folder is not a directory")
+            return invalid("The AgentX project folder is not a directory")
         }
 
         val name = directoryName(repository.owner, repository.name)
@@ -96,7 +108,7 @@ class CloneDestinationValidator {
         val target = File(root, name).canonicalFile
         if (target == root || !target.path.startsWith(root.path + File.separator)) {
             return CloneDestinationValidation.Invalid(
-                GitHubRepositoryError.PathTraversal("A clone destination must stay inside the AgentX projects folder"),
+                GitHubRepositoryError.PathTraversal("A clone destination must stay inside the AgentX project folder"),
             )
         }
         if (target.exists()) {
@@ -117,7 +129,7 @@ class CloneDestinationValidator {
     }
 
     companion object {
-        /** Long enough for real `owner-name` pairs, short enough for any filesystem. */
+        /** Long enough for real repository names, short enough for any filesystem. */
         const val MAX_DIRECTORY_NAME_LENGTH: Int = 100
     }
 }
