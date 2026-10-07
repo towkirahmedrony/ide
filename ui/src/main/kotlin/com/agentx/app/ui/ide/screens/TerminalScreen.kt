@@ -66,6 +66,7 @@ import com.agentx.app.ui.theme.ForgeDanger
 import com.agentx.app.ui.theme.ForgeInk
 import com.agentx.app.ui.theme.ForgeMint
 import com.agentx.app.ui.theme.ForgeMuted
+import com.agentx.app.ui.theme.ForgeOnAccent
 import com.agentx.app.ui.theme.ForgeSurfaceVariant
 import com.termux.terminal.TerminalSession
 import com.termux.view.TerminalView
@@ -658,7 +659,7 @@ private fun ModifierKey(label: String, active: Boolean, onClick: () -> Unit) {
     TextButton(onClick = onClick, modifier = Modifier.background(if (active) ForgeMint else ForgeCanvas)) {
         Text(
             text = label,
-            style = TerminalMetaStyle.copy(color = if (active) ForgeCanvas else ForgeMuted),
+            style = TerminalMetaStyle.copy(color = if (active) ForgeOnAccent else ForgeMuted),
         )
     }
 }

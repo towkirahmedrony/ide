@@ -302,6 +302,7 @@ internal fun runtimeHint(failure: ModelRuntimeFailure): String = when (failure) 
     else -> "The user has to act before this model can come online."
 }
 
+@Composable
 internal fun modelLifecycleColor(state: ModelLifecycleState): Color = when (state) {
     ModelLifecycleState.ONLINE -> ForgeMint
     ModelLifecycleState.DEGRADED -> ForgeAmber

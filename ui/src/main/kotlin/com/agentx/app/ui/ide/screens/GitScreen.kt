@@ -394,6 +394,7 @@ private fun detachedLabel(state: GitRepositoryState?): String = when (state) {
     else -> "—"
 }
 
+@Composable
 private fun changeColor(status: String) = when (status) {
     "modified" -> ForgeAmber
     "added" -> ForgeMint

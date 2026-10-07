@@ -287,6 +287,7 @@ fun ModelRunnerScreen(
     }
 }
 
+@Composable
 private fun statusColor(state: ModelLifecycleState): Color = when (state) {
     ModelLifecycleState.ONLINE -> ForgeMint
     ModelLifecycleState.DEGRADED -> ForgeAmber

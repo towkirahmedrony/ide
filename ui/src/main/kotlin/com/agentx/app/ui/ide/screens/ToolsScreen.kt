@@ -391,6 +391,7 @@ private fun ToolDetailDialog(
     )
 }
 
+@Composable
 private fun permissionColor(entry: ToolEntry): androidx.compose.ui.graphics.Color = when {
     !entry.available -> ForgeMuted
     entry.status == ToolStatus.DISABLED -> ForgeMuted

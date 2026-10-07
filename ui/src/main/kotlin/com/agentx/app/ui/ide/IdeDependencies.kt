@@ -34,6 +34,7 @@ import com.agentx.app.git.GitService
 import com.agentx.app.git.UnavailableGitService
 import com.agentx.app.termux.TermuxRuntime
 import com.agentx.app.tools.ToolPreferences
+import com.agentx.app.ui.theme.AppearanceController
 import com.agentx.app.tools.ToolRegistry
 import com.agentx.app.ubuntu.LocalUbuntuRuntime
 import com.agentx.app.workspace.WorkspaceManager
@@ -140,6 +141,13 @@ data class IdeDependencies(
      * screen affects what the agent is offered and may run.
      */
     val toolPreferences: ToolPreferences? = null,
+    /**
+     * The single source of truth for the theme mode. The composition root also
+     * hands the same instance to [com.agentx.app.ui.theme.ForgeTheme], so what
+     * Settings → Appearance selects is exactly what the whole app renders.
+     * Defaults to an in-memory controller so previews work without a store.
+     */
+    val appearance: AppearanceController = AppearanceController(),
 ) {
     companion object {
         /** In-memory bindings for previews and tests. */

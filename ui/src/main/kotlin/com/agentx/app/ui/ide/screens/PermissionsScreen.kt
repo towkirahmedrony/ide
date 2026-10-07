@@ -244,6 +244,7 @@ private fun statusLabel(status: PermissionStatus): String = when (status) {
     PermissionStatus.UNAVAILABLE -> "Unavailable"
 }
 
+@Composable
 private fun statusColor(status: PermissionStatus): Color = when (status) {
     PermissionStatus.GRANTED -> ForgeMint
     PermissionStatus.DENIED, PermissionStatus.PERMANENTLY_DENIED -> ForgeDanger

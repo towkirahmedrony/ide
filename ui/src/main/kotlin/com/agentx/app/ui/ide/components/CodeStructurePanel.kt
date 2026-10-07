@@ -169,6 +169,7 @@ private fun structureSubtitle(state: EditorStructureUiState, shown: Int): String
     }
 }
 
+@Composable
 private fun kindColor(kind: SymbolKind) = when (kind) {
     SymbolKind.CLASS, SymbolKind.INTERFACE, SymbolKind.OBJECT, SymbolKind.ENUM -> ForgeMint
     SymbolKind.FUNCTION, SymbolKind.METHOD, SymbolKind.CONSTRUCTOR -> ForgeAmber

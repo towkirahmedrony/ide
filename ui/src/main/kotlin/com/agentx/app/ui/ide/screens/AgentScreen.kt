@@ -114,6 +114,7 @@ import com.agentx.app.ui.theme.ForgeDanger
 import com.agentx.app.ui.theme.ForgeInk
 import com.agentx.app.ui.theme.ForgeMint
 import com.agentx.app.ui.theme.ForgeMuted
+import com.agentx.app.ui.theme.ForgeOnAccent
 import com.agentx.app.ui.theme.ForgeSurface
 import com.agentx.app.ui.theme.ForgeSurfaceVariant
 import kotlinx.coroutines.flow.collect
@@ -428,6 +429,7 @@ private fun agentStatusLabel(generation: GenerationState, activity: AgentActivit
     return if (elapsed.isEmpty()) base else "$base · $elapsed"
 }
 
+@Composable
 private fun agentStatusColor(generation: GenerationState): Color = when {
     generation.phase == GenerationPhase.WAITING_PERMISSION -> ForgeAmber
     generation.running -> ForgeMint
@@ -593,7 +595,7 @@ private fun PermissionPromptCard(
                 onClick = { onDecision(true) },
                 modifier = Modifier.weight(1f).height(44.dp),
                 shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = ForgeAmber, contentColor = ForgeCanvas),
+                colors = ButtonDefaults.buttonColors(containerColor = ForgeAmber, contentColor = ForgeOnAccent),
             ) {
                 Text("Allow")
             }
@@ -951,7 +953,7 @@ private fun SendStopButton(
         targetValue = if (active) ForgeMint else ForgeBorder,
         label = "sendContainer",
     )
-    val content = if (active) ForgeCanvas else ForgeMuted
+    val content = if (active) ForgeOnAccent else ForgeMuted
 
     Box(
         modifier = Modifier

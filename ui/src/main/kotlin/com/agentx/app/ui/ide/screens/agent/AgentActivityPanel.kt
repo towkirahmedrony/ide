@@ -309,6 +309,7 @@ private fun verbOf(activity: AgentActivityUiModel): String = when (activity.kind
     AgentActivityKind.TOOL -> "Tool"
 }
 
+@Composable
 private fun verbColor(kind: AgentActivityKind): Color = when (kind) {
     AgentActivityKind.FILE_READ, AgentActivityKind.SEARCH, AgentActivityKind.SUB_AGENT -> ForgePeriwinkle
     AgentActivityKind.FILE_WRITE -> ForgeMint

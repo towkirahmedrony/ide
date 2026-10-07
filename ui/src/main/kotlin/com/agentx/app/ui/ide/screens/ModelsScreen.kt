@@ -43,6 +43,7 @@ import com.agentx.app.ui.theme.ForgeCanvas
 import com.agentx.app.ui.theme.ForgeInk
 import com.agentx.app.ui.theme.ForgeMint
 import com.agentx.app.ui.theme.ForgeMuted
+import com.agentx.app.ui.theme.ForgeOnAccent
 
 /**
  * Saved models as a scannable list.
@@ -83,7 +84,7 @@ fun ModelsScreen(
                 ExtendedFloatingActionButton(
                     onClick = onAddModel,
                     containerColor = ForgeMint,
-                    contentColor = ForgeCanvas,
+                    contentColor = ForgeOnAccent,
                     icon = { Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp)) },
                     text = { Text("Add model") },
                 )

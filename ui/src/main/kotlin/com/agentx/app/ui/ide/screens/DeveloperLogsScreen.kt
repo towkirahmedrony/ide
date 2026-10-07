@@ -197,6 +197,7 @@ fun DeveloperLogsScreen(
     }
 }
 
+@Composable
 private fun logColor(line: DeveloperLogLine): Color = when (line.level) {
     DeveloperLogLevel.ERROR -> ForgeDanger
     DeveloperLogLevel.WARN -> ForgeAmber

@@ -62,7 +62,7 @@ enum class SettingsSection(
     TOOLS("tools", "Tools", "Manage the tools available to your agents", Icons.Filled.Handyman),
     PERMISSIONS("permissions", "Permissions", "Android access AgentX uses, and how to grant it", Icons.Filled.Security),
     WORKSPACE("workspace", "Workspace", "The active project, its storage and agent access", Icons.Filled.Folder),
-    APPEARANCE("appearance", "Appearance", "Theme, editor font and layout", Icons.Filled.Palette),
+    APPEARANCE("appearance", "Appearance", "Light, dark or system theme", Icons.Filled.Palette),
     ABOUT("about", "About", "App version and developer information", Icons.Filled.Info);
 
     companion object {

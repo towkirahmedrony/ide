@@ -44,11 +44,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.agentx.app.ui.ide.model.AgentSessionUiModel
 import com.agentx.app.ui.ide.state.AgentChatPresentation
-import com.agentx.app.ui.theme.ForgeCanvas
 import com.agentx.app.ui.theme.ForgeDanger
 import com.agentx.app.ui.theme.ForgeInk
 import com.agentx.app.ui.theme.ForgeMint
 import com.agentx.app.ui.theme.ForgeMuted
+import com.agentx.app.ui.theme.ForgeOnAccent
 import com.agentx.app.ui.theme.ForgeSurface
 import com.agentx.app.ui.theme.ForgeSurfaceVariant
 
@@ -99,9 +99,9 @@ fun AgentSessionDrawerContent(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.Center,
         ) {
-            Icon(Icons.Filled.Add, contentDescription = null, tint = ForgeCanvas, modifier = Modifier.size(18.dp))
+            Icon(Icons.Filled.Add, contentDescription = null, tint = ForgeOnAccent, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(8.dp))
-            Text(text = "New Session", color = ForgeCanvas, fontWeight = FontWeight.SemiBold)
+            Text(text = "New Session", color = ForgeOnAccent, fontWeight = FontWeight.SemiBold)
         }
         Spacer(Modifier.height(14.dp))
 

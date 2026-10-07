@@ -37,6 +37,9 @@ object IdeDestinations {
     /** Settings → Tools: the live tool catalog and per-tool enablement. */
     const val TOOLS = "settings/tools"
 
+    /** Settings → Appearance: the theme mode and its live preview. */
+    const val APPEARANCE = "settings/appearance"
+
     const val ABOUT = "about"
     const val DEVELOPER = "developer"
     const val DEVELOPER_LOGS = "developer/logs"

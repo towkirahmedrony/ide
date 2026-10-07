@@ -1,12 +1,19 @@
 package com.agentx.app
 
+import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.os.Environment
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.ui.graphics.toArgb
+import androidx.core.view.WindowCompat
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import com.agentx.app.agent.conversation.FilesystemConversationStore
@@ -46,6 +53,7 @@ import com.agentx.app.settings.SharedPreferencesAgentPromptStore
 import com.agentx.app.settings.SharedPreferencesAgentFallbackStore
 import com.agentx.app.settings.SharedPreferencesAgentRoleModelStore
 import com.agentx.app.settings.SharedPreferencesSkillConfigStore
+import com.agentx.app.settings.SharedPreferencesThemeModeStore
 import com.agentx.app.settings.SharedPreferencesToolPreferenceStore
 import com.agentx.app.skills.CompositeSkillStore
 import com.agentx.app.tools.DefaultToolPreferences
@@ -71,7 +79,9 @@ import com.agentx.app.ui.ide.IdeDependencies
 import com.agentx.app.termux.TermuxRuntime
 import com.agentx.app.termux.TermuxRuntimeHolder
 import com.agentx.app.ubuntu.LocalUbuntuRuntime
+import com.agentx.app.ui.theme.AppearanceController
 import com.agentx.app.ui.theme.ForgeTheme
+import com.agentx.app.ui.theme.resolveDarkTheme
 import com.agentx.app.workspace.DefaultWorkspaceManager
 import com.agentx.app.workspace.FileWorkspaceBackend
 import com.agentx.app.workspace.ManagedProjectDirectory
@@ -220,6 +230,21 @@ class MainActivity : ComponentActivity() {
             runCatching { (foundation.toolPreferences as? DefaultToolPreferences)?.load() }
                 .onFailure { error ->
                     Log.e(TAG, "Could not restore tool preferences; keeping all tools enabled", error)
+                }
+        }
+
+        // The theme mode is one value with one owner for the whole process: the
+        // controller feeds ForgeTheme at the root and Settings → Appearance
+        // writes to the same instance. It is process-scoped (below), so a
+        // configuration change cannot orphan the instance retained screen state
+        // still writes to. The persisted value is restored off the main thread;
+        // until this completes the app shows the default dark appearance, so a
+        // slow or failed read never delays the first frame.
+        val appearance = appearanceController(applicationContext)
+        backgroundScope.launch {
+            runCatching { appearance.restore() }
+                .onFailure { error ->
+                    Log.e(TAG, "Could not restore the theme mode; keeping the default", error)
                 }
         }
 
@@ -443,7 +468,24 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            ForgeTheme {
+            // One flow, collected once: ForgeTheme and Settings → Appearance
+            // observe the same selection, so a change applies immediately.
+            val themeMode by appearance.mode.collectAsState()
+            ForgeTheme(themeMode = themeMode) {
+                // The system bars are part of the appearance: in light mode their
+                // icons must flip dark or they would disappear over bright
+                // content, and their color follows the resolved canvas so the
+                // frame matches the theme before any content draws.
+                val dark = resolveDarkTheme(themeMode)
+                val barColor = MaterialTheme.colorScheme.background
+                SideEffect {
+                    window.statusBarColor = barColor.toArgb()
+                    window.navigationBarColor = barColor.toArgb()
+                    WindowCompat.getInsetsController(window, window.decorView).apply {
+                        isAppearanceLightStatusBars = !dark
+                        isAppearanceLightNavigationBars = !dark
+                    }
+                }
                 // Workspace access is real: the Storage Access Framework opens the
                 // folder the user picks and only the minimum metadata is persisted.
                 val workspacePicker = rememberAndroidWorkspacePicker()
@@ -501,6 +543,7 @@ class MainActivity : ComponentActivity() {
                         modelRunnerBrowser = modelRunnerBrowser,
                         modelRuntimeOutput = runtimeOutput,
                         projectCloner = projectCloner,
+                        appearance = appearance,
                     )
                 }
 
@@ -570,6 +613,29 @@ class MainActivity : ComponentActivity() {
         const val KEY_RUNNER_STATE = "forge.modelRunner.state"
         const val SKILLS_DIRECTORY = "skills"
         const val AGENT_SESSIONS_DIRECTORY = "agent-sessions"
+
+        /**
+         * The one appearance controller for the process. A configuration change
+         * recreates this Activity, but retained ViewModel state keeps writing
+         * through the instance it was first given — the same reason the Termux
+         * and Ubuntu runtimes are process-scoped — so the controller must
+         * outlive the Activity instead of being rebuilt in [onCreate].
+         */
+        @Volatile
+        private var appearanceInstance: AppearanceController? = null
+
+        private val appearanceLock = Any()
+
+        /**
+         * The process-wide appearance controller, backed by the app-private
+         * `SharedPreferences` the rest of the IDE's settings use.
+         */
+        private fun appearanceController(context: Context): AppearanceController =
+            appearanceInstance ?: synchronized(appearanceLock) {
+                appearanceInstance
+                    ?: AppearanceController(SharedPreferencesThemeModeStore(context.applicationContext))
+                        .also { created -> appearanceInstance = created }
+            }
 
         /**
          * Where projects AgentX created before the AgentX folder existed still live, under

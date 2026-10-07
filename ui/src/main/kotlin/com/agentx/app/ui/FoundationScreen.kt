@@ -203,6 +203,7 @@ private fun statusColor(status: HealthStatus): Color = when (status) {
     HealthStatus.UNHEALTHY -> MaterialTheme.colorScheme.error
 }
 
+@Composable
 private fun layerColor(status: LayerStatus): Color = when (status) {
     LayerStatus.ACTIVE -> ForgeMint
     LayerStatus.CONTRACT_ONLY -> ForgePeriwinkle

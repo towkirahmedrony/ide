@@ -55,14 +55,18 @@ import com.agentx.app.ui.theme.ForgeMuted
 import com.agentx.app.ui.theme.ForgeSurfaceVariant
 import kotlinx.coroutines.launch
 
-private val CodeTextStyle = TextStyle(
-    fontFamily = FontFamily.Monospace,
-    fontSize = 13.sp,
-    lineHeight = 20.sp,
-    color = ForgeInk,
-)
+// Resolved per recomposition from the active palette, so the editor's text
+// follows the selected theme instead of freezing the color it was created with.
+private val CodeTextStyle: TextStyle
+    @Composable get() = TextStyle(
+        fontFamily = FontFamily.Monospace,
+        fontSize = 13.sp,
+        lineHeight = 20.sp,
+        color = ForgeInk,
+    )
 
-private val GutterTextStyle = CodeTextStyle.copy(color = ForgeMuted, textAlign = TextAlign.End)
+private val GutterTextStyle: TextStyle
+    @Composable get() = CodeTextStyle.copy(color = ForgeMuted, textAlign = TextAlign.End)
 
 @Composable
 fun EditorScreen(

@@ -392,6 +392,7 @@ private fun accountLine(
     else -> connection?.statusMessage
 }
 
+@Composable
 internal fun lifecycleColor(lifecycle: IntegrationLifecycle): Color = when (lifecycle) {
     IntegrationLifecycle.CONNECTED -> ForgeMint
     IntegrationLifecycle.AUTHORIZING, IntegrationLifecycle.VERIFYING -> ForgePeriwinkle
@@ -400,6 +401,7 @@ internal fun lifecycleColor(lifecycle: IntegrationLifecycle): Color = when (life
     IntegrationLifecycle.READY_TO_CONNECT -> ForgeMuted
 }
 
+@Composable
 internal fun statusColor(status: ConnectionStatus): Color = when (status) {
     ConnectionStatus.CONNECTED -> ForgeMint
     ConnectionStatus.AUTHORIZING, ConnectionStatus.VERIFYING, ConnectionStatus.CONNECTING -> ForgePeriwinkle

@@ -33,6 +33,7 @@ import com.agentx.app.ui.ide.screens.AboutScreen
 import com.agentx.app.ui.ide.screens.AgentModelsScreen
 import com.agentx.app.ui.ide.screens.AgentPromptEditorScreen
 import com.agentx.app.ui.ide.screens.AgentPromptsScreen
+import com.agentx.app.ui.ide.screens.AppearanceScreen
 import com.agentx.app.ui.ide.screens.ConnectionEditorScreen
 import com.agentx.app.ui.ide.screens.ConnectionsScreen
 import com.agentx.app.ui.ide.screens.DeveloperLogsScreen
@@ -55,6 +56,7 @@ import com.agentx.app.ui.ide.screens.WorkspaceShell
 import com.agentx.app.ui.ide.state.AgentModelsViewModel
 import com.agentx.app.ui.ide.state.AgentPromptEditorViewModel
 import com.agentx.app.ui.ide.state.AgentPromptsViewModel
+import com.agentx.app.ui.ide.state.AppearanceViewModel
 import com.agentx.app.ui.ide.state.ConnectionEditorViewModel
 import com.agentx.app.ui.ide.state.ConnectionsViewModel
 import com.agentx.app.ui.ide.state.DeveloperLogsViewModel
@@ -170,6 +172,7 @@ fun ForgeIdeApp(
                         SettingsSection.TOOLS -> IdeDestinations.TOOLS
                         SettingsSection.PERMISSIONS -> IdeDestinations.PERMISSIONS
                         SettingsSection.WORKSPACE -> IdeDestinations.WORKSPACE_SETTINGS
+                        SettingsSection.APPEARANCE -> IdeDestinations.APPEARANCE
                         SettingsSection.ABOUT -> IdeDestinations.ABOUT
                         else -> IdeDestinations.settingsDetail(section.id)
                     }
@@ -230,6 +233,23 @@ fun ForgeIdeApp(
             ToolsScreen(
                 viewModel = toolsViewModel,
                 onBack = { navController.popBackStack() },
+            )
+        }
+
+        composable(IdeDestinations.APPEARANCE) {
+            val appearanceViewModel: AppearanceViewModel = viewModel(
+                key = "appearance-settings",
+                factory = IdeViewModelFactory {
+                    // The same controller ForgeTheme collects at the root, so a
+                    // selection here restyles the whole app and is persisted.
+                    AppearanceViewModel(dependencies.appearance)
+                },
+            )
+            val themeMode by appearanceViewModel.mode.collectAsState()
+            AppearanceScreen(
+                themeMode = themeMode,
+                onBack = { navController.popBackStack() },
+                onSelect = appearanceViewModel::select,
             )
         }
 

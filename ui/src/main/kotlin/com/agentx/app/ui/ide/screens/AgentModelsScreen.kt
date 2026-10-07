@@ -373,6 +373,7 @@ private fun statusLabel(state: RoleModelState): String = when (state) {
     RoleModelState.DISABLED -> "Disabled"
 }
 
+@Composable
 private fun statusColor(state: RoleModelState): Color = when (state) {
     RoleModelState.CONNECTED -> ForgeMint
     RoleModelState.NOT_CONFIGURED -> ForgeAmber
