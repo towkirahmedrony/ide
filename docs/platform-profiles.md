@@ -160,6 +160,8 @@ which platforms exist.
 | Registration | `ContextModule` → `ServiceKeys.CONTEXT_PLATFORM` |
 | Consumption | `AgentModule.assemble(platformProfile = …)` → `AgentLoop` |
 
-**Not implemented, and out of scope for this layer:** UI-task routing, a browser or
-rendering capability, screenshots, visual inspection, a visual reviewer, a visual
-quality gate, and computed contrast verification.
+UI-task routing now exists as the layer above this one (see `ui-task-planning.md`),
+which decides when a UI task is planned and which roles receive this profile.
+**Not implemented, and out of scope for this layer:** a browser or rendering
+capability, screenshots, visual inspection, a visual reviewer, a visual quality
+gate, and computed contrast verification.

@@ -55,7 +55,11 @@ import com.agentx.app.agent.domain.toToolGrants
 import com.agentx.app.agent.delegation.DelegationDecision
 import com.agentx.app.agent.delegation.DelegationPolicy
 import com.agentx.app.agent.delegation.DelegationRecord
+import com.agentx.app.agent.delegation.DelegationRejection
 import com.agentx.app.agent.delegation.DelegationState
+import com.agentx.app.agent.delegation.UiPlanningPolicy
+import com.agentx.app.agent.delegation.UiTaskClass
+import com.agentx.app.agent.delegation.UiTaskClassifier
 import com.agentx.app.core.logging.ForgeLogger
 import com.agentx.app.core.logging.ForgeLoggers
 import com.agentx.app.core.logging.LogLevel
@@ -1263,6 +1267,26 @@ class AgentLoop(
             )
         }
 
+        // Phase 4's UI gate: a design task must be planned before its
+        // implementation runs. It is deterministic, model-free (the classifier is a
+        // pure function over the turn's own text) and sits beside the existing
+        // delegation limits, so a UI design request cannot silently skip planning by
+        // reaching CODER/FAST_CODER first. A rejection is reported back to the Main
+        // Agent as a tool result so it can adapt — it is never a silent no-op.
+        val uiTask = UiTaskClassifier.classify(request.userPrompt, request.objective)
+        val planningGate = UiPlanningPolicy.gate(uiTask, role, state.hasUsablePlan())
+        if (planningGate != null) {
+            errors += AgentError(
+                code = AgentErrorCode.INVALID_DELEGATION,
+                message = planningGate,
+                role = request.definition.role,
+                sessionId = request.sessionId,
+                details = mapOf("delegationRejection" to DelegationRejection.PLANNING_REQUIRED.name),
+            )
+            toolActions += ToolActionRecord(AgentProtocol.DELEGATE_TOOL, false, planningGate)
+            return DelegateOutcome("ERROR: $planningGate", null, success = false, state = state)
+        }
+
         // The authoritative, deterministic gate: depth, total count, per-role
         // repeats and redundant re-delegation are all decided here, before any
         // child is created. A rejection is reported back to the Main Agent as a
@@ -1282,8 +1306,15 @@ class AgentLoop(
 
         // Scoped context is capped so one delegation can never hand a specialist
         // more than a bounded slice; the whole repo/conversation is never passed.
-        val scopedContext = call.arguments.stringOrNull(AgentProtocol.ARG_CONTEXT).orEmpty()
-            .let { if (it.length > DelegationPolicy.MAX_SCOPED_CONTEXT_CHARS) it.take(DelegationPolicy.MAX_SCOPED_CONTEXT_CHARS) else it }
+        // For a design task that required planning, the planner's result is folded
+        // into this same existing mechanism so the implementation agent actually
+        // receives the plan instead of it being generated and then discarded.
+        val scopedContext = handoffContext(
+            uiTask = uiTask,
+            role = role,
+            context = call.arguments.stringOrNull(AgentProtocol.ARG_CONTEXT).orEmpty(),
+            state = state,
+        )
 
         val childId = com.agentx.app.agent.runtime.AgentIds.newId()
         val childRequest = SubAgentRequest(
@@ -1412,11 +1443,20 @@ class AgentLoop(
                 timestampMillis = clock(),
             ),
         )
+        // A successful planner's result becomes the run's design plan, so a later
+        // implementation (or review) delegation can actually receive it. Only a
+        // non-blank plan is carried: a planner that failed, parked, or produced no
+        // text leaves the plan unset and the implementation gate closed.
+        val carried = if (role == AgentRole.PLANNER && succeeded) {
+            planTextOf(result).takeIf { it.isNotBlank() }?.let { state.withPlan(it) } ?: state
+        } else {
+            state
+        }
         return DelegateOutcome(
             resultText = renderSubAgentResult(result),
             path = result.filesChanged.firstOrNull() ?: result.filesInspected.firstOrNull(),
             success = succeeded,
-            state = state.record(
+            state = carried.record(
                 role = role,
                 task = task,
                 succeeded = succeeded,
@@ -1424,6 +1464,50 @@ class AgentLoop(
                 inspectedFiles = result.filesInspected,
             ),
         )
+    }
+
+    /**
+     * The planner result rendered for handoff: its summary plus any structured
+     * findings, without the runtime status lines. Empty when the planner produced
+     * no plan text at all.
+     */
+    private fun planTextOf(result: SubAgentResult): String = buildString {
+        val summary = result.summary.trim()
+        if (summary.isNotEmpty()) append(summary)
+        if (result.findings.isNotEmpty()) {
+            if (isNotEmpty()) append('\n')
+            append(result.findings.joinToString("\n"))
+        }
+    }.trim()
+
+    /**
+     * Folds the planner's result into a delegation's scoped context for the roles
+     * that should receive it (implementation and review), reusing the existing
+     * scoped-context channel and its cap. The plan is added at most once, so a
+     * Main Agent that already threaded it into `context` does not pay for it twice,
+     * and is placed first so the cap can never truncate the plan away.
+     */
+    private fun handoffContext(
+        uiTask: UiTaskClass,
+        role: AgentRole,
+        context: String,
+        state: DelegationState,
+    ): String {
+        val plan = state.plan?.takeIf { it.isNotBlank() }
+        val forwarded = if (plan != null && UiPlanningPolicy.shouldReceivePlan(uiTask, role) && !context.contains(plan)) {
+            buildString {
+                append("# Design Plan (from Planner)\n")
+                append(plan)
+                if (context.isNotBlank()) append("\n\n").append(context)
+            }
+        } else {
+            context
+        }
+        return if (forwarded.length > DelegationPolicy.MAX_SCOPED_CONTEXT_CHARS) {
+            forwarded.take(DelegationPolicy.MAX_SCOPED_CONTEXT_CHARS)
+        } else {
+            forwarded
+        }
     }
 
     private fun renderSubAgentResult(result: SubAgentResult): String = buildString {
@@ -1975,6 +2059,16 @@ class AgentLoop(
                     append("\nThis task looks moderate: delegate at most one specialist if it clearly fits its role; otherwise handle it directly.")
                 com.agentx.app.agent.delegation.TaskComplexity.COMPLEX ->
                     append("\nThis task looks complex: decompose it and delegate focused specialists one at a time in a sensible order (understand, then implement, test, review).")
+            }
+            // Phase 4 UI guidance, derived from the same deterministic classifier that
+            // gates the delegate tool. Advisory here, but it keeps the Main Agent's
+            // stated behaviour aligned with the hard planning gate below it.
+            when (UiTaskClassifier.classify(request.userPrompt, request.objective)) {
+                UiTaskClass.UI_SIMPLE ->
+                    append("\nThis is a small, localized UI change: make it directly, or delegate to ${AgentRole.FAST_CODER.name}. Full design planning is not required.")
+                UiTaskClass.UI_DESIGN, UiTaskClass.UI_COMPLEX ->
+                    append("\nThis is UI design work: before any CODER/FAST_CODER implementation, delegate to ${AgentRole.PLANNER.name} for a concise design Plan (user purpose, information hierarchy, sections, interaction, states, responsive behavior, reuse of the existing design system, and the files likely to change), then implement that plan.")
+                UiTaskClass.NON_UI -> Unit
             }
         } else {
             append("\nYou cannot delegate. Nested delegation is not permitted.")

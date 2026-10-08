@@ -156,6 +156,13 @@ enum class DelegationRejection {
 
     /** The role's required input (a change to review, a file to test) does not exist yet. */
     MISSING_INPUT,
+
+    /**
+     * A UI design task asked an implementation role to run before a usable design
+     * plan exists. This is the structural half of Phase 4's UI routing: a design
+     * task cannot reach CODER/FAST_CODER until PLANNER has produced a plan.
+     */
+    PLANNING_REQUIRED,
 }
 
 /** The outcome of [DelegationPolicy.evaluate]. */
@@ -180,10 +187,26 @@ data class DelegationState(
     val records: List<DelegationRecord> = emptyList(),
     /** What work already exists, so precondition checks can avoid empty delegations. */
     val priorWork: PriorWork = PriorWork(),
+    /**
+     * The latest successful planner result for this run, carried forward so the
+     * implementation (and review) delegation can actually receive the plan. It is
+     * a small piece of run state, not a second context store.
+     */
+    val plan: String? = null,
 ) {
     val totalDelegations: Int get() = records.size
 
     fun countFor(role: AgentRole): Int = records.count { it.role == role }
+
+    /**
+     * True when a planner has produced non-empty plan text. A planner that failed,
+     * parked, or returned no summary leaves this false, so it can never be mistaken
+     * for a successful design plan.
+     */
+    fun hasUsablePlan(): Boolean = !plan.isNullOrBlank()
+
+    /** Records the plan a successful planner produced. */
+    fun withPlan(plan: String): DelegationState = copy(plan = plan)
 
     fun alreadySucceeded(role: AgentRole, task: String): Boolean {
         val key = normalize(task)

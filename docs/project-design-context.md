@@ -163,7 +163,8 @@ design file states the direction, and neither substitutes for the other.
 | Consumption | `AgentModule.assemble(designContext = …)` → `AgentLoop` |
 | Prompt placement | `AgentLoop.buildSystemPrompt` (`# Project Design Context`, after the skills block) |
 
-Not yet implemented, and deliberately out of scope for this layer: platform or
-framework profiles, UI-aware task routing, a browser or rendering capability,
-screenshots, a visual reviewer, a visual quality gate, and computed
-accessibility verification.
+Platform profiles and UI-aware task routing now exist in their own layers (see
+`platform-profiles.md` and `ui-task-planning.md`). Still not implemented, and
+deliberately out of scope for this layer: a browser or rendering capability,
+screenshots, visual inspection, a visual reviewer, a visual quality gate, and
+computed accessibility verification.
