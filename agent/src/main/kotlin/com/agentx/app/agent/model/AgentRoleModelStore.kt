@@ -1,6 +1,8 @@
 package com.agentx.app.agent.model
 
 import com.agentx.app.agent.domain.AgentRole
+import com.agentx.app.model.manager.ModelConnectionKind
+import com.agentx.app.model.manager.connectionKind
 
 /**
  * One role's saved model assignment: which provider connection the role uses and,
@@ -11,6 +13,15 @@ import com.agentx.app.agent.domain.AgentRole
  * a key and removing a connection never leaks one. [connectionId] records the
  * saved connection (model preset) the user chose from, when any, so a removed
  * connection can be reported instead of silently replaced.
+ *
+ * The identity of the assignment is
+ * `execution domain + connectionId + modelId`: the domain is derived from the
+ * stored provider identity through [ModelConnectionKind], the single place the
+ * local/API distinction is decided, so a saved assignment is never resolved by
+ * provider family alone. A record saved before this binding existed migrates
+ * deterministically — its provider id is unchanged, so it keeps its own domain
+ * rather than being re-pointed at whichever connection of the family happens to
+ * be connected.
  */
 data class RoleModelConfig(
     val role: AgentRole,
@@ -26,16 +37,33 @@ data class RoleModelConfig(
     }
 
     /**
-     * The resolver-facing preference: provider family, optional model, and the
-     * saved connection the role was assigned from — never an endpoint or key. The
-     * connection id is what lets two connections of one family stay distinct.
+     * The resolver-facing preference: provider identity, optional model, the saved
+     * connection the role was assigned from, and the execution domain that identity
+     * belongs to — never an endpoint or key. The connection id is what lets two
+     * connections of one family stay distinct, and the domain is what keeps a saved
+     * local assignment from being answered by a same-family remote connection (or
+     * the other way round).
      *
      * A [RoleModelConfig] only ever represents a saved per-role override, so the
      * preference is marked [RoleModelPreference.explicit]: the assignment is the
      * user's authoritative choice and must not be silently replaced.
      */
     fun toPreference(): RoleModelPreference =
-        RoleModelPreference(providerId, model, connectionId, explicit = true)
+        RoleModelPreference(
+            providerId = providerId,
+            model = model,
+            connectionId = connectionId,
+            domain = executionDomain,
+            explicit = true,
+        )
+
+    /**
+     * The execution domain this assignment belongs to, from the stored provider
+     * identity. Persisted records carry the provider id, so this is stable across a
+     * reload and unaffected by which other connections exist.
+     */
+    val executionDomain: ModelConnectionKind
+        get() = providerId.connectionKind
 }
 
 /**
