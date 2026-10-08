@@ -72,9 +72,15 @@ interface TermuxViewHost {
  * The host is resolved per callback because a session outlives the screen that created it: the
  * Terminal tab can be left and re-entered, or recreated after a rotation, while the shell keeps
  * running. [hostProvider] returning null simply means nothing is watching right now.
+ *
+ * [onExit] is the other half of that: a shell that ends has to be reported to the runtime that owns
+ * it — the session list, the derived state and the keep-alive service — and that must happen whether
+ * or not a screen happens to be bound at that moment. It was the screen's callback alone before, so a
+ * shell that exited while the terminal tab was closed left the runtime believing it was still alive.
  */
 class TermuxSessionClient(
     private val hostProvider: () -> TermuxTerminalHost?,
+    private val onExit: (TerminalSession) -> Unit = {},
 ) : TerminalSessionClient {
 
     override fun onTextChanged(changedSession: TerminalSession) {
@@ -97,6 +103,9 @@ class TermuxSessionClient(
             DeveloperLogCategory.PROCESS,
             "process exit handle=${finishedSession.mHandle} exit code=${finishedSession.exitStatus}",
         )
+        // The runtime first, so the session list and its state are already correct when the screen
+        // that is bound reads them in the callback below.
+        onExit(finishedSession)
         hostProvider()?.onSessionFinished(finishedSession)
     }
 
@@ -132,14 +141,29 @@ class TermuxSessionClient(
     override fun logError(tag: String, message: String) {
         Log.e(tag, message)
         DeveloperLogger.error(DeveloperLogCategory.ERROR, "$tag: $message")
-        if (message.contains("EIO", ignoreCase = true)) {
-            DeveloperLogger.error(DeveloperLogCategory.PTY, "PTY EIO $tag: $message")
-        }
+        // The pty is its own stage: a failed read means output the user should have seen was lost,
+        // a failed write means input never reached the shell, and a dropped write means there was no
+        // shell to reach. Recorded under PTY/INPUT/OUTPUT as well, so one filter answers "did the
+        // terminal's I/O work" without reading every line of the log.
+        ioCategory(message)?.let { category -> DeveloperLogger.error(category, "$tag: $message") }
     }
 
     override fun logWarn(tag: String, message: String) {
         Log.w(tag, message)
-        DeveloperLogger.warn(DeveloperLogCategory.TERMINAL, "$tag: $message")
+        DeveloperLogger.warn(ioCategory(message) ?: DeveloperLogCategory.TERMINAL, "$tag: $message")
+    }
+
+    /**
+     * Which stage of the terminal chain a vendored message belongs to, or null when it does not
+     * name one. Kept as one mapping so the categories of the Developer Log cannot drift apart from
+     * the wording the log lines use.
+     */
+    private fun ioCategory(message: String): DeveloperLogCategory? = when {
+        message.contains("input dropped", ignoreCase = true) -> DeveloperLogCategory.INPUT
+        message.contains("input write failed", ignoreCase = true) -> DeveloperLogCategory.INPUT
+        message.contains("output read failed", ignoreCase = true) -> DeveloperLogCategory.OUTPUT
+        message.contains("EIO", ignoreCase = true) -> DeveloperLogCategory.PTY
+        else -> null
     }
 
     override fun logInfo(tag: String, message: String) {

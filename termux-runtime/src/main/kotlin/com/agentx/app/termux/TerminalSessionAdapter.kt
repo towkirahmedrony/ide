@@ -127,6 +127,12 @@ class TerminalSessionAdapter(
         state
 
         scope.launch {
+            // Armed before the launch, not after it. The case this guard exists for is a pty
+            // allocation that never returns — and if control never returns from the block below,
+            // arming it afterwards never happens either, so the timeout could only ever fire for a
+            // launch that had already succeeded. A launch that works reports RUNNING in
+            // milliseconds, long before the deadline, so this can still only fire on a stuck one.
+            armStartupTimeout()
             try {
                 // The fork/exec happens inside here. `updateSize` initialises the emulator on its
                 // first call, so a view that attached first has already done this; the second call
@@ -143,11 +149,30 @@ class TerminalSessionAdapter(
                 DeveloperLogger.info(DeveloperLogCategory.PROCESS, "process created handle=$handle pid=$pid")
                 DeveloperLogger.info(DeveloperLogCategory.PROCESS, "PID=$pid")
                 if (pid <= 0) {
+                    // Named as a pty failure: the log has to be able to say which stage of the
+                    // launch failed, because creating the pty and starting the guest program in it
+                    // are different problems with different fixes.
+                    DeveloperLogger.error(
+                        DeveloperLogCategory.PTY,
+                        "PTY create FAILED handle=$handle pid=$pid reason=no shell pid reported",
+                    )
                     fail("the pty did not report a shell pid", pid = pid, exit = null)
                     return@launch
                 }
+                if (failureValue != null || forcedStopped) {
+                    // This launch returned only after the startup guard had already given up on it.
+                    // The shell it has just created would otherwise run on with nobody owning it:
+                    // no screen, no handle the UI can act on, and nothing left that would ever stop
+                    // it. Killing it here is what keeps a timed-out launch from leaking a process.
+                    DeveloperLogger.warn(
+                        DeveloperLogCategory.PTY,
+                        "PTY create SUCCESS handle=$handle pid=$pid after the startup guard gave up; " +
+                            "stopping it",
+                    )
+                    runCatching { delegate.finishIfRunning() }
+                    return@launch
+                }
                 reachedRunning = true
-                armStartupTimeout()
                 Log.i(TAG, "RUNNING handle=$handle pid=$pid")
                 TerminalDiagnostics.record(TAG, "RUNNING handle=$handle pid=$pid")
                 DeveloperLogger.info(DeveloperLogCategory.TERMINAL, "Shell startup handle=$handle pid=$pid")
@@ -157,6 +182,11 @@ class TerminalSessionAdapter(
                 // matter here are Errors — UnsatisfiedLinkError, NoClassDefFoundError,
                 // ExceptionInInitializerError. Only Exception was caught before, which is why a
                 // missing or unloadable native library looked like "no session" rather than an error.
+                DeveloperLogger.error(
+                    DeveloperLogCategory.PTY,
+                    "PTY create FAILED handle=$handle ${error.javaClass.simpleName}: " +
+                        (error.message?.takeIf { it.isNotBlank() } ?: "(no message)"),
+                )
                 fail(
                     reason = error.message?.takeIf { it.isNotBlank() } ?: error.javaClass.simpleName,
                     pid = delegate.pid,

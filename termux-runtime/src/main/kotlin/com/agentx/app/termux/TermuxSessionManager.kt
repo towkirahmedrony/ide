@@ -394,9 +394,13 @@ class TermuxSessionManager(
             reason = session.failure,
         )
         synchronized(lock) {
-            byWorkspaceKey.entries.removeAll { it.value == handle }
-            // The command record goes with the process: a finished shell is never handed back by
-            // [open], so nothing may keep it for a future comparison either.
+            // The workspace key stays: it is what makes the next [open] for this workspace find the
+            // finished session, detach it and create the replacement, so a shell that exits does not
+            // leave one dead entry behind for every restart. It is also what keeps the exited session
+            // attributed to its own project, so a switch still closes it.
+            //
+            // The command record, though, goes with the process: a finished shell is never handed
+            // back by [open], so nothing may keep its spec for a future comparison either.
             specByHandle.remove(handle)
         }
         publish()

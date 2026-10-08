@@ -285,6 +285,9 @@ class TerminalViewModel(
     private var collectors: Job? = null
     private var boundHost: TermuxTerminalHost? = null
 
+    /** Set after input has been reported as dropped, so a shell that is not running logs once. */
+    private var inputDropReported = false
+
     /**
      * Which of this project's terminals the screen is on: its first one, or the extra one opened
      * beside it.
@@ -569,10 +572,27 @@ class TerminalViewModel(
         runtime?.terminateAll()
     }
 
-    /** Writes raw bytes to the active pty. Escape sequences are the caller's business. */
+    /**
+     * Writes raw bytes to the active pty. Escape sequences are the caller's business.
+     *
+     * A write that cannot happen is recorded once per outage rather than dropped in silence: "I
+     * pressed the key and nothing happened" and "the shell received it and printed nothing" look
+     * identical on screen, and only the log can tell them apart. The byte count is logged, never the
+     * bytes — this is where a typed password would otherwise end up in the developer log.
+     */
     fun send(bytes: ByteArray) {
-        val session = runtime?.sessions?.active() ?: return
-        if (!session.isRunning) return
+        val session = runtime?.sessions?.active()
+        if (session == null || !session.isRunning || bytes.isEmpty()) {
+            if (!inputDropReported) {
+                inputDropReported = true
+                DeveloperLogger.warn(
+                    DeveloperLogCategory.INPUT,
+                    "input dropped: session=${session?.state ?: "(none)"} bytes=${bytes.size}",
+                )
+            }
+            return
+        }
+        inputDropReported = false
         session.write(bytes, 0, bytes.size)
     }
 

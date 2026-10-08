@@ -38,6 +38,16 @@ public final class TerminalSession extends TerminalOutput {
      */
     static final int PTY_CLOSED_EXIT_STATUS = 128 + 1;
 
+    /** Sentinel for "waitpid has not reported yet". No real status can collide with it. */
+    private static final int UNREPORTED_EXIT_STATUS = Integer.MIN_VALUE;
+
+    /**
+     * How long the reader waits for the waiter's exit status before falling back to the pty-hangup
+     * status. A hand-off on the reader thread, not a delay in the user's path: `waitpid` returns as
+     * soon as the child is reaped, which is the same event that ended the read.
+     */
+    private static final long EXIT_HANDOFF_MILLIS = 250L;
+
     public final String mHandle = UUID.randomUUID().toString();
 
     /**
@@ -74,6 +84,25 @@ public final class TerminalSession extends TerminalOutput {
 
     /** Set once the pty has been released, so it is released exactly once. */
     private volatile boolean mCleanedUp;
+
+    /**
+     * Serializes the one-time pty launch.
+     *
+     * `updateSize` is reachable from two threads at once by design: the session manager starts a
+     * shell off the main thread while `TerminalView.attachSession` sizes the same session from the
+     * UI thread. Without this lock both callers can observe `mEmulator == null` and fork their own
+     * shell; the second one then overwrites the pid and the descriptor, so `finishIfRunning` only
+     * reaches the second process, the first keeps running against the same `/workspace`, and both
+     * readers feed one emulator. One session must own exactly one pty.
+     */
+    private final Object mLaunchLock = new Object();
+
+    /** The exit status `waitpid` returned, or {@link #UNREPORTED_EXIT_STATUS} until it is known. */
+    private volatile int mReportedExitStatus = UNREPORTED_EXIT_STATUS;
+
+    /** Set once input dropped for want of a process has been reported, so typing into a dead
+     * session fills the log with one line rather than one line per keystroke. */
+    private volatile boolean mInputDropReported;
 
     /**
      * The file descriptor referencing the master half of a pseudo-terminal pair, resulting from calling
@@ -124,11 +153,13 @@ public final class TerminalSession extends TerminalOutput {
 
     /** Inform the attached pty of the new size and reflow or initialize the emulator. */
     public void updateSize(int columns, int rows, int cellWidthPixels, int cellHeightPixels) {
-        if (mEmulator == null) {
-            initializeEmulator(columns, rows, cellWidthPixels, cellHeightPixels);
-        } else {
-            JNI.setPtyWindowSize(mTerminalFileDescriptor, rows, columns, cellWidthPixels, cellHeightPixels);
-            mEmulator.resize(columns, rows, cellWidthPixels, cellHeightPixels);
+        synchronized (mLaunchLock) {
+            if (mEmulator == null) {
+                startProcessLocked(columns, rows, cellWidthPixels, cellHeightPixels);
+            } else {
+                JNI.setPtyWindowSize(mTerminalFileDescriptor, rows, columns, cellWidthPixels, cellHeightPixels);
+                mEmulator.resize(columns, rows, cellWidthPixels, cellHeightPixels);
+            }
         }
     }
 
@@ -144,11 +175,26 @@ public final class TerminalSession extends TerminalOutput {
      * @param rows    The number of rows in the terminal window.
      */
     public void initializeEmulator(int columns, int rows, int cellWidthPixels, int cellHeightPixels) {
+        synchronized (mLaunchLock) {
+            // Already launched: the pty exists and only its size can still change. Idempotent, so a
+            // second caller can never fork a second shell for this session.
+            if (mEmulator != null) {
+                JNI.setPtyWindowSize(mTerminalFileDescriptor, rows, columns, cellWidthPixels, cellHeightPixels);
+                mEmulator.resize(columns, rows, cellWidthPixels, cellHeightPixels);
+                return;
+            }
+            startProcessLocked(columns, rows, cellWidthPixels, cellHeightPixels);
+        }
+    }
+
+    /** Creates the pty and starts the shell. Callers must hold {@link #mLaunchLock}. */
+    private void startProcessLocked(int columns, int rows, int cellWidthPixels, int cellHeightPixels) {
         mEmulator = new TerminalEmulator(this, columns, rows, cellWidthPixels, cellHeightPixels, mTranscriptRows, mClient);
 
         int[] processId = new int[1];
         mTerminalFileDescriptor = JNI.createSubprocess(mShellPath, mCwd, mArgs, mEnv, processId, rows, columns, cellWidthPixels, cellHeightPixels);
         mShellPid = processId[0];
+        mInputDropReported = false;
         mClient.setTerminalShellPid(this, mShellPid);
 
         // The pty master is addressed as a FileDescriptor obtained through public API.
@@ -166,6 +212,20 @@ public final class TerminalSession extends TerminalOutput {
         mPtyDescriptor = pty;
         final FileDescriptor ptyDescriptor = pty.getFileDescriptor();
 
+        // The waiter starts first so the reader can hand the exit status over instead of announcing
+        // a pty hangup that would read as "killed by signal 1" for a clean exit.
+        final Thread waiter = new Thread("TermSessionWaiter[pid=" + mShellPid + "]") {
+            @Override
+            public void run() {
+                final int processExitCode = JNI.waitFor(mShellPid);
+                // Published before the message is posted, so the reader can use it whether or not
+                // the main thread has processed the message yet.
+                mReportedExitStatus = processExitCode;
+                mMainThreadHandler.sendMessage(mMainThreadHandler.obtainMessage(MSG_PROCESS_EXITED, processExitCode));
+            }
+        };
+        waiter.start();
+
         new Thread("TermSessionInputReader[pid=" + mShellPid + "]") {
             @Override
             public void run() {
@@ -179,14 +239,34 @@ public final class TerminalSession extends TerminalOutput {
                         mMainThreadHandler.sendEmptyMessage(MSG_NEW_INPUT);
                     }
                 } catch (ErrnoException | IOException e) {
-                    // EIO is the normal way a pty master read ends once the slave side is gone;
-                    // InterruptedIOException is the other way Os.read gives up.
+                    // EIO is the normal way a pty master read ends once the slave side is gone, and
+                    // EBADF is how this session ends it when it is torn down. InterruptedIOException
+                    // is the other way Os.read gives up. Anything else cost the user output that
+                    // never reached the screen, so it is reported rather than swallowed.
+                    if (!isExpectedPtyShutdown(e)) {
+                        Logger.logError(mClient, LOG_TAG, "pty output read failed: " + e);
+                    }
                 } finally {
-                    // EOF or EIO here means nothing is left on the other end of the pty. Announcing
-                    // it is what stops a session whose process never got reaped from looking alive
-                    // forever: without this the UI waits for an exit that no waiter will report.
-                    // deliverExit() ignores a second announcement, so a normal exit still wins.
-                    mMainThreadHandler.sendEmptyMessage(MSG_PTY_CLOSED);
+                    // Wait for the waiter's status before falling back to the pty-hangup one: a clean
+                    // `exit 0` must not be reported as "killed by signal 1" merely because this
+                    // thread reached the end of the pty first. The wait is bounded because a process
+                    // that is never reaped must still end up reported by the fallback below.
+                    try {
+                        waiter.join(EXIT_HANDOFF_MILLIS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    final int reportedExitStatus = mReportedExitStatus;
+                    if (reportedExitStatus != UNREPORTED_EXIT_STATUS) {
+                        mMainThreadHandler.sendMessage(
+                            mMainThreadHandler.obtainMessage(MSG_PROCESS_EXITED, reportedExitStatus));
+                    } else {
+                        // Nothing is left on the other end of the pty and no waiter status arrived, so
+                        // the hangup is all there is to report. Announcing it is what stops a session
+                        // whose process never got reaped from looking alive forever; deliverExit()
+                        // ignores a second announcement, so a normal exit still wins.
+                        mMainThreadHandler.sendEmptyMessage(MSG_PTY_CLOSED);
+                    }
                 }
             }
         }.start();
@@ -202,25 +282,51 @@ public final class TerminalSession extends TerminalOutput {
                         Os.write(ptyDescriptor, buffer, 0, bytesToWrite);
                     }
                 } catch (ErrnoException | IOException e) {
-                    // The pty is gone; the reader thread is what reports it.
+                    // EIO/EBADF here mean the pty was torn down under this thread, which is how an
+                    // exit ends it. Anything else means bytes the user typed were never delivered to
+                    // the shell, and saying so is the only way that is ever distinguishable from a
+                    // command that simply produced no output.
+                    if (!isExpectedPtyShutdown(e)) {
+                        Logger.logError(mClient, LOG_TAG, "pty input write failed: " + e);
+                    }
                 }
             }
         }.start();
+    }
 
-        new Thread("TermSessionWaiter[pid=" + mShellPid + "]") {
-            @Override
-            public void run() {
-                int processExitCode = JNI.waitFor(mShellPid);
-                mMainThreadHandler.sendMessage(mMainThreadHandler.obtainMessage(MSG_PROCESS_EXITED, processExitCode));
-            }
-        }.start();
-
+    /**
+     * Whether a pty I/O exception is the normal way one of this session's threads ends.
+     *
+     * EIO is what a master read or write returns once the slave side is gone — the shell exited —
+     * and EBADF is what both directions return once {@link #cleanupResources} has closed the
+     * descriptor. Both are expected at the end of every session's life. Reporting them would bury
+     * the failures that cost the user data, which is why the two are told apart instead of caught
+     * blindly.
+     */
+    private static boolean isExpectedPtyShutdown(Throwable error) {
+        if (!(error instanceof ErrnoException)) return false;
+        final int errno = ((ErrnoException) error).errno;
+        return errno == OsConstants.EIO || errno == OsConstants.EBADF;
     }
 
     /** Write data to the shell process. */
     @Override
     public void write(byte[] data, int offset, int count) {
-        if (mShellPid > 0) mTerminalToProcessIOQueue.write(data, offset, count);
+        // No process means nothing can receive the bytes: before the shell is spawned, and after it
+        // has been reaped. Dropping them is right — queueing them would hand them to whatever runs
+        // next — but it is stated once per launch, because input that silently goes nowhere is
+        // otherwise indistinguishable from a shell that received it and printed nothing.
+        if (mShellPid <= 0) {
+            if (!mInputDropReported) {
+                mInputDropReported = true;
+                Logger.logWarn(mClient, LOG_TAG, "input dropped: no process is attached (" + count + " byte(s))");
+            }
+            return;
+        }
+        if (!mTerminalToProcessIOQueue.write(data, offset, count) && !mInputDropReported) {
+            mInputDropReported = true;
+            Logger.logWarn(mClient, LOG_TAG, "input dropped: the input queue is closed (" + count + " byte(s))");
+        }
     }
 
     /** Write the Unicode code point to the terminal encoded in UTF-8. */
@@ -341,7 +447,13 @@ public final class TerminalSession extends TerminalOutput {
      */
     private boolean deliverExit(int exitStatus) {
         synchronized (this) {
-            if (mExitDelivered) return false;
+            if (mExitDelivered) {
+                // The same exit arriving by the other route. The waiter's status is the real one and
+                // the pty-hangup path only synthesises one, so the newer value replaces it instead of
+                // being discarded — a clean `exit 0` must not stay reported as a signal.
+                mShellExitStatus = exitStatus;
+                return false;
+            }
             mExitDelivered = true;
         }
         cleanupResources(exitStatus);

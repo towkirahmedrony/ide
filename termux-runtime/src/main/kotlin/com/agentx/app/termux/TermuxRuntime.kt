@@ -84,7 +84,19 @@ class TermuxRuntime(
     @Volatile
     var terminalHost: TermuxTerminalHost? = null
 
-    private val sessionClient = TermuxSessionClient { terminalHost }
+    /**
+     * The client every session is created with.
+     *
+     * The host is resolved per callback, and [onSessionFinished] is told about an exit even when no
+     * screen is bound — the session list, the derived state, the command record and the keep-alive
+     * service all belong to the runtime, so a shell that ends while the terminal tab is closed must
+     * still be accounted for. Nothing else calls [onSessionFinished], which is why the callback is
+     * wired here rather than left to the screen.
+     */
+    private val sessionClient = TermuxSessionClient(
+        hostProvider = { terminalHost },
+        onExit = { session -> onSessionFinished(session) },
+    )
 
     /** Invoked whenever the session list changes, for observers that are not Compose. */
     @Volatile

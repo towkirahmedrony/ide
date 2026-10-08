@@ -171,17 +171,22 @@ class TermuxSessionManagerTest {
     }
 
     @Test
-    fun `a shell that exits on its own frees its workspace key`() {
+    fun `an exit is reported through the manager and the next open replaces the shell`() {
         val recorder = Recorder()
         val manager = TermuxSessionManager(recorder.factory())
 
         val session = manager.open(spec())!!
         recorder.sessions.first().exitOnItsOwn(0)
+        // Reported the way the runtime reports it: from the session's own exit callback, which is
+        // what `TermuxSessionClient` now forwards even when no screen is bound.
         manager.onSessionFinished(session.handle)
 
-        // The next open must start a new process rather than hand back the dead one.
+        // The next open must start a new process rather than hand back the dead one, and must leave
+        // exactly one session behind: a shell that exits may not add a dead entry per restart.
         val next = manager.open(spec())!!
         assertNotEquals(session.handle, next.handle)
+        assertEquals(listOf(next.handle), manager.sessions().map { it.handle })
+        assertEquals(1, recorder.sessions.first().finishCount)
     }
 
     @Test
