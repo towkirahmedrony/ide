@@ -25,6 +25,7 @@ import com.agentx.app.ubuntu.LocalUbuntuRuntime
 import com.agentx.app.ubuntu.NativeRuntimeLayout
 import com.agentx.app.ubuntu.RuntimeStatus
 import com.agentx.app.ubuntu.UbuntuProjectBinding
+import com.agentx.app.ubuntu.UbuntuProjectBindings
 import com.termux.terminal.TerminalSession
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -72,6 +73,14 @@ data class TerminalUiState(
      * say, so this is null in the normal case.
      */
     val workspaceNote: String? = null,
+    /**
+     * Set when the missing shared-storage access is the reason [workspaceNote] is there.
+     *
+     * The note alone would only describe the situation; this is what lets the screen offer the one
+     * action that changes it — opening Android's "All files access" screen — and what the re-check on
+     * resume keys off, so a grant is picked up without leaving and reopening the project.
+     */
+    val workspaceAccessRequired: Boolean = false,
     /** Set when the prefix cannot host the official Termux packages. */
     val prefixNote: String? = null,
     /** True when the embedded runtime is missing entirely (previews, or a failed boot). */
@@ -188,6 +197,23 @@ data class TerminalUiState(
 }
 
 /**
+ * Where the active project stands with respect to the shell that is about to run in it.
+ *
+ * [note] is what the screen says, and is null when the project is bound and there is nothing to
+ * report. [accessRequired] and [mountable] are what the screen and the re-check act on, kept beside
+ * the note so the wording and the action can never describe different states.
+ */
+private data class ProjectStatus(
+    val note: String?,
+    /** The shell fell back to the guest home for want of shared-storage access, and only that. */
+    val accessRequired: Boolean,
+    /** The project is bound at the guest project root, so a shell there would be in the project. */
+    val mountable: Boolean,
+    /** The platform's answer for "All files access" at the moment this was resolved. */
+    val allFilesAccessGranted: Boolean,
+)
+
+/**
  * Drives the Terminal screen.
  *
  * Owns no process. The shell belongs to [TermuxRuntime], which outlives this ViewModel, so
@@ -228,6 +254,16 @@ class TerminalViewModel(
      * owns — the display location alone is not enough.
      */
     private val workspaceHandle: () -> String? = { null },
+    /**
+     * Whether AgentX currently holds the "All files access" that lets it reach a project in shared
+     * storage.
+     *
+     * Injected rather than read here for the same reason the handle is: the app has exactly one
+     * place that reads Android's permission APIs, and this class must not grow a second one. The
+     * default says "granted" so a caller that does not wire the check in — a preview, a unit test —
+     * behaves exactly as it did before this access became part of the flow.
+     */
+    private val allFilesAccessGranted: () -> Boolean = { true },
     private val runtime: TermuxRuntime?,
     /**
      * The primary developer runtime. When it is present and ready it supplies the terminal's
@@ -287,6 +323,46 @@ class TerminalViewModel(
             developerRuntimeAvailable = developerRuntime != null,
             developerRuntime = developerRuntime?.status?.value ?: RuntimeStatus.NotInstalled,
         )
+    }
+
+    /**
+     * Re-reads the shared-storage access and re-resolves the active project's binding.
+     *
+     * This is the return half of the grant flow: the screen calls it when the terminal becomes
+     * visible again, and again when the user comes back from Android's "All files access" screen, so
+     * a grant takes effect without leaving and reopening the project. When the project is now
+     * mountable at the guest project root the session is rebuilt from the project that is open now,
+     * exactly as Restart does, because a shell that was started in the guest home cannot be moved —
+     * it has to be replaced.
+     *
+     * Deliberately quiet when there is nothing to reconsider. It only runs at all while the access
+     * was the outstanding problem, and it restarts nothing when the access is still missing or the
+     * project still cannot be bound, so returning from Settings is never a loop and never a
+     * restart of a shell that was fine.
+     */
+    fun refreshWorkspaceAccess() {
+        val current = runtime ?: return
+        val developer = developerRuntime ?: return
+        if (!uiState.workspaceAccessRequired) return
+        viewModelScope.launch {
+            val resolved = withContext(Dispatchers.IO) {
+                runCatching { projectStatus(developer, current) to developer.isReady() }
+            }.getOrNull() ?: return@launch
+            val (status, ready) = resolved
+            DeveloperLogger.info(
+                DeveloperLogCategory.STORAGE,
+                "All files access re-checked granted=${status.allFilesAccessGranted} " +
+                    "mountable=${status.mountable} accessRequired=${status.accessRequired}",
+            )
+            if (status.accessRequired) return@launch
+            uiState = uiState.copy(workspaceNote = status.note, workspaceAccessRequired = false)
+            if (!status.mountable || !ready) return@launch
+            DeveloperLogger.info(
+                DeveloperLogCategory.STORAGE,
+                "Terminal restart after access granted mountable=true runtimeReady=$ready",
+            )
+            restart()
+        }
     }
 
     /** The screen publishes itself here so emulator callbacks reach the view it renders. */
@@ -362,7 +438,11 @@ class TerminalViewModel(
         // shown and the decision to open a shell come from one source of truth.
         developer.refresh()
         current.sessions.discardUnusable(workspaceKey(secondary))
-        uiState = uiState.copy(usingDeveloperRuntime = true, workspaceNote = null)
+        uiState = uiState.copy(
+            usingDeveloperRuntime = true,
+            workspaceNote = null,
+            workspaceAccessRequired = false,
+        )
         // restart is what actually creates the new session; it needs no handle, so a workspace whose
         // session was just discarded still gets a completely fresh one.
         restart()
@@ -433,9 +513,20 @@ class TerminalViewModel(
                 // describes where the shell is rooted is re-derived with it rather than kept from
                 // a session that no longer exists. The legacy backend has no project binding to
                 // derive one from, so its own note stands.
-                val note =
-                    if (developer != null) projectNote(developer, current) else uiState.workspaceNote
-                uiState = uiState.copy(usingDeveloperRuntime = developer != null, workspaceNote = note)
+                val status = if (developer != null) {
+                    withContext(Dispatchers.IO) { projectStatus(developer, current) }
+                } else {
+                    null
+                }
+                if (status == null) {
+                    uiState = uiState.copy(usingDeveloperRuntime = false)
+                } else {
+                    uiState = uiState.copy(
+                        usingDeveloperRuntime = true,
+                        workspaceNote = status.note,
+                        workspaceAccessRequired = status.accessRequired,
+                    )
+                }
                 current.sessions.restart(handle, spec)?.let { restarted ->
                     current.sessions.setActive(restarted.handle)
                 }
@@ -454,7 +545,11 @@ class TerminalViewModel(
             resolved.exceptionOrNull()?.let { error ->
                 DeveloperLogger.error(DeveloperLogCategory.ERROR, "restart could not prepare a shell", error)
             }
-            uiState = uiState.copy(usingDeveloperRuntime = developer != null, workspaceNote = reason)
+            uiState = uiState.copy(
+                usingDeveloperRuntime = developer != null,
+                workspaceNote = reason,
+                workspaceAccessRequired = false,
+            )
             current.sessions.restartUnstartable(
                 handle = handle,
                 workspaceKey = workspaceKey(extra),
@@ -572,9 +667,11 @@ class TerminalViewModel(
                 // The primary backend: a real Ubuntu guest shell. Any previous note goes with it:
                 // what the shell is rooted at is re-derived from the project that is open now, so a
                 // stale reason from an earlier attempt cannot outlive the state it described.
+                val status = withContext(Dispatchers.IO) { projectStatus(developer, current) }
                 uiState = uiState.copy(
                     usingDeveloperRuntime = true,
-                    workspaceNote = projectNote(developer, current),
+                    workspaceNote = status.note,
+                    workspaceAccessRequired = status.accessRequired,
                 )
                 current.openSession(spec)
                 return@launch
@@ -595,7 +692,13 @@ class TerminalViewModel(
                     error,
                 )
             }
-            uiState = uiState.copy(usingDeveloperRuntime = true, workspaceNote = reason)
+            // The shell never started, so a project binding is not the question here: the note is
+            // the runtime's own reason and the terminal offers no access prompt for it.
+            uiState = uiState.copy(
+                usingDeveloperRuntime = true,
+                workspaceNote = reason,
+                workspaceAccessRequired = false,
+            )
             current.sessions.openUnstartable(
                 workspaceKey = key,
                 executable = developer.layout.proot,
@@ -629,6 +732,9 @@ class TerminalViewModel(
         uiState = uiState.copy(
             usingDeveloperRuntime = false,
             workspaceNote = workspaceNoteFor(binding)?.let(::trimNote),
+            // The legacy backend has no guest to bind a project into, so shared-storage access is
+            // not what decides where its shell runs.
+            workspaceAccessRequired = false,
         )
         current.openSession(current.specFor(key, binding, extraEnvironment(secondary)))
     }
@@ -788,21 +894,58 @@ class TerminalViewModel(
         )
 
     /**
-     * What the user has to know about where the developer shell is rooted, from the binding the
-     * shell was actually built with.
+     * What the user has to know about where the developer shell is rooted, computed from the binding
+     * the shell is actually built with.
      *
      * Only a project that could not be bound has something to say. Bound at
      * [com.agentx.app.ubuntu.ProotCommand.GUEST_PROJECT_ROOT] is the norm and gets no note; a shell
      * that is in the guest home because no project is open — or because this app cannot reach the
      * project's folder as a path — says so, so the screen never implies it is the project when it is
-     * not. The reason comes from the binding, not from the caller, so the note and the shell cannot
-     * describe different states.
+     * not.
+     *
+     * When the reason the project could not be bound is that AgentX lacks shared-storage access, the
+     * internal reason is replaced by [WORKSPACE_ACCESS_REQUIRED_NOTE] and [ProjectStatus.accessRequired]
+     * is set, which is what puts the "Grant Access" action on the screen. Every other failure keeps
+     * its own wording, so the user is never sent after a permission that would not help.
      */
-    private fun projectNote(developer: LocalUbuntuRuntime, current: TermuxRuntime): String? =
-        when (val resolved = developer.projectBinding(projectHandle(current), workspaceLocation())) {
+    private fun projectStatus(developer: LocalUbuntuRuntime, current: TermuxRuntime): ProjectStatus {
+        val location = workspaceHandle() ?: workspaceLocation()
+        val binding = developer.projectBinding(projectHandle(current), workspaceLocation())
+        val mountable = binding is UbuntuProjectBinding.Direct
+        val granted = runCatching { allFilesAccessGranted() }.getOrDefault(true)
+        val accessRequired = workspaceAccessRequired(
+            binding = binding,
+            projectLocation = location,
+            allFilesAccessGranted = granted,
+        )
+        // Structured, and keyed so each cause is distinguishable from the others in the Developer
+        // Logs: an unreadable shared-storage folder (sharedStorage=true allFilesAccess=false), a
+        // path that is not a project at all (mountable=false accessRequired=false), a runtime that
+        // is not ready (the ROOTFS lines), and a process that failed to start (the PROCESS lines).
+        DeveloperLogger.info(
+            DeveloperLogCategory.STORAGE,
+            "Project detected path=${location ?: "(none)"} " +
+                "sharedStorage=${UbuntuProjectBindings.isSharedStorageLocation(location)} " +
+                "allFilesAccess=$granted",
+        )
+        DeveloperLogger.info(
+            DeveloperLogCategory.STORAGE,
+            "Project binding resolved mountable=$mountable " +
+                "hostPath=${binding.hostPath ?: "(none)"} guestPath=${binding.guestPath} " +
+                "accessRequired=$accessRequired",
+        )
+        val note = when (binding) {
             is UbuntuProjectBinding.Direct -> null
-            is UbuntuProjectBinding.Home -> trimNote(resolved.reason)
+            is UbuntuProjectBinding.Home ->
+                if (accessRequired) WORKSPACE_ACCESS_REQUIRED_NOTE else trimNote(binding.reason)
         }
+        return ProjectStatus(
+            note = note,
+            accessRequired = accessRequired,
+            mountable = mountable,
+            allFilesAccessGranted = granted,
+        )
+    }
 
     /**
      * Context for the shell. Deliberately only identifiers: no credentials, no tokens, nothing

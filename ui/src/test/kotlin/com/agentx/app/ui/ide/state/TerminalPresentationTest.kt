@@ -5,6 +5,7 @@ import com.agentx.app.termux.TermuxBootstrapCatalog
 import com.agentx.app.termux.TermuxInstallStage
 import com.agentx.app.termux.TermuxProvisioning
 import com.agentx.app.termux.TermuxProvisioningState
+import com.agentx.app.ubuntu.UbuntuProjectBinding
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -119,6 +120,87 @@ class TerminalPresentationTest {
         assertNull(terminalFailureHeading(TerminalSessionState.STARTING))
         // No session at all still says so rather than leaving the panel blank.
         assertTrue(noSessionSummary().isNotBlank())
+    }
+
+    @Test
+    fun `a shared-storage project that fell back to the guest home asks for storage access`() {
+        // The exact state the terminal lands in when All files access is missing: the binding fell
+        // back to the guest home, and the project really is a folder in shared storage.
+        val home = UbuntuProjectBinding.Home("The project path is not a readable directory from this app.")
+
+        assertTrue(
+            workspaceAccessRequired(
+                binding = home,
+                projectLocation = "/storage/emulated/0/AgentX/demo",
+                allFilesAccessGranted = false,
+            ),
+        )
+        // The same project once the access is granted is not a permission problem any more.
+        assertFalse(
+            workspaceAccessRequired(
+                binding = home,
+                projectLocation = "/storage/emulated/0/AgentX/demo",
+                allFilesAccessGranted = true,
+            ),
+        )
+        // Nor is its SAF spelling a different answer: the tree names the same shared-storage folder.
+        assertTrue(
+            workspaceAccessRequired(
+                binding = home,
+                projectLocation = "content://com.android.externalstorage.documents/tree/primary%3AAgentX%2Fdemo",
+                allFilesAccessGranted = false,
+            ),
+        )
+    }
+
+    @Test
+    fun `a bound project and a project with another problem never ask for storage access`() {
+        val home = UbuntuProjectBinding.Home("no project is open")
+
+        // Bound at the guest project root: nothing to ask for.
+        assertFalse(
+            workspaceAccessRequired(
+                binding = UbuntuProjectBinding.Direct("/storage/emulated/0/AgentX/demo"),
+                projectLocation = "/storage/emulated/0/AgentX/demo",
+                allFilesAccessGranted = false,
+            ),
+        )
+        // Fell back to the guest home, but the project is app-private, so no storage grant would
+        // change the outcome — it keeps its own reason instead of being reported as a permission.
+        assertFalse(
+            workspaceAccessRequired(
+                binding = home,
+                projectLocation = "/data/data/com.agentx.app/files/projects/legacy",
+                allFilesAccessGranted = false,
+            ),
+        )
+        // No project at all, and a location that is not a filesystem path.
+        assertFalse(
+            workspaceAccessRequired(
+                binding = home,
+                projectLocation = null,
+                allFilesAccessGranted = false,
+            ),
+        )
+        assertFalse(
+            workspaceAccessRequired(
+                binding = UbuntuProjectBinding.Home("a cloud tree has no path"),
+                projectLocation = "content://com.google.android.apps.docs.storage/tree/primary%3Ax",
+                allFilesAccessGranted = false,
+            ),
+        )
+    }
+
+    @Test
+    fun `the missing-access notice and its action are user-facing wording`() {
+        // Neither names an internal component: the user sees a shell that is not in their project,
+        // and one action that changes it.
+        assertTrue(WORKSPACE_ACCESS_REQUIRED_NOTE.contains("without the active project"))
+        assertTrue(WORKSPACE_ACCESS_REQUIRED_NOTE.contains("storage access is not granted"))
+        assertFalse(WORKSPACE_ACCESS_REQUIRED_NOTE.contains("PRoot", ignoreCase = true))
+        assertFalse(WORKSPACE_ACCESS_REQUIRED_NOTE.contains("bind", ignoreCase = true))
+        assertFalse(WORKSPACE_ACCESS_REQUIRED_NOTE.contains("workspace", ignoreCase = true))
+        assertTrue(WORKSPACE_ACCESS_ACTION_LABEL.isNotBlank())
     }
 
     @Test

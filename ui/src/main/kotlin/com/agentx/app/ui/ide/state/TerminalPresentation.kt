@@ -5,6 +5,8 @@ import com.agentx.app.termux.TermuxBootstrapCatalog
 import com.agentx.app.termux.TermuxInstallStage
 import com.agentx.app.termux.TermuxProvisioningState
 import com.agentx.app.ubuntu.UbuntuInstallStage
+import com.agentx.app.ubuntu.UbuntuProjectBinding
+import com.agentx.app.ubuntu.UbuntuProjectBindings
 
 /**
  * The wording rules of the Terminal screen.
@@ -81,6 +83,39 @@ fun installStageGuidance(stage: TermuxInstallStage?): String = when (stage) {
     null ->
         "Install failed."
 }
+
+/**
+ * The message shown when the terminal could not expose the active project because AgentX has not
+ * been granted access to shared storage.
+ *
+ * Stated in the user's terms on purpose: what they see is a shell that is not in their project, and
+ * what they can do about it is grant one access. Nothing here names an internal component.
+ */
+const val WORKSPACE_ACCESS_REQUIRED_NOTE: String =
+    "Terminal is running without the active project because storage access is not granted."
+
+/** The action that opens the system screen which grants shared-storage access to AgentX. */
+const val WORKSPACE_ACCESS_ACTION_LABEL: String = "Grant Access"
+
+/**
+ * Whether the terminal has to ask for shared-storage access before it can expose the active project.
+ *
+ * True only in the situation the user can actually act on: the shell fell back to the guest home
+ * instead of binding the project ([UbuntuProjectBinding.Home]), the project really is a folder in
+ * shared storage, and the access that would let the app read it is not granted.
+ *
+ * Deliberately narrow. A project that is merely unusable — a folder that no longer exists, a tree
+ * from a provider with no filesystem path — is not this case and keeps its own reason, so the
+ * terminal never asks for a permission that would not change anything.
+ */
+fun workspaceAccessRequired(
+    binding: UbuntuProjectBinding,
+    projectLocation: String?,
+    allFilesAccessGranted: Boolean,
+): Boolean =
+    binding is UbuntuProjectBinding.Home &&
+        !allFilesAccessGranted &&
+        UbuntuProjectBindings.isSharedStorageLocation(projectLocation)
 
 /**
  * Can the screen offer the on-screen keyboard?

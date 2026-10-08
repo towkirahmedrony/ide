@@ -35,6 +35,30 @@ class AndroidPermissionReader(private val context: Context) {
     /** The real state of every permission AgentX declares, in display order. */
     fun snapshot(): List<AgentPermissionState> = AgentPermission.entries.map(::stateOf)
 
+    /**
+     * Whether AgentX currently holds "All files access".
+     *
+     * The single platform check for that access, and the only one any other screen asks for. Below
+     * Android 11 the access does not exist — shared storage is governed by the platform's own
+     * storage model — so the answer is yes rather than sending the user to a setting their device
+     * does not have. From Android 11 it is a special access only the user can turn on, and
+     * `Environment.isExternalStorageManager()` is how Android reports it.
+     *
+     * This is the same condition the runtime's mount probe applies before it refuses to bind a
+     * shared-storage project, so the terminal never offers a grant that would not help, and never
+     * stays quiet when one would.
+     */
+    fun hasAllFilesAccess(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.R || isGranted(AgentPermission.ALL_FILES_ACCESS)
+
+    /**
+     * The system screens that can grant "All files access", best match first.
+     *
+     * Exposed as a named accessor so a caller that needs this one access does not have to know which
+     * [PermissionSettingsTarget] carries it.
+     */
+    fun allFilesAccessIntents(): List<Intent> = settingsIntents(PermissionSettingsTarget.ALL_FILES)
+
     /** Records that the app asked for [permission], which is how "don't ask again" is told apart. */
     fun markRequested(permission: AgentPermission) = ledger.markRequested(permission.androidName)
 

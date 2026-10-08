@@ -96,6 +96,43 @@ object UbuntuProjectBindings {
     }
 
     /**
+     * Where [raw] is a directory in the device's shared storage, or null when it is not.
+     *
+     * A project's location reaches the runtime in three spellings — a real path, a `file://` URI, or
+     * a Storage Access Framework tree whose id names a shared-storage folder — so both spellings are
+     * tried and the first that proves to be shared storage wins. Nothing is guessed: a `content://`
+     * handle from any other provider (a cloud tree, a third-party file manager) resolves to null.
+     *
+     * This is the one place that decides what "shared storage" means. It is what the mount probe
+     * gates on, and it is what the terminal asks before it offers to open Android's All files access
+     * screen, so the two cannot disagree about whether a project needs that access.
+     */
+    fun sharedStorageLocation(raw: String?): String? =
+        listOfNotNull(asFilesystemPath(raw), safFilesystemPath(raw))
+            .firstOrNull(::isSharedStoragePath)
+
+    /**
+     * Whether [raw] names a directory in shared storage.
+     *
+     * The filesystem paths that reach here are the ones [resolve] would bind, so an app-private
+     * project folder answers false and a project in the AgentX folder in shared storage answers
+     * true.
+     */
+    fun isSharedStorageLocation(raw: String?): Boolean = sharedStorageLocation(raw) != null
+
+    /**
+     * Whether [path] is shared storage rather than something the app owns.
+     *
+     * Matched on whole path segments, so the AgentX folder is shared storage while a directory that
+     * merely shares the prefix (`/storage-backups`) is not. Every Android volume hangs off
+     * [STORAGE_ROOT]; [PRIMARY_ALIAS] and [LEGACY_PRIMARY_ALIAS] are the platform's own aliases for
+     * the primary volume, which is the one AgentX projects live on.
+     */
+    private fun isSharedStoragePath(path: String): Boolean =
+        listOf(STORAGE_ROOT, PRIMARY_ALIAS, LEGACY_PRIMARY_ALIAS)
+            .any { root -> path == root || path.startsWith("$root/") }
+
+    /**
      * The phone-storage path a Storage Access Framework tree URI names, when it has one.
      *
      * The system folder picker (`ACTION_OPEN_DOCUMENT_TREE`) answers with a tree over the
@@ -199,4 +236,13 @@ object UbuntuProjectBindings {
     private const val PRIMARY_VOLUME = "primary"
 
     private const val PRIMARY_STORAGE_ROOT = "/storage/emulated/0"
+
+    /** The parent of every Android volume, removable ones included. */
+    private const val STORAGE_ROOT = "/storage"
+
+    /** Android's alias for the primary shared volume. */
+    private const val PRIMARY_ALIAS = "/sdcard"
+
+    /** The pre-multi-user alias of the same volume. */
+    private const val LEGACY_PRIMARY_ALIAS = "/mnt/sdcard"
 }

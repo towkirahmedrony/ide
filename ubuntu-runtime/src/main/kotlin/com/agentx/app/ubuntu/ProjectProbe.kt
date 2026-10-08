@@ -13,13 +13,16 @@ import java.io.File
  * folder can pass both checks while its non-media files are filtered out, which shows up as an
  * empty /workspace. For shared storage the real answer therefore also needs All files access.
  * Every decision is logged so the Developer Logs screen shows why a path was or was not bound.
+ *
+ * What counts as shared storage is not decided here: [UbuntuProjectBindings.isSharedStorageLocation]
+ * owns that definition, so this gate and the terminal's "Grant Access" prompt cannot disagree about
+ * whether a given project is the kind that needs the access.
  */
 internal fun probeProjectDirectory(path: String): Boolean {
     val dir = File(path)
     val isDir = dir.isDirectory
     val canRead = dir.canRead()
-    val sharedStorage = path.startsWith("/storage/") || path.startsWith("/sdcard") ||
-        path.startsWith("/mnt/sdcard")
+    val sharedStorage = UbuntuProjectBindings.isSharedStorageLocation(path)
     val allFiles = Build.VERSION.SDK_INT < Build.VERSION_CODES.R ||
         runCatching { Environment.isExternalStorageManager() }.getOrDefault(true)
     val entries = if (isDir) dir.list()?.size else null

@@ -21,8 +21,10 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavHostController
@@ -32,6 +34,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.agentx.app.ui.ide.IdeDependencies
 import com.agentx.app.ui.ide.components.IdeTopBar
+import com.agentx.app.ui.ide.permissions.AndroidPermissionReader
 import com.agentx.app.ui.ide.state.AgentViewModel
 import com.agentx.app.ui.ide.state.GitViewModel
 import com.agentx.app.ui.ide.state.IdeViewModelFactory
@@ -102,6 +105,12 @@ fun WorkspaceShell(
             )
         },
     )
+    // The app's one reader of Android permission state. The terminal asks it whether shared-storage
+    // access is held, so the prompt the terminal shows and the Permissions screen agree by
+    // construction rather than by two copies of the same check.
+    val permissionReader = LocalContext.current.let { context ->
+        remember(context) { AndroidPermissionReader(context) }
+    }
     val terminalViewModel: TerminalViewModel = viewModel(
         key = "terminal-$workspaceId",
         factory = IdeViewModelFactory {
@@ -122,6 +131,11 @@ fun WorkspaceShell(
                         ?.takeIf { it.workspace.id.value == workspaceId }
                         ?.let { dependencies.workspaceManager.currentHandle }
                 },
+                // A project in shared storage can only be bound into the guest once the user has
+                // granted "All files access", and the terminal is where that shows up as a shell
+                // that is not in the project. Read through the permission reader so the answer is
+                // the platform's, re-read on every open and restart.
+                allFilesAccessGranted = { permissionReader.hasAllFilesAccess() },
                 runtime = dependencies.terminalRuntime,
                 developerRuntime = dependencies.developerRuntime,
             )

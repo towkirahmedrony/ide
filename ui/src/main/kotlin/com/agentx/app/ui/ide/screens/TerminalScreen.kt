@@ -1,10 +1,15 @@
 package com.agentx.app.ui.ide.screens
 
+import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.view.MotionEvent
 import android.view.inputmethod.InputMethodManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -49,6 +54,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.agentx.app.termux.DeveloperLogCategory
+import com.agentx.app.termux.DeveloperLogger
 import com.agentx.app.termux.TerminalSessionState
 import com.agentx.app.termux.TermuxKeys
 import com.agentx.app.termux.TermuxProvisioningState
@@ -56,6 +63,9 @@ import com.agentx.app.termux.TermuxTerminalHost
 import com.agentx.app.termux.TermuxViewClient
 import com.agentx.app.termux.TermuxViewHost
 import com.agentx.app.ubuntu.AgentxRuntimeState
+import com.agentx.app.ui.ide.permissions.AndroidPermissionReader
+import com.agentx.app.ui.ide.state.WORKSPACE_ACCESS_ACTION_LABEL
+import com.agentx.app.ui.ide.state.WORKSPACE_ACCESS_REQUIRED_NOTE
 import com.agentx.app.ui.ide.state.developerRuntimeStageGuidance
 import com.agentx.app.ui.ide.state.noSessionSummary
 import com.agentx.app.ui.ide.state.TerminalUiState
@@ -176,6 +186,45 @@ fun TerminalScreen(
         onDispose { viewModel.unbindTerminalHost(terminalHost) }
     }
 
+    // The grant flow. The reader is the app's one place for Android permission state, so the screen
+    // asks it rather than touching `Environment` itself, and the settings screens it offers are the
+    // same ones Settings → Permissions uses.
+    val permissionReader = remember(context) { AndroidPermissionReader(context) }
+
+    val settingsLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) {
+        // The user is back from Android Settings: re-read the access and re-resolve the binding.
+        viewModel.refreshWorkspaceAccess()
+    }
+
+    fun grantWorkspaceAccess() {
+        // Launched from the button only, never from a recomposition, so the settings screen can
+        // only ever appear because the user asked for it.
+        DeveloperLogger.info(DeveloperLogCategory.STORAGE, "All files access settings launched")
+        permissionReader.allFilesAccessIntents().forEach { intent ->
+            try {
+                settingsLauncher.launch(intent)
+                return
+            } catch (_: ActivityNotFoundException) {
+                // Not on this device — fall through to the next screen.
+            }
+        }
+    }
+
+    // A grant can also be made without this screen having launched Settings, so the same re-check
+    // runs whenever the terminal becomes visible again. It is a no-op unless the access was the
+    // outstanding problem, which is what keeps it from restarting a shell that was already fine.
+    val lifecycle = permissionReader.lifecycle
+    DisposableEffect(lifecycle) {
+        val owner = lifecycle ?: return@DisposableEffect onDispose {}
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) viewModel.refreshWorkspaceAccess()
+        }
+        owner.addObserver(observer)
+        onDispose { owner.removeObserver(observer) }
+    }
+
     Column(modifier = modifier.fillMaxSize().background(ForgeCanvas)) {
         TerminalHeader(
             state = state,
@@ -253,11 +302,26 @@ fun TerminalScreen(
 
         // An unavailable bootstrap is shown before the workspace note: it explains why the
         // Install button is missing, and it is the one the user has to act on.
-        val note = state.bootstrapNote ?: state.workspaceNote ?: state.prefixNote
+        //
+        // The missing-access sentence is the exception: it is not drawn here, because the strip
+        // below carries it together with the action that resolves it and the same sentence must not
+        // appear twice.
+        val workspaceNote = state.workspaceNote?.takeIf { !state.workspaceAccessRequired }
+        val note = state.bootstrapNote ?: workspaceNote ?: state.prefixNote
         if (note != null) {
             NoteStrip(
                 text = note,
                 tone = if (state.workspaceNote != null || state.bootstrapNote != null) ForgeAmber else ForgeMuted,
+            )
+        }
+
+        // The one reason a shell can be running and still not be in the project that the user can
+        // fix themselves, so it is shown with what to do about it rather than only described.
+        if (state.workspaceAccessRequired) {
+            WorkspaceAccessStrip(
+                text = WORKSPACE_ACCESS_REQUIRED_NOTE,
+                label = WORKSPACE_ACCESS_ACTION_LABEL,
+                onGrant = ::grantWorkspaceAccess,
             )
         }
 
@@ -609,6 +673,33 @@ private fun NoteStrip(text: String, tone: androidx.compose.ui.graphics.Color) {
             .padding(horizontal = 12.dp, vertical = 6.dp),
     ) {
         Text(text = text, style = TerminalMetaStyle.copy(color = tone))
+    }
+}
+
+/**
+ * The missing-storage-access notice, with its action.
+ *
+ * [NoteStrip] only tells the user something; this one tells them something they can change, so the
+ * action sits with the sentence it answers rather than somewhere else in the chrome.
+ */
+@Composable
+private fun WorkspaceAccessStrip(text: String, label: String, onGrant: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(ForgeSurfaceVariant)
+            .padding(start = 12.dp, end = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = text,
+            style = TerminalMetaStyle.copy(color = ForgeAmber),
+            modifier = Modifier.weight(1f).padding(vertical = 6.dp),
+        )
+        TextButton(onClick = onGrant) {
+            Text(text = label, style = TerminalMetaStyle.copy(color = ForgeMint))
+        }
     }
 }
 

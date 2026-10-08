@@ -68,6 +68,28 @@ class TerminalUiStateTest {
     }
 
     @Test
+    fun `the missing-storage-access flag rides beside the note without changing the session`() {
+        // A running shell that is not in the project: still typable, and the note plus the flag are
+        // what put the Grant Access action on the screen.
+        val blocked = TerminalUiState(
+            sessionState = TerminalSessionState.RUNNING,
+            workspaceNote = WORKSPACE_ACCESS_REQUIRED_NOTE,
+            workspaceAccessRequired = true,
+        )
+        assertTrue(blocked.workspaceAccessRequired)
+        assertTrue(blocked.canType)
+        assertFalse(blocked.showsRecoveryPanel)
+        assertTrue(blocked.running)
+        assertEquals("running", blocked.statusLabel)
+
+        // A bound project reports nothing, which is the default and therefore the normal case.
+        assertFalse(TerminalUiState().workspaceAccessRequired)
+        assertFalse(
+            TerminalUiState(sessionState = TerminalSessionState.RUNNING).workspaceAccessRequired,
+        )
+    }
+
+    @Test
     fun `an install result is reported with its file count`() {
         val state = TermuxProvisioningState.Ready(
             TermuxProvisioning.Installed(bytes = 1, files = 1234, symlinks = 300),

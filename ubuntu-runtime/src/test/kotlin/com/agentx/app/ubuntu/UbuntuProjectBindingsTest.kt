@@ -2,8 +2,10 @@ package com.agentx.app.ubuntu
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class UbuntuProjectBindingsTest {
 
@@ -80,6 +82,99 @@ class UbuntuProjectBindingsTest {
                     "/document/primary%3Aapp%2Fsub",
             ),
         )
+    }
+
+    @Test
+    fun `shared storage is recognised from every way a project location arrives`() {
+        // A project in the AgentX folder in shared storage: a real path.
+        assertEquals(
+            "/storage/emulated/0/AgentX/demo",
+            UbuntuProjectBindings.sharedStorageLocation("/storage/emulated/0/AgentX/demo"),
+        )
+        // A removable volume is shared storage too.
+        assertEquals(
+            "/storage/1234-ABCD/AgentX/demo",
+            UbuntuProjectBindings.sharedStorageLocation("/storage/1234-ABCD/AgentX/demo"),
+        )
+        // The platform's aliases for the primary volume name the same place.
+        assertEquals("/sdcard/Projects/app", UbuntuProjectBindings.sharedStorageLocation("/sdcard/Projects/app"))
+        assertEquals(
+            "/mnt/sdcard/Projects/app",
+            UbuntuProjectBindings.sharedStorageLocation("/mnt/sdcard/Projects/app"),
+        )
+        // A `file://` URI is the same path.
+        assertEquals(
+            "/storage/emulated/0/AgentX/demo",
+            UbuntuProjectBindings.sharedStorageLocation("file:///storage/emulated/0/AgentX/demo/"),
+        )
+        // A SAF tree over shared storage resolves to the folder it names.
+        assertEquals(
+            "/storage/emulated/0/AgentX/demo",
+            UbuntuProjectBindings.sharedStorageLocation(
+                "content://com.android.externalstorage.documents/tree/primary%3AAgentX%2Fdemo",
+            ),
+        )
+    }
+
+    @Test
+    fun `an app-private project and an unresolvable location are not shared storage`() {
+        // The root the runtime owns, and the legacy project folder under the app's own data.
+        assertNull(UbuntuProjectBindings.sharedStorageLocation("/data/data/com.agentx.app/files/developer-runtime"))
+        assertNull(
+            UbuntuProjectBindings.sharedStorageLocation(
+                "/data/user/0/com.agentx.app/files/projects/legacy",
+            ),
+        )
+        // A cloud tree has no local path, so it cannot be asserted to be shared storage.
+        assertNull(
+            UbuntuProjectBindings.sharedStorageLocation(
+                "content://com.google.android.apps.docs.storage/tree/primary%3AAgentX%2Fdemo",
+            ),
+        )
+        // A directory that merely shares the prefix is not inside shared storage.
+        assertNull(UbuntuProjectBindings.sharedStorageLocation("/storage-backups/app"))
+        assertNull(UbuntuProjectBindings.sharedStorageLocation("/sdcardx/app"))
+        assertNull(UbuntuProjectBindings.sharedStorageLocation("relative/path"))
+        assertNull(UbuntuProjectBindings.sharedStorageLocation(null))
+        assertNull(UbuntuProjectBindings.sharedStorageLocation(""))
+    }
+
+    @Test
+    fun `the shared storage classifier is the boolean form of the same answer`() {
+        assertTrue(UbuntuProjectBindings.isSharedStorageLocation("/storage/emulated/0/AgentX/demo"))
+        assertFalse(UbuntuProjectBindings.isSharedStorageLocation("/data/data/com.agentx.app/files/projects/legacy"))
+        assertFalse(UbuntuProjectBindings.isSharedStorageLocation(null))
+    }
+
+    @Test
+    fun `a shared storage project that is now readable is bound and entered at workspace`() {
+        // Exactly the construction the terminal performs once the access is in place: the project
+        // path is probed, bound, and the shell is started with `/workspace` as its working
+        // directory, so `pwd` inside the guest is the project.
+        val host = "/storage/emulated/0/AgentX/demo"
+        val layout = NativeRuntimeLayout(
+            nativeLibraryDir = "/data/app/com.agentx.app/lib/arm64",
+            runtimeDir = "/data/user/0/com.agentx.app/files/developer-runtime",
+        )
+
+        val binding = assertIs<UbuntuProjectBinding.Direct>(
+            UbuntuProjectBindings.resolve(handle = host, displayLocation = host, isDirectory = { it == host }),
+        )
+        assertEquals(host, binding.hostPath)
+        assertEquals(ProotCommand.GUEST_PROJECT_ROOT, binding.guestPath)
+
+        val invocation = ProotCommand.build(
+            layout = layout,
+            guestWorkingDirectory = binding.guestPath,
+            binds = ProotCommand.withProject(ProotCommand.infrastructureBinds(layout, resolvConf = null), binding.hostPath),
+            guestCommand = ProotCommand.LOGIN_SHELL,
+        )
+        assertEquals(
+            "/workspace",
+            invocation.arguments[invocation.arguments.indexOf("-w") + 1],
+        )
+        assertEquals(1, invocation.arguments.count { it == "$host:/workspace" })
+        assertEquals(ProotCommand.LOGIN_SHELL, invocation.arguments.takeLast(2))
     }
 
     @Test
