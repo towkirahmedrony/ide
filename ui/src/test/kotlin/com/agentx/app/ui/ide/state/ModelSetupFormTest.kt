@@ -10,6 +10,7 @@ import com.agentx.app.model.catalog.ModelCatalogSnapshot
 import com.agentx.app.model.connect.KnownModelProviders
 import com.agentx.app.model.connect.ModelSetupKind
 import com.agentx.app.model.manager.ModelConnectionKind
+import com.agentx.app.model.manager.connectionKind
 import com.agentx.app.model.preset.EndpointConfig
 import com.agentx.app.model.preset.EndpointDiscoveryMode
 import com.agentx.app.model.preset.HealthCheckConfig
