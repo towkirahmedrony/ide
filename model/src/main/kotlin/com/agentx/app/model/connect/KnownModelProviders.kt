@@ -48,9 +48,10 @@ enum class ModelSetupKind(
         displayName = "FreeLLMAPI",
         description = "A hosted OpenAI-compatible gateway that serves Gemini, Groq and other remote models.",
         requiresApiKey = true,
-        // The FreeLLMAPI server address is user-specific, so the endpoint is
-        // configured rather than hardcoded here; the wire protocol stays the
-        // shared OpenAI-compatible one.
+        // FreeLLMAPI ships with a working default gateway address (see its
+        // catalogue spec) but is endpoint-addressable: a self-hosted or relocated
+        // gateway is just an edited address on the connection, so the field stays
+        // editable rather than being pinned to one deployment.
         showsEndpointField = true,
     ),
     ;
@@ -205,15 +206,50 @@ object KnownModelProviders {
         preferredModel = "llama-3.3-70b-versatile",
     )
 
+    /**
+     * The FreeLLMAPI gateway: one hosted OpenAI-compatible surface in front of
+     * Gemini, Groq and other remote models.
+     *
+     * The address here is the shipped default a connection starts from, not a
+     * constant baked into the wire client: a connection keeps its own endpoint and
+     * is discovered and chatted through that, so a relocated or self-hosted gateway
+     * needs no code change. The list below is a compatibility fallback used only
+     * when `/models` cannot be read (no key yet, offline), exactly like Groq's.
+     */
+    val freeLlmApi: KnownProviderSpec = KnownProviderSpec(
+        kind = ModelSetupKind.FREELLMAPI,
+        // The gateway's address including its version path, with no extra base path:
+        // the connection's endpoint *is* the API base, so an address the user edits
+        // is used exactly as typed instead of having another `/v1` appended.
+        rootUrl = "https://agentx-vgtx.onrender.com/v1",
+        apiBasePath = "",
+        suggestedModels = listOf(
+            "gemini-2.5-flash",
+            "openai/gpt-oss-20b",
+            "llama-3.3-70b-versatile",
+            "gemini-3.5-flash",
+        ),
+        preferredModel = "gemini-2.5-flash",
+    )
+
     fun spec(kind: ModelSetupKind): KnownProviderSpec? = when (kind) {
         ModelSetupKind.CUSTOM -> null
         ModelSetupKind.GEMINI -> gemini
         ModelSetupKind.GROQ -> groq
-        // FreeLLMAPI is an API provider but has no fixed catalogue root: its gateway
-        // address is user-supplied, so it is discovered from the configured endpoint
-        // rather than from a hardcoded spec.
-        ModelSetupKind.FREELLMAPI -> null
+        ModelSetupKind.FREELLMAPI -> freeLlmApi
     }
+
+    /**
+     * The address a connection of [kind] starts from, when the provider is
+     * endpoint-addressable and its field is left untouched.
+     *
+     * A fixed-address provider (Gemini, Groq) never asks for an endpoint at all, so
+     * this is only ever consulted while building the form for a provider whose
+     * field is shown. The value is a default, never a substitute: the saved preset's
+     * own endpoint is what the runtime uses.
+     */
+    fun defaultEndpoint(kind: ModelSetupKind): String =
+        spec(kind)?.rootUrl.orEmpty()
 }
 
 /**

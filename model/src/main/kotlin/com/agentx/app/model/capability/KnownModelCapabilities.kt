@@ -43,6 +43,8 @@ object KnownModelCapabilities {
         remote("gemini-3.5-flash", "Gemini 3.5 Flash"),
         remote("gemini-2.5-flash", "Gemini 2.5 Flash"),
         remote("gemini-3-flash-preview", "Gemini 3 Flash Preview"),
+        remote("openai/gpt-oss-120b", "GPT OSS 120B"),
+        remote("openai/gpt-oss-20b", "GPT OSS 20B"),
         remote("llama-3.3-70b-versatile", "Llama 3.3 70B Versatile"),
         remote("llama-3.1-8b-instant", "Llama 3.1 8B Instant"),
         remote("qwen/qwen3.8-27b", "Qwen 3.8 27B"),

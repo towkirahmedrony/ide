@@ -10,12 +10,14 @@ import com.agentx.app.model.http.HttpResponseSpec
 import com.agentx.app.model.manager.DefaultModelManager
 import com.agentx.app.model.manager.FakeModelRunner
 import com.agentx.app.model.manager.GatewayModelConnectionRegistry
+import com.agentx.app.model.manager.ModelConnectionKind
 import com.agentx.app.model.manager.RecordingModelProvider
 import com.agentx.app.model.preset.DefaultModelPresetRepository
 import com.agentx.app.model.preset.EndpointDiscoveryMode
 import com.agentx.app.model.preset.InMemoryModelPresetStore
 import com.agentx.app.model.preset.InMemoryModelSecretStore
 import com.agentx.app.model.preset.ModelApiProtocol
+import com.agentx.app.model.preset.ModelProviderIds
 import com.agentx.app.model.preset.NGROK_SKIP_BROWSER_WARNING_HEADER
 import com.agentx.app.model.preset.ModelProviderType
 import com.agentx.app.model.preset.StoreBackedModelCredentialResolver
@@ -295,6 +297,143 @@ class ModelConnectServiceTest {
         assertEquals("llama-3.3-70b-versatile", connected.preset.modelIdentifier)
         assertEquals("https://api.groq.com/openai", connected.preset.endpoint.explicitUrl)
         assertEquals("/v1", connected.preset.apiBasePath)
+    }
+
+    @Test
+    fun `freellmapi requires an api key, uses the shipped gateway and lists its models`() = runBlocking {
+        val transport = openAiTransport(
+            listBody = modelsJson("gemini-2.5-flash", "openai/gpt-oss-20b"),
+        )
+        val manager = manager(transport)
+
+        val missing = assertNotNull(
+            manager.connectQuick(
+                ModelConnectRequest(displayName = "FreeLLMAPI", setupKind = ModelSetupKind.FREELLMAPI),
+            ).errorOrNull(),
+        )
+        assertTrue(missing.message!!.contains("API key"))
+
+        val connected = assertIs<ModelConnectOutcome.Connected>(
+            assertNotNull(
+                manager.connectQuick(
+                    ModelConnectRequest(
+                        displayName = "FreeLLMAPI",
+                        setupKind = ModelSetupKind.FREELLMAPI,
+                        credential = "fla-test-key",
+                        modelIdentifier = "gemini-2.5-flash",
+                    ),
+                ).valueOrNull(),
+            ),
+        )
+
+        // API AI, addressed at the shipped gateway. The address is configuration
+        // (a preset endpoint), never a constant inside the wire client.
+        assertEquals("freellmapi", connected.preset.setupKind)
+        assertEquals(ModelProviderIds.FREELMAPI, connected.preset.providerId)
+        assertEquals("https://agentx-vgtx.onrender.com/v1", connected.preset.endpoint.explicitUrl)
+        assertEquals("", connected.preset.normalizedApiBasePath)
+        assertEquals(EndpointDiscoveryMode.CONFIGURED_ENDPOINT, connected.preset.endpoint.mode)
+        assertEquals(ModelProviderType.REMOTE_OPENAI_COMPATIBLE, connected.preset.providerType)
+        // The existing OpenAI-compatible protocol, not a new one.
+        assertEquals(ModelApiProtocol.OPENAI_COMPATIBLE, connected.preset.apiProtocol)
+
+        // Discovery read the gateway's own model list, over Bearer auth.
+        val discovery = assertNotNull(transport.requests.firstOrNull { it.method == "GET" })
+        assertEquals("https://agentx-vgtx.onrender.com/v1/models", discovery.url)
+        assertEquals("Bearer fla-test-key", discovery.headers["Authorization"])
+
+        // The key is stored as a reference: never in the preset, never in the logs.
+        val ref = assertNotNull(connected.preset.credentialRef)
+        assertEquals("fla-test-key", secrets.get(ref))
+        assertFalse(connected.preset.toString().contains("fla-test-key"))
+        assertFalse(logs.contains("fla-test-key"))
+
+        // The runtime connection the agent chats over is the gateway base, with the
+        // selected model id carried on the request.
+        val config = assertNotNull(manager.activeConfig())
+        assertEquals("https://agentx-vgtx.onrender.com/v1", config.baseUrl)
+        assertEquals("gemini-2.5-flash", config.model)
+        assertEquals("fla-test-key", config.apiKey)
+        // And it is an API connection, so it is never mistaken for a local endpoint.
+        assertEquals(ModelConnectionKind.API, config.connectionKind)
+    }
+
+    @Test
+    fun `a model listed by the freellmapi gateway is parsed and selectable`() = runBlocking {
+        // A FreeLLMAPI /models body is an ordinary OpenAI-compatible list, so the
+        // existing parser turns it into the existing model representation — including
+        // an id the catalogue's fallback list does not mention.
+        val transport = openAiTransport(
+            listBody = modelsJson("gemini-2.5-flash", "brand-new-gateway-model"),
+        )
+        val manager = manager(transport)
+
+        val connected = assertIs<ModelConnectOutcome.Connected>(
+            assertNotNull(
+                manager.connectQuick(
+                    ModelConnectRequest(
+                        displayName = "FreeLLMAPI",
+                        setupKind = ModelSetupKind.FREELLMAPI,
+                        credential = "fla-test-key",
+                        modelIdentifier = "brand-new-gateway-model",
+                    ),
+                ).valueOrNull(),
+            ),
+        )
+
+        assertEquals("brand-new-gateway-model", connected.preset.modelIdentifier)
+        // And that id is what the runtime sends, rather than a gateway default.
+        assertEquals("brand-new-gateway-model", assertNotNull(manager.activeConfig()).model)
+    }
+
+    @Test
+    fun `freellmapi falls back to its catalogue model when none is chosen`() = runBlocking {
+        // Several models listed and none chosen: the provider's catalogue preference
+        // decides, the same rule Groq and Gemini follow.
+        val transport = openAiTransport(modelsJson("gemini-2.5-flash", "openai/gpt-oss-20b"))
+        val manager = manager(transport)
+
+        val connected = assertIs<ModelConnectOutcome.Connected>(
+            assertNotNull(
+                manager.connectQuick(
+                    ModelConnectRequest(
+                        displayName = "FreeLLMAPI",
+                        setupKind = ModelSetupKind.FREELLMAPI,
+                        credential = "fla-test-key",
+                    ),
+                ).valueOrNull(),
+            ),
+        )
+
+        assertEquals("gemini-2.5-flash", connected.preset.modelIdentifier)
+    }
+
+    @Test
+    fun `an edited freellmapi address is where the connection is probed and chatted`() = runBlocking {
+        // A self-hosted or relocated gateway: the edited address wins over the
+        // catalogue default, rather than being ignored.
+        val transport = openAiTransport(listBody = modelsJson("gemini-2.5-flash"))
+        val manager = manager(transport)
+
+        val connected = assertIs<ModelConnectOutcome.Connected>(
+            assertNotNull(
+                manager.connectQuick(
+                    ModelConnectRequest(
+                        displayName = "FreeLLMAPI (self-hosted)",
+                        setupKind = ModelSetupKind.FREELLMAPI,
+                        endpoint = "https://gateway.example.com/v1",
+                        credential = "fla-test-key",
+                        modelIdentifier = "gemini-2.5-flash",
+                    ),
+                ).valueOrNull(),
+            ),
+        )
+
+        assertEquals("https://gateway.example.com/v1", connected.preset.endpoint.explicitUrl)
+        assertEquals("", connected.preset.normalizedApiBasePath)
+        val discovery = assertNotNull(transport.requests.firstOrNull { it.method == "GET" })
+        assertEquals("https://gateway.example.com/v1/models", discovery.url)
+        assertEquals("https://gateway.example.com/v1", assertNotNull(manager.activeConfig()).baseUrl)
     }
 
     @Test

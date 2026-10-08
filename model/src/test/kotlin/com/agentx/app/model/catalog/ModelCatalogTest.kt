@@ -719,6 +719,14 @@ class ModelCatalogTest {
             "http://localhost:11434/v1/models",
             factory.modelsUrlFor(ModelProviderIds.OPENAI_COMPATIBLE, "http://localhost:11434/v1"),
         )
+        // FreeLLMAPI is a hosted OpenAI-compatible surface in the API domain, so its
+        // own /models route is listed the same way — but under its own identity, so a
+        // local endpoint and the gateway never collapse into one catalog.
+        assertTrue(factory.supports(ModelProviderIds.FREELMAPI))
+        assertEquals(
+            "https://agentx-vgtx.onrender.com/v1/models",
+            factory.modelsUrlFor(ModelProviderIds.FREELMAPI, "https://agentx-vgtx.onrender.com/v1"),
+        )
         // Gemini keeps its own list; /models is never appended to the chat surface.
         assertEquals(
             "https://generativelanguage.googleapis.com/v1beta/models",

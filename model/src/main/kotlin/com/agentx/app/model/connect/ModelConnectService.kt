@@ -333,11 +333,14 @@ class ModelConnectService(
         if (kind.requiresApiKey && request.credential.isNullOrBlank() && request.clearCredential) {
             return "An API key is required for ${kind.displayName}."
         }
-        if (kind.showsEndpointField && request.endpoint.isBlank()) {
-            return "Endpoint is required."
-        }
         if (kind.showsEndpointField) {
-            when (val outcome = EndpointResolver.resolve(request.endpoint)) {
+            // An endpoint-addressable provider may be left at the address its
+            // catalogue ships (FreeLLMAPI has one), so only a provider with nothing to
+            // fall back on has to be told where to go. Whatever is used is validated
+            // here, so a shipped default is held to the same rules as a typed address.
+            val endpoint = request.endpoint.ifBlank { KnownModelProviders.defaultEndpoint(kind) }
+            if (endpoint.isBlank()) return "Endpoint is required."
+            when (val outcome = EndpointResolver.resolve(endpoint)) {
                 is EndpointResolver.Outcome.Invalid -> return outcome.reason
                 is EndpointResolver.Outcome.Ok -> Unit
             }
@@ -352,6 +355,22 @@ class ModelConnectService(
     ): DiscoveryResult {
         val preferred = request.modelIdentifier.trim().ifBlank { null }
         val spec = KnownModelProviders.spec(prepared.setupKind)
+        // A provider whose address is fixed by the catalogue (Gemini, Groq) is probed
+        // at that address. A provider the user addresses by endpoint (FreeLLMAPI) is
+        // probed where the connection actually points — the endpoint the request
+        // carries, or the catalogue's shipped address when none was given — so an
+        // edited or self-hosted gateway is discovered where it really is rather than
+        // at a default it was never pointed at. The catalogue still supplies that
+        // provider's wire contract (protocol, key header, model-list route), so the
+        // probe is the same request either way.
+        if (spec != null && prepared.setupKind.showsEndpointField) {
+            val endpoint = request.endpoint.trim().ifBlank { spec.rootUrl }
+            return discovery.discoverKnown(
+                spec.copy(rootUrl = endpoint, apiBasePath = ""),
+                credential,
+                preferred,
+            )
+        }
         return if (spec != null) {
             discovery.discoverKnown(spec, credential, preferred)
         } else {

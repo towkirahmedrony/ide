@@ -3,6 +3,7 @@ package com.agentx.app.model.manager
 import com.agentx.app.core.errorOrNull
 import com.agentx.app.core.valueOrNull
 import com.agentx.app.model.DefaultModelGateway
+import com.agentx.app.model.connect.KnownModelProviders
 import com.agentx.app.model.connect.ModelSetupKind
 import com.agentx.app.model.preset.DefaultModelPresetRepository
 import com.agentx.app.model.preset.HealthCheckConfig
@@ -214,6 +215,29 @@ class ApiLocalConnectionSeparationTest {
         assertEquals(ModelProviderIds.FREELMAPI, freeConfig.providerId)
         assertEquals(ModelConnectionKind.API, freeConfig.connectionKind)
         assertEquals(1, manager.connections().values.count { it.connectionId == saved.id })
+    }
+
+    @Test
+    fun `the FreeLLMAPI catalogue entry ships the gateway address and its models`() {
+        val spec = assertNotNull(KnownModelProviders.spec(ModelSetupKind.FREELLMAPI))
+
+        assertEquals(ModelSetupKind.FREELLMAPI, spec.kind)
+        // The shipped gateway, stored as configuration rather than baked into a client.
+        assertEquals("https://agentx-vgtx.onrender.com/v1", spec.rootUrl)
+        assertEquals("", spec.apiBasePath)
+        assertEquals("https://agentx-vgtx.onrender.com/v1", KnownModelProviders.defaultEndpoint(ModelSetupKind.FREELLMAPI))
+        // The same OpenAI-compatible protocol the rest of the API path speaks.
+        assertEquals(ModelApiProtocol.OPENAI_COMPATIBLE, spec.protocol)
+        // A working model list when /models cannot be read yet.
+        assertTrue("gemini-2.5-flash" in spec.suggestedModels)
+        assertTrue("openai/gpt-oss-20b" in spec.suggestedModels)
+        assertEquals("gemini-2.5-flash", spec.preferredModel)
+        // The gateway's own model list, on the shipped address.
+        assertEquals("https://agentx-vgtx.onrender.com/v1/models", spec.modelListUrlFor())
+
+        // A provider with no catalogue entry at all has no default to fall back on,
+        // so its endpoint field stays mandatory.
+        assertEquals("", KnownModelProviders.defaultEndpoint(ModelSetupKind.CUSTOM))
     }
 
     // --- Test 1 ------------------------------------------------------------

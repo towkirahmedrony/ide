@@ -151,29 +151,39 @@ data class ModelSetupForm(
         get() = setupKind.requiresApiKey && !hasStoredCredential && credential.isBlank()
 
     /**
-     * Whether a server URL field is required: always for Local, and for an API
-     * provider that declares it needs one (FreeLLMAPI, whose gateway address is
-     * user-specific rather than a hardcoded catalogue root).
+     * Whether a server URL field is shown: always for Local, and for an API
+     * provider that declares it is addressed by endpoint (FreeLLMAPI).
      */
     val showsServerUrl: Boolean
         get() = connectionType == ModelConnectionType.LOCAL || setupKind.showsEndpointField
 
-    /** The typed URL in the shape the provider abstraction stores it. */
+    /**
+     * The address this connection will use: what the user typed, or the catalogue's
+     * own address for a provider that ships one (FreeLLMAPI).
+     *
+     * The catalogue value is the starting point shown in the field, never a
+     * substitute for it: editing the field changes the saved connection, so a
+     * relocated or self-hosted gateway is reachable without a code change.
+     */
+    val effectiveServerUrl: String
+        get() = serverUrl.ifBlank { KnownModelProviders.defaultEndpoint(setupKind) }
+
+    /** The address in the shape the provider abstraction stores it. */
     val normalizedServerUrl: String?
-        get() = when (val outcome = EndpointResolver.resolve(serverUrl)) {
+        get() = when (val outcome = EndpointResolver.resolve(effectiveServerUrl)) {
             is EndpointResolver.Outcome.Ok -> outcome.resolved.normalizedUrl
             is EndpointResolver.Outcome.Invalid -> null
         }
 
-    /** The reason a typed URL is rejected, or null when it is usable. */
+    /** The reason the address is rejected, or null when it is usable. */
     val serverUrlProblem: String?
-        get() = when (val outcome = EndpointResolver.resolve(serverUrl)) {
+        get() = when (val outcome = EndpointResolver.resolve(effectiveServerUrl)) {
             is EndpointResolver.Outcome.Ok -> null
             is EndpointResolver.Outcome.Invalid -> outcome.reason
         }
 
     val serverUrlRequired: Boolean
-        get() = showsServerUrl && serverUrl.isBlank() && !inheritsEndpointDiscovery
+        get() = showsServerUrl && effectiveServerUrl.isBlank() && !inheritsEndpointDiscovery
 
     /**
      * The declaration this form states, or null when the form has nothing to say
@@ -248,11 +258,15 @@ data class ModelSetupForm(
         }
         val endpointUrl = when (connectionType) {
             ModelConnectionType.LOCAL -> normalizedServerUrl ?: inherit?.endpoint?.explicitUrl
-            // A known provider's root URL wins; FreeLLMAPI (no catalogue root) falls
-            // back to the URL the user typed for its gateway.
-            ModelConnectionType.API -> inherit?.endpoint?.explicitUrl?.takeIf { it.isNotBlank() }
-                ?: spec?.rootUrl?.takeIf { it.isNotBlank() }
-                ?: normalizedServerUrl
+            // An endpoint-addressed provider keeps the address the connection carries
+            // (typed, or its catalogue default) so an edited gateway is used as typed.
+            // A fixed-address provider uses its catalogue root, and an existing
+            // endpoint is preserved ahead of both.
+            ModelConnectionType.API -> if (setupKind.showsEndpointField) {
+                normalizedServerUrl ?: inherit?.endpoint?.explicitUrl
+            } else {
+                inherit?.endpoint?.explicitUrl?.takeIf { it.isNotBlank() } ?: spec?.rootUrl
+            }
         }
         val endpointMode = when {
             // A local preset that never had a typed URL keeps its discovery mode.
@@ -296,7 +310,7 @@ data class ModelSetupForm(
         presetId = presetId ?: duplicateOf?.id,
         displayName = name.trim(),
         setupKind = setupKind,
-        endpoint = if (showsServerUrl) serverUrl.trim() else "",
+        endpoint = if (showsServerUrl) effectiveServerUrl.trim() else "",
         credential = credential.takeIf { it.isNotBlank() },
         clearCredential = clearCredential,
         modelIdentifier = modelId.trim(),

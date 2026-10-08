@@ -9,6 +9,7 @@ import com.agentx.app.model.json.booleanOrNull
 import com.agentx.app.model.json.numberOrNull
 import com.agentx.app.model.json.objectOrNull
 import com.agentx.app.model.json.stringOrNull
+import com.agentx.app.model.preset.ModelProviderIds
 import com.agentx.app.model.preset.NGROK_SKIP_BROWSER_WARNING_HEADER
 import com.agentx.app.model.provider.openai.OpenAiCompatibleProvider
 import java.io.IOException
@@ -215,6 +216,61 @@ class OpenAiCompatibleProviderTest {
         assertTrue(events.any { it is ModelStreamEvent.Started })
         assertTrue(events.any { it is ModelStreamEvent.Completed })
         assertTrue(requestBody(transport).booleanOrNull("stream") == true)
+        assertEquals("text/event-stream, application/json", transport.lastRequest?.headers?.get("Accept"))
+    }
+
+    // --- FreeLLMAPI: the same provider, addressed at the API gateway --------
+
+    /** The API-AI path: an OpenAI-compatible gateway in front of Gemini/Groq. */
+    private fun freeLlmConfig(model: String = "gemini-2.5-flash") = openAiConfig(
+        providerId = ModelProviderIds.FREELMAPI,
+        baseUrl = "https://agentx-vgtx.onrender.com/v1",
+        model = model,
+        apiKey = "fla-test-key",
+    )
+
+    @Test
+    fun `a freellmapi completion is addressed at the gateway with the selected model and bearer auth`() {
+        val transport = FakeHttpTransport(response = HttpResponseSpec(200, SUCCESS_RESPONSE))
+        val provider = provider(transport)
+
+        val response = runSuspend {
+            provider.complete(request(freeLlmConfig("openai/gpt-oss-20b"), ModelMessage.user("hi")))
+        }
+
+        val sent = assertNotNull(transport.lastRequest)
+        // No FreeLLMAPI-specific client: the shared OpenAI-compatible one is aimed at
+        // the gateway's base URL.
+        assertEquals("https://agentx-vgtx.onrender.com/v1/chat/completions", sent.url)
+        assertEquals("Bearer fla-test-key", sent.headers["Authorization"])
+        // The model the user selected travels in the body, never a gateway default.
+        assertEquals("openai/gpt-oss-20b", requestBody(transport).stringOrNull("model"))
+        assertEquals("Hello!", response.content)
+    }
+
+    @Test
+    fun `a freellmapi stream reuses the shared sse pipeline`() {
+        val transport = FakeHttpTransport(
+            streamLines = listOf(
+                """data: {"model":"gemini-2.5-flash","choices":[{"index":0,"delta":{"role":"assistant","content":"Hel"}}]}""",
+                """data: {"model":"gemini-2.5-flash","choices":[{"index":0,"delta":{"content":"lo"}}]}""",
+                """data: {"model":"gemini-2.5-flash","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}""",
+                "data: [DONE]",
+            ),
+        )
+        val events = mutableListOf<ModelStreamEvent>()
+
+        val response = runSuspend {
+            provider(transport).stream(request(freeLlmConfig().copy(stream = true), ModelMessage.user("hi"))) {
+                events += it
+            }
+        }
+
+        assertEquals("Hello", response.content)
+        assertEquals(ModelFinishReason.STOP, response.finishReason)
+        assertEquals(listOf("Hel", "lo"), events.filterIsInstance<ModelStreamEvent.TextDelta>().map { it.text })
+        assertTrue(requestBody(transport).booleanOrNull("stream") == true)
+        // The gateway's stream is read by the same SSE reader, ending on [DONE].
         assertEquals("text/event-stream, application/json", transport.lastRequest?.headers?.get("Accept"))
     }
 

@@ -9,6 +9,7 @@ import com.agentx.app.model.catalog.ModelCatalogRegistry
 import com.agentx.app.model.catalog.ModelCatalogSnapshot
 import com.agentx.app.model.connect.KnownModelProviders
 import com.agentx.app.model.connect.ModelSetupKind
+import com.agentx.app.model.manager.ModelConnectionKind
 import com.agentx.app.model.preset.EndpointConfig
 import com.agentx.app.model.preset.EndpointDiscoveryMode
 import com.agentx.app.model.preset.HealthCheckConfig
@@ -222,9 +223,85 @@ class ModelSetupFormTest {
     }
 
     @Test
+    fun `a FreeLLMAPI connection is API AI, addressed at its shipped gateway`() {
+        val form = apiForm(ModelSetupKind.FREELLMAPI, model = "gemini-2.5-flash", name = "FreeLLMAPI")
+
+        // API AI, never Local AI, even though both speak OpenAI-compatible.
+        assertEquals(ModelConnectionType.API, form.connectionType)
+        assertEquals("freellmapi", form.providerId)
+        assertEquals(ModelConnectionKind.API, form.setupKind.connectionKind)
+        // The address field is shown and starts at the shipped gateway, so it can be
+        // edited without the user having to know the URL.
+        assertTrue(form.showsServerUrl)
+        assertEquals("https://agentx-vgtx.onrender.com/v1", form.effectiveServerUrl)
+        assertFalse(form.serverUrlRequired)
+        assertTrue(form.issues().isEmpty(), form.issues().toString())
+
+        val preset = form.toPreset(null)
+        assertEquals("freellmapi", preset.providerId)
+        assertEquals(ModelProviderType.REMOTE_OPENAI_COMPATIBLE, preset.providerType)
+        // The existing OpenAI-compatible protocol, not a new one.
+        assertEquals(ModelApiProtocol.OPENAI_COMPATIBLE, preset.apiProtocol)
+        assertEquals("https://agentx-vgtx.onrender.com/v1", preset.endpoint.explicitUrl)
+        assertEquals("", preset.apiBasePath)
+        assertEquals("gemini-2.5-flash", preset.modelIdentifier)
+        assertTrue(preset.validate().isEmpty(), preset.validate().toString())
+
+        // The connection test probes the gateway's address, with the provider identity.
+        val request = form.toConnectRequest()
+        assertEquals("freellmapi", request.setupKind.id)
+        assertEquals("https://agentx-vgtx.onrender.com/v1", request.endpoint)
+    }
+
+    @Test
+    fun `a FreeLLMAPI connection can be pointed at another gateway`() {
+        val form = apiForm(ModelSetupKind.FREELLMAPI, model = "gemini-2.5-flash")
+            .copy(serverUrl = "https://my-gateway.example.com/v1")
+
+        assertEquals("https://my-gateway.example.com/v1", form.effectiveServerUrl)
+        assertEquals("https://my-gateway.example.com/v1", form.toConnectRequest().endpoint)
+        // Used exactly as typed: no second /v1 is appended to the edited address.
+        val preset = form.toPreset(null)
+        assertEquals("https://my-gateway.example.com/v1", preset.endpoint.explicitUrl)
+        assertEquals("", preset.apiBasePath)
+        assertTrue(preset.validate().isEmpty(), preset.validate().toString())
+    }
+
+    @Test
+    fun `a saved FreeLLMAPI gateway is loaded back into the form`() {
+        val saved = ModelPreset(
+            id = "p1",
+            displayName = "FreeLLMAPI",
+            providerType = ModelProviderType.REMOTE_OPENAI_COMPATIBLE,
+            modelIdentifier = "gemini-2.5-flash",
+            apiProtocol = ModelApiProtocol.OPENAI_COMPATIBLE,
+            apiBasePath = "",
+            credentialRef = "models.secret.p1",
+            endpoint = EndpointConfig(EndpointDiscoveryMode.CONFIGURED_ENDPOINT, "https://gateway.example.com/v1"),
+            setupKind = ModelSetupKind.FREELLMAPI.id,
+        )
+
+        val form = ModelSetupForm.from(saved)
+
+        assertEquals(ModelSetupKind.FREELLMAPI, form.setupKind)
+        assertEquals(ModelConnectionType.API, form.connectionType)
+        assertEquals("https://gateway.example.com/v1", form.effectiveServerUrl)
+        assertEquals("https://gateway.example.com/v1", form.toPreset(saved).endpoint.explicitUrl)
+    }
+
+    @Test
     fun `an API model needs a key unless one is already stored`() {
         assertNotNull(apiForm(key = "").issueFor(ModelSetupField.API_KEY))
         assertNull(apiForm(key = "").copy(hasStoredCredential = true).issueFor(ModelSetupField.API_KEY))
+    }
+
+    @Test
+    fun `a FreeLLMAPI connection needs a key and offers its catalogue models`() {
+        assertNotNull(apiForm(ModelSetupKind.FREELLMAPI, key = "").issueFor(ModelSetupField.API_KEY))
+        assertEquals(
+            KnownModelProviders.freeLlmApi.suggestedModels,
+            ModelChoices.suggestions("freellmapi"),
+        )
     }
 
     @Test
