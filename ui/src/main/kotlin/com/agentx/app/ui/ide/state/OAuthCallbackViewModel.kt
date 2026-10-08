@@ -9,6 +9,7 @@ import com.agentx.app.core.errorOrNull
 import com.agentx.app.integrations.connection.ConnectionManager
 import com.agentx.app.integrations.connection.ConnectionStatus
 import com.agentx.app.integrations.connection.ConnectionType
+import com.agentx.app.integrations.github.GitHubDiagnostics
 import com.agentx.app.ui.ide.data.OAuthCallbackInbox
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
@@ -59,24 +60,50 @@ class OAuthCallbackViewModel(
     }
 
     private suspend fun handle(uri: String) {
-        if (uri.isBlank() || uri == handledUri) return
+        if (uri.isBlank() || uri == handledUri) {
+            GitHubDiagnostics.warn(
+                GitHubDiagnostics.STAGE_CALLBACK,
+                "callback ignored",
+                mapOf("blank" to uri.isBlank(), "duplicate" to (uri == handledUri)),
+            )
+            return
+        }
         handledUri = uri
         inbox.clear()
 
+        GitHubDiagnostics.callback("callback received", mapOf("uriPresent" to true))
         busy = true
         // Which service is waiting decides where the user is returned to; it is read
         // before the redirect is handled, because completing it settles that state.
         val awaiting = manager.state.value.connections
             .firstOrNull { it.status == ConnectionStatus.AUTHORIZING }
             ?.type
+        GitHubDiagnostics.callback(
+            "callback awaiting connection resolved",
+            mapOf("awaitingType" to (awaiting?.name ?: "(none)")),
+        )
         try {
             val failure = manager.completeAuthorization(uri).errorOrNull()
+            if (failure == null) {
+                GitHubDiagnostics.callback("callback processing succeeded")
+            } else {
+                GitHubDiagnostics.failure(
+                    GitHubDiagnostics.STAGE_CALLBACK,
+                    "callback processing failed",
+                    fields = mapOf("errorCode" to failure.code.name),
+                )
+            }
             message = failure?.message
             // The page reflects whatever the manager decided, connected or not.
             manager.refresh()
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Throwable) {
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_CALLBACK,
+                "callback processing threw",
+                error,
+            )
             message = error.message ?: "The authorization could not be completed"
         } finally {
             busy = false

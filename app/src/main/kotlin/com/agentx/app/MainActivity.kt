@@ -35,6 +35,7 @@ import com.agentx.app.core.config.ForgeConfigLoader
 import com.agentx.app.core.config.OAuthConfig
 import com.agentx.app.core.config.OAuthProviderConfig
 import com.agentx.app.core.foundation.ServiceKeys
+import com.agentx.app.core.logging.ForgeLogger
 import com.agentx.app.foundation.ConnectionManagerToolAuthorizer
 import com.agentx.app.app.git.ActiveGitProjectProvider
 import com.agentx.app.app.git.UbuntuGitCommandRunner
@@ -43,6 +44,7 @@ import com.agentx.app.git.CliGitService
 import com.agentx.app.foundation.IntegrationToolSynchronizer
 import com.agentx.app.logging.DeveloperLogSink
 import com.agentx.app.integrations.android.SharedPreferencesIntegrationSetupStore
+import com.agentx.app.integrations.github.GitHubDiagnostics
 import com.agentx.app.integrations.oauth.OAuthCallbackAuthority
 import com.agentx.app.integrations.providers.ConnectionProviders
 import com.agentx.app.integrations.oauth.UrlConnectionOAuthHttpClient
@@ -206,6 +208,12 @@ class MainActivity : ComponentActivity() {
             logSink = DeveloperLogSink(),
         )
 
+        // GitHub diagnostics go through the same structured logger the app already
+        // bridges into the Developer Log, so the whole GitHub connection attempt is
+        // inspectable there (category `GitHub`) alongside the terminal and model
+        // diagnostics. No credential is ever passed to it.
+        GitHubDiagnostics.install(foundation.services.get<ForgeLogger>(ServiceKeys.LOGGER))
+
         // The saved role → model assignments are restored off the main thread;
         // until this completes the registry serves the built-in default mapping.
         backgroundScope.launch {
@@ -297,7 +305,10 @@ class MainActivity : ComponentActivity() {
         }
 
         // A redirect that started the app has to be handled as soon as the UI is up.
-        intent?.data?.toString()?.let(oauthCallbacks::publish)
+        intent?.data?.toString()?.let { uri ->
+            GitHubDiagnostics.callback("callback intent detected at launch")
+            oauthCallbacks.publish(uri)
+        }
 
         // Android cannot run foreground network monitoring forever, so the manager
         // is told when the app is actually visible and re-checks on return.
@@ -572,7 +583,10 @@ class MainActivity : ComponentActivity() {
         setIntent(intent)
         // Duplicate deliveries are handled downstream: the Connection Manager's
         // pending authorization is single-use, so a replay cannot exchange twice.
-        intent.data?.toString()?.let(oauthCallbacks::publish)
+        intent.data?.toString()?.let { uri ->
+            GitHubDiagnostics.callback("callback intent received")
+            oauthCallbacks.publish(uri)
+        }
     }
 
     override fun onDestroy() {

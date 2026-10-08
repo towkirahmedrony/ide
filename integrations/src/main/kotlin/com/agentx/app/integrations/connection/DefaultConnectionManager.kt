@@ -7,6 +7,7 @@ import com.agentx.app.core.errorOrNull
 import com.agentx.app.core.failure
 import com.agentx.app.core.success
 import com.agentx.app.core.valueOrNull
+import com.agentx.app.integrations.github.GitHubDiagnostics
 import com.agentx.app.integrations.oauth.DeviceFlowState
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -268,6 +269,12 @@ class DefaultConnectionManager(
         reload()
 
         val result = runCatching { tester.test(existing) }.getOrElse { error ->
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_API,
+                "connection test failed",
+                error,
+                mapOf("connectionId" to id.value, "type" to existing.type.name),
+            )
             ConnectionTestResult(
                 status = ConnectionStatus.ERROR,
                 message = error.message?.takeIf { it.isNotBlank() } ?: "Connection test failed",
@@ -310,6 +317,14 @@ class DefaultConnectionManager(
         type: ConnectionType,
         displayName: String?,
     ): ForgeResult<AuthorizationStart, ForgeError> {
+        GitHubDiagnostics.auth(
+            "connect requested",
+            mapOf(
+                "type" to type.name,
+                "deviceFlowSupported" to supportsDeviceAuthorization(type),
+                "providerConfigured" to (providers.provider(type)?.configured == true),
+            ),
+        )
         val existing = io { store.load() }
         val match = existing
             .filter { it.type == type }
@@ -317,7 +332,21 @@ class DefaultConnectionManager(
             .firstOrNull()
             ?: return createForAuthorization(type, displayName)
 
+        GitHubDiagnostics.auth(
+            "authentication prerequisites",
+            mapOf(
+                "type" to type.name,
+                "connectionFound" to true,
+                "enabled" to match.enabled,
+                "usesOAuth" to match.usesOAuth,
+            ),
+        )
         if (!match.enabled) {
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_AUTH,
+                "connect refused: connection is disabled",
+                fields = mapOf("connectionId" to match.id.value),
+            )
             return failure(
                 connectionFailure(
                     code = ForgeErrorCode.CONNECTION_OPERATION_FAILED,
@@ -341,8 +370,19 @@ class DefaultConnectionManager(
                 ),
             )
         }
+        GitHubDiagnostics.auth(
+            "starting authentication flow",
+            mapOf("type" to existing.type.name, "connectionId" to existing.id.value),
+        )
         val provider = providers.provider(existing.type)
-            ?: return failure(unavailable(existing, "No provider handles ${existing.type.displayName}."))
+        if (provider == null) {
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_AUTH,
+                "authentication flow start failed: no provider registered",
+                fields = mapOf("type" to existing.type.name),
+            )
+            return failure(unavailable(existing, "No provider handles ${existing.type.displayName}."))
+        }
 
         val target = if (existing.usesOAuth) existing else existing.copy(
             config = existing.config.copy(authMethod = ConnectionAuthMethod.OAUTH),
@@ -351,7 +391,15 @@ class DefaultConnectionManager(
 
         val started = provider.beginAuthorization(target)
         val start = started.valueOrNull()
-            ?: return failure(started.errorOrNull() ?: unavailable(existing, "The authorization could not start"))
+        if (start == null) {
+            val error = started.errorOrNull() ?: unavailable(existing, "The authorization could not start")
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_AUTH,
+                "authentication flow start failed",
+                fields = mapOf("type" to existing.type.name, "errorCode" to error.code.name),
+            )
+            return failure(error)
+        }
 
         val next = when (start) {
             is AuthorizationStart.OpenUrl -> target.copy(
@@ -381,10 +429,30 @@ class DefaultConnectionManager(
         displayName: String?,
     ): ForgeResult<DeviceAuthorization, ForgeError> {
         val provider = providers.provider(type)
-            ?: return failure(
+        GitHubDiagnostics.auth(
+            "begin device authorization requested",
+            mapOf(
+                "type" to type.name,
+                "providerRegistered" to (provider != null),
+                "providerSupportsDeviceFlow" to (provider?.supportsDeviceAuthorization == true),
+            ),
+        )
+        if (provider == null) {
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_AUTH,
+                "device authorization start failed: no provider registered",
+                fields = mapOf("type" to type.name),
+            )
+            return failure(
                 unavailable(null, "No provider is registered for ${type.displayName} in this build.", type),
             )
+        }
         if (!provider.supportsDeviceAuthorization) {
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_AUTH,
+                "device authorization start failed: provider does not support device flow",
+                fields = mapOf("type" to type.name),
+            )
             return failure(
                 unavailable(
                     null,
@@ -435,12 +503,30 @@ class DefaultConnectionManager(
             config = connection.config.copy(authMethod = ConnectionAuthMethod.OAUTH),
             updatedAtMillis = clock(),
         )
+        GitHubDiagnostics.auth(
+            "device authorization flow started",
+            mapOf("connectionId" to target.id.value, "type" to target.type.name),
+        )
         val started = provider.beginDeviceAuthorization(target)
         val authorization = started.valueOrNull()
-            ?: return failure(
-                started.errorOrNull()
-                    ?: unavailable(target, "The device authorization could not be started"),
+        if (authorization == null) {
+            val error = started.errorOrNull()
+                ?: unavailable(target, "The device authorization could not be started")
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_AUTH,
+                "device authorization start failed",
+                fields = mapOf("errorCode" to error.code.name),
             )
+            return failure(error)
+        }
+        GitHubDiagnostics.auth(
+            "device authorization initialized",
+            mapOf(
+                "connectionId" to authorization.connectionId.value,
+                "userCodePresent" to authorization.userCode.isNotBlank(),
+                "expiresAtMillis" to authorization.expiresAtMillis,
+            ),
+        )
 
         // Only after the provider returned a code does the record become authorizing;
         // a failed start leaves it exactly as it was.
@@ -482,11 +568,23 @@ class DefaultConnectionManager(
 
         // The provider owns the poll loop; it runs in the caller's coroutine, so
         // cancelling the caller cancels the loop and nothing keeps polling.
+        GitHubDiagnostics.auth(
+            "device authorization completion started",
+            mapOf("connectionId" to existing.id.value, "type" to existing.type.name),
+        )
         val completed = provider.completeDeviceAuthorization(existing, onState)
 
         val grant = completed.valueOrNull()
         if (grant == null) {
             val error = completed.errorOrNull() ?: unavailable(existing, "The device authorization failed")
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_AUTH,
+                "GitHub connection FAILED",
+                fields = mapOf(
+                    "connectionId" to existing.id.value,
+                    "errorCode" to error.code.name,
+                ),
+            )
             // A failed attempt only settles this connection's status; its metadata,
             // and every other connection, is left untouched.
             io { store.save(toFailed(existing, error)) }
@@ -502,12 +600,18 @@ class DefaultConnectionManager(
     override suspend fun completeAuthorization(callbackUri: String): ForgeResult<Connection, ForgeError> {
         // The callback belongs to the connection whose provider is holding a pending
         // authorization; the provider still validates state and PKCE itself.
+        GitHubDiagnostics.callback("callback received")
         val waiting = current().filter { it.status == ConnectionStatus.AUTHORIZING }
         val target = waiting.firstOrNull { connection ->
             providers.provider(connection.type)?.hasPendingAuthorization(connection.id) == true
         } ?: waiting.firstOrNull()
 
         if (target == null) {
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_CALLBACK,
+                "callback did not match any waiting connection",
+                fields = mapOf("waitingConnections" to waiting.size),
+            )
             // Nothing is waiting: refuse without touching any record, so a redirect
             // that arrives late — or twice — cannot change a connection's state.
             return failure(
@@ -518,6 +622,10 @@ class DefaultConnectionManager(
                 ),
             )
         }
+        GitHubDiagnostics.callback(
+            "callback matched waiting connection",
+            mapOf("type" to target.type.name, "connectionId" to target.id.value),
+        )
         val activeProvider = providers.provider(target.type)
             ?: return failure(unavailable(target, "No provider handles ${target.type.displayName}."))
 
@@ -565,7 +673,16 @@ class DefaultConnectionManager(
             val provider = providers.provider(existing.type)
             val payload = io { secrets.get(credentialRef) }
             if (provider != null && payload != null) {
-                val revocation = runCatching { provider.revoke(existing, payload) }.getOrNull()
+                val revocation = runCatching { provider.revoke(existing, payload) }
+                    .onFailure { error ->
+                        GitHubDiagnostics.failure(
+                            GitHubDiagnostics.STAGE_AUTH,
+                            "provider revoke failed during disconnect",
+                            error,
+                            mapOf("connectionId" to id.value),
+                        )
+                    }
+                    .getOrNull()
                 if (revocation != null && !revocation.revoked && revocation.message.isNotBlank()) {
                     message = "Disconnected. ${revocation.message}"
                 }

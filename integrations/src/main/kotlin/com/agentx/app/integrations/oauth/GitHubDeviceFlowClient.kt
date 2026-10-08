@@ -1,5 +1,6 @@
 package com.agentx.app.integrations.oauth
 
+import com.agentx.app.integrations.github.GitHubDiagnostics
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
@@ -28,11 +29,20 @@ class GitHubDeviceFlowClient(
     override suspend fun requestDeviceCode(scopes: Set<String>): OAuthDeviceCodeResult {
         val clientId = clientProvider().clientId
         if (clientId.isBlank()) {
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_AUTH,
+                "device authorization refused: no client id configured",
+                fields = mapOf("clientIdPresent" to false),
+            )
             return OAuthDeviceCodeResult.Failure(
                 reason = OAuthFailureReason.PROVIDER_NOT_CONFIGURED,
                 message = "GitHub authorization is not configured: no Client ID is set.",
             )
         }
+        GitHubDiagnostics.auth(
+            "device authorization request prepared",
+            mapOf("endpoint" to deviceCodeEndpoint, "scopes" to scopes.sorted()),
+        )
 
         val request = OAuthHttpRequest(
             method = "POST",
@@ -46,12 +56,32 @@ class GitHubDeviceFlowClient(
                 },
             ),
         )
+        GitHubDiagnostics.auth("device authorization request dispatched")
         val response = call(request)
-            ?: return OAuthDeviceCodeResult.Failure(OAuthFailureReason.NETWORK, "GitHub could not be reached.")
+        if (response == null) {
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_AUTH,
+                "device authorization request failed: GitHub could not be reached",
+            )
+            return OAuthDeviceCodeResult.Failure(OAuthFailureReason.NETWORK, "GitHub could not be reached.")
+        }
+        GitHubDiagnostics.auth(
+            "device authorization response received",
+            mapOf("httpStatus" to response.statusCode),
+        )
 
+        GitHubDiagnostics.auth("device authorization response parsing started")
         val fields = TokenResponseParser.parse(response)
         val error = fields["error"]?.takeIf { it.isNotBlank() }
         if (error != null || !response.isSuccess) {
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_AUTH,
+                "device authorization request rejected",
+                fields = mapOf(
+                    "httpStatus" to response.statusCode,
+                    "errorCode" to (error ?: "(none)"),
+                ),
+            )
             return OAuthDeviceCodeResult.Failure(
                 reason = failureReasonFor(response.statusCode, error),
                 message = describe("GitHub refused the device authorization request", error, fields),
@@ -59,15 +89,23 @@ class GitHubDeviceFlowClient(
         }
 
         val deviceCode = fields["device_code"]?.takeIf { it.isNotBlank() }
-            ?: return malformed("GitHub did not return a device code.")
+            ?: return malformed(missingField("device_code"))
         val userCode = fields["user_code"]?.takeIf { it.isNotBlank() }
-            ?: return malformed("GitHub did not return a user code.")
+            ?: return malformed(missingField("user_code"))
         // GitHub has used both names over time; accept either documented form.
         val verificationUri = (fields["verification_uri"] ?: fields["verification_url"])?.takeIf { it.isNotBlank() }
-            ?: return malformed("GitHub did not return a verification URI.")
+            ?: return malformed(missingField("verification_uri"))
         val expiresIn = positiveSeconds(fields, "expires_in") ?: DEFAULT_EXPIRES_IN_SECONDS
         val interval = positiveSeconds(fields, "interval") ?: DEFAULT_INTERVAL_SECONDS
 
+        GitHubDiagnostics.auth(
+            "device authorization initialized",
+            mapOf(
+                "verificationUriPresent" to verificationUri.isNotBlank(),
+                "expiresInSeconds" to expiresIn,
+                "intervalSeconds" to interval,
+            ),
+        )
         return OAuthDeviceCodeResult.Success(
             OAuthDeviceCode(
                 deviceCode = deviceCode,
@@ -82,6 +120,10 @@ class GitHubDeviceFlowClient(
     override suspend fun poll(deviceCode: String): OAuthDevicePollResult {
         val clientId = clientProvider().clientId
         if (clientId.isBlank()) {
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_AUTH,
+                "token poll refused: no client id configured",
+            )
             return OAuthDevicePollResult.Failure(
                 reason = OAuthFailureReason.PROVIDER_NOT_CONFIGURED,
                 message = "GitHub authorization is not configured: no Client ID is set.",
@@ -102,16 +144,32 @@ class GitHubDeviceFlowClient(
             ),
         )
         val response = call(request)
-            ?: return OAuthDevicePollResult.Failure(OAuthFailureReason.NETWORK, "GitHub could not be reached.")
+        if (response == null) {
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_AUTH,
+                "token poll failed: GitHub could not be reached",
+            )
+            return OAuthDevicePollResult.Failure(OAuthFailureReason.NETWORK, "GitHub could not be reached.")
+        }
 
         // A throttled or failing endpoint is reported before the body is trusted.
         if (response.statusCode == HTTP_TOO_MANY_REQUESTS) {
+            GitHubDiagnostics.warn(
+                GitHubDiagnostics.STAGE_AUTH,
+                "token poll rate limited",
+                mapOf("httpStatus" to response.statusCode),
+            )
             return OAuthDevicePollResult.Failure(
                 reason = OAuthFailureReason.RATE_LIMITED,
                 message = "GitHub is rate limiting this app.",
             )
         }
         if (response.statusCode >= HTTP_SERVER_ERROR) {
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_AUTH,
+                "token poll failed: GitHub temporarily unavailable",
+                fields = mapOf("httpStatus" to response.statusCode),
+            )
             return OAuthDevicePollResult.Failure(
                 reason = OAuthFailureReason.NETWORK,
                 message = "GitHub is temporarily unavailable (HTTP ${response.statusCode}).",
@@ -121,6 +179,15 @@ class GitHubDeviceFlowClient(
         val fields = TokenResponseParser.parse(response)
         val error = fields["error"]?.takeIf { it.isNotBlank() }
         if (error != null) {
+            // `authorization_pending` is the normal "not approved yet" answer and is
+            // reported by the polling loop, so it is not logged on every poll here.
+            if (error != ERROR_AUTHORIZATION_PENDING) {
+                GitHubDiagnostics.warn(
+                    GitHubDiagnostics.STAGE_AUTH,
+                    "token poll reported '$error'",
+                    mapOf("httpStatus" to response.statusCode),
+                )
+            }
             return when (error) {
                 ERROR_AUTHORIZATION_PENDING -> OAuthDevicePollResult.Pending
 
@@ -152,6 +219,11 @@ class GitHubDeviceFlowClient(
         }
 
         if (!response.isSuccess) {
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_AUTH,
+                "token poll rejected",
+                fields = mapOf("httpStatus" to response.statusCode),
+            )
             return OAuthDevicePollResult.Failure(
                 reason = failureReasonFor(response.statusCode, error = null),
                 message = "GitHub rejected the request (HTTP ${response.statusCode}).",
@@ -162,8 +234,22 @@ class GitHubDeviceFlowClient(
             ?: return OAuthDevicePollResult.Failure(
                 reason = OAuthFailureReason.AUTHORIZATION_ERROR,
                 message = "GitHub did not return an access token.",
-            )
+            ).also {
+                GitHubDiagnostics.failure(
+                    GitHubDiagnostics.STAGE_AUTH,
+                    "token poll response missing access_token",
+                    fields = mapOf("httpStatus" to response.statusCode),
+                )
+            }
 
+        GitHubDiagnostics.auth(
+            "token response received",
+            mapOf(
+                "accessTokenPresent" to true,
+                "refreshTokenPresent" to !fields["refresh_token"].isNullOrBlank(),
+                "scopes" to parseScopes(fields["scope"]).sorted(),
+            ),
+        )
         return OAuthDevicePollResult.Success(
             OAuthTokenSet(
                 accessToken = accessToken,
@@ -180,8 +266,16 @@ class GitHubDeviceFlowClient(
         )
     }
 
-    private fun malformed(message: String): OAuthDeviceCodeResult =
-        OAuthDeviceCodeResult.Failure(OAuthFailureReason.AUTHORIZATION_ERROR, message)
+    private fun malformed(message: String): OAuthDeviceCodeResult {
+        GitHubDiagnostics.failure(
+            GitHubDiagnostics.STAGE_AUTH,
+            "device authorization response malformed: $message",
+        )
+        return OAuthDeviceCodeResult.Failure(OAuthFailureReason.AUTHORIZATION_ERROR, message)
+    }
+
+    /** Names the response field that was missing, which is safe (it is not a value). */
+    private fun missingField(name: String): String = "GitHub did not return $name."
 
     /**
      * Reads a positive integer field. GitHub answers with a JSON number and the

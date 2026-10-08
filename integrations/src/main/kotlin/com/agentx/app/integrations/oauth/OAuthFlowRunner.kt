@@ -10,6 +10,7 @@ import com.agentx.app.integrations.connection.ConnectionCapability
 import com.agentx.app.integrations.connection.ConnectionId
 import com.agentx.app.integrations.connection.ConnectionType
 import com.agentx.app.integrations.connection.connectionFailure
+import com.agentx.app.integrations.github.GitHubDiagnostics
 import java.security.SecureRandom
 
 /** What the app has to open to let the user authorize. */
@@ -74,6 +75,15 @@ class OAuthFlowRunner(
         requestedCapabilities: Set<ConnectionCapability> = connection.capabilities,
     ): ForgeResult<OAuthAuthorizationPlan, ForgeError> {
         if (!provider.client.isConfigured) {
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_AUTH,
+                "authorization flow start refused: provider not configured",
+                fields = mapOf(
+                    "type" to connection.type.name,
+                    "connectionId" to connection.id.value,
+                    "problem" to (provider.client.configurationProblem ?: "missing client configuration"),
+                ),
+            )
             return failure(
                 oauthFailure(
                     code = ForgeErrorCode.CONNECTION_OAUTH_UNAVAILABLE,
@@ -85,11 +95,23 @@ class OAuthFlowRunner(
             )
         }
 
+        GitHubDiagnostics.auth(
+            "authorization flow initialization started",
+            mapOf(
+                "type" to connection.type.name,
+                "connectionId" to connection.id.value,
+                "supportsPkce" to provider.descriptor.supportsPkce,
+            ),
+        )
         val scopes = provider.scopesFor(requestedCapabilities)
         val state = OAuthPkce.createState(random)
         val verifier = if (provider.descriptor.supportsPkce) OAuthPkce.createVerifier(random) else null
         val challenge = verifier?.let(OAuthPkce::challenge)
         val now = clock()
+        GitHubDiagnostics.auth(
+            if (verifier != null) "PKCE preparation succeeded" else "PKCE not required",
+            mapOf("type" to connection.type.name),
+        )
 
         val url = provider.authorizationUrl(
             OAuthAuthorizationRequest(
@@ -117,6 +139,14 @@ class OAuthFlowRunner(
             ),
         )
 
+        GitHubDiagnostics.auth(
+            "authorization URL prepared",
+            mapOf(
+                "type" to connection.type.name,
+                "connectionId" to connection.id.value,
+                "scopes" to scopes.sorted(),
+            ),
+        )
         return success(
             OAuthAuthorizationPlan(
                 authorizationUrl = url,
@@ -135,10 +165,23 @@ class OAuthFlowRunner(
      * and is refused without touching any record.
      */
     suspend fun complete(callbackUri: String): ForgeResult<OAuthGrant, ForgeError> {
+        GitHubDiagnostics.callback("callback processing started")
         val callback = OAuthCallback.parse(callbackUri)
+        GitHubDiagnostics.callback(
+            "callback parsed",
+            mapOf(
+                "codePresent" to callback.hasCode,
+                "statePresent" to !callback.state.isNullOrBlank(),
+                "error" to (callback.error ?: "(none)"),
+            ),
+        )
 
         if (callback.isDenied) {
             sessions.consume(callback.state.orEmpty())
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_CALLBACK,
+                "callback reported access denied",
+            )
             return failure(
                 oauthFailure(
                     code = ForgeErrorCode.CONNECTION_OAUTH_DENIED,
@@ -150,6 +193,11 @@ class OAuthFlowRunner(
 
         if (callback.isError) {
             sessions.consume(callback.state.orEmpty())
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_CALLBACK,
+                "callback reported an authorization error",
+                fields = mapOf("error" to (callback.error ?: "(none)")),
+            )
             return failure(
                 oauthFailure(
                     code = ForgeErrorCode.CONNECTION_OAUTH_FAILED,
@@ -222,21 +270,44 @@ class OAuthFlowRunner(
             )
         }
 
+        GitHubDiagnostics.auth(
+            "token exchange started",
+            mapOf("type" to pending.type.name, "connectionId" to pending.connectionId.value),
+        )
         val tokens = when (val result = provider.exchange(code, pending.codeVerifier, pending.redirectUri)) {
             is OAuthTokenResult.Success -> result.tokens
 
-            is OAuthTokenResult.Failure -> return failure(
-                oauthFailure(
-                    code = ForgeErrorCode.CONNECTION_OAUTH_FAILED,
-                    reason = result.failure.reason,
-                    message = result.failure.message,
-                    connectionId = pending.connectionId,
-                ),
-            )
+            is OAuthTokenResult.Failure -> {
+                GitHubDiagnostics.failure(
+                    GitHubDiagnostics.STAGE_AUTH,
+                    "token exchange failed",
+                    fields = mapOf(
+                        "reason" to result.failure.reason.name,
+                        "connectionId" to pending.connectionId.value,
+                    ),
+                )
+                return failure(
+                    oauthFailure(
+                        code = ForgeErrorCode.CONNECTION_OAUTH_FAILED,
+                        reason = result.failure.reason,
+                        message = result.failure.message,
+                        connectionId = pending.connectionId,
+                    ),
+                )
+            }
         }
+        GitHubDiagnostics.auth(
+            "token exchange succeeded",
+            mapOf("accessTokenPresent" to true, "refreshTokenPresent" to tokens.hasRefreshToken),
+        )
 
         val validation = provider.validate(tokens)
         if (!validation.valid) {
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_AUTH,
+                "token validation failed after exchange",
+                fields = mapOf("connectionId" to pending.connectionId.value),
+            )
             return failure(
                 oauthFailure(
                     code = ForgeErrorCode.CONNECTION_OAUTH_FAILED,

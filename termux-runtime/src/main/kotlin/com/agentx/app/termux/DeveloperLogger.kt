@@ -34,6 +34,14 @@ enum class DeveloperLogCategory {
     MODEL,
 
     /**
+     * GitHub connection diagnostics: configuration, authorization (OAuth/device
+     * flow), the callback, token validation and repository loading, forwarded from
+     * the platform's structured logger by the app-level log sink. Messages carry a
+     * `GitHub/<stage>` prefix so one connection attempt can be read in order.
+     */
+    GITHUB,
+
+    /**
      * Where the app's own storage went: a periodic on-device reading of the runtime directories,
      * the caches, the project copies and the logs, so an app-size report can be answered from
      * measurements instead of from a guess. See `AgentxStorageAudit`.

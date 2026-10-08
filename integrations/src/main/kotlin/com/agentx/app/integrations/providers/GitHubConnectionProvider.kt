@@ -21,6 +21,7 @@ import com.agentx.app.integrations.connection.ProviderToolCatalog
 import com.agentx.app.integrations.connection.ProviderToolCategory
 import com.agentx.app.integrations.connection.ProviderToolSpec
 import com.agentx.app.integrations.connection.connectionFailure
+import com.agentx.app.integrations.github.GitHubDiagnostics
 import com.agentx.app.integrations.oauth.DeviceFlowRunner
 import com.agentx.app.integrations.oauth.DeviceFlowState
 import com.agentx.app.integrations.oauth.GitHubOAuthProvider
@@ -67,8 +68,29 @@ class GitHubConnectionProvider(
     override suspend fun beginDeviceAuthorization(
         connection: Connection,
     ): ForgeResult<DeviceAuthorization, ForgeError> {
-        val runner = deviceFlow ?: return failure(deviceFlowUnsupported(connection))
+        val runner = deviceFlow
+        GitHubDiagnostics.auth(
+            "device authorization prerequisites",
+            mapOf(
+                "connectionId" to connection.id.value,
+                "deviceFlowAvailable" to (runner != null),
+                "clientIdPresent" to oauthProvider.client.clientId.isNotBlank(),
+            ),
+        )
+        if (runner == null) {
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_AUTH,
+                "device authorization unavailable in this build",
+                fields = mapOf("connectionId" to connection.id.value),
+            )
+            return failure(deviceFlowUnsupported(connection))
+        }
         if (oauthProvider.client.clientId.isBlank()) {
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_AUTH,
+                "device authorization refused: no client id saved",
+                fields = mapOf("connectionId" to connection.id.value),
+            )
             return failure(
                 connectionFailure(
                     code = ForgeErrorCode.CONNECTION_OAUTH_UNAVAILABLE,
@@ -77,6 +99,10 @@ class GitHubConnectionProvider(
                 ),
             )
         }
+        GitHubDiagnostics.auth(
+            "starting GitHub device authorization",
+            mapOf("connectionId" to connection.id.value),
+        )
         return runner.begin(connection, oauthProvider.scopesFor(connection.capabilities))
     }
 
@@ -86,15 +112,39 @@ class GitHubConnectionProvider(
     ): ForgeResult<ProviderGrant, ForgeError> {
         val runner = deviceFlow ?: return failure(deviceFlowUnsupported(connection))
 
+        GitHubDiagnostics.auth(
+            "device authorization completion started",
+            mapOf("connectionId" to connection.id.value),
+        )
         val polled = runner.complete(connection.id, onState)
         val tokens = polled.valueOrNull()
-            ?: return failure(polled.errorOrNull() ?: deviceFlowUnsupported(connection))
+        if (tokens == null) {
+            val error = polled.errorOrNull() ?: deviceFlowUnsupported(connection)
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_AUTH,
+                "device authorization completion failed",
+                fields = mapOf(
+                    "connectionId" to connection.id.value,
+                    "errorCode" to error.code.name,
+                ),
+            )
+            return failure(error)
+        }
+        GitHubDiagnostics.auth(
+            "token exchange succeeded: accessTokenPresent=true",
+            mapOf("refreshTokenPresent" to tokens.hasRefreshToken),
+        )
 
         // The grant is verified with GitHub's own API before it is stored: a token
         // that cannot be used is never reported as connected.
         val validation = oauthProvider.validate(tokens)
         if (!validation.valid) {
             onState(DeviceFlowState.AUTH_ERROR)
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_AUTH,
+                "GitHub connection FAILED: credential validation failed",
+                fields = mapOf("connectionId" to connection.id.value),
+            )
             return failure(
                 connectionFailure(
                     code = ForgeErrorCode.CONNECTION_OAUTH_FAILED,
@@ -110,6 +160,14 @@ class GitHubConnectionProvider(
 
         val accountLabel = validation.accountLabel ?: tokens.accountLabel ?: handleFor(connection)
         val grantedScopes = oauthProvider.grantedScopes(tokens)
+        GitHubDiagnostics.auth(
+            "GitHub connection SUCCESS",
+            mapOf(
+                "connectionId" to connection.id.value,
+                "accountLabelPresent" to accountLabel.isNotBlank(),
+                "scopes" to grantedScopes.sorted(),
+            ),
+        )
         return success(
             ProviderGrant(
                 connectionId = connection.id,

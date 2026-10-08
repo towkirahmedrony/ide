@@ -3,6 +3,7 @@ package com.agentx.app.integrations.oauth
 import com.agentx.app.integrations.connection.ConnectionCapabilities
 import com.agentx.app.integrations.connection.ConnectionCapability
 import com.agentx.app.integrations.connection.ConnectionType
+import com.agentx.app.integrations.github.GitHubDiagnostics
 
 /**
  * Official GitHub authorization (OAuth 2.0 authorization code + PKCE).
@@ -106,6 +107,7 @@ class GitHubOAuthProvider(
     override suspend fun refresh(refreshToken: String): OAuthTokenResult = exchange.refreshToken(refreshToken)
 
     override suspend fun validate(tokens: OAuthTokenSet): OAuthValidation {
+        GitHubDiagnostics.api("auth validation started", mapOf("endpoint" to USER_ENDPOINT))
         val response = try {
             http.execute(
                 OAuthHttpRequest(
@@ -118,13 +120,27 @@ class GitHubOAuthProvider(
                 ),
             )
         } catch (error: OAuthHttpException) {
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_API,
+                "auth validation failed: GitHub could not be reached",
+                error,
+            )
             return OAuthValidation(
                 valid = false,
                 message = error.message ?: "GitHub could not be reached.",
             )
         }
 
+        GitHubDiagnostics.api(
+            "auth validation response received",
+            mapOf("httpStatus" to response.statusCode),
+        )
         if (!response.isSuccess) {
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_API,
+                "auth validation failed: GitHub rejected the credentials",
+                fields = mapOf("httpStatus" to response.statusCode),
+            )
             return OAuthValidation(
                 valid = false,
                 message = "GitHub rejected the new credentials (HTTP ${response.statusCode}).",
@@ -133,6 +149,10 @@ class GitHubOAuthProvider(
 
         val root = OAuthJson.parse(response.body)
         val login = root.string("login") ?: root.string("name")
+        GitHubDiagnostics.api(
+            "GitHub API auth validation: HTTP ${response.statusCode}",
+            mapOf("accountLabelPresent" to (login != null)),
+        )
         return OAuthValidation(
             valid = true,
             accountLabel = login,

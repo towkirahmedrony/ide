@@ -258,6 +258,15 @@ class GitHubRepositoryServiceImpl(
             "per_page must be between 1 and ${GitHubRepositoryService.MAX_PER_PAGE}"
         }
 
+        GitHubDiagnostics.repositories(
+            "repository fetch started",
+            mapOf(
+                "connectionId" to connectionId.value,
+                "visibility" to visibility.name,
+                "page" to page,
+                "perPage" to perPage,
+            ),
+        )
         val handed = credentialGateway.withCredential(connectionId) { token ->
             requestPage(token, visibility, page, perPage)
         }
@@ -267,21 +276,59 @@ class GitHubRepositoryServiceImpl(
                 is ForgeResult.Success -> {
                     val parsed = parsePage(requested.value, page, perPage)
                     when (parsed) {
-                        is ForgeResult.Success -> totals[connectionId.value] = parsed.value.totalCount
-                        is ForgeResult.Failure -> totals.remove(connectionId.value)
+                        is ForgeResult.Success -> {
+                            totals[connectionId.value] = parsed.value.totalCount
+                            GitHubDiagnostics.repositories(
+                                "repository fetch parsed",
+                                mapOf(
+                                    "count" to parsed.value.repositories.size,
+                                    "hasNextPage" to parsed.value.hasNextPage,
+                                    "totalCount" to parsed.value.totalCount,
+                                ),
+                            )
+                            GitHubDiagnostics.repositories(
+                                "repository sync succeeded",
+                                mapOf(
+                                    "connectionId" to connectionId.value,
+                                    "totalCount" to parsed.value.totalCount,
+                                ),
+                            )
+                        }
+                        is ForgeResult.Failure -> {
+                            totals.remove(connectionId.value)
+                            logRepositoryError("repository fetch parse failed", parsed.error)
+                        }
                     }
                     parsed
                 }
                 is ForgeResult.Failure -> {
                     totals.remove(connectionId.value)
+                    logRepositoryError("repository fetch failed", requested.error)
                     requested
                 }
             }
             is ForgeResult.Failure -> {
                 totals.remove(connectionId.value)
+                GitHubDiagnostics.failure(
+                    GitHubDiagnostics.STAGE_REPOSITORIES,
+                    "repository fetch failed: connection not authorized",
+                    fields = mapOf(
+                        "connectionId" to connectionId.value,
+                        "errorCode" to handed.error.code.name,
+                    ),
+                )
                 failure(gitHubGatewayError(handed.error))
             }
         }
+    }
+
+    /** Files a repository failure under the Repositories stage without a token. */
+    private fun logRepositoryError(message: String, error: GitHubRepositoryError) {
+        GitHubDiagnostics.failure(
+            GitHubDiagnostics.STAGE_REPOSITORIES,
+            message,
+            fields = mapOf("error" to error.javaClass.simpleName),
+        )
     }
 
     override suspend fun totalKnown(connectionId: ConnectionId): Int =
@@ -309,10 +356,27 @@ class GitHubRepositoryServiceImpl(
                 ),
             )
         } catch (network: GitHubRestNetworkException) {
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_REPOSITORIES,
+                "repository fetch failed: GitHub could not be reached",
+                network,
+                mapOf("endpoint" to REPOSITORIES_ENDPOINT_LABEL),
+            )
             return failure(GitHubRepositoryError.NetworkFailure)
         } catch (offline: IOException) {
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_REPOSITORIES,
+                "repository fetch failed: network error",
+                offline,
+                mapOf("endpoint" to REPOSITORIES_ENDPOINT_LABEL),
+            )
             return failure(GitHubRepositoryError.NetworkFailure)
         }
+
+        GitHubDiagnostics.repositories(
+            "repository fetch response received",
+            mapOf("httpStatus" to response.statusCode, "page" to page),
+        )
 
         return when {
             response.isSuccess -> success(response)
@@ -392,6 +456,9 @@ class GitHubRepositoryServiceImpl(
         const val DEFAULT_BASE_URL: String = "https://api.github.com"
         const val GITHUB_API_VERSION: String = "2022-11-28"
         const val USER_AGENT: String = "AgentX-Android"
+
+        /** A category, never the full request URL (which carries paging parameters). */
+        const val REPOSITORIES_ENDPOINT_LABEL: String = "user/repos"
 
         val LINK_URL = Regex("""<([^>]*)>""")
         // The closing quote is left off the pattern on purpose: the negated class

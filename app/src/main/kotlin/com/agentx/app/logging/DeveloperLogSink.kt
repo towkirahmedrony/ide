@@ -35,23 +35,27 @@ class DeveloperLogSink(
     }
 
     private fun render(record: LogRecord): String {
-        if (record.fields.isEmpty()) return record.message
-        val suffix = record.fields.entries.joinToString(" ") { (key, value) -> "$key=$value" }
+        // The `component` field is routing metadata used by [categoryFor], so it is
+        // not repeated in the readable line. Everything else stays key=value.
+        val fields = record.fields.filterKeys { it != COMPONENT_FIELD }
+        if (fields.isEmpty()) return record.message
+        val suffix = fields.entries.joinToString(" ") { (key, value) -> "$key=$value" }
         return "${record.message} $suffix"
     }
 
     private fun categoryFor(record: LogRecord): DeveloperLogCategory {
         val component = record.fields[COMPONENT_FIELD] as? String ?: return DeveloperLogCategory.SESSION
-        return if (component.startsWith(MODEL_COMPONENT_PREFIX)) {
-            DeveloperLogCategory.MODEL
-        } else {
-            DeveloperLogCategory.SESSION
+        return when {
+            component.startsWith(MODEL_COMPONENT_PREFIX) -> DeveloperLogCategory.MODEL
+            component.startsWith(GITHUB_COMPONENT_PREFIX) -> DeveloperLogCategory.GITHUB
+            else -> DeveloperLogCategory.SESSION
         }
     }
 
     private companion object {
         const val COMPONENT_FIELD = "component"
         const val MODEL_COMPONENT_PREFIX = "model"
+        const val GITHUB_COMPONENT_PREFIX = "github"
     }
 }
 

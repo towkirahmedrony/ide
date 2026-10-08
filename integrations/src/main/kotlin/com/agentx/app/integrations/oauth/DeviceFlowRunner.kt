@@ -10,6 +10,7 @@ import com.agentx.app.integrations.connection.ConnectionId
 import com.agentx.app.integrations.connection.ConnectionType
 import com.agentx.app.integrations.connection.DeviceAuthorization
 import com.agentx.app.integrations.connection.connectionFailure
+import com.agentx.app.integrations.github.GitHubDiagnostics
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -94,6 +95,14 @@ class DeviceFlowRunner(
         connection: Connection,
         scopes: Set<String>,
     ): ForgeResult<DeviceAuthorization, ForgeError> {
+        GitHubDiagnostics.auth(
+            "device authorization flow started",
+            mapOf(
+                "connectionId" to connection.id.value,
+                "type" to connection.type.name,
+                "scopes" to scopes.sorted(),
+            ),
+        )
         return when (val result = client.requestDeviceCode(scopes)) {
             is OAuthDeviceCodeResult.Success -> {
                 val code = result.code
@@ -108,6 +117,10 @@ class DeviceFlowRunner(
                         intervalSeconds = code.intervalSeconds,
                     ),
                 )
+                GitHubDiagnostics.auth(
+                    "device authorization waiting for user",
+                    mapOf("connectionId" to connection.id.value, "expiresAtMillis" to expiresAt),
+                )
                 success(
                     DeviceAuthorization(
                         connectionId = connection.id,
@@ -121,9 +134,14 @@ class DeviceFlowRunner(
                 )
             }
 
-            is OAuthDeviceCodeResult.Failure -> failure(
-                deviceFailure(result.reason, result.message, connection.id),
-            )
+            is OAuthDeviceCodeResult.Failure -> {
+                GitHubDiagnostics.failure(
+                    GitHubDiagnostics.STAGE_AUTH,
+                    "device authorization start failed",
+                    fields = mapOf("reason" to result.reason.name, "connectionId" to connection.id.value),
+                )
+                failure(deviceFailure(result.reason, result.message, connection.id))
+            }
         }
     }
 
@@ -143,8 +161,15 @@ class DeviceFlowRunner(
                     message = "No device authorization is waiting for this connection.",
                     connectionId = connectionId,
                 ),
-            )
+            ).also {
+                GitHubDiagnostics.failure(
+                    GitHubDiagnostics.STAGE_AUTH,
+                    "device authorization completion failed: no pending authorization",
+                    fields = mapOf("connectionId" to connectionId.value),
+                )
+            }
         var intervalSeconds = initial.intervalSeconds
+        GitHubDiagnostics.auth("authorization polling started", mapOf("connectionId" to connectionId.value))
         onState(DeviceFlowState.WAITING_FOR_USER)
 
         try {
@@ -160,6 +185,11 @@ class DeviceFlowRunner(
                 if (pending.isExpired(clock())) {
                     sessions.cancel(connectionId)
                     onState(DeviceFlowState.EXPIRED)
+                    GitHubDiagnostics.failure(
+                        GitHubDiagnostics.STAGE_AUTH,
+                        "device authorization expired before approval",
+                        fields = mapOf("connectionId" to connectionId.value),
+                    )
                     return failure(
                         deviceFailure(
                             reason = OAuthFailureReason.DEVICE_CODE_EXPIRED,
@@ -180,18 +210,35 @@ class DeviceFlowRunner(
                     is OAuthDevicePollResult.SlowDown -> {
                         intervalSeconds =
                             result.intervalSeconds.coerceAtLeast(intervalSeconds + SLOW_DOWN_STEP_SECONDS)
+                        GitHubDiagnostics.warn(
+                            GitHubDiagnostics.STAGE_AUTH,
+                            "token poll slowed down by GitHub",
+                            mapOf("intervalSeconds" to intervalSeconds),
+                        )
                         onState(DeviceFlowState.WAITING_FOR_USER)
                         sleep(intervalSeconds * 1000)
                     }
 
                     is OAuthDevicePollResult.Success -> {
                         sessions.cancel(connectionId)
+                        GitHubDiagnostics.auth(
+                            "device authorization approved: token obtained",
+                            mapOf("connectionId" to connectionId.value, "accessTokenPresent" to true),
+                        )
                         return success(result.tokens)
                     }
 
                     is OAuthDevicePollResult.Failure -> {
                         sessions.cancel(connectionId)
                         onState(DeviceFlowState.forFailure(result.reason))
+                        GitHubDiagnostics.failure(
+                            GitHubDiagnostics.STAGE_AUTH,
+                            "device authorization failed",
+                            fields = mapOf(
+                                "reason" to result.reason.name,
+                                "connectionId" to connectionId.value,
+                            ),
+                        )
                         return failure(deviceFailure(result.reason, result.message, connectionId))
                     }
                 }
@@ -211,6 +258,11 @@ class DeviceFlowRunner(
             // Cancellation drops the pending attempt so nothing keeps polling, then
             // propagates: the owning coroutine decides what happens next.
             sessions.cancel(connectionId)
+            GitHubDiagnostics.warn(
+                GitHubDiagnostics.STAGE_AUTH,
+                "device authorization cancelled",
+                mapOf("connectionId" to connectionId.value),
+            )
             throw cancelled
         }
     }

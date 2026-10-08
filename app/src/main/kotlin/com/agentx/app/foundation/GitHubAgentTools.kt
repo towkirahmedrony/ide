@@ -11,6 +11,7 @@ import com.agentx.app.integrations.github.CloneDestinationValidator
 import com.agentx.app.integrations.github.GitHubRepository
 import com.agentx.app.integrations.github.GitHubRepositoryError
 import com.agentx.app.integrations.github.GitHubRepositoryProjectCloner
+import com.agentx.app.integrations.github.GitHubDiagnostics
 import com.agentx.app.integrations.github.GitHubRepositoryService
 import com.agentx.app.integrations.github.GitHubRepositoryVisibility
 import com.agentx.app.tools.github.DelegatingGitHubRepositoryCatalog
@@ -142,17 +143,28 @@ class ConnectionGitHubRepositoryCatalog(
             capability = ConnectionCapabilities.REPOSITORY_READ,
         )
         val connection = authorized.valueOrNull()
-            ?: return Loaded.Failed(
+        if (connection == null) {
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_REPOSITORIES,
+                "repository load failed: connection not authorized",
+                fields = mapOf("errorCode" to (authorized.errorOrNull()?.code?.name ?: "(none)")),
+            )
+            return Loaded.Failed(
                 GitHubCatalogResult.Failure(
                     GitHubCatalogFailure.NOT_CONNECTED,
                     authorized.errorOrNull()?.message ?: "No connected GitHub account is available.",
                 ),
             )
+        }
 
         return mutex.withLock {
             val now = clock()
             val hit = cached
             if (hit != null && hit.connectionId == connection.id.value && now - hit.atMillis < CACHE_MILLIS) {
+                GitHubDiagnostics.repositories(
+                    "repository load served from cache",
+                    mapOf("connectionId" to connection.id.value, "count" to hit.repos.size),
+                )
                 return@withLock Loaded.Ok(connection.id, hit)
             }
             when (val fetched = fetchAll(connection.id, now)) {
@@ -167,6 +179,10 @@ class ConnectionGitHubRepositoryCatalog(
     }
 
     private suspend fun fetchAll(id: ConnectionId, now: Long): Fetched {
+        GitHubDiagnostics.repositories(
+            "repository fetch started",
+            mapOf("connectionId" to id.value),
+        )
         val collected = LinkedHashMap<String, GitHubRepository>()
         var truncated = false
         // GitHub's list endpoint takes one visibility at a time, so both are read and merged.
@@ -185,10 +201,29 @@ class ConnectionGitHubRepositoryCatalog(
                         page = next
                     }
 
-                    is ForgeResult.Failure -> return Fetched.Failed(result.error.toFailure())
+                    is ForgeResult.Failure -> {
+                        GitHubDiagnostics.failure(
+                            GitHubDiagnostics.STAGE_REPOSITORIES,
+                            "repository fetch failed",
+                            fields = mapOf(
+                                "connectionId" to id.value,
+                                "visibility" to visibility.name,
+                                "error" to result.error.javaClass.simpleName,
+                            ),
+                        )
+                        return Fetched.Failed(result.error.toFailure())
+                    }
                 }
             }
         }
+        GitHubDiagnostics.repositories(
+            "repository fetch succeeded",
+            mapOf(
+                "connectionId" to id.value,
+                "count" to collected.size,
+                "truncated" to truncated,
+            ),
+        )
         return Fetched.Ok(Snapshot(id.value, now, collected.values.toList(), truncated))
     }
 

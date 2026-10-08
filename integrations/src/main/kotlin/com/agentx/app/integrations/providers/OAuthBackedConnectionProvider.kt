@@ -17,6 +17,7 @@ import com.agentx.app.integrations.connection.ProviderGrant
 import com.agentx.app.integrations.connection.ProviderIdentity
 import com.agentx.app.integrations.connection.ProviderRevocation
 import com.agentx.app.integrations.connection.connectionFailure
+import com.agentx.app.integrations.github.GitHubDiagnostics
 import com.agentx.app.integrations.oauth.OAuthAuthorizationPlan
 import com.agentx.app.integrations.oauth.OAuthFailureReason
 import com.agentx.app.integrations.oauth.OAuthFlowRunner
@@ -63,9 +64,25 @@ abstract class OAuthBackedConnectionProvider(
         oauthProvider.capabilitiesFor(scopes)
 
     override suspend fun beginAuthorization(connection: Connection): ForgeResult<AuthorizationStart, ForgeError> {
+        GitHubDiagnostics.auth(
+            "authorization flow start requested (redirect)",
+            mapOf("type" to connection.type.name, "connectionId" to connection.id.value),
+        )
         val started = flow.begin(provider = oauthProvider, connection = connection)
         val plan = started.valueOrNull()
-            ?: return failure(started.errorOrNull() ?: unavailable(connection, "The authorization could not start"))
+        if (plan == null) {
+            val error = started.errorOrNull() ?: unavailable(connection, "The authorization could not start")
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_AUTH,
+                "authorization flow start failed",
+                fields = mapOf("type" to connection.type.name, "errorCode" to error.code.name),
+            )
+            return failure(error)
+        }
+        GitHubDiagnostics.auth(
+            "authentication initialization succeeded",
+            mapOf("type" to connection.type.name, "scopes" to plan.scopes.sorted()),
+        )
         return success(plan.toStart(connection, oauthProvider.descriptor.displayName))
     }
 
@@ -73,9 +90,25 @@ abstract class OAuthBackedConnectionProvider(
         connection: Connection,
         callbackUri: String,
     ): ForgeResult<ProviderGrant, ForgeError> {
+        GitHubDiagnostics.callback(
+            "callback validation started",
+            mapOf("type" to connection.type.name, "connectionId" to connection.id.value),
+        )
         val completed = flow.complete(callbackUri)
         val grant = completed.valueOrNull()
-            ?: return failure(completed.errorOrNull() ?: unavailable(connection, "The callback could not be processed"))
+        if (grant == null) {
+            val error = completed.errorOrNull() ?: unavailable(connection, "The callback could not be processed")
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_CALLBACK,
+                "callback processing failed",
+                fields = mapOf("type" to connection.type.name, "errorCode" to error.code.name),
+            )
+            return failure(error)
+        }
+        GitHubDiagnostics.callback(
+            "callback validation succeeded",
+            mapOf("type" to connection.type.name),
+        )
         return success(
             ProviderGrant(
                 connectionId = grant.connectionId,
@@ -220,8 +253,17 @@ abstract class OAuthBackedConnectionProvider(
             scopes = scopes,
             obtainedAtMillis = clock(),
         )
+        GitHubDiagnostics.api(
+            "manual credential validation started",
+            mapOf("type" to connection.type.name),
+        )
         val validation = oauthProvider.validate(tokens)
         if (!validation.valid) {
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_API,
+                "manual credential validation failed",
+                fields = mapOf("type" to connection.type.name),
+            )
             return failure(
                 unavailable(
                     connection,
@@ -233,6 +275,10 @@ abstract class OAuthBackedConnectionProvider(
                 ),
             )
         }
+        GitHubDiagnostics.api(
+            "manual credential validation succeeded",
+            mapOf("type" to connection.type.name, "accountLabelPresent" to (validation.accountLabel != null)),
+        )
         return success(
             ProviderIdentity(
                 accountLabel = validation.accountLabel ?: handleFor(connection),

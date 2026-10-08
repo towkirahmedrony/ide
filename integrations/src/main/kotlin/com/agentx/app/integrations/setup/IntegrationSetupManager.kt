@@ -10,12 +10,14 @@ import com.agentx.app.core.success
 import com.agentx.app.integrations.connection.Connection
 import com.agentx.app.integrations.connection.ConnectionType
 import com.agentx.app.integrations.connection.connectionFailure
+import com.agentx.app.integrations.github.GitHubDiagnostics
 import com.agentx.app.integrations.oauth.GitHubOAuthProvider
 import com.agentx.app.integrations.oauth.OAuthCallbackAuthority
 import com.agentx.app.integrations.oauth.OAuthClientConfig
 import com.agentx.app.integrations.oauth.OAuthProvider
 import com.agentx.app.integrations.oauth.SupabaseOAuthProvider
 import com.agentx.app.integrations.oauth.toClientConfig
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -48,9 +50,31 @@ class IntegrationSetupManager(
     fun guide(type: ConnectionType): ProviderSetupGuide = IntegrationSetupGuides.forType(type)
 
     suspend fun refresh() {
+        GitHubDiagnostics.config("configuration load started")
         val loaded = store.loadAll()
         applyToProviders(loaded)
         mutableState.value = IntegrationSetupState(loaded = true, setups = loaded)
+        logResolvedConfiguration()
+    }
+
+    /**
+     * Records what the GitHub configuration resolved to after a load: whether a
+     * Client ID is present, its masked shape, and whether validation passes. Never
+     * the raw Client ID.
+     */
+    private fun logResolvedConfiguration() {
+        val type = ConnectionType.GITHUB
+        val resolved = resolvedClient(type)
+        val validation = validationFor(type, resolved.clientId, resolved.exchangeBrokerUrl)
+        GitHubDiagnostics.config(
+            "configuration loaded",
+            mapOf(
+                "type" to type.name,
+                "clientIdPresent" to resolved.clientId.isNotBlank(),
+                "clientId" to GitHubDiagnostics.maskClientId(resolved.clientId),
+                "validationComplete" to validation.complete,
+            ),
+        )
     }
 
     fun snapshot(
@@ -106,7 +130,13 @@ class IntegrationSetupManager(
         exchangeBrokerUrl: String? = null,
         scopes: Set<String> = emptySet(),
     ): ForgeResult<PersonalOAuthSetup, ForgeError> {
+        GitHubDiagnostics.config("client id save started", mapOf("type" to type.name))
         if (type != ConnectionType.GITHUB && type != ConnectionType.SUPABASE) {
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_CONFIG,
+                "client id save rejected: provider is not configurable with a Client ID",
+                fields = mapOf("type" to type.name),
+            )
             return failure(
                 connectionFailure(
                     code = ForgeErrorCode.CONNECTION_INVALID,
@@ -127,6 +157,11 @@ class IntegrationSetupManager(
         // provider, so an incomplete setup is refused with the reason instead of
         // being saved.
         if (!check.complete) {
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_CONFIG,
+                "client id save rejected: validation failed",
+                fields = mapOf("type" to type.name, "problems" to check.problems),
+            )
             return failure(
                 connectionFailure(
                     code = ForgeErrorCode.CONNECTION_INVALID,
@@ -135,27 +170,61 @@ class IntegrationSetupManager(
                 ),
             )
         }
-        val setup = PersonalOAuthSetup(
-            clientId = trimmedId,
-            exchangeBrokerUrl = trimmedBroker,
-            scopes = scopes,
-            updatedAtMillis = clock(),
-        )
-        store.save(type, setup)
-        applyToProvider(type, setup)
-        mutableState.update { current ->
-            current.copy(setups = current.setups + (type to setup))
+        return try {
+            val setup = PersonalOAuthSetup(
+                clientId = trimmedId,
+                exchangeBrokerUrl = trimmedBroker,
+                scopes = scopes,
+                updatedAtMillis = clock(),
+            )
+            store.save(type, setup)
+            applyToProvider(type, setup)
+            mutableState.update { current ->
+                current.copy(setups = current.setups + (type to setup))
+            }
+            GitHubDiagnostics.config(
+                "client id save succeeded",
+                mapOf(
+                    "type" to type.name,
+                    "clientIdPresent" to true,
+                    "clientId" to GitHubDiagnostics.maskClientId(trimmedId),
+                ),
+            )
+            success(setup)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_CONFIG,
+                "client id save failed",
+                error,
+                mapOf("type" to type.name),
+            )
+            throw error
         }
-        return success(setup)
     }
 
     suspend fun clearSetup(type: ConnectionType): ForgeResult<Unit, ForgeError> {
-        store.clear(type)
-        applyToProvider(type, setup = null)
-        mutableState.update { current ->
-            current.copy(setups = current.setups - type)
+        GitHubDiagnostics.config("client id clear started", mapOf("type" to type.name))
+        return try {
+            store.clear(type)
+            applyToProvider(type, setup = null)
+            mutableState.update { current ->
+                current.copy(setups = current.setups - type)
+            }
+            GitHubDiagnostics.config("client id clear succeeded", mapOf("type" to type.name))
+            success(Unit)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_CONFIG,
+                "client id clear failed",
+                error,
+                mapOf("type" to type.name),
+            )
+            throw error
         }
-        return success(Unit)
     }
 
     fun oauthProvider(type: ConnectionType): OAuthProvider? = when (type) {

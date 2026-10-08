@@ -17,6 +17,7 @@ import com.agentx.app.integrations.connection.ConnectionDraft
 import com.agentx.app.integrations.connection.ConnectionId
 import com.agentx.app.integrations.connection.ConnectionManager
 import com.agentx.app.integrations.connection.ConnectionType
+import com.agentx.app.integrations.github.GitHubDiagnostics
 import com.agentx.app.integrations.mcp.McpTransportKind
 import com.agentx.app.integrations.mcp.META_COMMAND
 import com.agentx.app.integrations.mcp.META_TRANSPORT
@@ -215,6 +216,10 @@ class ConnectionEditorViewModel(
      */
     fun connectWithOAuth() {
         if (state.saving) return
+        GitHubDiagnostics.auth(
+            "OAuth connect requested from editor",
+            mapOf("type" to state.type.name, "connectionId" to state.connectionId),
+        )
         state = state.copy(saving = true, errors = emptyList())
         viewModelScope.launch {
             try {
@@ -246,14 +251,27 @@ class ConnectionEditorViewModel(
                         )
                     }
 
-                    is ForgeResult.Failure -> state = state.copy(
-                        saving = false,
-                        errors = listOf(started.error.message ?: "The authorization could not be started"),
-                    )
+                    is ForgeResult.Failure -> {
+                        GitHubDiagnostics.failure(
+                            GitHubDiagnostics.STAGE_AUTH,
+                            "OAuth connect failed: authorization could not start",
+                            fields = mapOf("type" to state.type.name, "errorCode" to started.error.code.name),
+                        )
+                        state = state.copy(
+                            saving = false,
+                            errors = listOf(started.error.message ?: "The authorization could not be started"),
+                        )
+                    }
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
+                GitHubDiagnostics.failure(
+                    GitHubDiagnostics.STAGE_AUTH,
+                    "OAuth connect failed: authorization threw",
+                    error,
+                    mapOf("type" to state.type.name),
+                )
                 state = state.copy(
                     saving = false,
                     errors = listOf(error.message ?: "The authorization could not be started"),
@@ -287,6 +305,14 @@ class ConnectionEditorViewModel(
             val failure = result.errorOrNull()
             val saved = result.valueOrNull()
             if (failure != null || saved == null) {
+                GitHubDiagnostics.failure(
+                    GitHubDiagnostics.STAGE_CONFIG,
+                    "connection save failed",
+                    fields = mapOf(
+                        "type" to state.type.name,
+                        "errorCode" to (failure?.code?.name ?: "(none)"),
+                    ),
+                )
                 val fieldErrors = failure?.details?.get("errors") as? List<*>
                 state = state.copy(
                     saving = false,

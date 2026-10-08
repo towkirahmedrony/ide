@@ -3,6 +3,7 @@ package com.agentx.app.oauth
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import com.agentx.app.integrations.github.GitHubDiagnostics
 import com.agentx.app.ui.ide.data.OAuthBrowserLauncher
 
 /**
@@ -18,11 +19,32 @@ import com.agentx.app.ui.ide.data.OAuthBrowserLauncher
 class IntentOAuthBrowserLauncher(private val context: Context) : OAuthBrowserLauncher {
 
     override fun launch(authorizationUrl: String): Boolean {
-        if (authorizationUrl.isBlank()) return false
-        val uri = runCatching { Uri.parse(authorizationUrl) }.getOrNull() ?: return false
+        GitHubDiagnostics.auth("browser launch requested")
+        if (authorizationUrl.isBlank()) {
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_AUTH,
+                "browser launch failed: blank authorization URL",
+            )
+            return false
+        }
+        val uri = runCatching { Uri.parse(authorizationUrl) }.getOrNull()
+        if (uri == null) {
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_AUTH,
+                "browser launch failed: authorization URL could not be parsed",
+            )
+            return false
+        }
         // Only ever hand an https URL to the browser: an authorization page must be
         // reached over TLS.
-        if (uri.scheme?.lowercase() != "https") return false
+        if (uri.scheme?.lowercase() != "https") {
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_AUTH,
+                "browser launch failed: URL was not https",
+                fields = mapOf("scheme" to (uri.scheme ?: "(none)")),
+            )
+            return false
+        }
 
         val intent = Intent(Intent.ACTION_VIEW, uri).apply {
             addCategory(Intent.CATEGORY_BROWSABLE)
@@ -30,10 +52,21 @@ class IntentOAuthBrowserLauncher(private val context: Context) : OAuthBrowserLau
         }
         return try {
             context.startActivity(intent)
+            GitHubDiagnostics.auth("browser launch succeeded")
             true
         } catch (error: android.content.ActivityNotFoundException) {
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_AUTH,
+                "browser launch failed: no browser handled the URL",
+                error,
+            )
             false
         } catch (error: SecurityException) {
+            GitHubDiagnostics.failure(
+                GitHubDiagnostics.STAGE_AUTH,
+                "browser launch failed: security exception",
+                error,
+            )
             false
         }
     }

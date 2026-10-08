@@ -19,6 +19,7 @@ import com.agentx.app.integrations.connection.DeviceAuthorization
 import com.agentx.app.integrations.connection.InstalledTool
 import com.agentx.app.integrations.connection.ProviderAvailability
 import com.agentx.app.integrations.connection.ProviderDescriptor
+import com.agentx.app.integrations.github.GitHubDiagnostics
 import com.agentx.app.integrations.setup.IntegrationSetupManager
 import com.agentx.app.integrations.setup.ProviderSetupGuide
 import com.agentx.app.integrations.setup.ProviderSetupSnapshot
@@ -148,6 +149,7 @@ class ConnectionsViewModel(
     ) {
         val manager = setup ?: return
         if (setupBusy) return
+        GitHubDiagnostics.config("client id save requested", mapOf("type" to type.name))
         setupBusy = true
         viewModelScope.launch {
             try {
@@ -156,11 +158,24 @@ class ConnectionsViewModel(
                         refreshDerived()
                         message = "${type.displayName} Client ID saved. This does not connect the account."
                     }
-                    is ForgeResult.Failure -> message = result.error.message
+                    is ForgeResult.Failure -> {
+                        GitHubDiagnostics.failure(
+                            GitHubDiagnostics.STAGE_CONFIG,
+                            "client id save failed",
+                            fields = mapOf("type" to type.name, "message" to result.error.message),
+                        )
+                        message = result.error.message
+                    }
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
+                GitHubDiagnostics.failure(
+                    GitHubDiagnostics.STAGE_CONFIG,
+                    "client id save failed",
+                    error,
+                    mapOf("type" to type.name),
+                )
                 message = error.message ?: "The Client ID could not be saved"
             } finally {
                 setupBusy = false
@@ -214,13 +229,30 @@ class ConnectionsViewModel(
 
     /** Starts the connection flow for a service the user has not connected yet. */
     fun connect(type: ConnectionType) {
-        if (busyKey != null || deviceFlowState.isInProgress) return
+        if (busyKey != null || deviceFlowState.isInProgress) {
+            // This is exactly the "nothing happens" case: the tap was ignored because
+            // the screen already had an operation in flight.
+            GitHubDiagnostics.warn(
+                GitHubDiagnostics.STAGE_AUTH,
+                "connect action ignored: an operation is already in progress",
+                mapOf("type" to type.name, "busyKey" to busyKey, "deviceFlowState" to deviceFlowState.name),
+            )
+            return
+        }
+        GitHubDiagnostics.auth(
+            "connect action received",
+            mapOf(
+                "type" to type.name,
+                "deviceFlowSupported" to manager.supportsDeviceAuthorization(type),
+            ),
+        )
         // GitHub authorizes with a device code: no browser redirect is involved, so
         // the redirect flow is not started for it.
         if (manager.supportsDeviceAuthorization(type)) {
             startDeviceFlow(type)
             return
         }
+        GitHubDiagnostics.auth("starting redirect authorization flow", mapOf("type" to type.name))
         busyKey = type.name
         viewModelScope.launch {
             try {
@@ -240,7 +272,15 @@ class ConnectionsViewModel(
 
     /** Re-runs authorization for an existing connection (reconnect / re-authorize). */
     fun reconnect(id: String) {
-        if (busyKey != null || deviceFlowState.isInProgress) return
+        GitHubDiagnostics.auth("reconnect requested", mapOf("connectionId" to id))
+        if (busyKey != null || deviceFlowState.isInProgress) {
+            GitHubDiagnostics.warn(
+                GitHubDiagnostics.STAGE_AUTH,
+                "reconnect action ignored: an operation is already in progress",
+                mapOf("connectionId" to id, "busyKey" to busyKey, "deviceFlowState" to deviceFlowState.name),
+            )
+            return
+        }
         // A device-flow service re-authorizes with a new device code: reusing the
         // existing connection id, never a second connection record.
         val type = manager.state.value.connection(ConnectionId(id))?.type
@@ -334,10 +374,20 @@ class ConnectionsViewModel(
      * abandoned instead of leaving the connection stuck waiting.
      */
     private suspend fun openAuthorization(key: String, start: AuthorizationStart.OpenUrl) {
+        GitHubDiagnostics.auth(
+            "browser launch requested",
+            mapOf("connectionId" to start.connectionId.value, "type" to start.type.name),
+        )
         if (browser.launch(start.authorizationUrl)) {
+            GitHubDiagnostics.auth("browser launch succeeded")
             awaitingAuthorizationId = start.connectionId.value
             return
         }
+        GitHubDiagnostics.failure(
+            GitHubDiagnostics.STAGE_AUTH,
+            "browser launch failed: no browser is available",
+            fields = mapOf("connectionId" to start.connectionId.value),
+        )
         awaitingAuthorizationId = null
         manager.cancelAuthorization(start.connectionId)
         message = "No browser is available to open the authorization page."
@@ -348,6 +398,10 @@ class ConnectionsViewModel(
      * polling. The access token is stored by the manager; nothing here ever sees it.
      */
     private fun startDeviceFlow(type: ConnectionType) {
+        GitHubDiagnostics.auth(
+            "starting GitHub authentication flow",
+            mapOf("type" to type.name),
+        )
         busyKey = type.name
         deviceAuthorization = null
         deviceFlowState = DeviceFlowState.AUTHORIZING
@@ -359,15 +413,42 @@ class ConnectionsViewModel(
                         deviceAuthorization = authorization
                         deviceFlowConnectionId = authorization.connectionId.value
                         deviceFlowState = DeviceFlowState.WAITING_FOR_USER
+                        GitHubDiagnostics.auth(
+                            "authentication initialization succeeded",
+                            mapOf(
+                                "connectionId" to authorization.connectionId.value,
+                                "userCodePresent" to authorization.userCode.isNotBlank(),
+                                "verificationUriPresent" to authorization.verificationUri.isNotBlank(),
+                            ),
+                        )
                         // Best effort: point the user at GitHub's page. The code and
                         // URL stay on screen either way.
-                        if (openVerificationAutomatically) browser.launch(authorization.verificationUri)
+                        if (openVerificationAutomatically) {
+                            GitHubDiagnostics.auth("browser launch requested")
+                            val opened = browser.launch(authorization.verificationUri)
+                            if (opened) {
+                                GitHubDiagnostics.auth("browser launch succeeded")
+                            } else {
+                                GitHubDiagnostics.warn(
+                                    GitHubDiagnostics.STAGE_AUTH,
+                                    "browser launch failed: no browser handled the verification page",
+                                )
+                            }
+                        }
                         busyKey = null
                         pollDeviceAuthorization(authorization.connectionId.value)
                     }
 
                     is ForgeResult.Failure -> {
                         deviceFlowState = DeviceFlowState.AUTH_ERROR
+                        GitHubDiagnostics.failure(
+                            GitHubDiagnostics.STAGE_AUTH,
+                            "GitHub connection FAILED: device authorization could not start",
+                            fields = mapOf(
+                                "type" to type.name,
+                                "errorCode" to result.error.code.name,
+                            ),
+                        )
                         message = result.error.message
                     }
                 }
@@ -375,6 +456,12 @@ class ConnectionsViewModel(
                 throw cancelled
             } catch (error: Throwable) {
                 deviceFlowState = DeviceFlowState.AUTH_ERROR
+                GitHubDiagnostics.failure(
+                    GitHubDiagnostics.STAGE_AUTH,
+                    "GitHub connection FAILED: device authorization threw",
+                    error,
+                    mapOf("type" to type.name),
+                )
                 message = error.message ?: failedToStart(type)
             } finally {
                 busyKey = null
@@ -400,11 +487,23 @@ class ConnectionsViewModel(
                         deviceFlowConnectionId = null
                         deviceFlowState = DeviceFlowState.CONNECTED
                         lastConnectedId = connectionId
+                        GitHubDiagnostics.auth(
+                            "GitHub connection SUCCESS",
+                            mapOf("connectionId" to connectionId),
+                        )
                     }
 
                     is ForgeResult.Failure -> {
                         // The manager reported the terminal state through the callback;
                         // the message explains why.
+                        GitHubDiagnostics.failure(
+                            GitHubDiagnostics.STAGE_AUTH,
+                            "GitHub connection FAILED",
+                            fields = mapOf(
+                                "connectionId" to connectionId,
+                                "errorCode" to result.error.code.name,
+                            ),
+                        )
                         message = result.error.message
                     }
                 }
@@ -414,6 +513,12 @@ class ConnectionsViewModel(
             } catch (error: Throwable) {
                 deviceAuthorization = null
                 deviceFlowState = DeviceFlowState.AUTH_ERROR
+                GitHubDiagnostics.failure(
+                    GitHubDiagnostics.STAGE_AUTH,
+                    "GitHub connection FAILED",
+                    error,
+                    mapOf("connectionId" to connectionId),
+                )
                 message = error.message ?: "The GitHub authorization failed"
             } finally {
                 deviceFlowJob = null
@@ -433,6 +538,10 @@ class ConnectionsViewModel(
     /** Cancels a running device authorization and resets the service to not connected. */
     fun cancelDeviceFlow() {
         val id = deviceFlowConnectionId
+        GitHubDiagnostics.auth(
+            "GitHub connection CANCELLED",
+            mapOf("connectionId" to id),
+        )
         stopDeviceFlow()
         if (id != null) {
             viewModelScope.launch {
