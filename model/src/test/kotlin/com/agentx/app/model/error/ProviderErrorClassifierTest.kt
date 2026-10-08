@@ -105,6 +105,46 @@ class ProviderErrorClassifierTest {
         }
     }
 
+    // --- failures reported inside a response ---------------------------------
+
+    /**
+     * An OpenAI-compatible endpoint that fails *during* a stream has no status line
+     * left to send, so the failure arrives as a frame instead. Only the provider's own
+     * type and wording can decide, and the categories must still be the same ones the
+     * HTTP path produces.
+     */
+    @Test
+    fun `a failure reported inside a stream is classified without an http status`() {
+        assertEquals(
+            ModelProviderErrorCode.SERVICE_UNAVAILABLE,
+            ProviderErrorClassifier.forStreamError("UNAVAILABLE"),
+        )
+        assertEquals(
+            ModelProviderErrorCode.AUTHENTICATION_FAILED,
+            ProviderErrorClassifier.forStreamError("invalid_api_key"),
+        )
+        assertEquals(
+            ModelProviderErrorCode.MODEL_NOT_FOUND,
+            ProviderErrorClassifier.forStreamError("model_not_found"),
+        )
+        assertEquals(
+            ModelProviderErrorCode.QUOTA_EXHAUSTED,
+            ProviderErrorClassifier.forStreamError("insufficient_quota", "You exceeded your current quota"),
+        )
+        assertEquals(
+            ModelProviderErrorCode.RATE_LIMITED,
+            ProviderErrorClassifier.forStreamError(null, "Rate limit exceeded, retry later"),
+        )
+        // Nothing conclusive stays generic rather than being guessed into a rate limit
+        // or a quota problem, and a rate limit is never repeated by the retry layer.
+        assertEquals(
+            ModelProviderErrorCode.PROVIDER_ERROR,
+            ProviderErrorClassifier.forStreamError(null, "the upstream refused it"),
+        )
+        assertFalse(ProviderErrorClassifier.isTransient(ModelProviderErrorCode.RATE_LIMITED))
+        assertFalse(ProviderErrorClassifier.isTransient(ModelProviderErrorCode.QUOTA_EXHAUSTED))
+    }
+
     // --- retry eligibility --------------------------------------------------
 
     @Test
