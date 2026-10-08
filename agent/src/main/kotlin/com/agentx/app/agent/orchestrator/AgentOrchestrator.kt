@@ -645,6 +645,14 @@ class DefaultAgentOrchestrator(
                         agent.run(request, childConfig, childPermissionFilter(sink), onCancelled)
                     }
                 }
+            } catch (cancelled: CancellationException) {
+                // The run was stopped while this specialist was working. The child has
+                // not finished and has not failed — it was cancelled — so it is recorded
+                // as cancelled instead of being left behind as a running specialist, and
+                // the cancellation still travels up to end the parent run.
+                sessions.update(request.sessionId) { it.withStatus(AgentStatus.CANCELLED, clock()) }
+                history?.markStatus(request.sessionId, AgentStatus.CANCELLED)
+                throw cancelled
             } catch (timeout: TimeoutCancellationException) {
                 // Structured and recoverable: the Main Agent is told the delegate
                 // ran out of budget and can continue, re-delegate or report it.
@@ -676,16 +684,34 @@ class DefaultAgentOrchestrator(
         if (result.status == AgentStatus.WAITING_FOR_PERMISSION && result.pendingPermission != null) {
             pausedChildren[request.sessionId] = PausedChild(request = request, config = childConfig)
         }
-        val asAgent = result.toAgentResult()
-        history?.applyTurn(request.sessionId, request.task, asAgent)
-        history?.recordSubAgent(
+        persistChildOutcome(request, result)
+        return result
+    }
+
+    /**
+     * Records a specialist's turn in its own transcript and its outcome in its
+     * parent's, once the child has actually reached a terminal state.
+     *
+     * A specialist that merely parked for permission has neither finished nor
+     * failed — the delegation policy and the loop both treat that pause as a pause —
+     * so recording it as a failed delegation would leave the parent's transcript
+     * claiming a specialist failed while the same specialist later completed. The
+     * record is therefore written when the child ends: straight away for a child that
+     * ends live, and when a resumed child ends. A re-park writes nothing.
+     */
+    private fun persistChildOutcome(request: SubAgentRequest, result: SubAgentResult) {
+        val store = history ?: return
+        // The child's own session state follows every outcome, including a pause: the
+        // conversation store is what `session(childId)` and the session listing report.
+        store.applyTurn(request.sessionId, request.task, result.toAgentResult())
+        if (!result.status.isTerminal) return
+        store.recordSubAgent(
             sessionId = request.parentSessionId,
             childSessionId = request.sessionId,
             role = request.role,
             summary = result.summary,
             success = result.status == AgentStatus.COMPLETED,
         )
-        return result
     }
 
     /**
@@ -723,7 +749,11 @@ class DefaultAgentOrchestrator(
                 ),
             )
         } else {
+            // The resumed child's outcome is persisted exactly like a child that ended
+            // live: only now has this specialist actually finished, so this is where its
+            // turn and its parent-visible result are recorded.
             resumeChild(childAgent, child, delegated, sessionId, approved, sink)
+                .also { outcome -> persistChildOutcome(child.request, outcome) }
         }
 
         // A later sibling of the specialist asked for approval too: park the parent
@@ -920,6 +950,10 @@ class DefaultAgentOrchestrator(
                 errors = listOf(error),
             )
         } catch (cancelled: CancellationException) {
+            // Same as a live child: a stopped specialist is cancelled, never left
+            // registered as one that is still running.
+            sessions.update(child.request.sessionId) { it.withStatus(AgentStatus.CANCELLED, clock()) }
+            history?.markStatus(child.request.sessionId, AgentStatus.CANCELLED)
             throw cancelled
         } catch (error: Throwable) {
             val agentError = AgentError(
@@ -1092,17 +1126,25 @@ class DefaultAgentOrchestrator(
         val hasAssistant = afterUser?.messages?.any { message ->
             message.role == MessageRole.ASSISTANT || message.role == MessageRole.ERROR
         } == true
-        if (!hasAssistant && result.summary.isNotBlank()) {
-            val role = if (result.status == AgentStatus.FAILED || result.status == AgentStatus.CANCELLED) {
-                MessageRole.ERROR
-            } else {
-                MessageRole.ASSISTANT
-            }
-            val status = if (role == MessageRole.ERROR) {
+        // A run that has not finished has no answer to store. Persisting the pause text
+        // as the assistant's reply would leave it standing in for the real answer — the
+        // transcript would say "waiting for approval" forever, because a completed resume
+        // finds an assistant message already there and never records its summary.
+        if (!hasAssistant && result.summary.isNotBlank() && result.status.isTerminal) {
+            val ended = result.status == AgentStatus.FAILED || result.status == AgentStatus.CANCELLED
+            val role = if (ended) MessageRole.ERROR else MessageRole.ASSISTANT
+            val status = if (ended) {
                 com.agentx.app.agent.conversation.MessageStatus.ERROR
             } else {
                 com.agentx.app.agent.conversation.MessageStatus.COMPLETED
             }
+            // What is stored is what this run reported. Its error list may be non-empty
+            // even though it succeeded — a tool call that failed and was recovered from,
+            // or a specialist that failed while the run carried on — and those errors
+            // describe parts of the turn, not the turn's answer. Storing the first of
+            // them would replace the reply the user was given, and the next run would
+            // rebuild its context from that error text instead of the outcome.
+            val failure = if (ended) result.errors.firstOrNull() else null
             store.append(
                 sessionId,
                 com.agentx.app.agent.conversation.ConversationMessage(
@@ -1110,8 +1152,8 @@ class DefaultAgentOrchestrator(
                     sessionId = sessionId,
                     role = role,
                     content = com.agentx.app.agent.conversation.MessageContent(
-                        text = result.errors.firstOrNull()?.message ?: result.summary,
-                        errorCode = result.errors.firstOrNull()?.code?.name,
+                        text = failure?.message ?: result.summary,
+                        errorCode = failure?.code?.name,
                     ),
                     metadata = com.agentx.app.agent.conversation.MessageMetadata(
                         status = status,
