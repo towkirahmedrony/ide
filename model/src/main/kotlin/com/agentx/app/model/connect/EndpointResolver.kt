@@ -36,7 +36,20 @@ object EndpointResolver {
         val inferredProviderType: ModelProviderType,
         val candidates: List<Candidate>,
         val requireHttps: Boolean,
-    )
+    ) {
+        /**
+         * The address a connection keeps when its endpoint *is* its API base: the
+         * matched root together with the API-base path the resolver would append for
+         * chat.
+         *
+         * [normalizedUrl] stores the bare root and leaves `/v1` to the base path,
+         * which suits a provider that owns a base path (Gemini) or a local endpoint.
+         * A provider whose catalogue declares no base path of its own stores this
+         * instead, so a typed `/v1` stays on the endpoint rather than being dropped
+         * into a path that provider never appends.
+         */
+        val providerBaseUrl: String get() = candidates.firstOrNull()?.providerBaseUrl ?: normalizedUrl
+    }
 
     sealed interface Outcome {
         data class Ok(val resolved: Resolved) : Outcome

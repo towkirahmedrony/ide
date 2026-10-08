@@ -25,6 +25,30 @@ class EndpointResolverTest {
     }
 
     @Test
+    fun `the provider base url keeps a version path the endpoint already carries`() {
+        // The shape a connection stores when its endpoint *is* its API base (the
+        // FreeLLMAPI gateway): a typed `/v1` stays on the address instead of landing
+        // in a base path that provider never appends, so the gateway is not left
+        // addressed one segment short.
+        listOf(
+            "https://gateway.example.com/v1" to "https://gateway.example.com/v1",
+            "https://gateway.example.com" to "https://gateway.example.com/v1",
+            "https://gateway.example.com/v1/" to "https://gateway.example.com/v1",
+            "https://gateway.example.com/v1/chat/completions" to "https://gateway.example.com/v1",
+        ).forEach { (raw, expected) ->
+            val resolved = ok(raw)
+            assertEquals(expected, resolved.providerBaseUrl, raw)
+            // It still describes the same URL as the bare root plus its base path.
+            val first = resolved.candidates.first()
+            assertEquals(
+                first.providerBaseUrl,
+                EndpointResolver.join(resolved.normalizedUrl, first.apiBasePath),
+                raw,
+            )
+        }
+    }
+
+    @Test
     fun `trailing slash is stripped`() {
         val resolved = ok("https://example.com/")
         assertEquals("https://example.com", resolved.origin)

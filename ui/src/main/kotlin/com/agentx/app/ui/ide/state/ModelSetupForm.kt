@@ -175,6 +175,21 @@ data class ModelSetupForm(
             is EndpointResolver.Outcome.Invalid -> null
         }
 
+    /**
+     * The address of a connection whose endpoint *is* its API base, version path
+     * included.
+     *
+     * [normalizedServerUrl] intentionally stores the bare root and keeps `/v1` in a
+     * separate base path, which is right for a provider that owns a base path or for
+     * a local endpoint. A provider that declares no base path of its own keeps its
+     * API base in the endpoint, so that is the shape such a connection has to store.
+     */
+    private val normalizedEndpointWithApiBase: String?
+        get() = when (val outcome = EndpointResolver.resolve(effectiveServerUrl)) {
+            is EndpointResolver.Outcome.Ok -> outcome.resolved.providerBaseUrl
+            is EndpointResolver.Outcome.Invalid -> null
+        }
+
     /** The reason the address is rejected, or null when it is usable. */
     val serverUrlProblem: String?
         get() = when (val outcome = EndpointResolver.resolve(effectiveServerUrl)) {
@@ -263,7 +278,17 @@ data class ModelSetupForm(
             // A fixed-address provider uses its catalogue root, and an existing
             // endpoint is preserved ahead of both.
             ModelConnectionType.API -> if (setupKind.showsEndpointField) {
-                normalizedServerUrl ?: inherit?.endpoint?.explicitUrl
+                // An endpoint-addressed provider that declares its own base path
+                // (there is none today) would have that path appended separately and
+                // so keeps the bare root; one with no declared base path keeps its
+                // API base in the endpoint, exactly as its connect request already
+                // points at it.
+                val stored = if (spec?.apiBasePath.isNullOrBlank()) {
+                    normalizedEndpointWithApiBase
+                } else {
+                    normalizedServerUrl
+                }
+                stored ?: inherit?.endpoint?.explicitUrl
             } else {
                 inherit?.endpoint?.explicitUrl?.takeIf { it.isNotBlank() } ?: spec?.rootUrl
             }
