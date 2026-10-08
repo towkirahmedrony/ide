@@ -2,6 +2,7 @@ package com.agentx.app.agent.orchestrator
 
 import com.agentx.app.agent.conversation.ConversationAssembler
 import com.agentx.app.agent.conversation.ConversationHistory
+import com.agentx.app.agent.conversation.ConversationMessage
 import com.agentx.app.agent.conversation.MessageRole
 import com.agentx.app.agent.conversation.SessionTitle
 import com.agentx.app.agent.domain.AgentError
@@ -1115,22 +1116,34 @@ class DefaultAgentOrchestrator(
 
     private fun rememberTurn(sessionId: String, prompt: String, result: AgentResult) {
         val store = history ?: return
-        val existing = store.conversation(sessionId)
-        val alreadyRecorded = existing?.messages?.any { message ->
-            message.role == MessageRole.USER && message.content.text == prompt.trim()
-        } == true
-        if (!alreadyRecorded && prompt.isNotBlank()) {
-            store.recordUser(sessionId, prompt.trim())
+        val asked = prompt.trim()
+        // This turn's user message is recorded once — but "once" is per turn, not per
+        // session. An occurrence of this prompt that no answer follows yet *is* this
+        // turn's message, already recorded: that is the resume case, where the pause
+        // recorded it and resuming must not add a second. Any earlier identical prompt
+        // has since been answered, so asking the same thing again is a new turn and is
+        // recorded as one instead of being mistaken for the previous ask.
+        val before = store.conversation(sessionId)
+        val lastAnswer = before?.messages?.indexOfLast { it.isAnswer() } ?: -1
+        val alreadyOpen = before?.messages.orEmpty()
+            .drop(lastAnswer + 1)
+            .any { message -> message.role == MessageRole.USER && message.content.text == asked }
+        if (!alreadyOpen && asked.isNotBlank()) {
+            store.recordUser(sessionId, asked)
         }
-        val afterUser = store.conversation(sessionId)
-        val hasAssistant = afterUser?.messages?.any { message ->
-            message.role == MessageRole.ASSISTANT || message.role == MessageRole.ERROR
-        } == true
+        val messages = store.conversation(sessionId)?.messages.orEmpty()
+        // Has *this* turn been answered? Asked of the session as a whole — "is there any
+        // assistant message" — the first turn's reply answers every later one: the
+        // second turn's answer, and every later failure and cancellation, would never
+        // reach the transcript. The turn is answered when an answer follows its own
+        // user message.
+        val thisTurn = messages.indexOfLast { it.role == MessageRole.USER && it.content.text == asked }
+        val answered = thisTurn >= 0 && messages.drop(thisTurn + 1).any { it.isAnswer() }
         // A run that has not finished has no answer to store. Persisting the pause text
         // as the assistant's reply would leave it standing in for the real answer — the
         // transcript would say "waiting for approval" forever, because a completed resume
         // finds an assistant message already there and never records its summary.
-        if (!hasAssistant && result.summary.isNotBlank() && result.status.isTerminal) {
+        if (!answered && result.summary.isNotBlank() && result.status.isTerminal) {
             val ended = result.status == AgentStatus.FAILED || result.status == AgentStatus.CANCELLED
             val role = if (ended) MessageRole.ERROR else MessageRole.ASSISTANT
             val status = if (ended) {
@@ -1164,6 +1177,10 @@ class DefaultAgentOrchestrator(
         }
         store.applyTurn(sessionId, prompt, result)
     }
+
+    /** A message that closes a turn: the assistant's reply, or the failure in its place. */
+    private fun ConversationMessage.isAnswer(): Boolean =
+        role == MessageRole.ASSISTANT || role == MessageRole.ERROR
 
     /**
      * Template variables available to a run's system prompt. Only non-secret,

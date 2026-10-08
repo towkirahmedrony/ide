@@ -34,7 +34,9 @@ object ConversationAssembler {
         conversation: AgentConversation,
         budget: ContextBudget = ContextBudget.DEFAULT,
     ): List<ConversationMessage> {
-        val messages = conversation.messages.filter { it.metadata.status != MessageStatus.STARTED }
+        // Only what has settled is context. A message that is still being written is a
+        // placeholder for the UI, not part of the record the next request is built from.
+        val messages = conversation.messages.filter { it.metadata.status.settled }
         if (messages.isEmpty()) return emptyList()
         val limit = budget.maxConversationMessages.coerceAtLeast(0)
         val charLimit = budget.maxConversationChars.coerceAtLeast(1)

@@ -20,6 +20,17 @@ enum class MessageStatus {
     STREAMING,
     COMPLETED,
     ERROR,
+    ;
+
+    /**
+     * Whether this message is a finished part of the record.
+     *
+     * A message that is still being written is a placeholder: it is stored so a session
+     * can render what has arrived, but it is not yet an answer, and telling the model it
+     * was one would put half a reply — or a reply that never finished — into the context
+     * the next turn is built from.
+     */
+    val settled: Boolean get() = this == COMPLETED || this == ERROR
 }
 
 /** Structured payload of one conversation message. */

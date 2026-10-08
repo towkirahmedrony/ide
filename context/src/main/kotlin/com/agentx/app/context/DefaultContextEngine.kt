@@ -375,16 +375,46 @@ class DefaultContextEngine(
     }
 
     override fun render(items: List<ContextItem>): String =
-        items.filter { it.content.isNotBlank() }.joinToString("\n\n") { item ->
+        asTranscript(items).filter { it.content.isNotBlank() }.joinToString("\n\n") { item ->
             buildString {
                 append('[').append(item.source.name)
                 item.path?.takeIf { it.isNotBlank() }?.let { append(' ').append(it) }
                 append(']')
                 if (item.truncated) append(" (truncated)")
                 append('\n')
+                // Who said it is part of the record. A transcript without the speaker is
+                // unattributed text, and the model cannot tell the user's requests from
+                // its own earlier replies.
+                if (item.source == ContextSource.CONVERSATION) {
+                    item.title?.takeIf { it.isNotBlank() }?.let { speaker -> append(speaker).append(": ") }
+                }
                 append(item.content.trim())
             }
         }
+
+    /**
+     * The order the surviving items are read in.
+     *
+     * Ranking decides *which* items make it into the request; it must not also decide
+     * the order in which the surviving conversation is read. Conversation items are
+     * ranked by recency, so rendering them in ranked order handed the model the
+     * previous dialogue backwards — the assistant's reply placed before the request it
+     * answered — and a transcript read in reverse is not a record of what happened.
+     * The conversation is therefore presented oldest-first, occupying the slots the
+     * ranking gave it. Every other source keeps its ranked order, which is the ranking's
+     * actual purpose.
+     */
+    private fun asTranscript(items: List<ContextItem>): List<ContextItem> {
+        val slots = items.indices.filter { items[it].source == ContextSource.CONVERSATION }
+        if (slots.size < 2) return items
+        val ranked = slots.map { items[it] }
+        // `recencyRank` is 0 for the newest message, so descending rank is oldest-first.
+        val transcript = ranked.sortedByDescending { it.metadata.recencyRank ?: Int.MIN_VALUE }
+        if (transcript == ranked) return items
+        return items.toMutableList().also { ordered ->
+            slots.forEachIndexed { position, slot -> ordered[slot] = transcript[position] }
+        }
+    }
 
     override fun newRunContext(sessionId: String, budget: ContextBudget): RunContext =
         DefaultRunContext(
@@ -564,8 +594,10 @@ class DefaultContextEngine(
     ): ContextItem {
         val bounded = ContextTruncator.truncate(message.content, budget.maxConversationChars)
         val body = buildString {
+            // The name is part of reading a tool result; who spoke is added when the
+            // transcript is rendered, so the item itself stays the raw message.
             if (message.role == ModelRole.TOOL && !message.name.isNullOrBlank()) {
-                append("tool ").append(message.name).append(": ")
+                append(message.name).append(": ")
             }
             append(bounded.text)
             if (message.toolCalls.isNotEmpty()) {

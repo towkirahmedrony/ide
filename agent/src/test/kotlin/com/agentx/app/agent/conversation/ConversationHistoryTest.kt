@@ -467,6 +467,36 @@ class ConversationHistoryTest {
 
     // --- session summary and task state ------------------------------------
 
+    /**
+     * The boundary between what a session renders and what a model is told: text that is
+     * still arriving is not yet an answer, and must not be sent as one.
+     */
+    @Test
+    fun `a message still being written is stored but is never sent to the model`() {
+        val history = history()
+        history.createSession(workspaceId = null, sessionId = "sess-a")
+        history.recordUser("sess-a", "Find the authentication code.")
+        history.startAssistant("sess-a", messageId = "m-2")
+        history.streamAssistant("sess-a", "m-2", "It is in Auth")
+
+        // The partial text is visible in the session so it can be rendered ...
+        val stored = history.conversation("sess-a")!!
+        assertEquals(2, stored.messages.size)
+        assertEquals(MessageStatus.STREAMING, stored.messages.last().metadata.status)
+
+        // ... but it is not context: the model is not told a turn that has not finished.
+        val whileStreaming = history.modelMessages("sess-a")
+        assertTrue(whileStreaming.none { it.role == ModelRole.ASSISTANT }, "messages=$whileStreaming")
+        assertFalse(whileStreaming.any { it.content.contains("It is in Auth") })
+        assertTrue(whileStreaming.any { it.role == ModelRole.USER })
+
+        // Once it settles it is context, as one message and not two.
+        history.completeAssistant("sess-a", "m-2", "It is in AuthRepository.kt.")
+        val settled = history.modelMessages("sess-a")
+        assertEquals(1, settled.count { it.role == ModelRole.ASSISTANT })
+        assertTrue(settled.single { it.role == ModelRole.ASSISTANT }.content.contains("AuthRepository.kt"))
+    }
+
     @Test
     fun `a turn updates the summary and the structured task state`() {
         val history = history()
