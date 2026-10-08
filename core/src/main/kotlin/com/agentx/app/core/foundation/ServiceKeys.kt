@@ -60,6 +60,13 @@ object ServiceKeys {
      */
     const val PULL_REQUEST_REPOSITORY_PROVIDER = "forge.git.pullRequestRepositoryProvider"
     const val CONTEXT_ENGINE = "forge.context.engine"
+
+    /**
+     * Resolves the open project's optional design direction (`DESIGN.md`) for the
+     * roles that create or review UI. Registered by the Context layer, consumed by
+     * the Agent layer.
+     */
+    const val CONTEXT_DESIGN = "forge.context.design"
     const val MODEL_GATEWAY = "forge.model.gateway"
     const val MODEL_MANAGER = "forge.model.manager"
 

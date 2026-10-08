@@ -26,7 +26,18 @@ class ContextModule(
         budget = budget,
     )
 
+    /**
+     * Reads the open project's optional `DESIGN.md` for the roles that build or
+     * judge UI. It is built here because reading the project root is a context-layer
+     * concern: the Agent Core only ever sees the resolved design context.
+     */
+    private val designContext = ProjectDesignContextResolver(
+        workspace = workspace,
+        engine = engine,
+    )
+
     override fun initialize(context: ModuleContext) {
         context.services.register(ServiceKeys.CONTEXT_ENGINE, engine)
+        context.services.register(ServiceKeys.CONTEXT_DESIGN, designContext)
     }
 }

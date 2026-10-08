@@ -37,6 +37,15 @@ enum class ContextSource {
 
     /** Instructions from a skill assigned to the running agent role. */
     SKILL,
+
+    /**
+     * The project's own design direction, read from its `DESIGN.md`.
+     *
+     * This is reference *data about a project*, not an instruction: it says what
+     * this product should look like and never overrides a role, a permission, a
+     * tool grant or a universal constraint.
+     */
+    DESIGN,
     ;
 
     /** Coarse band this source falls back to when a builder does not set one. */
@@ -51,6 +60,7 @@ enum class ContextSource {
             CONVERSATION -> ContextPriority.LOW
             AGENT_STATE -> ContextPriority.LOW
             SKILL -> ContextPriority.NORMAL
+            DESIGN -> ContextPriority.NORMAL
         }
 }
 
@@ -84,6 +94,9 @@ enum class ContextReason {
     PROVIDER,
     SKILL,
     MANUAL,
+
+    /** The project's own design direction file (`DESIGN.md`). */
+    PROJECT_DESIGN,
 }
 
 /** Outcome of the tool call a [ToolContextResult] describes. */
@@ -219,6 +232,15 @@ object ContextRelevance {
     const val SKILL_NORMAL = 58.0
     const val SKILL_LOW = 42.0
 
+    /**
+     * The project's own design direction.
+     *
+     * It sits in the same band as the skills: it steers how UI work is done, so it
+     * outranks the workspace descriptor and older conversation, but it must never
+     * displace the user's request, a real file read or a tool result.
+     */
+    const val PROJECT_DESIGN = 66.0
+
     const val DEFAULT = 50.0
 
     fun defaultFor(source: ContextSource): Double = when (source) {
@@ -231,6 +253,7 @@ object ContextRelevance {
         ContextSource.WORKSPACE_INFO -> WORKSPACE_INFO
         ContextSource.CONVERSATION -> CONVERSATION
         ContextSource.SKILL -> SKILL_NORMAL
+        ContextSource.DESIGN -> PROJECT_DESIGN
     }
 
     fun toolResult(status: ToolContextStatus): Double = when (status) {

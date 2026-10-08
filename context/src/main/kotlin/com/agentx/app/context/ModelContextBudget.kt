@@ -72,6 +72,7 @@ object ModelContextBudget {
     private const val TOOL_RESULT_FLOOR_CHARS = 500
     private const val CONVERSATION_FLOOR_CHARS = 1_000
     private const val SKILL_FLOOR_CHARS = 1_000
+    private const val DESIGN_FLOOR_CHARS = 800
 
     /** The arithmetic behind one budget, kept so a run can be explained after the fact. */
     data class ModelContextBudgetReport(
@@ -197,6 +198,10 @@ object ModelContextBudget {
             maxToolResultChars = shrink(base.maxToolResultChars, shrink, TOOL_RESULT_FLOOR_CHARS),
             maxConversationChars = shrink(base.maxConversationChars, shrink, CONVERSATION_FLOOR_CHARS),
             maxSkillTotalChars = shrink(base.maxSkillTotalChars, shrink, SKILL_FLOOR_CHARS),
+            // Scaled like the others so a small model still receives a usable
+            // statement of design intent instead of none: a ceiling wider than the
+            // whole window would not truncate the file, it would exclude it.
+            maxDesignChars = shrink(base.maxDesignChars, shrink, DESIGN_FLOOR_CHARS),
         )
     }
 

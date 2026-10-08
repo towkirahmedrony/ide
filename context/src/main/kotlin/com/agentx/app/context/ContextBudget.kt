@@ -46,6 +46,15 @@ data class ContextBudget(
      * effective limit is the smaller of this and [charLimit].
      */
     val maxSkillTotalChars: Int = DEFAULT_MAX_SKILL_TOTAL_CHARS,
+    /**
+     * Maximum characters kept from the project's `DESIGN.md`.
+     *
+     * The design direction is appended to the system instruction like the skill
+     * block, so it gets its own ceiling rather than borrowing the (much larger)
+     * file ceiling. A direction file is meant to be a short statement of intent;
+     * one that exceeds this is truncated, not admitted whole.
+     */
+    val maxDesignChars: Int = DEFAULT_MAX_DESIGN_CHARS,
 ) {
 
     /** Effective character ceiling, honoring both the char and token limits. */
@@ -58,6 +67,7 @@ data class ContextBudget(
         ContextSource.TOOL_RESULT -> maxToolResultChars
         ContextSource.CONVERSATION -> maxConversationChars
         ContextSource.SKILL -> maxSkillChars
+        ContextSource.DESIGN -> maxDesignChars
         ContextSource.DIRECTORY -> maxDirectoryEntries * AVERAGE_DIRECTORY_ENTRY_CHARS
         else -> Int.MAX_VALUE
     }
@@ -84,6 +94,7 @@ data class ContextBudget(
         if (maxSkillItems < 0) problems += "maxSkillItems must not be negative"
         if (maxSkillChars <= 0) problems += "maxSkillChars must be positive"
         if (maxSkillTotalChars <= 0) problems += "maxSkillTotalChars must be positive"
+        if (maxDesignChars <= 0) problems += "maxDesignChars must be positive"
         return problems
     }
 
@@ -107,6 +118,17 @@ data class ContextBudget(
          * stay a supporting instruction set rather than the bulk of the prompt.
          */
         const val DEFAULT_MAX_SKILL_TOTAL_CHARS = 12_000
+
+        /**
+         * Whole-file ceiling for the project design direction.
+         *
+         * Small on purpose. `DESIGN.md` is a statement of intent that is injected
+         * into the system instruction of every UI turn, so it competes with the
+         * work itself for the model's attention: 2,000 characters is enough for
+         * identity, audience, palette, type, density, shape and interaction
+         * principles, and short enough that it stays read.
+         */
+        const val DEFAULT_MAX_DESIGN_CHARS = 2_000
 
         /** Rough size of one rendered directory entry. */
         private const val AVERAGE_DIRECTORY_ENTRY_CHARS = 64

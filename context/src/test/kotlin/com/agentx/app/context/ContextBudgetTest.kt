@@ -18,6 +18,33 @@ class ContextBudgetTest {
         assertTrue(ContextBudget(maxFileChars = 0).validate().isNotEmpty())
         assertTrue(ContextBudget(maxConversationMessages = -1).validate().isNotEmpty())
         assertTrue(ContextBudget(maxTotalTokens = 0).validate().isNotEmpty())
+        assertTrue(ContextBudget(maxDesignChars = 0).validate().isNotEmpty())
+    }
+
+    @Test
+    fun `the design direction has its own, smaller ceiling than a file`() {
+        val budget = ContextBudget.DEFAULT
+
+        assertEquals(budget.maxDesignChars, budget.itemCharLimit(ContextSource.DESIGN))
+        // A statement of design intent is injected into the system instruction, so it
+        // is bounded like the skill block rather than like a source file.
+        assertTrue(budget.maxDesignChars < budget.maxFileChars)
+        assertEquals(ContextPriority.NORMAL, ContextSource.DESIGN.defaultPriority)
+        assertEquals(ContextRelevance.PROJECT_DESIGN, ContextRelevance.defaultFor(ContextSource.DESIGN))
+    }
+
+    @Test
+    fun `a derived model budget keeps the design ceiling usable and valid`() {
+        val plan = ModelContextBudget.forModel(
+            windowTokens = ModelContextBudget.MIN_CONTEXT_WINDOW_TOKENS,
+            base = ContextBudget.DEFAULT,
+        )
+
+        assertEquals(emptyList(), plan.budget.validate())
+        assertTrue(plan.budget.maxDesignChars > 0)
+        // Narrowing the window narrows the design ceiling too, so a small model
+        // receives a shortened direction instead of none at all.
+        assertTrue(plan.budget.maxDesignChars <= ContextBudget.DEFAULT.maxDesignChars)
     }
 
     @Test

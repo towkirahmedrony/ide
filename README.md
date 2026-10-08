@@ -205,3 +205,4 @@ There is no requirement to send source code to a third-party AI provider. AI sho
 ## Documentation
 
 - [Model Manager, Model Presets and the Colab Model Runner](docs/model-manager.md) — how a saved model is started, connected and used by the agent.
+- [Project Design Context (`DESIGN.md`)](docs/project-design-context.md) — how a project supplies its own design direction, and how it stays bounded and subordinate to the rules above it.

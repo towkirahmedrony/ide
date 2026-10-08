@@ -190,5 +190,6 @@ class WorkspaceFileContextLoader(
         ContextReason.PROVIDER -> "Context provider"
         ContextReason.SKILL -> "Skill instructions"
         ContextReason.MANUAL -> "Added by the caller"
+        ContextReason.PROJECT_DESIGN -> "Project design direction"
     }
 }

@@ -20,6 +20,7 @@ import com.agentx.app.agent.specialized.SpecializedAgentFactory
 import com.agentx.app.agent.tools.AgentToolBridge
 import com.agentx.app.context.ContextEngine
 import com.agentx.app.context.DefaultContextEngine
+import com.agentx.app.context.DesignContextResolver
 import com.agentx.app.context.RunContextFactory
 import com.agentx.app.context.SkillContextProvider
 import com.agentx.app.context.SkillContextResolver
@@ -87,6 +88,10 @@ class AgentModule(
         // context and the skill-context resolver.
         val engine = contextEngine ?: DefaultContextEngine()
         val skillContext = skills?.let { SkillContextProvider(skills, engine) }
+        // The Context layer builds and registers this resolver; the agent layer only
+        // consumes it. Absent (a test, a preview, a host without the Context module)
+        // means no design block, which is how the loop behaved before it existed.
+        val designContext = context.services.get<DesignContextResolver>(ServiceKeys.CONTEXT_DESIGN)
         val sessionStore = context.services.get<AgentSessionStore>(ServiceKeys.AGENT_SESSION_STORE)
             ?: InMemoryAgentSessionStore()
         val conversationStore = context.services.get<ConversationStore>(ServiceKeys.AGENT_CONVERSATION_STORE)
@@ -139,6 +144,7 @@ class AgentModule(
             timeouts = context.services.get<AgentTimeouts>(ServiceKeys.AGENT_TIMEOUTS) ?: timeouts,
             prompts = prompts,
             skillContext = skillContext,
+            designContext = designContext,
             sessions = sessionStore,
             healthTracker = healthTracker,
             conversations = conversationStore,
@@ -171,6 +177,8 @@ class AgentModule(
             timeouts: AgentTimeouts = AgentTimeouts.DEFAULT,
             prompts: PromptManager? = null,
             skillContext: SkillContextResolver? = null,
+            /** The open project's optional design direction; null means none. */
+            designContext: DesignContextResolver? = null,
             sessions: AgentSessionStore = InMemoryAgentSessionStore(),
             conversations: ConversationStore = InMemoryConversationStore(),
             modelResolver: AgentModelResolver = AgentModelResolver(),
@@ -201,6 +209,7 @@ class AgentModule(
                 runContexts = RunContextFactory.of(engine),
                 prompts = prompts,
                 skillContext = skillContext,
+                designContext = designContext,
                 timeouts = timeouts,
                 // The context ceiling of every run is read from the selected model's
                 // authoritative capability profile, so a specialist running a small
