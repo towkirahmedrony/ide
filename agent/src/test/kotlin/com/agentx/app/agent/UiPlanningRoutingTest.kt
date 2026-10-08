@@ -106,8 +106,8 @@ class UiPlanningRoutingTest {
     private fun finish(summary: String = "Done") =
         toolCall(AgentProtocol.FINISH_TOOL, AgentProtocol.ARG_SUMMARY to summary)
 
-    private fun scriptedMain(vararg main: ModelToolCall) = ScriptedModelProvider(
-        mapOf(AgentRole.MAIN to main.toMutableList()),
+    private fun scriptedMain(vararg calls: ModelToolCall) = ScriptedModelProvider(
+        mapOf(AgentRole.MAIN to calls.map { response("", it) }.toMutableList()),
     )
 
     /**
