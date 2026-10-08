@@ -138,11 +138,11 @@ class SilentSubstitutionPreventionTest {
     @Test
     fun `D an explicit model with unknown capability fails and never uses another model`() = runBlocking {
         val resolver = resolver(
-            explicit(AgentRole.EXPLORER, "provider-a", "conn-a", "model-a"),
+            explicit(AgentRole.CODER, "provider-a", "conn-a", "model-a"),
             mapOf("conn-a" to unknownCapability("conn-a", "provider-a", "model-a"), "conn-b" to modelB),
         )
 
-        val result = resolver.resolveForRole(AgentRole.EXPLORER, default = modelB)
+        val result = resolver.resolveForRole(AgentRole.CODER, default = modelB)
 
         assertFalse(result.eligible)
         assertEquals(ModelEligibilityState.UNKNOWN, result.eligibility.state)

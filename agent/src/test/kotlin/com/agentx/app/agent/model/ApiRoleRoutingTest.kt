@@ -10,6 +10,7 @@ import com.agentx.app.model.capability.ModelCapability
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
@@ -240,7 +241,7 @@ class ApiRoleRoutingTest {
     // --- eligibility --------------------------------------------------------
 
     @Test
-    fun `the api roles are eligible on their routed models under the unchanged capability rules`() = runBlocking {
+    fun `the api analysis roles are eligible on their routed models`() = runBlocking {
         val live = resolver(local, freeLlm, groq)
 
         val reviewer = live.resolveForRole(AgentRole.REVIEWER, active)
@@ -250,30 +251,33 @@ class ApiRoleRoutingTest {
         assertTrue(explorer.eligible, explorer.errorOrNull()?.message ?: "explorer not eligible")
         assertEquals("gemini-2.5-flash", reviewer.config.model)
         assertEquals("openai/gpt-oss-20b", explorer.config.model)
-        // Tool calling is still required and still checked; the two routed models
-        // satisfy it because they are declared per model id, not because the gateway
-        // speaks the OpenAI-compatible protocol.
-        assertTrue(reviewer.eligibility.profile.supports(ModelCapability.TOOL_CALLING))
-        assertTrue(explorer.eligibility.profile.supports(ModelCapability.TOOL_CALLING))
-        assertTrue(reviewer.eligibility.profile.supports(ModelCapability.STREAMING))
-        assertTrue(explorer.eligibility.profile.supports(ModelCapability.STREAMING))
+        // The gateway's models are not declared tool-capable, and these roles do not
+        // require it: they are eligible on text generation, which is the point of the
+        // analysis/tool split. Only text generation is asserted as present.
+        assertFalse(AgentRoleRequirements.requiresToolCalling(AgentRole.REVIEWER))
+        assertFalse(AgentRoleRequirements.requiresToolCalling(AgentRole.EXPLORER))
+        assertFalse(reviewer.eligibility.profile.supports(ModelCapability.TOOL_CALLING))
+        assertFalse(explorer.eligibility.profile.supports(ModelCapability.TOOL_CALLING))
+        assertTrue(reviewer.eligibility.profile.supports(ModelCapability.TEXT_GENERATION))
+        assertTrue(explorer.eligibility.profile.supports(ModelCapability.TEXT_GENERATION))
     }
 
     @Test
     fun `an undeclared gateway model is not assumed tool capable`() = runBlocking {
         // A model only the gateway lists is UNKNOWN for tool calling, so it cannot
-        // fill an agent role: nothing is claimed from the wire protocol.
+        // fill a role that genuinely needs tools: nothing is claimed from the wire
+        // protocol. A CODER requires tool calling, so it is rejected.
         val unknown = connection(AgentModelProviders.FREELMAPI, "some-new-gateway-model")
         val preferences = AgentModelPreferences.DEFAULT.with(
-            AgentRole.EXPLORER,
+            AgentRole.CODER,
             RoleModelPreference(AgentModelProviders.FREELMAPI, "some-new-gateway-model"),
         )
         val result = AgentModelResolver(
             preferences = preferences,
             connections = { mapOf(unknown.connectionId to unknown) },
-        ).resolveForRole(AgentRole.EXPLORER, active)
+        ).resolveForRole(AgentRole.CODER, active)
 
-        assertTrue(!result.eligible)
+        assertFalse(result.eligible)
         assertEquals("some-new-gateway-model", result.config.model)
     }
 }

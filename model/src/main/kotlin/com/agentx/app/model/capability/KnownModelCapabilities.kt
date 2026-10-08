@@ -34,16 +34,16 @@ object KnownModelCapabilities {
 
     /**
      * Models a FreeLLMAPI gateway serves, under its own provider identity
-     * ([ModelProviderIds.FREELMAPI]). They reuse the same underlying Gemini/Groq
-     * models and their documented capabilities, but are declared here rather than
-     * inferred from the OpenAI-compatible protocol: a FreeLLMAPI connection is
-     * never assumed tool-capable merely because it speaks OpenAI-compatible.
+     * ([ModelProviderIds.FREELMAPI]). A FreeLLMAPI connection is never assumed
+     * tool-capable, and neither is any model routed through it: the gateway speaks
+     * OpenAI-compatible but can route a request to an upstream that differs in real
+     * capability, so tool calling is left [CapabilitySupport.UNKNOWN] per model.
      *
-     * A model reached through the gateway is listed once its underlying model
-     * documents tool calling, which is what makes the API roles' assignments
-     * resolvable under the unchanged capability requirements: `gemini-2.5-flash`
-     * (Reviewer) and `openai/gpt-oss-20b` (Explorer) are both declared. Nothing is
-     * claimed merely because an id appeared in a `/models` list.
+     * A gateway model is therefore listed here for its identity and display name
+     * only, and the Reviewer/Explorer assignments stay resolvable because those
+     * roles require only text generation, not because a gateway model was assumed
+     * tool-capable. Nothing is claimed merely because an id appeared in a
+     * `/models` list.
      */
     val FREELMAPI: List<ModelCapabilityProfile> = listOf(
         remote("gemini-3.5-flash", "Gemini 3.5 Flash"),
@@ -171,16 +171,27 @@ object KnownModelCapabilities {
     )
 
     /**
-     * A model reached through FreeLLMAPI. Tool calling is declared per model id —
-     * the underlying Gemini/Groq models document it — never inherited from the
-     * OpenAI-compatible wire protocol. Vision and structured output relay through
-     * the gateway are not assumed, so they stay [CapabilitySupport.UNKNOWN].
+     * A model reached through FreeLLMAPI.
+     *
+     * Tool calling is deliberately *not* declared. The gateway speaks the
+     * OpenAI-compatible protocol and supports OpenAI-style tool calling, but it
+     * routes a request to whatever upstream provider serves the model, and those
+     * providers differ in real capability. The OpenAI-compatible wire protocol is
+     * therefore not proof, and marking every gateway model tool-capable would be
+     * exactly the provider-family assumption this layer forbids. Tool calling
+     * stays [CapabilitySupport.UNKNOWN] until a definition or an explicit
+     * per-model declaration proves it, and a role that genuinely needs tools
+     * consequently will not run on an unproven gateway model.
+     *
+     * Streaming is the one attested property: the connection is the same SSE
+     * OpenAI-compatible endpoint the runtime chats through. Vision and structured
+     * output relayed through the gateway are not assumed and stay UNKNOWN.
      */
     private fun remote(modelId: String, displayName: String): ModelCapabilityProfile = ModelCapabilityProfile(
         providerId = ModelProviderIds.FREELMAPI,
         modelId = modelId,
         displayName = displayName,
-        toolCalling = CapabilitySupport.SUPPORTED,
+        toolCalling = CapabilitySupport.UNKNOWN,
         streaming = CapabilitySupport.SUPPORTED,
         vision = CapabilitySupport.UNKNOWN,
         structuredOutput = CapabilitySupport.UNKNOWN,

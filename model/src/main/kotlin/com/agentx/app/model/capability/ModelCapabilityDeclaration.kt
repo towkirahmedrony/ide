@@ -46,9 +46,18 @@ data class ModelCapabilityDeclaration(
         ModelCapability.VISION -> vision
         ModelCapability.STRUCTURED_OUTPUT -> structuredOutput
         ModelCapability.REASONING -> reasoning
+        // Text generation is the baseline of being a model, not something a saved
+        // declaration states, so a declaration never speaks to it.
+        ModelCapability.TEXT_GENERATION -> CapabilitySupport.UNKNOWN
     }
 
-    /** A copy with [capability] stated as [support]. */
+    /**
+     * A copy with [capability] stated as [support].
+     *
+     * [ModelCapability.TEXT_GENERATION] cannot be stated: it is the baseline every
+     * runnable model has and no user statement can change it, so that case is the
+     * identity.
+     */
     fun with(capability: ModelCapability, support: CapabilitySupport): ModelCapabilityDeclaration =
         when (capability) {
             ModelCapability.TOOL_CALLING -> copy(toolCalling = support)
@@ -56,6 +65,7 @@ data class ModelCapabilityDeclaration(
             ModelCapability.VISION -> copy(vision = support)
             ModelCapability.STRUCTURED_OUTPUT -> copy(structuredOutput = support)
             ModelCapability.REASONING -> copy(reasoning = support)
+            ModelCapability.TEXT_GENERATION -> this
         }
 
     /**

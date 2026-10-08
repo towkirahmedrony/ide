@@ -109,11 +109,11 @@ class AgentModelEligibilityTest {
     fun `an unknown model for a tool enabled role is not eligible`() = runBlocking {
         // The role is explicitly assigned a model with no authoritative definition.
         val preferences = AgentModelPreferences()
-            .with(AgentRole.EXPLORER, RoleModelPreference(AgentModelProviders.GROQ, "allam-2-7b"))
+            .with(AgentRole.CODER, RoleModelPreference(AgentModelProviders.GROQ, "allam-2-7b"))
         val connections = mapOf(
             AgentModelProviders.GROQ to config(AgentModelProviders.GROQ, "allam-2-7b"),
         )
-        val result = resolver(connections, preferences = preferences).resolveForRole(AgentRole.EXPLORER, active)
+        val result = resolver(connections, preferences = preferences).resolveForRole(AgentRole.CODER, active)
 
         assertFalse(result.eligible)
         assertEquals(ModelEligibilityState.UNKNOWN, result.eligibility.state)
@@ -138,12 +138,12 @@ class AgentModelEligibilityTest {
             ),
         )
         val preferences = AgentModelPreferences()
-            .with(AgentRole.EXPLORER, RoleModelPreference(AgentModelProviders.GROQ, "allam-2-7b"))
+            .with(AgentRole.CODER, RoleModelPreference(AgentModelProviders.GROQ, "allam-2-7b"))
         val connections = mapOf(
             AgentModelProviders.GROQ to config(AgentModelProviders.GROQ, "allam-2-7b"),
         )
         val result = resolver(connections, capabilityRegistry = registry, preferences = preferences)
-            .resolveForRole(AgentRole.EXPLORER, active)
+            .resolveForRole(AgentRole.CODER, active)
 
         assertFalse(result.eligible)
         assertEquals(ModelEligibilityState.UNKNOWN, result.eligibility.state)
@@ -164,7 +164,11 @@ class AgentModelEligibilityTest {
                 capabilities = ModelCapabilities(toolCalling = false, streaming = true),
             ),
         )
-        val result = resolver(connections).resolveForRole(AgentRole.REVIEWER, active)
+        val preferences = AgentModelPreferences().with(
+            AgentRole.CODER,
+            RoleModelPreference(AgentModelProviders.FREELMAPI, AgentModelIds.FREELLMAPI_GEMINI),
+        )
+        val result = resolver(connections, preferences = preferences).resolveForRole(AgentRole.CODER, active)
 
         assertFalse(result.eligible)
         assertEquals(ModelEligibilityState.CAPABILITY_UNSUPPORTED, result.eligibility.state)
@@ -327,8 +331,12 @@ class AgentModelEligibilityTest {
             val fallback = if (AgentModelPreferences.DEFAULT[role] == null) capableDefault else active
             val result = live.resolveForRole(role, fallback)
             assertTrue(result.eligible, "role ${role.name} should resolve an eligible model")
-            assertTrue(result.eligibility.profile.supports(ModelCapability.TOOL_CALLING))
-            assertTrue(result.eligibility.profile.supports(ModelCapability.STREAMING))
+            // Only the roles that genuinely act on the workspace require the tool
+            // contract; analysis roles resolve on text generation alone.
+            if (AgentRoleRequirements.requiresToolCalling(role)) {
+                assertTrue(result.eligibility.profile.supports(ModelCapability.TOOL_CALLING), role.name)
+                assertTrue(result.eligibility.profile.supports(ModelCapability.STREAMING), role.name)
+            }
         }
     }
 }

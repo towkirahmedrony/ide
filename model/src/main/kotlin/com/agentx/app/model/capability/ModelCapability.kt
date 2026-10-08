@@ -10,6 +10,17 @@ import com.agentx.app.model.ModelCapabilities
  * or a model name.
  */
 enum class ModelCapability(val id: String) {
+    /**
+     * Ordinary text generation, the baseline every model AgentX can run has.
+     *
+     * It is deliberately not a discovered or declared capability: a model only
+     * reaches the registry after the discovery layer rejected the entries that
+     * cannot generate text, and the gateway only ever asks for text generation.
+     * It is therefore always [CapabilitySupport.SUPPORTED] (see
+     * [ModelCapabilityProfile.support]) and a role that requires only it is never
+     * blocked by an unverified tool or streaming capability.
+     */
+    TEXT_GENERATION("textGeneration"),
     TOOL_CALLING("toolCalling"),
     STREAMING("streaming"),
     VISION("vision"),
@@ -117,6 +128,10 @@ data class ModelCapabilityProfile(
         ModelCapability.VISION -> vision
         ModelCapability.STRUCTURED_OUTPUT -> structuredOutput
         ModelCapability.REASONING -> reasoning
+        // Text generation is the baseline of being a runnable model, not a claim
+        // any metadata makes. It is never UNKNOWN, so a text-only role is never
+        // rejected for a capability the model has by definition.
+        ModelCapability.TEXT_GENERATION -> CapabilitySupport.SUPPORTED
     }
 
     fun supports(capability: ModelCapability): Boolean = support(capability).isSupported

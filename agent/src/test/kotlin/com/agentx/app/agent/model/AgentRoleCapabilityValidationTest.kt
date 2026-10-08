@@ -7,9 +7,12 @@ import com.agentx.app.agent.testConfig
 import com.agentx.app.agent.testDomain
 import com.agentx.app.model.ModelCapabilities
 import com.agentx.app.model.ModelConfig
+import com.agentx.app.model.capability.CapabilitySupport
+import com.agentx.app.model.capability.InMemoryModelCapabilityRegistry
 import com.agentx.app.model.capability.ModelCapability
 import com.agentx.app.model.capability.ModelCapabilityErrors
 import com.agentx.app.model.preset.ModelProviderIds
+import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -34,12 +37,54 @@ class AgentRoleCapabilityValidationTest {
     )
 
     @Test
-    fun `every role requires tool calling and streaming`() {
-        AgentRole.entries.forEach { role ->
+    fun `only the roles that act on the workspace require tool calling`() {
+        // Action roles mutate the workspace or repository, so they genuinely need
+        // tool calling; the local Devstral roles are among them.
+        val actionRoles = setOf(
+            AgentRole.MAIN,
+            AgentRole.CODER,
+            AgentRole.DEBUGGER,
+            AgentRole.TESTER,
+            AgentRole.FAST_CODER,
+            AgentRole.DOCS,
+            AgentRole.COMMIT_PR,
+        )
+        actionRoles.forEach { role ->
             val required = AgentRoleRequirements.required(role)
             assertTrue(ModelCapability.TOOL_CALLING in required, role.name)
             assertTrue(ModelCapability.STREAMING in required, role.name)
+            assertTrue(AgentRoleRequirements.requiresToolCalling(role), role.name)
         }
+
+        // Analysis roles answer through an ordinary model response and must not be
+        // rejected for an unverified tool capability.
+        val analysisRoles = setOf(
+            AgentRole.EXPLORER,
+            AgentRole.RESEARCHER,
+            AgentRole.REVIEWER,
+            AgentRole.PLANNER,
+            AgentRole.SECURITY_REVIEWER,
+        )
+        analysisRoles.forEach { role ->
+            val required = AgentRoleRequirements.required(role)
+            assertFalse(ModelCapability.TOOL_CALLING in required, role.name)
+            assertTrue(ModelCapability.TEXT_GENERATION in required, role.name)
+            assertFalse(AgentRoleRequirements.requiresToolCalling(role), role.name)
+        }
+
+        // Every role is classified as exactly one of the two.
+        assertEquals(AgentRole.entries.size, actionRoles.size + analysisRoles.size)
+    }
+
+    @Test
+    fun `an analysis role is eligible on a remote model whose tool capability is unknown`() = runBlocking {
+        // The gateway declares no tool calling for its models. A Reviewer only needs
+        // text generation, so it still resolves.
+        val unknownTools = config(ModelProviderIds.FREELMAPI, "some-new-gateway-model")
+        val result = AgentModelResolver().resolveForRole(AgentRole.REVIEWER, unknownTools)
+
+        assertTrue(result.eligible, result.errorOrNull()?.message.orEmpty())
+        assertFalse(result.eligibility.profile.supports(ModelCapability.TOOL_CALLING))
     }
 
     @Test
@@ -53,13 +98,13 @@ class AgentRoleCapabilityValidationTest {
     @Test
     fun `an unknown model cannot be selected for a tool enabled role`() {
         val unknown = config(ModelProviderIds.GROQ, "allam-2-7b")
-        val result = resolver.validate(AgentRole.EXPLORER, unknown)
+        val result = resolver.validate(AgentRole.CODER, unknown)
         assertTrue(result.isFailure)
         val error = assertFailsWith<AgentModelResolutionException> {
-            resolver.resolveChecked(AgentRole.EXPLORER, unknown)
+            resolver.resolveChecked(AgentRole.CODER, unknown)
         }.error
         assertEquals(AgentErrorCode.MODEL_CAPABILITY_UNSUPPORTED, error.code)
-        assertEquals(AgentRole.EXPLORER, error.role)
+        assertEquals(AgentRole.CODER, error.role)
         assertTrue(error.message.contains(ModelCapabilityErrors.CODE))
         assertTrue(error.message.contains("allam-2-7b"))
         assertTrue(error.message.contains("toolCalling"))
@@ -150,13 +195,39 @@ class AgentRoleCapabilityValidationTest {
     }
 
     @Test
+    fun `capabilities are scoped to the resolved provider and model identity`() {
+        // The same model id under two provider identities is two capability records:
+        // the local Devstral definition must not make a gateway model of the same
+        // name tool-capable, and the gateway identity must not weaken the local one.
+        val registry = InMemoryModelCapabilityRegistry()
+        assertEquals(
+            CapabilitySupport.SUPPORTED,
+            registry.support(ModelProviderIds.OPENAI_COMPATIBLE, "devstral-24b", ModelCapability.TOOL_CALLING),
+        )
+        assertEquals(
+            CapabilitySupport.UNKNOWN,
+            registry.support(ModelProviderIds.FREELMAPI, "devstral-24b", ModelCapability.TOOL_CALLING),
+        )
+
+        // The local identity still satisfies a tool-requiring role; the gateway
+        // identity does not, so no capability leaked across the two connections.
+        assertTrue(
+            resolver.canSatisfy(
+                AgentRole.CODER,
+                config(ModelProviderIds.OPENAI_COMPATIBLE, "devstral-24b", baseUrl = "http://localhost:11434/v1"),
+            ),
+        )
+        assertFalse(resolver.canSatisfy(AgentRole.CODER, config(ModelProviderIds.FREELMAPI, "devstral-24b")))
+    }
+
+    @Test
     fun `an explicit capability override is required to use an otherwise unknown model`() {
         val override = config(
             ModelProviderIds.GROQ,
             "allam-2-7b",
             capabilities = ModelCapabilities(toolCalling = true, streaming = true),
         )
-        assertTrue(resolver.canSatisfy(AgentRole.REVIEWER, override))
-        assertEquals(override, resolver.resolveChecked(AgentRole.REVIEWER, override))
+        assertTrue(resolver.canSatisfy(AgentRole.CODER, override))
+        assertEquals(override, resolver.resolveChecked(AgentRole.CODER, override))
     }
 }
