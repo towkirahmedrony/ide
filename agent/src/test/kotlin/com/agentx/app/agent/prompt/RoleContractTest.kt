@@ -260,19 +260,25 @@ class RoleContractTest {
 
     // E. Coding roles receive verification requirements.
 
+    /**
+     * Prompt text is prose that gets re-wrapped, so a contract check must not depend on
+     * where a line happens to break. Compare against normalised whitespace instead.
+     */
+    private fun String.withoutLineBreaks(): String = replace(Regex("\\s+"), " ")
+
     @Test
     fun `coding roles are instructed to verify without inventing a pass`() {
         codingRoles.forEach { role ->
-            val prompt = DefaultAgentPrompts.forRole(role)
+            val prompt = DefaultAgentPrompts.forRole(role).withoutLineBreaks()
             assertTrue(prompt.contains("inspect → understand → targeted change → verify → report") || prompt.contains("Verify"), role.name)
             assertTrue(
                 prompt.contains("not verified") || prompt.contains("Never claim") || prompt.contains("unless observed"),
                 role.name,
             )
         }
-        assertTrue(DefaultAgentPrompts.CODER.contains("Never claim tests or a build passed unless"))
-        assertTrue(DefaultAgentPrompts.TESTER.contains("Never claim \"build passed\" unless"))
-        assertTrue(DefaultAgentPrompts.DEBUGGER.contains("Never claim a build or test passed unless observed"))
+        assertTrue(DefaultAgentPrompts.CODER.withoutLineBreaks().contains("Never claim tests or a build passed unless"))
+        assertTrue(DefaultAgentPrompts.TESTER.withoutLineBreaks().contains("Never claim \"build passed\" unless"))
+        assertTrue(DefaultAgentPrompts.DEBUGGER.withoutLineBreaks().contains("Never claim a build or test passed unless observed"))
     }
 
     // F. Reviewer does not receive accidental coding authority.
