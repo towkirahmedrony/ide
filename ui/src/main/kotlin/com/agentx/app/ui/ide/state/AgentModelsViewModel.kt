@@ -16,8 +16,10 @@ import com.agentx.app.model.catalog.ModelCatalogRegistry
 import com.agentx.app.model.catalog.ModelCatalogState
 import com.agentx.app.model.connect.KnownModelProviders
 import com.agentx.app.model.connect.ModelSetupKind
+import com.agentx.app.model.manager.ModelConnectionKind
 import com.agentx.app.model.manager.ModelManager
 import com.agentx.app.model.manager.ModelManagerState
+import com.agentx.app.model.manager.connectionKind
 import com.agentx.app.model.preset.ModelPreset
 import com.agentx.app.model.ratelimit.RateLimitManager
 import com.agentx.app.model.ratelimit.RateLimitSource
@@ -36,6 +38,13 @@ data class AgentModelRow(
     val message: String,
     /** True when the user explicitly assigned this, false for the built-in default. */
     val explicit: Boolean,
+    /**
+     * The execution domain this role's provider belongs to, so the screen can show
+     * the Local AI and API AI groups separately. Derived from the assigned provider
+     * identity through the same rule that classifies a saved connection, so the
+     * grouping never disagrees with how the connection is actually addressed.
+     */
+    val domain: ModelConnectionKind = ModelConnectionKind.LOCAL_CUSTOM,
     /**
      * Set when the assigned model cannot serve the role's required capabilities
      * (tool calling, streaming). Null when nothing is known to be missing, so an
@@ -203,8 +212,9 @@ class AgentModelsViewModel(
             // model it offers and the capability verdict all come from the same
             // authoritative sources the resolver uses, so Settings and the runtime cannot
             // disagree about whether an assignment can run.
+            val selection = registry.selection(role)
             val status = RoleModelEvaluation.evaluate(
-                selection = registry.selection(role),
+                selection = selection,
                 options = connectionOptions,
                 availableConnections = liveConnections,
                 capabilities = capabilities,
@@ -220,6 +230,8 @@ class AgentModelsViewModel(
                 message = status.message,
                 explicit = status.explicit,
                 capabilityNote = status.capabilityNote,
+                // Local AI vs API AI, from the assigned provider identity.
+                domain = selection.providerId.connectionKind,
             )
         }
         providerSummaries = current.associate { it.providerId to summaryFor(it) }

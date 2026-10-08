@@ -31,6 +31,7 @@ import androidx.compose.ui.unit.dp
 import com.agentx.app.agent.domain.AgentRole
 import com.agentx.app.agent.model.ProviderModelOption
 import com.agentx.app.agent.model.RoleModelState
+import com.agentx.app.model.manager.ModelConnectionKind
 import com.agentx.app.ui.ide.components.IdeCard
 import com.agentx.app.ui.ide.components.IdeDivider
 import com.agentx.app.ui.ide.components.IdeSectionLabel
@@ -49,9 +50,12 @@ import com.agentx.app.ui.theme.ForgeMuted
  * Settings → Agent Models.
  *
  * Lists the Main agent and every sub-agent with the provider and model each one
- * runs on, and lets the user reassign them independently. Availability is judged
- * from the Model Manager's live state; a role whose provider is not connected is
- * shown as not configured rather than pretending to be ready.
+ * runs on, and lets the user reassign them independently. Roles are grouped by
+ * execution domain — Local AI for the models that run on the user's own endpoint,
+ * API AI for the hosted provider connections — so which domain an agent runs in is
+ * visible without reading the provider name. Availability is judged from the Model
+ * Manager's live state; a role whose provider is not connected is shown as not
+ * configured rather than pretending to be ready.
  */
 @Composable
 fun AgentModelsScreen(
@@ -114,8 +118,19 @@ fun AgentModelsScreen(
                     }
                 }
             }
-            rows.forEach { row ->
-                AgentModelCard(row = row, onClick = { editing = row.role })
+            // Grouped by execution domain: a local role and an API role are different
+            // kinds of assignment, and the grouping is what makes that visible even
+            // when both providers happen to speak the same OpenAI-compatible protocol.
+            listOf(
+                ModelConnectionKind.LOCAL_CUSTOM to "Local AI",
+                ModelConnectionKind.API to "API AI",
+            ).forEach { (domain, label) ->
+                val group = rows.filter { it.domain == domain }
+                if (group.isEmpty()) return@forEach
+                IdeSectionLabel(label)
+                group.forEach { row ->
+                    AgentModelCard(row = row, onClick = { editing = row.role })
+                }
             }
             IdeSpacer(8)
         }

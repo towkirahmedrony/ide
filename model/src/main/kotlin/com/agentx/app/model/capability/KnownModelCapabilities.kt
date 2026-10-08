@@ -38,10 +38,17 @@ object KnownModelCapabilities {
      * models and their documented capabilities, but are declared here rather than
      * inferred from the OpenAI-compatible protocol: a FreeLLMAPI connection is
      * never assumed tool-capable merely because it speaks OpenAI-compatible.
+     *
+     * A model reached through the gateway is listed once its underlying model
+     * documents tool calling, which is what makes the API roles' assignments
+     * resolvable under the unchanged capability requirements: `gemini-2.5-flash`
+     * (Reviewer) and `openai/gpt-oss-20b` (Explorer) are both declared. Nothing is
+     * claimed merely because an id appeared in a `/models` list.
      */
     val FREELMAPI: List<ModelCapabilityProfile> = listOf(
         remote("gemini-3.5-flash", "Gemini 3.5 Flash"),
         remote("gemini-2.5-flash", "Gemini 2.5 Flash"),
+        remote("openai/gpt-oss-20b", "GPT OSS 20B"),
         remote("gemini-3-flash-preview", "Gemini 3 Flash Preview"),
         remote("openai/gpt-oss-120b", "GPT OSS 120B"),
         remote("openai/gpt-oss-20b", "GPT OSS 20B"),

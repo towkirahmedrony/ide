@@ -60,11 +60,23 @@ object AgentModelIds {
     /** The canonical local model MAIN/CODER/DEBUGGER target. */
     const val DEVSTRAL_24B = "devstral-24b"
 
-    /** Gemini, reached through the FreeLLMAPI gateway. */
-    const val FREELLMAPI_GEMINI = "gemini-3.5-flash"
+    /**
+     * Gemini Flash, reached through the FreeLLMAPI gateway.
+     *
+     * The explicit model the Reviewer runs on. It is a concrete model *id* — not a
+     * provider family and not the gateway's own default — so the completion AgentX
+     * sends names it and the gateway cannot substitute another Gemini model.
+     */
+    const val FREELLMAPI_GEMINI = "gemini-2.5-flash"
 
-    /** Groq's Llama model, reached through the FreeLLMAPI gateway. */
-    const val FREELLMAPI_GROQ = "llama-3.3-70b-versatile"
+    /**
+     * Groq's GPT-OSS 20B, reached through the FreeLLMAPI gateway.
+     *
+     * The explicit model the Explorer runs on. AgentX selects it; FreeLLMAPI's own
+     * provider-side routing may still apply, but the request already states the
+     * intended model rather than relying on the gateway's implicit default.
+     */
+    const val FREELLMAPI_GROQ = "openai/gpt-oss-20b"
 }
 
 /**
@@ -145,13 +157,17 @@ data class AgentModelPreferences(
          * connection can never move a local role onto an API model, and vice versa.
          *
          * ```
-         * MAIN       → LOCAL  → Devstral 24B (openai-compatible local)
-         * CODER      → LOCAL  → Devstral 24B (openai-compatible local)
-         * DEBUGGER   → LOCAL  → Devstral 24B (openai-compatible local)
-         * REVIEWER   → API    → FreeLLMAPI → Gemini
-         * EXPLORER   → API    → FreeLLMAPI → Groq
-         * RESEARCHER → API    → FreeLLMAPI → Gemini (configured remote model)
-         * TESTER     → API    → Groq
+         * MAIN       → LOCAL  → openai-compatible (local) → devstral-24b
+         * CODER      → LOCAL  → openai-compatible (local) → devstral-24b
+         * DEBUGGER   → LOCAL  → openai-compatible (local) → devstral-24b
+         * REVIEWER   → API    → freellmapi → gemini-2.5-flash
+         * EXPLORER   → API    → freellmapi → openai/gpt-oss-20b
+         * RESEARCHER → API    → freellmapi → the configured API model
+         * TESTER     → API    → groq → llama-3.3-70b-versatile
+         *
+         * Each API role names a concrete model id, and each role names the provider
+         * *identity* it runs on, so nothing is resolved by provider family, protocol
+         * or the order connections happen to be listed in.
          * ```
          */
         val DEFAULT: AgentModelPreferences = AgentModelPreferences(
@@ -347,8 +363,22 @@ class AgentModelResolver(
             return Selection(withModel(default, model), fromRoleMapping = true)
         }
 
-        val connection = connectionForProvider(providerId, domain)
-        if (connection != null) return Selection(withModel(connection, model), fromRoleMapping = true)
+        val candidates = connectionsForProvider(providerId, domain)
+        // Several connections of the required identity sit in the required domain and
+        // the preference names none of them. Choosing one would be routing by the
+        // order the connections happen to be listed in, so an authoritative role
+        // fails instead: the assignment stays intact and the user binds one exact
+        // connection in Settings, which is then addressed by identity. A legacy
+        // family-only preference (no domain, not explicit) keeps its documented
+        // first-match behaviour.
+        if (candidates.size > 1 && authoritative) {
+            return Selection(
+                config = null,
+                fromRoleMapping = true,
+                error = ambiguousConnectionFailure(role, preference, model, candidates.map { it.connectionId }),
+            )
+        }
+        candidates.firstOrNull()?.let { return Selection(withModel(it, model), fromRoleMapping = true) }
 
         // The provider family is not connected in the required domain. A policy
         // default may still fall back to the active model (documented compatibility);
@@ -365,13 +395,22 @@ class AgentModelResolver(
     }
 
     /**
-     * The connection a preference with no explicit identity resolves to: any
-     * connected configuration of that provider family within [domain]. Scans the
-     * values because the connection set is keyed by connection identity, not
-     * provider family. A null domain matches any domain (legacy behaviour).
+     * Every connected configuration of one provider identity within [domain]. Scans
+     * the values because the connection set is keyed by connection identity, not
+     * provider family, so two connections of one identity are two entries. A null
+     * domain matches any domain (legacy behaviour).
+     */
+    private fun connectionsForProvider(providerId: String, domain: ModelConnectionKind?): List<ModelConfig> =
+        connections().values.filter { it.providerId == providerId && matchesDomain(it, domain) }
+
+    /**
+     * The connection a preference with no explicit identity resolves to: the single
+     * connected configuration of that provider family within [domain], or the first
+     * one for a legacy family-only preference. Callers that must not route by
+     * connection order use [connectionsForProvider] and judge the count themselves.
      */
     private fun connectionForProvider(providerId: String, domain: ModelConnectionKind? = null): ModelConfig? =
-        connections().values.firstOrNull { it.providerId == providerId && matchesDomain(it, domain) }
+        connectionsForProvider(providerId, domain).firstOrNull()
 
     /** Whether [config] belongs to [domain]; a null domain matches everything. */
     private fun matchesDomain(config: ModelConfig, domain: ModelConnectionKind?): Boolean =
@@ -419,6 +458,46 @@ class AgentModelResolver(
                 requestedModel?.let { put("model", it) }
                 put("reason", "CONNECTION_NOT_CONNECTED")
                 put("cause", "MODEL_NOT_CONNECTED")
+                put("explicit", "true")
+                put("fallbackAvailable", fallbackConfigured.toString())
+            },
+        )
+    }
+
+    /**
+     * The structured failure for an authoritative assignment that matches more than
+     * one connection of its provider identity and names none of them.
+     *
+     * It is reported through the same [AgentErrorCode.MODEL_NOT_CONNECTED] a missing
+     * connection uses, because from the role's point of view the same thing happened:
+     * the exact connection it is bound to is not addressable. `reason` and
+     * `candidates` distinguish the two, so the UI can say "pick which connection"
+     * rather than "add the provider". The candidate list carries connection ids
+     * only — never an endpoint, a model or a credential.
+     */
+    private fun ambiguousConnectionFailure(
+        role: AgentRole,
+        preference: RoleModelPreference,
+        model: String?,
+        candidateConnections: List<String>,
+    ): AgentError {
+        val requestedModel = model ?: preference.model
+        val fallbackConfigured = intentionalFallback(role)
+        val candidates = candidateConnections.joinToString(",")
+        return AgentError(
+            code = AgentErrorCode.MODEL_NOT_CONNECTED,
+            message = "MODEL_NOT_CONNECTED role=${role.name} provider=${preference.providerId} " +
+                "connection=(ambiguous) model=${requestedModel ?: "(provider default)"} " +
+                "reason=CONNECTION_AMBIGUOUS candidates=$candidates fallbackAvailable=$fallbackConfigured",
+            role = role,
+            details = buildMap {
+                put("role", role.name)
+                put("provider", preference.providerId)
+                put("connection", preference.connectionId.orEmpty())
+                requestedModel?.let { put("model", it) }
+                put("reason", "CONNECTION_AMBIGUOUS")
+                put("cause", "MODEL_NOT_CONNECTED")
+                put("candidates", candidates)
                 put("explicit", "true")
                 put("fallbackAvailable", fallbackConfigured.toString())
             },
