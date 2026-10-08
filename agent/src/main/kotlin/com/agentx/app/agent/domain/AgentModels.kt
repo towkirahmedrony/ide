@@ -21,8 +21,19 @@ data class AgentDefinition(
         require(maxSteps > 0) { "maxSteps must be positive" }
     }
 
+    /**
+     * Runtime ceiling for this definition.
+     *
+     * [isReadOnly] forbids workspace mutation; it does not strip a non-mutating
+     * [PermissionLevel.NETWORK] ceiling. Collapsing NETWORK to READ_ONLY is what
+     * previously removed the researcher's web tools at runtime.
+     */
     val effectivePermission: PermissionLevel
-        get() = if (isReadOnly) PermissionLevel.READ_ONLY else permissionLevel
+        get() = when {
+            !isReadOnly -> permissionLevel
+            permissionLevel == PermissionLevel.NETWORK -> PermissionLevel.NETWORK
+            else -> PermissionLevel.READ_ONLY
+        }
 }
 
 data class AgentTask(

@@ -176,6 +176,8 @@ class SpecializedExecutionAuditTest {
         val toolResult = toolResultOf(second)
         assertEquals("call-delegate_to_agent", toolResult.toolCallId)
         assertTrue(toolResult.content.contains("status=COMPLETED"), toolResult.content)
+        assertTrue(toolResult.content.contains("interpretation="), toolResult.content)
+        assertTrue(toolResult.content.contains("evidence"), toolResult.content)
         assertTrue(toolResult.content.contains("Login lives in Auth.kt"), toolResult.content)
         assertTrue(toolResult.content.contains("session is held in memory"), toolResult.content)
 
@@ -274,6 +276,7 @@ class SpecializedExecutionAuditTest {
         // The result MAIN received says FAILED, carries the reason, and never claims success.
         val toolResult = toolResultOf(mainRequests(provider.requests)[1])
         assertTrue(toolResult.content.contains("status=FAILED"), toolResult.content)
+        assertTrue(toolResult.content.contains("not a successful finding"), toolResult.content)
         assertTrue(toolResult.content.contains("Rate limit exceeded"), toolResult.content)
         assertFalse(toolResult.content.contains("status=COMPLETED"), toolResult.content)
         // The partial stream is not offered as the specialist's answer.

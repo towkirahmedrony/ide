@@ -157,7 +157,11 @@ class AgentRoleExpansionTest {
         readOnlyRoles.forEach { role ->
             val definition = AgentCatalog.definition(role)
             assertTrue(definition.isReadOnly, role.name)
-            assertEquals(PermissionLevel.READ_ONLY, definition.effectivePermission, role.name)
+            if (role == AgentRole.RESEARCHER) {
+                assertEquals(PermissionLevel.NETWORK, definition.effectivePermission, role.name)
+            } else {
+                assertEquals(PermissionLevel.READ_ONLY, definition.effectivePermission, role.name)
+            }
             assertFalse(WriteFileTool.NAME in definition.allowedTools, role.name)
             val allowed = bridge.filterAllowed(registry.names(), definition.effectivePermission)
             assertFalse("write_file" in allowed, role.name)

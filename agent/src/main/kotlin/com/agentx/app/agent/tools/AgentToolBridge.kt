@@ -148,8 +148,10 @@ class AgentToolBridge(
         name = AgentProtocol.DELEGATE_TOOL,
         description = "Delegate a focused sub-task to a specialized agent. Sequential only: wait for " +
             "the result before continuing. Handle simple, single-step tasks yourself instead of " +
-            "delegating. Pass only the scoped context the specialist needs — never the whole " +
-            "repository or conversation. Delegations are bounded (max depth ${com.agentx.app.agent.delegation.DelegationPolicy.MAX_DEPTH}, " +
+            "delegating. The specialist result is evidence, not automatic truth; FAILED, CANCELLED, " +
+            "incomplete, and permission-denied outcomes are not successful findings. Pass only the " +
+            "scoped context the specialist needs — never the whole repository or conversation. " +
+            "Delegations are bounded (max depth ${com.agentx.app.agent.delegation.DelegationPolicy.MAX_DEPTH}, " +
             "max ${com.agentx.app.agent.delegation.DelegationPolicy.MAX_TOTAL_SPECIALISTS} total, " +
             "max ${com.agentx.app.agent.delegation.DelegationPolicy.MAX_REPEATS_PER_ROLE} per role); " +
             "re-delegating a task a role already completed is rejected.",
@@ -163,19 +165,22 @@ class AgentToolBridge(
             ModelToolParameter(
                 name = AgentProtocol.ARG_TASK,
                 type = ModelToolParameterType.STRING,
-                description = "Concrete work the sub-agent should perform.",
+                description = "Exact work the specialist must perform. Include the target files, " +
+                    "symbols, or failure when known. Never a vague request such as 'analyze this'.",
                 required = true,
             ),
             ModelToolParameter(
                 name = AgentProtocol.ARG_OBJECTIVE,
                 type = ModelToolParameterType.STRING,
-                description = "What a successful result looks like.",
+                description = "What a successful specialist result looks like: the expected " +
+                    "finding, change, plan, or verification.",
                 required = true,
             ),
             ModelToolParameter(
                 name = AgentProtocol.ARG_CONTEXT,
                 type = ModelToolParameterType.STRING,
-                description = "Scoped context the sub-agent needs; keep it small.",
+                description = "Scoped context the specialist needs: relevant paths, constraints, " +
+                    "and prior findings. Keep it small; never dump the whole repository.",
                 required = false,
             ),
             ModelToolParameter(
@@ -195,7 +200,8 @@ class AgentToolBridge(
 
     private fun finishSpec(): ModelToolSpec = ModelToolSpec(
         name = AgentProtocol.FINISH_TOOL,
-        description = "Complete the current agent turn with a structured result.",
+        description = "Complete the current agent turn with a structured result. " +
+            "Do not claim verification, a build, or a test pass that was not observed.",
         parameters = listOf(
             ModelToolParameter(
                 name = AgentProtocol.ARG_SUMMARY,

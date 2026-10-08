@@ -70,11 +70,14 @@ enum class PermissionLevel {
         NETWORK -> setOf(
             ToolCapability.READ_ONLY,
             ToolCapability.NETWORK,
+            ToolCapability.FILESYSTEM,
         )
         GIT_WRITE -> setOf(
             ToolCapability.READ_ONLY,
             ToolCapability.GIT,
             ToolCapability.MUTATING,
+            ToolCapability.NETWORK,
+            ToolCapability.FILESYSTEM,
         )
     }
 
@@ -82,7 +85,16 @@ enum class PermissionLevel {
         if (ToolCapability.CREDENTIALS in capabilities) return false
         if (capabilities.isEmpty()) return true
         val allowed = allowedCapabilities() + ToolCapability.USER_INTERACTION
-        return capabilities.all { it in allowed }
+        if (!capabilities.all { it in allowed }) return false
+        // Git write may inspect files and mutate git remotes, but it must not
+        // mutate the workspace filesystem (that is WORKSPACE_WRITE / shell).
+        if (this == GIT_WRITE &&
+            ToolCapability.MUTATING in capabilities &&
+            ToolCapability.FILESYSTEM in capabilities
+        ) {
+            return false
+        }
+        return true
     }
 
     fun isAtMost(other: PermissionLevel): Boolean = rank() <= other.rank()

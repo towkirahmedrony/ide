@@ -1404,11 +1404,25 @@ class AgentLoop(
 
     private fun renderSubAgentResult(result: SubAgentResult): String = buildString {
         append("status=${result.status}\n")
+        append("interpretation=").append(interpretationOf(result.status)).append('\n')
         append("summary=${result.summary}\n")
         if (result.findings.isNotEmpty()) append("findings:\n").append(result.findings.joinToString("\n")).append('\n')
         if (result.filesInspected.isNotEmpty()) append("filesInspected=").append(result.filesInspected.joinToString(",")).append('\n')
         if (result.filesChanged.isNotEmpty()) append("filesChanged=").append(result.filesChanged.joinToString(",")).append('\n')
         if (result.errors.isNotEmpty()) append("errors=").append(result.errors.joinToString { it.message }).append('\n')
+    }
+
+    /**
+     * How Main must read a specialist [status]. Completed work is still evidence,
+     * not truth; every non-completed status is explicitly not a successful finding.
+     */
+    private fun interpretationOf(status: AgentStatus): String = when (status) {
+        AgentStatus.COMPLETED -> "specialist finished; treat as evidence, not automatic truth"
+        AgentStatus.FAILED -> "failure; not a successful finding"
+        AgentStatus.CANCELLED -> "cancelled; not a successful finding"
+        AgentStatus.MAX_STEPS_REACHED -> "incomplete; not a successful finding"
+        AgentStatus.WAITING_FOR_PERMISSION -> "permission pause; not a completed finding"
+        else -> "not a successful finding"
     }
 
     private fun toolTimeout(toolName: String): Long {
@@ -1886,6 +1900,10 @@ class AgentLoop(
         append("\nUse the tool-calling interface. Never write tool-call JSON as assistant text.")
         if (request.definition.role == AgentRole.MAIN) {
             append("\nDelegate at most one sub-agent per turn and wait for its result.")
+            append("\nA specialist result is evidence for you to judge, not automatic truth.")
+            append("\nCOMPLETED means the specialist finished; FAILED, CANCELLED, MAX_STEPS_REACHED,")
+            append(" permission denial, and incomplete work are not successful findings.")
+            append("\nDo not treat 'could not verify' as confirmation. Inspect cited project files yourself when the final answer depends on them.")
             // A deterministic guidance line derived from the task itself, so the Main
             // Agent is nudged to handle simple work directly instead of delegating by
             // reflex. This is advisory only: it never widens or narrows tool access,
@@ -1898,6 +1916,8 @@ class AgentLoop(
                 com.agentx.app.agent.delegation.TaskComplexity.COMPLEX ->
                     append("\nThis task looks complex: decompose it and delegate focused specialists one at a time in a sensible order (understand, then implement, test, review).")
             }
+        } else {
+            append("\nYou cannot delegate. Nested delegation is not permitted.")
         }
         if (skillBlock.isNotBlank()) {
             append("\n\n# Skills\n")
