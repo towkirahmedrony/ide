@@ -9,8 +9,8 @@ import com.agentx.app.integrations.connection.ConnectionManager
 import com.agentx.app.integrations.connection.ConnectionType
 import com.agentx.app.integrations.github.CloneDestinationValidator
 import com.agentx.app.integrations.github.GitHubRepository
-import com.agentx.app.integrations.github.GitHubRepositoryCloneService
 import com.agentx.app.integrations.github.GitHubRepositoryError
+import com.agentx.app.integrations.github.GitHubRepositoryProjectCloner
 import com.agentx.app.integrations.github.GitHubRepositoryService
 import com.agentx.app.integrations.github.GitHubRepositoryVisibility
 import com.agentx.app.tools.github.DelegatingGitHubRepositoryCatalog
@@ -19,30 +19,36 @@ import com.agentx.app.tools.github.GitHubCatalogResult
 import com.agentx.app.tools.github.GitHubCloneResult
 import com.agentx.app.tools.github.GitHubRepoSummary
 import com.agentx.app.tools.github.GitHubRepositoryCatalog
+import com.agentx.app.ui.ide.data.GitHubRepoItem
+import com.agentx.app.ui.ide.data.GitHubRepoLoad
+import com.agentx.app.ui.ide.data.GitHubRepoOpen
+import com.agentx.app.ui.ide.data.GitHubRepositoryBrowser
 import com.agentx.app.workspace.WorkspaceManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
-import com.agentx.app.ui.ide.data.GitHubRepoItem
-import com.agentx.app.ui.ide.data.GitHubRepoLoad
-import com.agentx.app.ui.ide.data.GitHubRepoOpen
-import com.agentx.app.ui.ide.data.GitHubRepositoryBrowser
 
 /**
- * The agent's view of the connected GitHub account: which repositories exist,
- * and cloning one into the active project.
+ * The agent's and the repository browser's view of the connected GitHub account: which
+ * repositories exist, and opening one as the active project.
  *
- * The connection is authorized through the Connection Manager on every call, and
- * the token is only ever lent inside the GitHub services; nothing here can see
- * it. A short cache keeps paging through a large account from re-fetching.
+ * The connection is authorized through the Connection Manager on every call, and the token is
+ * only ever lent inside the GitHub services; nothing here can see it. A short cache keeps paging
+ * through a large account from re-fetching.
+ *
+ * Cloning is not reimplemented here: a repository that is not on the device yet goes through
+ * [GitHubRepositoryProjectCloner], the one place that clones into the AgentX folder and registers
+ * the clone as a project. The only thing added is reusing a clone that is already there, which
+ * the project cloner deliberately refuses (its destination must not exist).
  */
 class ConnectionGitHubRepositoryCatalog(
     private val manager: ConnectionManager,
     private val repositories: GitHubRepositoryService,
-    private val cloneService: GitHubRepositoryCloneService,
+    private val projectCloner: GitHubRepositoryProjectCloner,
     private val workspaces: WorkspaceManager,
+    /** The same AgentX project root the project cloner was given. */
     private val managedRoot: File,
     private val validator: CloneDestinationValidator = CloneDestinationValidator(),
     private val clock: () -> Long = System::currentTimeMillis,
@@ -86,9 +92,8 @@ class ConnectionGitHubRepositoryCatalog(
     ): GitHubCloneResult {
         val root = managedRoot.canonicalFile
         val target = File(root, directoryName)
-        val existed = target.exists()
 
-        val path: String = if (existed) {
+        if (target.exists()) {
             val insideRoot = target.canonicalFile.parentFile == root
             if (!insideRoot || !File(target, ".git").exists()) {
                 return GitHubCloneResult.Failure(
@@ -97,31 +102,37 @@ class ConnectionGitHubRepositoryCatalog(
                         "but is not a Git clone, so it was left untouched.",
                 )
             }
-            target.path
-        } else {
-            when (val cloned = cloneService.clone(connectionId, repo, managedRoot, branch, onProgress = {})) {
-                is ForgeResult.Success -> cloned.value
-                is ForgeResult.Failure -> {
-                    val failure = cloned.error.toFailure()
-                    return GitHubCloneResult.Failure(failure.reason, failure.message)
-                }
+            // Already on the device: open it as it is. Its branch and history are the user's.
+            return when (val opened = workspaces.open(target.path)) {
+                is ForgeResult.Success -> GitHubCloneResult.Success(
+                    fullName = repo.fullName,
+                    defaultBranch = repo.defaultBranch,
+                    alreadyCloned = true,
+                    projectName = directoryName,
+                    workspaceId = opened.value.workspace.id.value,
+                )
+
+                is ForgeResult.Failure -> GitHubCloneResult.Failure(
+                    GitHubCatalogFailure.OTHER,
+                    "The repository was found but could not be opened as the active project: " +
+                        "${opened.error.message}",
+                )
             }
         }
 
-        return when (val opened = workspaces.open(path)) {
+        return when (val cloned = projectCloner.cloneAndOpen(connectionId, repo, branch)) {
             is ForgeResult.Success -> GitHubCloneResult.Success(
                 fullName = repo.fullName,
                 defaultBranch = repo.defaultBranch,
-                alreadyCloned = existed,
+                alreadyCloned = false,
                 projectName = directoryName,
-                workspaceId = opened.value.workspace.id.value,
+                workspaceId = cloned.value.workspace.id.value,
             )
 
-            is ForgeResult.Failure -> GitHubCloneResult.Failure(
-                GitHubCatalogFailure.OTHER,
-                "The repository was ${if (existed) "found" else "cloned"} but could not be opened " +
-                    "as the active project: ${opened.error.message}",
-            )
+            is ForgeResult.Failure -> {
+                val failure = cloned.error.toFailure()
+                GitHubCloneResult.Failure(failure.reason, failure.message)
+            }
         }
     }
 
@@ -266,19 +277,18 @@ fun bindGitHubAgentTools(
     catalog: Any?,
     connectionManager: ConnectionManager?,
     repositoryService: Any?,
-    cloneService: Any?,
+    projectCloner: GitHubRepositoryProjectCloner?,
     workspaceManager: WorkspaceManager,
     managedRoot: File,
 ) {
     val holder = catalog as? DelegatingGitHubRepositoryCatalog ?: return
     val repositories = repositoryService as? GitHubRepositoryService ?: return
-    val cloner = cloneService as? GitHubRepositoryCloneService ?: return
-    if (connectionManager == null) return
+    if (connectionManager == null || projectCloner == null) return
     holder.bind(
         ConnectionGitHubRepositoryCatalog(
             manager = connectionManager,
             repositories = repositories,
-            cloneService = cloner,
+            projectCloner = projectCloner,
             workspaces = workspaceManager,
             managedRoot = managedRoot,
         ),
@@ -303,15 +313,16 @@ class CatalogGitHubRepositoryBrowser(
         )
     }
 
-    override suspend fun open(fullName: String): GitHubRepoOpen = when (val result = catalog.cloneAndOpen(fullName, null)) {
-        is GitHubCloneResult.Success -> GitHubRepoOpen.Opened(
-            fullName = result.fullName,
-            workspaceId = result.workspaceId,
-            alreadyCloned = result.alreadyCloned,
-        )
+    override suspend fun open(fullName: String): GitHubRepoOpen =
+        when (val result = catalog.cloneAndOpen(fullName, null)) {
+            is GitHubCloneResult.Success -> GitHubRepoOpen.Opened(
+                fullName = result.fullName,
+                workspaceId = result.workspaceId,
+                alreadyCloned = result.alreadyCloned,
+            )
 
-        is GitHubCloneResult.Failure -> GitHubRepoOpen.Failed(result.message)
-    }
+            is GitHubCloneResult.Failure -> GitHubRepoOpen.Failed(result.message)
+        }
 }
 
 /** The browser for the app's UI, or null when the tool catalog is not the bindable one. */
