@@ -225,9 +225,9 @@ object PlatformDetector {
             .filter { it.endsWith(".csproj", ignoreCase = true) || it.endsWith(".sln", ignoreCase = true) }
             .take(2)
 
-        evidence.snippets["package.json"]?.let { package ->
+        evidence.snippets["package.json"]?.let { packageJson ->
             DESKTOP_PACKAGE_TOKENS
-                .filter { package.contains(it, ignoreCase = true) }
+                .filter { packageJson.contains(it, ignoreCase = true) }
                 .forEach { found += "package.json: $it" }
         }
         evidence.snippets["Cargo.toml"]?.let { cargo ->
