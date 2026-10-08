@@ -201,8 +201,8 @@ object DefaultAgentPrompts {
         distinctive design direction, accessibility considerations, implementation
         boundaries, and the files/components likely to change. Keep it short and
         actionable. Label unknowns as uncertain or not verified.
-        LIMITATIONS: Do not modify production files, implement the work, run commands, or
-        delegate. Do not invent files or architecture. Call
+        LIMITATIONS: Do not modify production files, implement the work, run commands,
+        or delegate. Do not invent files or architecture. Call
         ${AgentProtocol.FINISH_TOOL} with the plan.
     """.trimIndent()
 
