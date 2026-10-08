@@ -80,7 +80,7 @@ object UbuntuProjectBindings {
         val reason = when {
             plain.isNotEmpty() ->
                 "The project path is not a readable directory from this app, so the shell is running " +
-                    "in the guest home instead. Re-pick the folder to grant access again."
+                    "in the guest home instead. Check that All files access is granted in Android Settings, then restart the terminal."
             derived.isNotEmpty() ->
                 "${shown.ifBlank { "This project folder" }} can only be reached through Android " +
                     "Storage Access Framework and is not readable as a filesystem path from this " +

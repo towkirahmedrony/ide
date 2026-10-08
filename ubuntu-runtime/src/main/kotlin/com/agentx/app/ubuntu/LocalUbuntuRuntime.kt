@@ -692,7 +692,7 @@ class LocalUbuntuRuntime(
         UbuntuProjectBindings.resolve(
             handle = projectHandle,
             displayLocation = displayLocation ?: projectHandle,
-            isDirectory = { path -> File(path).let { it.isDirectory && it.canRead() } },
+            isDirectory = ::probeProjectDirectory,
         )
 
     /** The terminal spec for an already-resolved project binding. */
@@ -744,7 +744,7 @@ class LocalUbuntuRuntime(
         val binding = UbuntuProjectBindings.resolve(
             handle = projectHostPath,
             displayLocation = projectHostPath,
-            isDirectory = { path -> File(path).let { it.isDirectory && it.canRead() } },
+            isDirectory = ::probeProjectDirectory,
         )
         val guestCwd = workingDirectory ?: binding.guestPath
         val invocation = invocationFor(binding = binding, guestCommand = command, extraEnvironment = environment)
