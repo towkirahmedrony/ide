@@ -148,7 +148,8 @@ class ProjectDesignContextTest {
         assertEquals(ProjectDesign.UI_ROLES, uiRoles.toSet())
         uiRoles.forEach { role ->
             val fixture = Fixture(mapOf("DESIGN.md" to body))
-            val context = fixture.resolver.resolve(role.toLowerCase(), ContextBudget.DEFAULT)
+            // Lower case input on purpose: role matching must not depend on case.
+            val context = fixture.resolver.resolve(role.lowercase(), ContextBudget.DEFAULT)
             assertEquals(DesignContextStatus.INCLUDED, context.status, "role $role")
             assertEquals(listOf("DESIGN.md"), fixture.fileSystem.readPaths, "role $role")
         }
