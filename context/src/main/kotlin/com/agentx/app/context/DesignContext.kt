@@ -25,6 +25,20 @@ package com.agentx.app.context
  * - **Not unbounded.** Its size is bounded by [ContextBudget.maxDesignChars], and
  *   an oversized file is truncated (and says so) rather than admitted whole.
  */
+/**
+ * The roles that can meaningfully create or judge UI.
+ *
+ * The single source of truth for both prompt-side UI layers — the project design
+ * direction and the platform profile — so the two can never disagree about who
+ * counts as a UI role. Every other role is left alone: that guidance is
+ * project-wide prose, and giving it to an agent that never touches a screen spends
+ * budget without changing what it does.
+ */
+object UiRoles {
+
+    val ALL: Set<String> = setOf("MAIN", "PLANNER", "CODER", "FAST_CODER", "REVIEWER")
+}
+
 object ProjectDesign {
 
     /** The file, relative to the project root. */
@@ -34,13 +48,11 @@ object ProjectDesign {
     const val HEADING: String = "# Project Design Context"
 
     /**
-     * The roles that can meaningfully create or judge UI.
+     * The roles that receive the direction: the ones that create or judge UI.
      *
-     * Only these receive the direction. The block is project-wide prose, so
-     * handing it to an explorer or a docs agent would spend the budget those
-     * roles need for their own work without changing what they do.
+     * Shared with the platform profile layer through [UiRoles.ALL].
      */
-    val UI_ROLES: Set<String> = setOf("MAIN", "PLANNER", "CODER", "FAST_CODER", "REVIEWER")
+    val UI_ROLES: Set<String> = UiRoles.ALL
 }
 
 /**

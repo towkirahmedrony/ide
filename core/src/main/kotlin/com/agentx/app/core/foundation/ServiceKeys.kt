@@ -67,6 +67,13 @@ object ServiceKeys {
      * the Agent layer.
      */
     const val CONTEXT_DESIGN = "forge.context.design"
+
+    /**
+     * Resolves the platform conventions for the project's detected target platform,
+     * for the roles that create or review UI. Registered by the Context layer,
+     * consumed by the Agent layer.
+     */
+    const val CONTEXT_PLATFORM = "forge.context.platform"
     const val MODEL_GATEWAY = "forge.model.gateway"
     const val MODEL_MANAGER = "forge.model.manager"
 

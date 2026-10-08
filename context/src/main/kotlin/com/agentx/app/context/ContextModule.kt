@@ -36,8 +36,20 @@ class ContextModule(
         engine = engine,
     )
 
+    /**
+     * Detects the open project's target platform and selects the matching
+     * AgentX-authored conventions. Built here for the same reason as the design
+     * context: inspecting the project is a context-layer concern, and the Agent Core
+     * only ever sees the selected profile.
+     */
+    private val platformProfile = ProjectPlatformProfileResolver(
+        workspace = workspace,
+        engine = engine,
+    )
+
     override fun initialize(context: ModuleContext) {
         context.services.register(ServiceKeys.CONTEXT_ENGINE, engine)
         context.services.register(ServiceKeys.CONTEXT_DESIGN, designContext)
+        context.services.register(ServiceKeys.CONTEXT_PLATFORM, platformProfile)
     }
 }

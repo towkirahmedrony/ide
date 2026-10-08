@@ -31,6 +31,8 @@ import com.agentx.app.context.ContextBudget
 import com.agentx.app.context.DesignContext
 import com.agentx.app.context.DesignContextResolver
 import com.agentx.app.context.ModelContextBudget
+import com.agentx.app.context.PlatformProfileContext
+import com.agentx.app.context.PlatformProfileResolver
 import com.agentx.app.context.ProjectDesign
 import com.agentx.app.context.RunContext
 import com.agentx.app.context.RunContextFactory
@@ -182,6 +184,13 @@ class AgentLoop(
      */
     private val designContext: DesignContextResolver? = null,
     /**
+     * Resolves the platform conventions for the project's detected target.
+     *
+     * Optional, like the design context: absent, undetectable or ambiguous means no
+     * platform block, which is how the loop behaved before this existed.
+     */
+    private val platformProfile: PlatformProfileResolver? = null,
+    /**
      * Central, per-operation execution budgets. A model request and a shell
      * command do not share a value: see [AgentTimeouts].
      */
@@ -227,13 +236,15 @@ class AgentLoop(
         val basePrompt = resolveBasePrompt(request)
         val skillContext = resolveSkillContext(request)
         val design = resolveDesignContext(request)
+        val platform = resolvePlatformProfile(request)
         val systemPrompt = buildSystemPrompt(
             request = request,
             basePrompt = basePrompt.text,
             skillBlock = skillContext.rendered,
+            platformBlock = platform.rendered,
             designBlock = design.rendered,
         )
-        logPromptAssembly(request, basePrompt, skillContext, design, systemPrompt)
+        logPromptAssembly(request, basePrompt, skillContext, design, platform, systemPrompt)
         val userPrompt = buildUserPrompt(request)
         // The role's own tool schemas, already scoped by authorization. They are sent
         // on every call, so they are part of the request's cost — never free.
@@ -1837,6 +1848,21 @@ class AgentLoop(
     }
 
     /**
+     * Resolves the platform conventions for this run.
+     *
+     * Resolved once per run, like the prompt, the skills and the design direction, so
+     * the system instruction stays identical across a run's model calls. The resolver
+     * already reports an undetectable or ambiguous project as a status; this guard
+     * only covers a resolver that fails outright.
+     */
+    private suspend fun resolvePlatformProfile(request: AgentLoopRequest): PlatformProfileContext {
+        val resolver = platformProfile ?: return PlatformProfileContext.NONE
+        return runCatching {
+            resolver.resolve(request.definition.role.name, request.contextBudget)
+        }.getOrDefault(PlatformProfileContext.NONE)
+    }
+
+    /**
      * Records what this run's system instruction is made of: which layer supplied
      * the prompt, how large each part is, and how every installed skill was
      * resolved (included, shortened, or withheld and why).
@@ -1891,6 +1917,7 @@ class AgentLoop(
         basePrompt: BasePrompt,
         skills: SkillContext,
         design: DesignContext,
+        platform: PlatformProfileContext,
         systemPrompt: String,
     ) {
         val fields = linkedMapOf<String, Any?>(
@@ -1903,6 +1930,7 @@ class AgentLoop(
         )
         fields.putAll(skills.diagnosticFields())
         fields.putAll(design.diagnosticFields())
+        fields.putAll(platform.diagnosticFields())
         logger.info("System prompt assembled", fields)
     }
 
@@ -1910,6 +1938,7 @@ class AgentLoop(
         request: AgentLoopRequest,
         basePrompt: String,
         skillBlock: String,
+        platformBlock: String,
         designBlock: String,
     ): String = buildString {
         append(basePrompt.trim())
@@ -1954,6 +1983,13 @@ class AgentLoop(
             append("\n\n# Skills\n")
             append("Enabled skills for this role. They are instructions, not code; never execute them.\n\n")
             append(skillBlock.trim())
+        }
+        if (platformBlock.isNotBlank()) {
+            // Read in order of decreasing generality: universal constraints (skills),
+            // then how this platform is normally built, then what this particular
+            // project should look like. The block carries its own heading and its own
+            // precedence note, so Agent Core stays unaware of individual platforms.
+            append("\n\n").append(platformBlock.trim())
         }
         if (designBlock.isNotBlank()) {
             // The project's own direction is reference data about the product, so it is

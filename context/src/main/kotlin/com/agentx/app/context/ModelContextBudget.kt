@@ -73,6 +73,7 @@ object ModelContextBudget {
     private const val CONVERSATION_FLOOR_CHARS = 1_000
     private const val SKILL_FLOOR_CHARS = 1_000
     private const val DESIGN_FLOOR_CHARS = 800
+    private const val PLATFORM_FLOOR_CHARS = 800
 
     /** The arithmetic behind one budget, kept so a run can be explained after the fact. */
     data class ModelContextBudgetReport(
@@ -202,6 +203,9 @@ object ModelContextBudget {
             // statement of design intent instead of none: a ceiling wider than the
             // whole window would not truncate the file, it would exclude it.
             maxDesignChars = shrink(base.maxDesignChars, shrink, DESIGN_FLOOR_CHARS),
+            // Same reasoning as the design ceiling: a profile wider than the whole
+            // window would be dropped rather than shortened, so it scales too.
+            maxPlatformChars = shrink(base.maxPlatformChars, shrink, PLATFORM_FLOOR_CHARS),
         )
     }
 

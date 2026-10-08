@@ -46,6 +46,15 @@ enum class ContextSource {
      * tool grant or a universal constraint.
      */
     DESIGN,
+
+    /**
+     * The AgentX-authored conventions for the platform the project targets.
+     *
+     * Chosen deterministically from the project's own files, but never *supplied*
+     * by them: the guidance text is compiled in, and the platform's own design
+     * direction outranks it.
+     */
+    PLATFORM,
     ;
 
     /** Coarse band this source falls back to when a builder does not set one. */
@@ -61,6 +70,7 @@ enum class ContextSource {
             AGENT_STATE -> ContextPriority.LOW
             SKILL -> ContextPriority.NORMAL
             DESIGN -> ContextPriority.NORMAL
+            PLATFORM -> ContextPriority.NORMAL
         }
 }
 
@@ -97,6 +107,9 @@ enum class ContextReason {
 
     /** The project's own design direction file (`DESIGN.md`). */
     PROJECT_DESIGN,
+
+    /** Platform conventions chosen for the project's detected target platform. */
+    PLATFORM_PROFILE,
 }
 
 /** Outcome of the tool call a [ToolContextResult] describes. */
@@ -241,6 +254,15 @@ object ContextRelevance {
      */
     const val PROJECT_DESIGN = 66.0
 
+    /**
+     * Platform conventions for the detected target.
+     *
+     * Slightly below the project's own design direction: the platform says how
+     * this kind of project is usually built, while the project says how this one
+     * is meant to look, so the more specific input wins a tie.
+     */
+    const val PLATFORM_PROFILE = 64.0
+
     const val DEFAULT = 50.0
 
     fun defaultFor(source: ContextSource): Double = when (source) {
@@ -254,6 +276,7 @@ object ContextRelevance {
         ContextSource.CONVERSATION -> CONVERSATION
         ContextSource.SKILL -> SKILL_NORMAL
         ContextSource.DESIGN -> PROJECT_DESIGN
+        ContextSource.PLATFORM -> PLATFORM_PROFILE
     }
 
     fun toolResult(status: ToolContextStatus): Double = when (status) {

@@ -191,5 +191,6 @@ class WorkspaceFileContextLoader(
         ContextReason.SKILL -> "Skill instructions"
         ContextReason.MANUAL -> "Added by the caller"
         ContextReason.PROJECT_DESIGN -> "Project design direction"
+        ContextReason.PLATFORM_PROFILE -> "Platform conventions"
     }
 }

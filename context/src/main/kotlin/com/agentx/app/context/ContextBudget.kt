@@ -55,6 +55,15 @@ data class ContextBudget(
      * one that exceeds this is truncated, not admitted whole.
      */
     val maxDesignChars: Int = DEFAULT_MAX_DESIGN_CHARS,
+    /**
+     * Maximum characters kept from a platform profile block.
+     *
+     * Like the design direction, a platform profile goes into the system
+     * instruction, so it is bounded by its own small ceiling rather than by a file
+     * ceiling. A profile is a page of conventions, not a manual: one that exceeds
+     * this is truncated, and one that cannot fit the request at all is omitted.
+     */
+    val maxPlatformChars: Int = DEFAULT_MAX_PLATFORM_CHARS,
 ) {
 
     /** Effective character ceiling, honoring both the char and token limits. */
@@ -68,6 +77,7 @@ data class ContextBudget(
         ContextSource.CONVERSATION -> maxConversationChars
         ContextSource.SKILL -> maxSkillChars
         ContextSource.DESIGN -> maxDesignChars
+        ContextSource.PLATFORM -> maxPlatformChars
         ContextSource.DIRECTORY -> maxDirectoryEntries * AVERAGE_DIRECTORY_ENTRY_CHARS
         else -> Int.MAX_VALUE
     }
@@ -95,6 +105,7 @@ data class ContextBudget(
         if (maxSkillChars <= 0) problems += "maxSkillChars must be positive"
         if (maxSkillTotalChars <= 0) problems += "maxSkillTotalChars must be positive"
         if (maxDesignChars <= 0) problems += "maxDesignChars must be positive"
+        if (maxPlatformChars <= 0) problems += "maxPlatformChars must be positive"
         return problems
     }
 
@@ -129,6 +140,16 @@ data class ContextBudget(
          * principles, and short enough that it stays read.
          */
         const val DEFAULT_MAX_DESIGN_CHARS = 2_000
+
+        /**
+         * Whole-block ceiling for a platform profile.
+         *
+         * Sized to the shipped profiles (the largest is about 1,700 characters
+         * including its heading) with headroom for one more paragraph. It is
+         * injected into the system instruction of every UI turn, so it must stay a
+         * page rather than grow into a manual.
+         */
+        const val DEFAULT_MAX_PLATFORM_CHARS = 2_000
 
         /** Rough size of one rendered directory entry. */
         private const val AVERAGE_DIRECTORY_ENTRY_CHARS = 64

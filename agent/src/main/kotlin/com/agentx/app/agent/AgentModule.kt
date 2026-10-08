@@ -21,6 +21,7 @@ import com.agentx.app.agent.tools.AgentToolBridge
 import com.agentx.app.context.ContextEngine
 import com.agentx.app.context.DefaultContextEngine
 import com.agentx.app.context.DesignContextResolver
+import com.agentx.app.context.PlatformProfileResolver
 import com.agentx.app.context.RunContextFactory
 import com.agentx.app.context.SkillContextProvider
 import com.agentx.app.context.SkillContextResolver
@@ -92,6 +93,9 @@ class AgentModule(
         // consumes it. Absent (a test, a preview, a host without the Context module)
         // means no design block, which is how the loop behaved before it existed.
         val designContext = context.services.get<DesignContextResolver>(ServiceKeys.CONTEXT_DESIGN)
+        // Detects the project's platform and selects the matching AgentX-authored
+        // conventions. Absent means no platform block, which is the previous behaviour.
+        val platformProfile = context.services.get<PlatformProfileResolver>(ServiceKeys.CONTEXT_PLATFORM)
         val sessionStore = context.services.get<AgentSessionStore>(ServiceKeys.AGENT_SESSION_STORE)
             ?: InMemoryAgentSessionStore()
         val conversationStore = context.services.get<ConversationStore>(ServiceKeys.AGENT_CONVERSATION_STORE)
@@ -145,6 +149,7 @@ class AgentModule(
             prompts = prompts,
             skillContext = skillContext,
             designContext = designContext,
+            platformProfile = platformProfile,
             sessions = sessionStore,
             healthTracker = healthTracker,
             conversations = conversationStore,
@@ -179,6 +184,8 @@ class AgentModule(
             skillContext: SkillContextResolver? = null,
             /** The open project's optional design direction; null means none. */
             designContext: DesignContextResolver? = null,
+            /** The detected target platform's conventions; null means none. */
+            platformProfile: PlatformProfileResolver? = null,
             sessions: AgentSessionStore = InMemoryAgentSessionStore(),
             conversations: ConversationStore = InMemoryConversationStore(),
             modelResolver: AgentModelResolver = AgentModelResolver(),
@@ -210,6 +217,7 @@ class AgentModule(
                 prompts = prompts,
                 skillContext = skillContext,
                 designContext = designContext,
+                platformProfile = platformProfile,
                 timeouts = timeouts,
                 // The context ceiling of every run is read from the selected model's
                 // authoritative capability profile, so a specialist running a small
