@@ -475,9 +475,13 @@ fun interface ModelCatalogFactory {
  * OpenAI-compatible surface it does not chat on does not serve `/models`; a local
  * OpenAI-compatible runtime uses the same `/models` route, and answers 404 when it
  * has none, which is reported as "discovery unavailable" rather than as a catalog.
+ * A hosted FreeLLMAPI gateway is a separate provider identity that serves the same
+ * compatible `/models` route at its configured `<baseUrl>/models`, so its models
+ * reach the picker through the same normalization, with the gateway address taken
+ * from the connection rather than hardcoded.
  *
  * Each provider keeps its own catalog, credential and cache: adding Gemini does
- * not change what Groq or a local endpoint resolves to.
+ * not change what Groq, FreeLLMAPI or a local endpoint resolves to.
  */
 class RemoteModelCatalogFactory(
     private val transport: HttpTransport = UrlConnectionHttpTransport(),
@@ -532,6 +536,10 @@ class RemoteModelCatalogFactory(
     fun supports(providerId: String): Boolean =
         providerId == ModelProviderIds.GROQ ||
             providerId == ModelProviderIds.GEMINI ||
+            // FreeLLMAPI is a hosted provider that serves the compatible `/models`
+            // route, so its models are listed like Groq's — through its own
+            // provider identity, at the gateway address the connection configured.
+            providerId == ModelProviderIds.FREELMAPI ||
             providerId == ModelProviderIds.OPENAI_COMPATIBLE
 
     /**

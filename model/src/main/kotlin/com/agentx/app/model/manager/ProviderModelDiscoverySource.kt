@@ -17,9 +17,12 @@ import com.agentx.app.model.provider.openai.OpenAiCompatibleProvider
  * This is the same mapping [DefaultModelProviderFactory] uses to pick the provider
  * that serves chat, so a provider is never listed through a protocol it does not
  * speak: Gemini is a native API with its own model-list path and key header, while
- * Groq and a local OpenAI-compatible runtime both use the compatible `/models`
- * route. The connection is bound into the returned callable, so the provider
- * itself stays stateless and discovery never needs a second configuration.
+ * Groq, a local OpenAI-compatible runtime and a hosted FreeLLMAPI gateway all use
+ * the compatible `/models` route. FreeLLMAPI is a distinct provider identity from a
+ * user-run endpoint, but both are spoken to with the same OpenAI-compatible
+ * provider, so a FreeLLMAPI connection is listed through the very provider the
+ * runtime chats through. The connection is bound into the returned callable, so the
+ * provider itself stays stateless and discovery never needs a second configuration.
  *
  * A provider identity this build does not drive returns null, which the catalog
  * factory reports as "no catalog for this provider" rather than as an empty one.
@@ -41,6 +44,10 @@ class DefaultModelDiscoverySource(
 
         ModelProviderIds.GROQ,
         ModelProviderIds.OPENAI_COMPATIBLE,
+        // FreeLLMAPI speaks the same OpenAI-compatible `/models` route as Groq and a
+        // local runtime; it is a separate provider *identity*, not a separate
+        // protocol, so it is listed through the same provider that serves its chat.
+        ModelProviderIds.FREELMAPI,
         -> ModelDiscovery {
             OpenAiCompatibleProvider(
                 id = providerId,
