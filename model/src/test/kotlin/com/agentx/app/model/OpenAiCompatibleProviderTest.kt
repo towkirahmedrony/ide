@@ -1,5 +1,6 @@
 package com.agentx.app.model
 
+import com.agentx.app.model.discovery.ModelDiscoveryOutcome
 import com.agentx.app.model.http.HttpResponseSpec
 import com.agentx.app.model.json.JsonCodec
 import com.agentx.app.model.json.JsonObject
@@ -15,6 +16,7 @@ import com.agentx.app.model.provider.openai.OpenAiCompatibleProvider
 import java.io.IOException
 import java.net.ConnectException
 import java.net.SocketTimeoutException
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -289,6 +291,315 @@ class OpenAiCompatibleProviderTest {
         assertTrue(events.filterIsInstance<ModelStreamEvent.TextDelta>().any { it.text == "Hello from Colab" })
     }
 
+    // --- stream integrity ---------------------------------------------------
+
+    @Test
+    fun `empty and non-content chunks leave the accumulated response untouched`() {
+        val transport = FakeHttpTransport(
+            streamLines = listOf(
+                """data: {"choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}""",
+                "",
+                ": keep-alive",
+                "event: ping",
+                """data: {"choices":[{"index":0,"delta":{}}]}""",
+                "data: ",
+                """data: {"choices":[{"index":0,"delta":{"content":null}}]}""",
+                """data: {"choices":[{"index":0,"delta":{"content":"Hello"}}]}""",
+                """data: {"choices":[{"index":0,"delta":{"content":null},"finish_reason":"stop"}]}""",
+                "data: [DONE]",
+            ),
+        )
+        val events = mutableListOf<ModelStreamEvent>()
+
+        val response = runSuspend {
+            provider(transport).stream(request(openAiConfig(stream = true), ModelMessage.user("hi"))) { events += it }
+        }
+
+        assertEquals("Hello", response.content)
+        assertEquals(ModelFinishReason.STOP, response.finishReason)
+        assertEquals(listOf("Hello"), events.filterIsInstance<ModelStreamEvent.TextDelta>().map { it.text })
+    }
+
+    @Test
+    fun `a usage chunk is reported without becoming assistant content`() {
+        val transport = FakeHttpTransport(
+            streamLines = listOf(
+                """data: {"choices":[{"index":0,"delta":{"content":"Hi"}}]}""",
+                """data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}""",
+                """data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}""",
+                "data: [DONE]",
+            ),
+        )
+        val events = mutableListOf<ModelStreamEvent>()
+
+        val response = runSuspend {
+            provider(transport).stream(request(openAiConfig(stream = true), ModelMessage.user("hi"))) { events += it }
+        }
+
+        assertEquals("Hi", response.content)
+        assertEquals(4, response.usage?.totalTokens)
+        assertEquals(1, events.filterIsInstance<ModelStreamEvent.UsageReported>().size)
+        assertEquals(listOf("Hi"), events.filterIsInstance<ModelStreamEvent.TextDelta>().map { it.text })
+    }
+
+    /**
+     * A reasoning delta is a separate field, never the assistant's answer. It must not
+     * be appended to the normal content, and must not take its place.
+     */
+    @Test
+    fun `reasoning deltas do not replace the assistant content`() {
+        val transport = FakeHttpTransport(
+            streamLines = listOf(
+                """data: {"choices":[{"index":0,"delta":{"reasoning_content":"thinking hard"}}]}""",
+                """data: {"choices":[{"index":0,"delta":{"content":"Answer"}}]}""",
+                """data: {"choices":[{"index":0,"delta":{"content":null},"finish_reason":"stop"}]}""",
+                "data: [DONE]",
+            ),
+        )
+        val events = mutableListOf<ModelStreamEvent>()
+
+        val response = runSuspend {
+            provider(transport).stream(request(openAiConfig(stream = true), ModelMessage.user("hi"))) { events += it }
+        }
+
+        assertEquals("Answer", response.content)
+        assertEquals(listOf("Answer"), events.filterIsInstance<ModelStreamEvent.TextDelta>().map { it.text })
+    }
+
+    @Test
+    fun `frames after the done sentinel do not change the response`() {
+        val transport = FakeHttpTransport(
+            streamLines = listOf(
+                """data: {"choices":[{"index":0,"delta":{"content":"Hello"}}]}""",
+                "data: [DONE]",
+                """data: {"choices":[{"index":0,"delta":{"content":" and more"}}]}""",
+                "data: [DONE]",
+            ),
+        )
+        val events = mutableListOf<ModelStreamEvent>()
+
+        val response = runSuspend {
+            provider(transport).stream(request(openAiConfig(stream = true), ModelMessage.user("hi"))) { events += it }
+        }
+
+        // The response is not duplicated and nothing after the sentinel is appended.
+        assertEquals("Hello", response.content)
+        assertEquals(listOf("Hello"), events.filterIsInstance<ModelStreamEvent.TextDelta>().map { it.text })
+        assertEquals(1, events.count { it is ModelStreamEvent.Completed })
+    }
+
+    @Test
+    fun `a stream that ends on the done sentinel without a finish reason is complete`() {
+        val transport = FakeHttpTransport(
+            streamLines = listOf(
+                """data: {"choices":[{"index":0,"delta":{"content":"Hello"}}]}""",
+                "data: [DONE]",
+            ),
+        )
+
+        val response = runSuspend {
+            provider(transport).stream(request(openAiConfig(stream = true), ModelMessage.user("hi"))) { }
+        }
+
+        // `[DONE]` is the endpoint stating it finished, so this is not a cut-short
+        // stream even though no finish_reason was reported.
+        assertEquals("Hello", response.content)
+        assertNull(response.finishReason)
+    }
+
+    @Test
+    fun `a malformed event stream frame is a controlled provider error`() {
+        val transport = FakeHttpTransport(
+            streamLines = listOf(
+                """data: {"choices":[{"index":0,"delta":{"content":"Hel"}}]}""",
+                // A frame whose payload is not JSON at all.
+                """data: {"choices":[{"delta": truncated""",
+                "data: [DONE]",
+            ),
+        )
+        val events = mutableListOf<ModelStreamEvent>()
+
+        val error = assertFailsWith<ModelProviderError> {
+            runSuspend {
+                provider(transport).stream(request(openAiConfig(stream = true), ModelMessage.user("hi"))) { events += it }
+            }
+        }
+
+        assertEquals(ModelProviderErrorCode.INVALID_RESPONSE, error.code)
+        assertFalse(error.retryable)
+        // A damaged stream is failed, never completed: the caller must not be told the
+        // answer finished when only part of it arrived.
+        assertTrue(events.none { it is ModelStreamEvent.Completed })
+        assertTrue(error.message.orEmpty().isNotBlank())
+        // The malformed payload is not echoed back into the message.
+        assertFalse(error.message.orEmpty().contains("delta"))
+    }
+
+    @Test
+    fun `a cut short stream after partial output is not returned as a complete response`() {
+        val transport = FakeHttpTransport(
+            streamLines = listOf(
+                """data: {"choices":[{"index":0,"delta":{"content":"Hel"}}]}""",
+                """data: {"choices":[{"index":0,"delta":{"content":"lo"}}]}""",
+                // No finish_reason and no [DONE]: the endpoint stopped mid-answer.
+            ),
+        )
+        val events = mutableListOf<ModelStreamEvent>()
+
+        val error = assertFailsWith<ModelProviderError> {
+            runSuspend {
+                provider(transport).stream(request(openAiConfig(stream = true), ModelMessage.user("hi"))) { events += it }
+            }
+        }
+
+        assertEquals(ModelProviderErrorCode.INVALID_RESPONSE, error.code)
+        // Not retryable: the caller may already have shown what arrived, so this is not
+        // silently restarted from the beginning.
+        assertFalse(error.retryable)
+        assertTrue(events.none { it is ModelStreamEvent.Completed })
+        assertEquals(listOf("Hel", "lo"), events.filterIsInstance<ModelStreamEvent.TextDelta>().map { it.text })
+    }
+
+    @Test
+    fun `a transport failure after partial output fails instead of succeeding`() {
+        val transport = FakeHttpTransport(
+            streamLines = listOf(
+                """data: {"choices":[{"index":0,"delta":{"content":"Hel"}}]}""",
+            ),
+            streamFailure = IOException("unexpected end of stream"),
+        )
+        val events = mutableListOf<ModelStreamEvent>()
+
+        val error = assertFailsWith<ModelProviderError> {
+            runSuspend {
+                provider(transport).stream(request(openAiConfig(stream = true), ModelMessage.user("hi"))) { events += it }
+            }
+        }
+
+        assertEquals(ModelProviderErrorCode.NETWORK_ERROR, error.code)
+        assertTrue(events.none { it is ModelStreamEvent.Completed })
+        // The partial output the caller already received is not repeated by this call.
+        assertEquals(listOf("Hel"), events.filterIsInstance<ModelStreamEvent.TextDelta>().map { it.text })
+    }
+
+    @Test
+    fun `an error reported inside the stream is a classified provider failure`() {
+        val transport = FakeHttpTransport(
+            streamLines = listOf(
+                """data: {"choices":[{"index":0,"delta":{"content":"Hel"}}]}""",
+                """data: {"error":{"message":"Rate limit exceeded","type":"rate_limit_exceeded"}}""",
+            ),
+        )
+        val events = mutableListOf<ModelStreamEvent>()
+
+        val error = assertFailsWith<ModelProviderError> {
+            runSuspend {
+                provider(transport).stream(request(openAiConfig(stream = true), ModelMessage.user("hi"))) { events += it }
+            }
+        }
+
+        assertEquals(ModelProviderErrorCode.RATE_LIMITED, error.code)
+        assertEquals("Rate limit exceeded", error.message)
+        assertEquals("rate_limit_exceeded", error.providerErrorType)
+        // A rate limit is RateLimitManager's business, not the retry layer's, so this
+        // cannot become a retry loop.
+        assertFalse(error.retryable)
+        assertTrue(events.none { it is ModelStreamEvent.Completed })
+    }
+
+    @Test
+    fun `an upstream quota reported inside the stream is not a rate limit`() {
+        val transport = FakeHttpTransport(
+            streamLines = listOf(
+                """data: {"error":{"message":"You exceeded your current quota","type":"insufficient_quota"}}""",
+            ),
+        )
+
+        val error = assertFailsWith<ModelProviderError> {
+            runSuspend {
+                provider(transport).stream(request(openAiConfig(stream = true), ModelMessage.user("hi"))) { }
+            }
+        }
+
+        assertEquals(ModelProviderErrorCode.QUOTA_EXHAUSTED, error.code)
+        assertFalse(error.retryable)
+    }
+
+    @Test
+    fun `cancellation is propagated instead of being turned into a provider failure`() {
+        val transport = FakeHttpTransport(
+            streamLines = listOf(
+                """data: {"choices":[{"index":0,"delta":{"content":"Hel"}}]}""",
+            ),
+            streamFailure = CancellationException("cancelled"),
+        )
+        val events = mutableListOf<ModelStreamEvent>()
+
+        val failure = assertFailsWith<CancellationException> {
+            runSuspend {
+                provider(transport).stream(request(openAiConfig(stream = true), ModelMessage.user("hi"))) { events += it }
+            }
+        }
+
+        // Cancelling a run is not a provider fault: the cancellation is rethrown
+        // unchanged, so not even `assertFailsWith` above would have accepted a
+        // ModelProviderError here.
+        assertEquals("cancelled", failure.message)
+        assertTrue(events.none { it is ModelStreamEvent.Completed })
+        assertEquals(listOf("Hel"), events.filterIsInstance<ModelStreamEvent.TextDelta>().map { it.text })
+    }
+
+    // --- model list safety --------------------------------------------------
+
+    @Test
+    fun `the model list collapses duplicate ids and survives unreadable entries`() {
+        val transport = FakeHttpTransport(
+            response = HttpResponseSpec(
+                200,
+                """
+                {
+                  "object": "list",
+                  "data": [
+                    { "id": "gemini-2.5-flash" },
+                    { "id": "gemini-2.5-flash" },
+                    { "id": "" },
+                    { "note": "no id at all" },
+                    "not an object",
+                    { "id": "openai/gpt-oss-20b" }
+                  ]
+                }
+                """.trimIndent(),
+            ),
+        )
+
+        val outcome = runSuspend { provider(transport).discoverModels(freeLlmConfig()) }
+
+        // A settings screen must not crash on a list a gateway mangled, one id must not
+        // become two choices, and the ids that are readable are preserved verbatim.
+        assertIs<ModelDiscoveryOutcome.Discovered>(outcome)
+        assertEquals(listOf("gemini-2.5-flash", "openai/gpt-oss-20b"), outcome.models.map { it.modelId })
+        assertEquals(6, outcome.reportedCount)
+    }
+
+    @Test
+    fun `the selected model id reaches the request unchanged`() {
+        val selected = "meta-llama/llama-4-scout-17b-16e-instruct"
+        val transport = FakeHttpTransport(response = HttpResponseSpec(200, SUCCESS_RESPONSE))
+
+        runSuspend {
+            provider(transport).complete(request(freeLlmConfig(selected), ModelMessage.user("hi")))
+        }
+
+        val sent = assertNotNull(transport.lastRequest)
+        val body = requestBody(transport)
+        // The resolved model id travels verbatim: never the provider family, never a
+        // provider-family name substituted for it.
+        assertEquals(selected, body.stringOrNull("model"))
+        assertTrue(body.stringOrNull("model") != ModelProviderIds.FREELMAPI)
+        assertTrue(body.stringOrNull("model") != sent.headers["Authorization"])
+        assertEquals("Bearer fla-test-key", sent.headers["Authorization"])
+    }
+
     // --- invalid responses -------------------------------------------------
 
     @Test
@@ -487,6 +798,68 @@ class OpenAiCompatibleProviderTest {
         }
 
         assertEquals(ModelProviderErrorCode.CONNECTION_FAILED, error.code)
+    }
+
+    /**
+     * The provider is the boundary that turns a status into the shared error model.
+     * Every documented status must arrive as its own category with its status kept,
+     * rather than as a single undifferentiated "provider error".
+     */
+    @Test
+    fun `every documented http status reaches its own provider category`() {
+        val expected = mapOf(
+            400 to ModelProviderErrorCode.INVALID_REQUEST,
+            401 to ModelProviderErrorCode.AUTHENTICATION_FAILED,
+            403 to ModelProviderErrorCode.AUTHORIZATION_FAILED,
+            404 to ModelProviderErrorCode.MODEL_NOT_FOUND,
+            408 to ModelProviderErrorCode.TIMEOUT,
+            409 to ModelProviderErrorCode.INVALID_REQUEST,
+            429 to ModelProviderErrorCode.RATE_LIMITED,
+            500 to ModelProviderErrorCode.SERVER_ERROR,
+            502 to ModelProviderErrorCode.SERVER_ERROR,
+            503 to ModelProviderErrorCode.SERVICE_UNAVAILABLE,
+            504 to ModelProviderErrorCode.TIMEOUT,
+        )
+
+        expected.forEach { (status, code) ->
+            val transport = FakeHttpTransport(
+                response = HttpResponseSpec(status, """{"error":{"message":"the endpoint refused it"}}"""),
+            )
+            val error = assertFailsWith<ModelProviderError>("HTTP $status") {
+                runSuspend { provider(transport).complete(request(openAiConfig(), ModelMessage.user("hi"))) }
+            }
+
+            assertEquals(code, error.code, "HTTP $status")
+            assertEquals(status, error.httpStatus, "HTTP $status")
+            // The endpoint's own message is carried, so the user sees the reason.
+            assertEquals("the endpoint refused it", error.message)
+        }
+    }
+
+    @Test
+    fun `a streaming http failure is classified exactly like a normal one`() {
+        val expected = mapOf(
+            401 to ModelProviderErrorCode.AUTHENTICATION_FAILED,
+            429 to ModelProviderErrorCode.RATE_LIMITED,
+            503 to ModelProviderErrorCode.SERVICE_UNAVAILABLE,
+        )
+
+        expected.forEach { (status, code) ->
+            val transport = FakeHttpTransport(
+                streamResponse = HttpResponseSpec(status, """{"error":{"message":"the endpoint refused it"}}"""),
+            )
+            val events = mutableListOf<ModelStreamEvent>()
+
+            val error = assertFailsWith<ModelProviderError>("HTTP $status") {
+                runSuspend {
+                    provider(transport).stream(request(openAiConfig(stream = true), ModelMessage.user("hi"))) { events += it }
+                }
+            }
+
+            assertEquals(code, error.code, "HTTP $status")
+            assertEquals(status, error.httpStatus, "HTTP $status")
+            assertTrue(events.none { it is ModelStreamEvent.Completed }, "HTTP $status")
+        }
     }
 
     @Test

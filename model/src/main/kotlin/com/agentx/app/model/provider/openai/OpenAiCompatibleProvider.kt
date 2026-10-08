@@ -287,6 +287,25 @@ class OpenAiCompatibleProvider(
         if (accumulator.content.isEmpty() && accumulator.toolCalls().isEmpty() && !accumulator.done) {
             applyNonStreamFallback(accumulator, rawBody.toString(), request, onEvent)
         }
+        // Output arrived but the stream never said it had finished — no `[DONE]` and no
+        // finish_reason. That is a cut-short response, not a complete one: returning it
+        // as a success would present half an answer as the whole answer, and because the
+        // caller may already have shown what arrived it is failed rather than silently
+        // restarted from the beginning.
+        if (accumulator.isTruncated()) {
+            val failure = interruptedStreamError()
+            trace.failure(
+                "ERROR",
+                "stage" to "stream",
+                "provider" to id,
+                "model" to request.model,
+                "kind" to failure.code.name,
+                "contentChars" to accumulator.content.length,
+                "toolCalls" to accumulator.toolCalls().size,
+                "elapsedMs" to elapsedMillis(started),
+            )
+            throw failure
+        }
         onEvent(ModelStreamEvent.Completed(accumulator.finishReason, accumulator.usage))
         val normalized = ContentToolCallParser.normalize(
             ModelResponse(
@@ -595,6 +614,16 @@ class OpenAiCompatibleProvider(
     private fun extractErrorInfo(body: String): ProviderErrorInfo {
         val root = runCatching { JsonCodec.parse(body).objectOrNull() }.getOrNull()
             ?: return ProviderErrorInfo(null, null)
+        return errorInfo(root)
+    }
+
+    /**
+     * The message and machine-readable type of an error payload, in the shapes an
+     * OpenAI-compatible endpoint uses: `{"error":{"message":…,"type":…}}`, a bare
+     * `{"error":"…"}`, or a flat `{"message":…,"type":…}`. Nothing but those two
+     * fields is read, so an error body is never kept or echoed wholesale.
+     */
+    private fun errorInfo(root: JsonObject): ProviderErrorInfo {
         val error = root.objectOrNull("error")
         if (error != null) {
             return ProviderErrorInfo(
@@ -602,8 +631,41 @@ class OpenAiCompatibleProvider(
                 type = error.stringOrNull("type") ?: error.stringOrNull("code"),
             )
         }
+        root.stringOrNull("error")?.let { return ProviderErrorInfo(it, root.stringOrNull("type")) }
         return ProviderErrorInfo(root.stringOrNull("message"), root.stringOrNull("type"))
     }
+
+    /**
+     * A `data:` frame that is not valid JSON. The stream cannot be trusted past that
+     * point, so the failure is reported rather than the frame being skipped. Only the
+     * frame's size is stated: a malformed frame can contain anything, and echoing it
+     * could put a credential a broken endpoint leaked into a log or a message.
+     */
+    private fun malformedStreamFrame(payload: String): ModelProviderError = ModelProviderError(
+        code = ModelProviderErrorCode.INVALID_RESPONSE,
+        message = "The model endpoint sent a malformed event stream frame (${payload.length} bytes)",
+        providerId = id,
+    )
+
+    /** A failure the endpoint reported inside the stream instead of as an HTTP status. */
+    private fun streamErrorFrame(json: JsonObject): ModelProviderError {
+        val info = errorInfo(json)
+        val code = ProviderErrorClassifier.forStreamError(info.type, info.message)
+        return ModelProviderError(
+            code = code,
+            message = info.message ?: "The model endpoint reported an error while streaming",
+            providerId = id,
+            providerErrorType = info.type,
+            retryable = ProviderErrorClassifier.isTransient(code),
+        )
+    }
+
+    /** The stream stopped producing without ever reporting that it had finished. */
+    private fun interruptedStreamError(): ModelProviderError = ModelProviderError(
+        code = ModelProviderErrorCode.INVALID_RESPONSE,
+        message = "The model endpoint's stream ended before the response finished",
+        providerId = id,
+    )
 
     private fun timeoutError(error: Throwable): ModelProviderError = ModelProviderError(
         code = ModelProviderErrorCode.TIMEOUT,
@@ -776,20 +838,43 @@ class OpenAiCompatibleProvider(
         else -> ModelFinishReason.UNKNOWN
     }
 
+    /**
+     * Consumes one line of the OpenAI-compatible event stream.
+     *
+     * The contract is enforced rather than guessed at. `data: {...}` carries one
+     * chunk, `data: [DONE]` ends the stream, and blank lines and `:` comments are
+     * ignored. A `data:` frame that is neither — an unparseable payload, or a failure
+     * the endpoint reports in place of a chunk — is a protocol failure and is raised
+     * as a [ModelProviderError] instead of being skipped: dropping a damaged frame is
+     * exactly how a corrupted or refused stream comes to be shown as a shorter, but
+     * apparently complete, answer.
+     */
     private fun handleStreamLine(
         line: String,
         accumulator: StreamAccumulator,
         onEvent: (ModelStreamEvent) -> Unit,
     ) {
+        // `[DONE]` is terminal. A frame after it — a keep-alive, a repeated tail —
+        // belongs to no response and must not add to the accumulated output.
+        if (accumulator.done) return
         val trimmed = line.trim()
         if (trimmed.isEmpty() || trimmed.startsWith(":")) return
+        // SSE also defines `event:`, `id:` and `retry:` fields; only `data:` carries a
+        // payload for this API.
         if (!trimmed.startsWith("data:")) return
         val payload = trimmed.removePrefix("data:").trim()
         if (payload == "[DONE]") {
             accumulator.done = true
             return
         }
-        val json = runCatching { JsonCodec.parse(payload).objectOrNull() }.getOrNull() ?: return
+        // A keep-alive may be an empty data frame, which carries no chunk.
+        if (payload.isEmpty()) return
+        val json = runCatching { JsonCodec.parse(payload).objectOrNull() }.getOrNull()
+            ?: throw malformedStreamFrame(payload)
+        // A failure reported mid-stream (an upstream quota or rate limit, say) arrives
+        // as a data frame because the HTTP status was sent long before it. It is a
+        // failure, never an empty answer.
+        if (json["error"] != null) throw streamErrorFrame(json)
         json.stringOrNull("model")?.let { accumulator.model = it }
         json.objectOrNull("usage")?.let { usage ->
             val parsed = parseUsage(usage)
@@ -832,6 +917,9 @@ class OpenAiCompatibleProvider(
         val trimmed = rawBody.trim()
         if (trimmed.isEmpty() || !trimmed.startsWith("{")) return
         val parsed = runCatching { parseCompletion(parseJson(trimmed), request) }.getOrNull() ?: return
+        // A whole JSON body is a terminated response: there is no stream left to end,
+        // so it must not be mistaken for a cut-short one.
+        accumulator.done = true
         accumulator.model = parsed.model
         accumulator.finishReason = parsed.finishReason
         accumulator.usage = parsed.usage
@@ -865,6 +953,15 @@ class OpenAiCompatibleProvider(
         fun toolCalls(): List<ModelToolCall> = toolCalls.entries
             .sortedBy { it.key }
             .mapNotNull { (_, builder) -> builder.toToolCall() }
+
+        /**
+         * Whether the response was cut short: output arrived, yet the stream never
+         * reported that it had finished — neither with `[DONE]` nor with a
+         * finish_reason. A stream that produced nothing at all is not counted here, so
+         * an endpoint that simply returned no frames keeps its previous behaviour.
+         */
+        fun isTruncated(): Boolean =
+            !done && finishReason == null && (content.isNotEmpty() || toolCalls().isNotEmpty())
     }
 
     private class ToolCallBuilder {

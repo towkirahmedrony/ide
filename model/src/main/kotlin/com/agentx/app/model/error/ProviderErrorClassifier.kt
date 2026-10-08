@@ -59,6 +59,45 @@ object ProviderErrorClassifier {
     }
 
     /**
+     * Classifies a failure a provider reported *inside* a response rather than as an
+     * HTTP status: an OpenAI-compatible event stream may carry `{"error":{…}}` in
+     * place of a chunk, because the status line was sent long before the failure.
+     *
+     * There is no status to read, so only the rules that do not depend on one apply:
+     * the provider's own machine-readable type first, then the wording it used for a
+     * spent balance or a short-term rate limit. Anything else stays [PROVIDER_ERROR],
+     * the same category a status-less failure already gets, rather than being guessed
+     * into a more specific one — this is the same rule set, not a second classifier.
+     */
+    fun forStreamError(
+        providerErrorType: String? = null,
+        message: String? = null,
+    ): ModelProviderErrorCode {
+        providerNativeCode(providerErrorType)?.let { return it }
+        val text = haystack(providerErrorType, message)
+        return when {
+            mentions(text, QUOTA_HINTS) -> ModelProviderErrorCode.QUOTA_EXHAUSTED
+            mentions(text, RATE_LIMIT_HINTS) -> ModelProviderErrorCode.RATE_LIMITED
+            else -> ModelProviderErrorCode.PROVIDER_ERROR
+        }
+    }
+
+    /**
+     * Wording that names a *short-term* refusal rather than a spent balance.
+     *
+     * Read only when the provider's own type was not machine-readable, and only to
+     * tell a rate limit from a quota: the two are recovered differently, and calling a
+     * rate limit exhausted would stop a request that only had to wait. Deliberately
+     * narrow — when the wording is not conclusive the failure stays the generic
+     * [PROVIDER_ERROR] instead of being guessed at.
+     */
+    private val RATE_LIMIT_HINTS = listOf(
+        "rate limit",
+        "rate_limit",
+        "too many requests",
+    )
+
+    /**
      * Whether a category may be retried against the same model and connection.
      *
      * Only faults that are plausibly gone by the next attempt. A rejected

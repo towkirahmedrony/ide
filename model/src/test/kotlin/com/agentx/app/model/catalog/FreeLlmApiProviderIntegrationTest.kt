@@ -1,6 +1,7 @@
 package com.agentx.app.model.catalog
 
 import com.agentx.app.core.ForgeResult
+import com.agentx.app.model.DefaultModelGateway
 import com.agentx.app.model.FakeHttpTransport
 import com.agentx.app.model.ModelConfig
 import com.agentx.app.model.ModelFinishReason
@@ -198,6 +199,53 @@ class FreeLlmApiProviderIntegrationTest {
         assertEquals("text/event-stream, application/json", request.headers["Accept"])
         val body = assertNotNull(JsonCodec.parse(assertNotNull(request.body)).objectOrNull())
         assertTrue(body.booleanOrNull("stream") == true)
+    }
+
+    // --- connection isolation -----------------------------------------------
+
+    /**
+     * The gateway and a user-run local endpoint are both OpenAI-compatible, so they
+     * share one provider family and one protocol. Routing is on the connection
+     * identity, which is exactly what must keep a FreeLLMAPI request from picking up
+     * the other connection's endpoint, model or credential.
+     */
+    @Test
+    fun `a freellmapi request can never use another openai compatible connection`() {
+        val gateway = DefaultModelGateway()
+        val gatewayTransport = FakeHttpTransport(response = HttpResponseSpec(200, SUCCESS_RESPONSE))
+        val localTransport = FakeHttpTransport(response = HttpResponseSpec(200, SUCCESS_RESPONSE))
+        gateway.registerConnection(
+            "freellmapi-gateway",
+            OpenAiCompatibleProvider(id = ModelProviderIds.FREELMAPI, transport = gatewayTransport),
+        )
+        gateway.registerConnection(
+            "local-endpoint",
+            OpenAiCompatibleProvider(id = ModelProviderIds.OPENAI_COMPATIBLE, transport = localTransport),
+        )
+
+        val response = runSuspend {
+            gateway.complete(
+                ModelRequest(
+                    config = ModelConfig(
+                        providerId = ModelProviderIds.FREELMAPI,
+                        connectionId = "freellmapi-gateway",
+                        baseUrl = GATEWAY_BASE_URL,
+                        model = "gemini-2.5-flash",
+                        apiKey = API_KEY,
+                    ),
+                    messages = listOf(ModelMessage.user("hello")),
+                ),
+            )
+        }
+
+        assertEquals(ModelProviderIds.FREELMAPI, response.providerId)
+        val sent = assertNotNull(gatewayTransport.lastRequest)
+        assertEquals("$GATEWAY_BASE_URL/chat/completions", sent.url)
+        assertEquals("Bearer $API_KEY", sent.headers["Authorization"])
+        assertEquals("gemini-2.5-flash", assertNotNull(sent.body).let { JsonCodec.parse(it).objectOrNull()?.stringOrNull("model") })
+        // The other OpenAI-compatible connection was never addressed: no endpoint, model
+        // or credential of one connection crossed into the other.
+        assertTrue(localTransport.requests.isEmpty())
     }
 
     // --- credential handling ------------------------------------------------

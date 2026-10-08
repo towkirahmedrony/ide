@@ -32,6 +32,12 @@ internal class FakeHttpTransport(
     var onExecute: (() -> Unit)? = null,
     var onStream: (() -> Unit)? = null,
     var executeHandler: ((HttpRequestSpec) -> HttpResponseSpec)? = null,
+    /**
+     * Thrown after [streamLines] have been delivered, so a stream that is cut short
+     * part-way through can be scripted exactly. Null (the default) keeps the
+     * previous behaviour.
+     */
+    var streamFailure: Throwable? = null,
 ) : HttpTransport {
 
     val requests = mutableListOf<HttpRequestSpec>()
@@ -48,6 +54,7 @@ internal class FakeHttpTransport(
         requests += request
         onStream?.invoke()
         streamLines.forEach { onLine(it) }
+        streamFailure?.let { throw it }
         return streamResponse
     }
 }
