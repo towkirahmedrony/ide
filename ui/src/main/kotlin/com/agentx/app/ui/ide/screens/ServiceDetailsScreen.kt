@@ -103,6 +103,8 @@ fun ServiceDetailsScreen(
     onClearSetup: () -> Unit = {},
     onManage: () -> Unit,
     onBrowseRepositories: (() -> Unit)? = null,
+    message: String? = null,
+    onDismissMessage: () -> Unit = {},
 ) {
     var confirmDisconnect by remember { mutableStateOf(false) }
     // The setup guide is only useful before the first connection.
@@ -185,7 +187,7 @@ fun ServiceDetailsScreen(
 
             // A settled device attempt that did not connect says why, so the user can
             // tell "authorize again" from "try again later".
-            if (deviceAuthorization == null &&
+            if (deviceAuthorization == null && message == null &&
                 deviceState.isTerminal &&
                 deviceState != DeviceFlowState.CONNECTED &&
                 deviceState != DeviceFlowState.DISCONNECTED
@@ -193,7 +195,7 @@ fun ServiceDetailsScreen(
                 IdeSpacer(16)
                 IdeCard {
                     Text(
-                        text = deviceErrorText(deviceState, connection?.statusMessage),
+                        text = deviceErrorText(deviceState, null),
                         style = MaterialTheme.typography.bodyMedium,
                         color = ForgeDanger,
                     )

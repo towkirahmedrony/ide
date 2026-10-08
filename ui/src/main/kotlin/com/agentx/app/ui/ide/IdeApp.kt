@@ -634,6 +634,8 @@ fun ForgeIdeApp(
                 onConnect = { detailsViewModel.connect(type) },
                 onReconnect = { connection?.let { detailsViewModel.reconnect(it.id.value) } },
                 onCancelAuthorization = { connection?.let { detailsViewModel.cancelAuthorization(it.id.value) } },
+                message = detailsViewModel.message,
+                onDismissMessage = detailsViewModel::dismissMessage,
                 onBrowseRepositories = { navController.navigate(IdeDestinations.GITHUB_REPOS) },
                 onOpenDeviceVerification = { detailsViewModel.openDeviceVerificationPage() },
                 onCancelDeviceFlow = { detailsViewModel.cancelDeviceFlow() },
