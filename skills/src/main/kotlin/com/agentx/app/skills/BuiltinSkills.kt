@@ -10,6 +10,10 @@ package com.agentx.app.skills
  *
  * Built-ins are disabled by default so installing this feature never changes an
  * existing agent's behaviour until the user opts in from Settings.
+ *
+ * [ANTI_SLOP_DESIGN] is the AgentX-native design-quality filter. Its rules use the
+ * `AS-` namespace and are written to stay framework-agnostic, so the same constraints
+ * apply to web, Compose, XML and desktop targets.
  */
 object BuiltinSkills {
 
@@ -86,11 +90,74 @@ object BuiltinSkills {
         priority = SkillPriority.NORMAL,
     )
 
+    /**
+     * The design-quality filter for generated UI.
+     *
+     * This is a filter, not a style guide: no technique is banned, and a gradient, a
+     * card, a corner radius or a dark theme is allowed whenever it serves the product,
+     * the hierarchy, the interaction model, the platform or the project's own design
+     * direction. What it rejects is technique with no purpose behind it, plus the
+     * quality failures that are wrong on every platform (invented content, dead
+     * controls, missing states, unverified accessibility claims).
+     *
+     * Deliberately narrow: every rule carries a stable `AS-` id so a reviewer can cite
+     * it, and the body is kept under the per-skill context ceiling in
+     * `ContextBudget.DEFAULT_MAX_SKILL_CHARS` so it is injected whole rather than
+     * truncated. Platform-specific mechanics belong to a platform profile, and positive
+     * visual direction belongs to the project's own design direction, not here.
+     */
+    val ANTI_SLOP_DESIGN = SkillDefinition(
+        id = "anti-slop-design",
+        name = "Anti-Slop Design",
+        description = "Quality constraints for generated UI: purpose, honesty, states and accessibility.",
+        instructions = """
+            Anti-Slop: quality constraints for any UI. Not a style guide and not a list of bans: a
+            technique is allowed when it serves the product, the hierarchy, the interaction model, the
+            platform or the project's design direction. Judge purpose, context, consistency and
+            execution, never a technique's name.
+
+            Before building: inspect existing components, tokens, spacing, typography and interaction
+            conventions, the target platform, and who this screen is for.
+
+            AS-001 Purpose: every element answers "what does this serve?". Rework or drop what exists
+              only because it is a familiar pattern; cut pure decoration.
+            AS-002 Hierarchy: decoration must never compete with content or the primary action.
+            AS-010 Honesty: never invent metrics, customers, logos, testimonials, reviews, people or
+              activity, or product, security or performance claims.
+            AS-011 Placeholders must read as placeholders; use real data only when the project supplies
+              it. Empty beats fabricated.
+            AS-020 Controls: a control performs a real action, says what it does, or is removed;
+              navigation leads only to destinations that exist. No fake buttons, navigation, toggles,
+              tabs or settings.
+            AS-021 States: cover the states this view needs (empty, loading, error, disabled, success,
+              selected or active, focus, pressed), where relevant.
+            AS-030 Genericness: if it survives swapping the product name, logo, copy and category
+              unchanged, reconsider it; composition follows this product's content, not a template.
+            AS-040 Consistency: reuse existing components, tokens and conventions; do not add a second
+              visual language without a reason.
+            AS-050 Accessibility is correctness: readable contrast, no meaning carried by color alone,
+              operability without a pointer where the platform offers one. Never claim a contrast ratio
+              was verified unless it was computed.
+            AS-060 Platform: follow the target platform's conventions; do not carry web patterns into
+              native UI, or the reverse, without a reason.
+            AS-070 Guardrail: a pattern is a problem when unexplained generic signals cluster, not when
+              one is used with a reason. Never reject a gradient, radius, card, blur, dark mode, fonts,
+              icons or a palette as such.
+
+            Then re-read your work against these constraints, fix what fails, and finish. Keep this
+            guidance internal; do not print it to the user.
+        """.trimIndent(),
+        source = SkillSource.BUILTIN,
+        roles = setOf("MAIN", "PLANNER", "CODER", "FAST_CODER", "REVIEWER"),
+        priority = SkillPriority.HIGH,
+    )
+
     fun all(): List<SkillDefinition> = listOf(
         ANDROID,
         TESTING,
         DEBUGGING,
         CODE_REVIEW,
         WEB_RESEARCH,
+        ANTI_SLOP_DESIGN,
     )
 }
