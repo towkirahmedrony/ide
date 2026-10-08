@@ -36,6 +36,18 @@ class TermuxSessionManager(
     private val ordered = ArrayList<TermuxSession>()
     private val byWorkspaceKey = LinkedHashMap<String, String>()
 
+    /**
+     * The command each live session was actually started with, keyed by handle.
+     *
+     * Reuse is decided by the process that exists and not by the workspace key alone. A guest
+     * shell's working directory and its project bind are fixed at `exec` time, so a shell started
+     * before storage access was granted — or before the project resolved — runs in the guest home
+     * and cannot be moved to the project by any later call. Without this record the manager would
+     * hand that process back for the same workspace and the terminal would claim to be in
+     * `/workspace` while `pwd` still answered `/root`.
+     */
+    private val specByHandle = HashMap<String, TermuxShellSpec>()
+
     /** Handles for sessions that could not be constructed; never reused. */
     private var failureCounter = 0
 
@@ -79,8 +91,26 @@ class TermuxSessionManager(
             val existingHandle = byWorkspaceKey[spec.workspaceKey]
             superseded = existingHandle
             val existing = existingHandle?.let { handle -> ordered.firstOrNull { it.handle == handle } }
-            if (existing != null && existing.isRunning) return existing
-            if (existing != null) {
+            if (existing != null && existing.isRunning) {
+                // A running shell is reused only when it is the very process this spec describes.
+                // The guest cwd and the project bind are fixed when the process is started, so a
+                // shell started for a different mapping — the guest home before storage access was
+                // granted, or an earlier project binding — cannot be moved into the project. It is
+                // replaced rather than handed back, so the process the user gets is always the one
+                // the binding resolves to now.
+                if (specByHandle[existing.handle] == spec) return existing
+                DeveloperLogger.info(
+                    DeveloperLogCategory.SESSION,
+                    "Replacing running session with a changed command workspace=${spec.workspaceKey} " +
+                        "handle=${existing.handle}",
+                )
+                TerminalDiagnostics.record(
+                    TAG,
+                    "replacing running session with a changed command workspace=${spec.workspaceKey} " +
+                        "handle=${existing.handle}",
+                )
+                detachLocked(existing.handle)?.let(disposals::add)
+            } else if (existing != null) {
                 // Detached before the replacement is built so the two never coexist under one
                 // workspace key; finished outside the lock, because that kills a process.
                 detachLocked(existing.handle)?.let(disposals::add)
@@ -90,6 +120,7 @@ class TermuxSessionManager(
                 detachLocked(evictable.handle)?.let(disposals::add)
             }
             created = createLocked(spec)
+            specByHandle[created.handle] = spec
             ordered += created
             byWorkspaceKey[spec.workspaceKey] = created.handle
         }
@@ -333,6 +364,7 @@ class TermuxSessionManager(
             val all = ordered.toList()
             ordered.clear()
             byWorkspaceKey.clear()
+            specByHandle.clear()
             all
         }
         removed.forEach { runCatching { it.finish() } }
@@ -363,6 +395,9 @@ class TermuxSessionManager(
         )
         synchronized(lock) {
             byWorkspaceKey.entries.removeAll { it.value == handle }
+            // The command record goes with the process: a finished shell is never handed back by
+            // [open], so nothing may keep it for a future comparison either.
+            specByHandle.remove(handle)
         }
         publish()
     }
@@ -380,6 +415,7 @@ class TermuxSessionManager(
         if (index < 0) return null
         val removed = ordered.removeAt(index)
         byWorkspaceKey.entries.removeAll { it.value == handle }
+        specByHandle.remove(handle)
         return removed
     }
 

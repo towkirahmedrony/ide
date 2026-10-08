@@ -225,6 +225,12 @@ fun TerminalScreen(
         onDispose { owner.removeObserver(observer) }
     }
 
+    // The screen can become visible again without the Activity pausing — returning to the Terminal
+    // tab after granting the access elsewhere in the app, say — so the same re-check also runs when
+    // this composable enters. Idempotent: it is a no-op unless the missing access was the
+    // outstanding problem, and it rebuilds the session only when the project is now bound.
+    LaunchedEffect(Unit) { viewModel.refreshWorkspaceAccess() }
+
     Column(modifier = modifier.fillMaxSize().background(ForgeCanvas)) {
         TerminalHeader(
             state = state,

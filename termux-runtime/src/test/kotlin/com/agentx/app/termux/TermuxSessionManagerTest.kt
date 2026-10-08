@@ -423,17 +423,24 @@ class TermuxSessionManagerTest {
         workspaceId: String,
         secondary: Boolean = false,
         projectPath: String = "/data/user/0/com.agentx.app/files/projects/$workspaceId",
+        /**
+         * False builds what the terminal gets when the project cannot be bound — storage access
+         * missing, so the shell falls back to the guest home with nothing mounted at `/workspace`.
+         */
+        projectBound: Boolean = true,
     ) = TermuxShellSpec(
         workspaceKey = TerminalProjectKeys.forSession(workspaceId, secondary),
         executable = "/native/libproot.so",
         processName = "proot",
-        arguments = listOf(
-            "proot", "-0", "-l", "-w", "/workspace",
-            "-b", "$projectPath:/workspace",
-            "/bin/bash", "--login",
-        ),
+        arguments = listOf("proot", "-0", "-l", "-w", if (projectBound) "/workspace" else "/root") +
+            (if (projectBound) listOf("-b", "$projectPath:/workspace") else emptyList()) +
+            listOf("/bin/bash", "--login"),
         workingDirectory = "/data/user/0/com.agentx.app/files/developer-runtime",
-        environment = arrayOf("HOME=/root", "SHELL=/bin/bash", "AGENTX_PROJECT=/workspace"),
+        environment = arrayOf(
+            "HOME=/root",
+            "SHELL=/bin/bash",
+            if (projectBound) "AGENTX_PROJECT=/workspace" else "AGENTX_RUNTIME=ubuntu",
+        ),
         transcriptRows = 2000,
         temporarySystemShell = false,
         fullTermux = false,
@@ -543,6 +550,61 @@ class TermuxSessionManagerTest {
             flagValue(recorder.specs.last(), "-b"),
         )
         assertEquals(1, manager.sessions().size)
+    }
+
+    @Test
+    fun `a running shell started before the project was bound is replaced, never reused`() {
+        // The permission transition, decided at the layer that owns the process. The project is
+        // opened while its shared-storage folder is not yet readable, so the guest shell falls back
+        // to the guest home; nothing is mounted at `/workspace`.
+        val recorder = Recorder()
+        val manager = TermuxSessionManager(recorder.factory())
+        val unbound = projectSpec("proj-a", projectBound = false)
+
+        val first = manager.open(unbound)!!
+        assertEquals("/root", flagValue(unbound, "-w"))
+        assertEquals(TerminalSessionState.RUNNING, first.state)
+
+        // Storage access is granted. The same project now resolves to its real directory, and the
+        // terminal is opened again for the same workspace key.
+        val bound = projectSpec("proj-a", projectPath = "/storage/emulated/0/AgentX/proj-a")
+        val rebound = manager.open(bound)!!
+
+        // The process the user gets is the project-bound one; the guest-home shell is gone, so the
+        // screen can no longer describe a `/workspace` the live process does not have.
+        assertNotEquals(first.handle, rebound.handle)
+        assertEquals(1, recorder.sessions.first().finishCount)
+        assertEquals(2, recorder.specs.size)
+        assertEquals("/workspace", flagValue(recorder.specs.last(), "-w"))
+        assertEquals(
+            "/storage/emulated/0/AgentX/proj-a:/workspace",
+            flagValue(recorder.specs.last(), "-b"),
+        )
+        assertEquals(listOf(rebound.handle), manager.sessions().map { it.handle })
+        assertEquals(rebound.handle, manager.activeHandle.value)
+        assertEquals(TerminalSessionState.RUNNING, rebound.state)
+    }
+
+    @Test
+    fun `a running shell is reused only for the exact command it was started with`() {
+        val recorder = Recorder()
+        val manager = TermuxSessionManager(recorder.factory())
+        val spec = projectSpec("proj-a")
+
+        // The identical command is the same shell: no second process, no restart.
+        val first = manager.open(spec)!!
+        assertSame(first, manager.open(spec))
+        assertEquals(1, recorder.specs.size)
+        assertEquals(0, recorder.sessions.first().finishCount)
+
+        // A spec that differs only in what is bound at `/workspace` is a different process, so it
+        // is not handed back as if it were the same shell.
+        val other = projectSpec("proj-a", projectPath = "/storage/emulated/0/AgentX/proj-a")
+        val replaced = manager.open(other)!!
+        assertNotEquals(first.handle, replaced.handle)
+        assertEquals(1, recorder.sessions.first().finishCount)
+        assertEquals(2, recorder.specs.size)
+        assertEquals(replaced.handle, manager.activeHandle.value)
     }
 
     @Test
