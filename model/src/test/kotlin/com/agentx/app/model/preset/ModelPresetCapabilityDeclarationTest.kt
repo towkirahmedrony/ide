@@ -121,7 +121,7 @@ class ModelPresetCapabilityDeclarationTest {
 
         val reloaded = assertNotNull(repository().list().single())
         assertTrue(reloaded.declaredCapabilities.isEmpty)
-        assertTrue(reloaded.declaredCapabilitiesByModel.isEmpty)
+        assertTrue(reloaded.declaredCapabilitiesByModel.isEmpty())
     }
 
     /**
