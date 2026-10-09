@@ -109,11 +109,19 @@ data class RoleModelPreference(
      * The execution domain ([ModelConnectionKind.LOCAL_CUSTOM] or [ModelConnectionKind.API])
      * this preference is bound to.
      *
-     * A non-null domain makes the preference domain-constrained and authoritative:
-     * resolution only ever selects a connection of that exact domain, and never
-     * falls back to a connection in the other domain. This is what guarantees
-     * MAIN/CODER/DEBUGGER stay on the local model even when a FreeLLMAPI/Gemini
-     * API connection exists, and what lets API roles target the API domain.
+     * A non-null domain makes the preference domain-constrained: resolution only ever
+     * selects a connection of that exact domain, and never falls back to a connection
+     * in the other domain. This is what guarantees MAIN/CODER/DEBUGGER stay on the
+     * local model even when a FreeLLMAPI/Gemini API connection exists, and what lets
+     * API roles target the API domain.
+     *
+     * Being domain-constrained is deliberately *not* the same as being the user's own
+     * assignment (see [explicit]): the built-in MAIN/CODER/DEBUGGER defaults name the
+     * local domain because the role's policy says "this role runs locally", not because
+     * the user bound a connection. A domain-constrained preference still must not cross
+     * domains, and several unnamed candidates in it still fail rather than resolve by
+     * listing order, but a default with no candidate reports that nothing is configured
+     * rather than naming a connection the user never created.
      * Null preserves the legacy "match by provider family alone" behaviour.
      */
     val domain: ModelConnectionKind? = null,
@@ -123,9 +131,11 @@ data class RoleModelPreference(
      *
      * An explicit assignment is authoritative: when the provider/connection it
      * names cannot be addressed, the resolver returns a structured failure and
-     * never substitutes the active model. A policy default (the built-in mapping)
-     * keeps the documented compatibility behaviour. A preference that names a
-     * [connectionId] is authoritative regardless of this flag.
+     * never substitutes the active model. A built-in *policy default* is not the
+     * user's assignment — it reports the unconfigured state instead of a missing
+     * connection its domain has nothing to offer, and a family-only default keeps the
+     * documented compatibility behaviour. A preference that names a [connectionId] is
+     * authoritative regardless of this flag.
      */
     val explicit: Boolean = false,
     /**
@@ -248,13 +258,20 @@ data class AgentModelPreferences(
  * 4. A supplied [connections] entry of the preferred provider family → that
  *    configuration, with the role's model when one is known.
  * 5. The preferred provider/connection is not connected:
- *    - an explicit assignment ([RoleModelPreference.explicit], or a named
- *      connection) → a structured failure, never a substitute model;
- *    - a policy default → the [default] configuration, so an unconnected built-in
- *      preference never breaks a run that works today.
+ *    - the user's own assignment ([RoleModelPreference.explicit], or a preference
+ *      that names a connection) → a structured failure, never a substitute model;
+ *    - a domain-constrained *policy default* → an unconfigured-default failure,
+ *      reported with [AgentErrorCode.NOT_CONFIGURED]: the role has no model of its
+ *      own domain configured yet. It is named as a default (`defaultConnection=`,
+ *      `explicit=false`, `assignment=default`) with an actionable message, never as
+ *      a connection the user did not create, and its domain is never crossed;
+ *    - a legacy family-only policy default → the [default] configuration, so an
+ *      unconnected built-in preference never breaks a run that works today.
  *
- * The distinction in step 5 is what makes an explicit role → model assignment
- * authoritative while keeping the built-in mapping's compatibility behaviour.
+ * The distinction in step 5 is what makes the user's own role → model assignment
+ * authoritative while keeping the built-in mapping's compatibility behaviour, and
+ * what keeps a fresh install reporting "no model configured for this role" (the same
+ * state Settings shows) instead of a missing connection.
  */
 class AgentModelResolver(
     private val preferences: AgentModelPreferences = AgentModelPreferences.EMPTY,
@@ -338,8 +355,11 @@ class AgentModelResolver(
     /**
      * Internal selection shared by [resolve] and [resolveForRole]. It records
      * whether the role's own mapping produced the config, so an explicit role
-     * assignment can be reported as such, and carries a structured error when an
-     * explicit assignment cannot be addressed.
+     * assignment can be reported as such, and carries a structured error when the
+     * role's target cannot be addressed — the user's missing assignment
+     * ([connectionFailure]), several unnamed candidates for a domain-constrained
+     * role ([ambiguousConnectionFailure]), or a built-in default with nothing
+     * configured in its domain ([unconfiguredDefaultFailure]).
      */
     private fun select(role: AgentRole, preferredModel: String?, default: ModelConfig): Selection {
         val preference = currentPreferences()[role] ?: return Selection(default, fromRoleMapping = false)
@@ -351,24 +371,34 @@ class AgentModelResolver(
         // what makes a model picked in Settings take effect at run time.
         val model = preference.model?.takeIf { it.isNotBlank() }
             ?: preferredModel?.takeIf { it.isNotBlank() }
-        // An explicit assignment — the user's saved Settings choice, or a preference
-        // that names a specific saved connection — is authoritative. It is never
-        // silently answered by another connection, another domain or the active model.
+        // Two independent questions, deliberately kept apart instead of folded into one
+        // "authoritative" flag. They are not the same thing, and conflating them is what
+        // made a fresh install unusable:
         //
-        // A built-in *policy default* is not an assignment, even though it names a
-        // domain: the domain is the role's documented preference ("MAIN runs locally"),
-        // not a user choice. Counting it as authoritative is what made a fresh install
-        // unusable — MAIN's default is domain-bound to the local runtime, so with no
-        // local connection yet the resolver failed against a connection and a model the
-        // user had never configured, instead of falling back as documented below.
-        val authoritative = preference.explicit || !preference.connectionId.isNullOrBlank() || domain != null
+        //  - `userAssignment` — is this the user's own choice: the assignment saved in
+        //    Settings, or a preference that names one specific saved connection? Only a
+        //    user's assignment is authoritative, and only it fails as an assignment.
+        //  - `domainConstrained` — does the preference name an execution domain? MAIN's
+        //    built-in preference does ("MAIN runs on the local runtime"), but that is a
+        //    property of the role's policy, not evidence that the user bound a
+        //    connection. It constrains which connections may answer the role, and it is
+        //    what makes several same-domain candidates fail rather than resolve by the
+        //    order they happen to be listed in — but it must never turn a built-in
+        //    default into a user assignment.
+        //
+        // Reading the domain as authoritativeness is the original defect: MAIN's default
+        // is domain-bound to the local runtime, so with no local connection yet the
+        // resolver took the "explicit assignment" failure branch and named a connection,
+        // and a model, the user had never configured.
+        val namedId = preference.connectionId?.takeIf { it.isNotBlank() }
+        val userAssignment = preference.explicit || namedId != null
+        val domainConstrained = domain != null
 
         // A specific saved connection is addressed by its own identity, so a role
         // assigned to one custom endpoint never resolves to another endpoint of the
         // same provider family. A named connection that is not connected right now
         // (disconnected or deleted, or a map keyed differently) is a hard failure:
         // the saved identity is preserved and reported instead of being replaced.
-        val namedId = preference.connectionId?.takeIf { it.isNotBlank() }
         if (namedId != null) {
             val named = connections()[namedId]
                 ?: return Selection(
@@ -389,12 +419,12 @@ class AgentModelResolver(
         val candidates = connectionsForProvider(providerId, domain)
         // Several connections of the required identity sit in the required domain and
         // the preference names none of them. Choosing one would be routing by the
-        // order the connections happen to be listed in, so an authoritative role
-        // fails instead: the assignment stays intact and the user binds one exact
-        // connection in Settings, which is then addressed by identity. A legacy
-        // family-only preference (no domain, not explicit) keeps its documented
+        // order the connections happen to be listed in, so a domain-constrained role
+        // (or an authoritative one) fails instead: the target stays intact and the user
+        // binds one exact connection in Settings, which is then addressed by identity. A
+        // legacy family-only preference (no domain, not explicit) keeps its documented
         // first-match behaviour.
-        if (candidates.size > 1 && authoritative) {
+        if (candidates.size > 1 && (userAssignment || domainConstrained)) {
             return Selection(
                 config = null,
                 fromRoleMapping = true,
@@ -405,17 +435,30 @@ class AgentModelResolver(
             return Selection(withAssignedStatement(withModel(it, model), preference), fromRoleMapping = true)
         }
 
-        // The provider family is not connected in the required domain. An explicit
+        // The provider family is not connected in the required domain. The user's own
         // assignment may not be answered by anything else, which is what keeps
         // MAIN/CODER/DEBUGGER on their saved local model when only an API connection
-        // exists. A policy default keeps the documented fallback to the active model —
-        // but only within its own domain, so an API active model never answers a local
-        // role merely because the built-in preference could not be met.
-        if (authoritative) {
+        // exists.
+        if (userAssignment) {
             return Selection(
                 config = null,
                 fromRoleMapping = true,
                 error = connectionFailure(role, preference, model, providerId),
+            )
+        }
+        // A built-in *policy default* whose target is not connected at all. Nothing the
+        // user chose is missing, so this is not a connection failure: it is the
+        // documented fresh-install state, "this role has no model configured yet". It is
+        // still a failure — a default's domain is never crossed, so an API connection
+        // never answers a local role, and the active model is never substituted across
+        // domains — but it must be reported as an unconfigured default rather than as a
+        // missing connection, which named a connection (and a model) the user had never
+        // created and made a fresh install read as a broken pinned assignment.
+        if (domainConstrained) {
+            return Selection(
+                config = null,
+                fromRoleMapping = true,
+                error = unconfiguredDefaultFailure(role, preference, model),
             )
         }
         return Selection(default, fromRoleMapping = false)
@@ -454,14 +497,26 @@ class AgentModelResolver(
     )
 
     /**
-     * The structured failure for an explicit assignment whose provider or saved
+     * How many connected configurations of [providerId] exist *outside* [domain].
+     *
+     * Diagnostics only, and the one thing that separates "no such connection exists at
+     * all" from "a connection of that provider family exists but cannot serve this
+     * role" — two states the user repairs differently. It never influences selection.
+     * Reads connection identifiers only: never an endpoint and never a credential.
+     */
+    private fun sameFamilyOtherDomain(providerId: String, domain: ModelConnectionKind?): Int =
+        connections().values.count { it.providerId == providerId && !matchesDomain(it, domain) }
+
+    /**
+     * The structured failure for the *user's own* assignment whose provider or saved
      * connection is not currently connected.
      *
-     * The role, the requested provider/connection, the requested model and
-     * whether an intentional fallback is configured are carried on
-     * [AgentError.details], so the UI/runtime can explain the failure instead of
-     * silently executing the role on a different model. It never contains a
-     * credential or an endpoint.
+     * The role, the requested provider/connection, the requested model and whether an
+     * intentional fallback is configured are carried on [AgentError.details], so the
+     * UI/runtime can explain the failure instead of silently executing the role on a
+     * different model. `assignment` and `explicit` say this was the user's choice, and
+     * `sameFamilyOtherDomain` says whether an unusable connection of the family exists
+     * in the other execution domain. It never contains a credential or an endpoint.
      */
     private fun connectionFailure(
         role: AgentRole,
@@ -470,24 +525,21 @@ class AgentModelResolver(
         missingConnectionId: String,
     ): AgentError {
         val named = preference.connectionId?.takeIf { it.isNotBlank() }
+        // A named saved connection is reported by its own identity; an explicit
+        // provider-family assignment (no saved connection id) by the provider identity it
+        // names. Either way this is the user's assignment, so the target is a
+        // `connection=` — the built-in default's target is named separately, by
+        // [unconfiguredDefaultFailure], where nothing the user chose is missing.
         val connection = named ?: missingConnectionId
         val requestedModel = model ?: preference.model
         val fallbackConfigured = intentionalFallback(role)
-        // A built-in *policy default* is reported as a default. Naming its provider as
-        // `connection=` made a fresh install read as though the user had bound a
-        // connection that does not exist, which is what sent the first investigation
-        // looking for one; `explicit=` hardcoded to true compounded it.
-        val target = if (named != null || preference.explicit) {
-            "connection=$connection"
-        } else {
-            "defaultConnection=$connection"
-        }
+        val otherDomain = sameFamilyOtherDomain(preference.providerId, preference.domain)
         return AgentError(
             code = AgentErrorCode.MODEL_NOT_CONNECTED,
             message = "MODEL_NOT_CONNECTED role=${role.name} provider=${preference.providerId} " +
-                "$target model=${requestedModel ?: "(provider default)"} " +
+                "connection=$connection model=${requestedModel ?: "(provider default)"} " +
                 "reason=CONNECTION_NOT_CONNECTED fallbackAvailable=$fallbackConfigured " +
-                "explicit=${preference.explicit}",
+                "explicit=${preference.explicit} assignment=user",
             role = role,
             details = buildMap {
                 put("role", role.name)
@@ -497,8 +549,68 @@ class AgentModelResolver(
                 put("reason", "CONNECTION_NOT_CONNECTED")
                 put("cause", "MODEL_NOT_CONNECTED")
                 put("explicit", preference.explicit.toString())
-                put("assignment", if (named != null || preference.explicit) "user" else "default")
+                put("assignment", "user")
                 put("fallbackAvailable", fallbackConfigured.toString())
+                preference.domain?.let { put("domain", it.name) }
+                if (otherDomain > 0) put("sameFamilyOtherDomain", otherDomain.toString())
+            },
+        )
+    }
+
+    /**
+     * The structured failure for a *built-in policy default* whose target is not
+     * connected at all — the fresh-install state.
+     *
+     * A default is not an assignment: the user chose nothing, so nothing of theirs is
+     * missing and no connection may be claimed to exist. Reporting this through
+     * [connectionFailure] named the default's provider as a `connection=`, so a fresh
+     * install read as though the user had pinned a connection that does not exist; the
+     * reading, blocked a run, and sent the first investigation after a phantom
+     * connection.
+     *
+     * It is therefore reported as what it is: the role has no model configured yet. The
+     * error code is [AgentErrorCode.NOT_CONFIGURED] — the same state the runtime already
+     * uses for "no model is configured" and the same state Settings reports for this
+     * role — with an actionable instruction. The target is named as a default
+     * (`defaultConnection=`), `explicit=false` and `assignment=default` say no one chose
+     * it, and `otherDomain`-family connections are counted so an unusable connection in
+     * the wrong domain is distinguishable from no connection at all. It never contains a
+     * credential or an endpoint, and it never names a connection the user does not have.
+     */
+    private fun unconfiguredDefaultFailure(
+        role: AgentRole,
+        preference: RoleModelPreference,
+        model: String?,
+    ): AgentError {
+        val requestedModel = model ?: preference.model
+        val fallbackConfigured = intentionalFallback(role)
+        val target = preference.providerId
+        val label = RoleModelEvaluation.providerLabel(preference.providerId)
+        val otherDomain = sameFamilyOtherDomain(preference.providerId, preference.domain)
+        return AgentError(
+            code = AgentErrorCode.NOT_CONFIGURED,
+            message = "No model is connected for the ${role.name} agent. Open Settings → Models and " +
+                "connect $label${requestedModel?.let { " ($it)" } ?: ""}, or assign this agent a model " +
+                "that is connected. " +
+                "MODEL_NOT_CONFIGURED role=${role.name} provider=${preference.providerId} " +
+                "defaultConnection=$target model=${requestedModel ?: "(provider default)"} " +
+                "reason=NO_CONNECTION_CONFIGURED fallbackAvailable=$fallbackConfigured " +
+                "explicit=false assignment=default connectionsInDomain=0" +
+                (if (otherDomain > 0) " sameFamilyOtherDomain=$otherDomain" else ""),
+            role = role,
+            details = buildMap {
+                put("role", role.name)
+                put("provider", preference.providerId)
+                put("defaultConnection", target)
+                requestedModel?.let { put("model", it) }
+                put("reason", "NO_CONNECTION_CONFIGURED")
+                put("cause", "MODEL_NOT_CONFIGURED")
+                put("explicit", "false")
+                put("assignment", "default")
+                put("fallbackAvailable", fallbackConfigured.toString())
+                put("connectionsInDomain", "0")
+                preference.domain?.let { put("domain", it.name) }
+                if (otherDomain > 0) put("sameFamilyOtherDomain", otherDomain.toString())
             },
         )
     }
@@ -513,6 +625,11 @@ class AgentModelResolver(
      * `candidates` distinguish the two, so the UI can say "pick which connection"
      * rather than "add the provider". The candidate list carries connection ids
      * only — never an endpoint, a model or a credential.
+     *
+     * `explicit` and `assignment` are reported from the preference rather than assumed:
+     * this branch is also reachable for a domain-constrained built-in default (two
+     * connections in the role's domain, none named), and a policy default must not be
+     * described as the user's own pinned assignment.
      */
     private fun ambiguousConnectionFailure(
         role: AgentRole,
@@ -523,11 +640,14 @@ class AgentModelResolver(
         val requestedModel = model ?: preference.model
         val fallbackConfigured = intentionalFallback(role)
         val candidates = candidateConnections.joinToString(",")
+        val userAssignment = preference.explicit || !preference.connectionId.isNullOrBlank()
+        val assignment = if (userAssignment) "user" else "default"
         return AgentError(
             code = AgentErrorCode.MODEL_NOT_CONNECTED,
             message = "MODEL_NOT_CONNECTED role=${role.name} provider=${preference.providerId} " +
                 "connection=(ambiguous) model=${requestedModel ?: "(provider default)"} " +
-                "reason=CONNECTION_AMBIGUOUS candidates=$candidates fallbackAvailable=$fallbackConfigured",
+                "reason=CONNECTION_AMBIGUOUS candidates=$candidates fallbackAvailable=$fallbackConfigured " +
+                "explicit=${preference.explicit} assignment=$assignment",
             role = role,
             details = buildMap {
                 put("role", role.name)
@@ -537,8 +657,10 @@ class AgentModelResolver(
                 put("reason", "CONNECTION_AMBIGUOUS")
                 put("cause", "MODEL_NOT_CONNECTED")
                 put("candidates", candidates)
-                put("explicit", "true")
+                put("explicit", preference.explicit.toString())
+                put("assignment", assignment)
                 put("fallbackAvailable", fallbackConfigured.toString())
+                preference.domain?.let { put("domain", it.name) }
             },
         )
     }

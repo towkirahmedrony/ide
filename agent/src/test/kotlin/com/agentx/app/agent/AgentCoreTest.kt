@@ -13,6 +13,11 @@ import com.agentx.app.agent.protocol.AgentProtocol
 import com.agentx.app.agent.runtime.AgentLoop
 import com.agentx.app.agent.runtime.AgentLoopRequest
 import com.agentx.app.agent.domain.ResumedPermission
+import com.agentx.app.agent.model.AgentModelPreferences
+import com.agentx.app.agent.model.AgentModelResolver
+import com.agentx.app.agent.model.AgentRoleModelRegistry
+import com.agentx.app.agent.model.DefaultAgentRoleModelRepository
+import com.agentx.app.agent.model.InMemoryAgentRoleModelStore
 import com.agentx.app.agent.specialized.SpecializedAgentFactory
 import com.agentx.app.agent.tools.AgentToolBridge
 import com.agentx.app.context.DefaultContextEngine
@@ -24,6 +29,7 @@ import com.agentx.app.model.DefaultModelGateway
 import com.agentx.app.model.ModelConfig
 import com.agentx.app.model.ModelProviderErrorCode
 import com.agentx.app.model.ModelRole
+import com.agentx.app.model.manager.ModelConnectionKind
 import com.agentx.app.tools.BuiltinTools
 import com.agentx.app.tools.DefaultToolRegistry
 import com.agentx.app.tools.DefaultToolRouter
@@ -441,6 +447,112 @@ class AgentCoreTest {
         assertEquals(AgentStatus.FAILED, result.status)
         assertTrue(result.errors.any { it.code == AgentErrorCode.NOT_CONFIGURED })
         assertTrue(provider.completeCalls.isEmpty())
+    }
+
+    /**
+     * The same wiring as `AgentModule.initialize` — built-in role defaults, the Model
+     * Manager's live connections, the live Settings registry — so this is the resolution
+     * path a real conversation startup takes.
+     */
+    private fun runtimeLike(
+        fx: Fixtures,
+        providers: List<ScriptedModelProvider>,
+        connections: Map<String, ModelConfig>,
+        preferences: AgentModelPreferences = AgentModelPreferences.DEFAULT,
+    ): AgentRuntime {
+        val gateway = DefaultModelGateway()
+        providers.forEach { gateway.register(it) }
+        val roles = AgentRoleModelRegistry(DefaultAgentRoleModelRepository(InMemoryAgentRoleModelStore()))
+        return AgentModule.assemble(
+            gateway = gateway,
+            registry = fx.registry,
+            router = DefaultToolRouter(fx.registry),
+            modelResolver = AgentModelResolver(
+                preferences = preferences,
+                connections = { connections },
+                livePreferences = { roles.preferences() },
+            ),
+        )
+    }
+
+    /**
+     * A fresh install with a connected *API* model: the active configuration is valid, so
+     * the session's own "no model online" gate passes, but nothing of MAIN's local
+     * execution domain exists. The run must report MAIN as unconfigured, with an actionable
+     * message, and must not call any model — least of all the API model the session is
+     * running on, which would be the cross-domain substitution the role mapping forbids.
+     */
+    @Test
+    fun `a fresh install fails MAIN as unconfigured and calls no model`() = runAgent {
+        val fx = Fixtures()
+        // Registered under both identities a wrong resolution could pick: MAIN's own local
+        // target, and the API active model.
+        val localTarget = ScriptedModelProvider(mapOf(AgentRole.MAIN to mutableListOf(response("local"))), id = "openai-compatible")
+        val apiActive = ScriptedModelProvider(mapOf(AgentRole.MAIN to mutableListOf(response("api"))), id = "freellmapi")
+        val runtime = runtimeLike(fx, listOf(localTarget, apiActive), connections = emptyMap())
+
+        val result = runtime.orchestrator.run(
+            request = AgentRunRequest(prompt = "go"),
+            modelConfig = ModelConfig(
+                providerId = "freellmapi",
+                baseUrl = "https://gateway.example/v1",
+                model = "gemini-2.5-flash",
+                connectionKind = ModelConnectionKind.API,
+            ),
+            sink = CollectingEventSink(),
+        )
+
+        assertEquals(AgentStatus.FAILED, result.status)
+        val error = result.errors.single()
+        assertEquals(AgentErrorCode.NOT_CONFIGURED, error.code)
+        assertEquals("default", error.details["assignment"])
+        assertEquals("false", error.details["explicit"])
+        assertEquals("openai-compatible", error.details["provider"])
+        assertTrue(error.message.contains("NO_CONNECTION_CONFIGURED"), error.message)
+        assertTrue(error.message.contains("Settings"), error.message)
+        assertTrue(localTarget.completeCalls.isEmpty())
+        assertTrue(apiActive.completeCalls.isEmpty())
+    }
+
+    /** The same wiring with the local model connected: the conversation runs on it. */
+    @Test
+    fun `a connected local model makes the same wiring complete on it`() = runAgent {
+        val fx = Fixtures()
+        val provider = ScriptedModelProvider(
+            mapOf(
+                AgentRole.MAIN to mutableListOf(
+                    response("", toolCall(AgentProtocol.FINISH_TOOL, AgentProtocol.ARG_SUMMARY to "Done")),
+                ),
+            ),
+            id = "openai-compatible",
+        )
+        val local = ModelConfig(
+            providerId = "openai-compatible",
+            baseUrl = "http://127.0.0.1:8080/v1",
+            model = "devstral-24b",
+            connectionKind = ModelConnectionKind.LOCAL_CUSTOM,
+        )
+        val runtime = runtimeLike(
+            fx,
+            providers = listOf(provider),
+            connections = mapOf(local.connectionId to local),
+        )
+
+        val result = runtime.orchestrator.run(
+            request = AgentRunRequest(prompt = "go"),
+            // The active model is still the API one; the local role does not use it.
+            modelConfig = ModelConfig(
+                providerId = "freellmapi",
+                baseUrl = "https://gateway.example/v1",
+                model = "gemini-2.5-flash",
+                connectionKind = ModelConnectionKind.API,
+            ),
+            sink = CollectingEventSink(),
+        )
+
+        assertEquals(AgentStatus.COMPLETED, result.status)
+        assertEquals(listOf(AgentRole.MAIN), provider.completeCalls)
+        assertEquals(listOf("devstral-24b"), provider.requests.map { it.config.model })
     }
 
     @Test

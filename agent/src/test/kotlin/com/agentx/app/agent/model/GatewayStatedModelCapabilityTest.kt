@@ -311,18 +311,21 @@ class GatewayStatedModelCapabilityTest {
     // --- Evidence A: the fresh-install default -------------------------------
 
     /**
-     * A fresh install has no connection at all. MAIN follows the built-in mapping (the
-     * local runtime's Devstral), which is a policy default — not something the user
-     * bound — so the report must say that, and must not name a connection nobody
-     * created (which is what the first investigation was sent looking for):
+     * A fresh install has no local connection at all. MAIN follows the built-in mapping
+     * (the local runtime's Devstral), which is a policy default — not something the user
+     * bound — so nothing of the user's is missing and no connection may be claimed:
      *
      * ```
      * MODEL_NOT_CONNECTED role=MAIN provider=openai-compatible connection=openai-compatible
      * model=devstral-24b reason=CONNECTION_NOT_CONNECTED fallbackAvailable=false
      * ```
+     *
+     * That reading named a connection (and a model) the user had never created. The role
+     * is in the state Settings already shows for it — *no model configured yet* — and
+     * that is what the run must report.
      */
     @Test
-    fun `a fresh install reports its built-in default as a default, not as a connection`() =
+    fun `a fresh install reports an unconfigured built-in default, never a phantom connection`() =
         runBlocking {
             val apiActive = com.agentx.app.model.ModelConfig(
                 providerId = providerId,
@@ -338,16 +341,20 @@ class GatewayStatedModelCapabilityTest {
                 ).resolveForRole(AgentRole.MAIN, apiActive)
             }
 
-            // The pinned contract is unchanged: an unconnected role target still fails
-            // rather than running on something else.
-            assertEquals(AgentErrorCode.MODEL_NOT_CONNECTED, failure.error.code)
-            assertEquals("CONNECTION_NOT_CONNECTED", failure.error.details["reason"])
+            // The pinned contract is unchanged: an unmet role target still fails rather
+            // than running on something else. The API active model never answers MAIN.
+            assertEquals(AgentErrorCode.NOT_CONFIGURED, failure.error.code)
+            assertEquals("NO_CONNECTION_CONFIGURED", failure.error.details["reason"])
             assertEquals("openai-compatible", failure.error.details["provider"])
             assertEquals("devstral-24b", failure.error.details["model"])
-            // What changed: it is reported as the built-in default, with no connection
-            // claimed and no false claim that the user chose it.
+            assertEquals("LOCAL_CUSTOM", failure.error.details["domain"])
+            assertEquals("0", failure.error.details["connectionsInDomain"])
+            // It is the built-in default: the target is named as a default, no connection
+            // record is claimed, and nothing says the user chose it.
             assertEquals("false", failure.error.details["explicit"])
             assertEquals("default", failure.error.details["assignment"])
+            assertEquals("openai-compatible", failure.error.details["defaultConnection"])
+            assertNull(failure.error.details["connection"])
             assertTrue(
                 failure.error.message.contains("defaultConnection=openai-compatible"),
                 failure.error.message,
@@ -357,6 +364,12 @@ class GatewayStatedModelCapabilityTest {
                 failure.error.message,
             )
             assertTrue(failure.error.message.contains("explicit=false"), failure.error.message)
+            assertTrue(
+                failure.error.message.contains("reason=NO_CONNECTION_CONFIGURED"),
+                failure.error.message,
+            )
+            // Actionable: the message names where the user repairs it.
+            assertTrue(failure.error.message.contains("Settings"), failure.error.message)
         }
 
     /** A saved assignment is still reported as the user's own, and still never substituted. */

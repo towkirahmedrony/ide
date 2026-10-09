@@ -193,10 +193,19 @@ class ApiRoleRoutingTest {
             resolver(local, gemini, groq).resolve(AgentCatalog.REVIEWER, active)
         }
 
-        assertEquals(AgentErrorCode.MODEL_NOT_CONNECTED, failure.error.code)
-        assertEquals("CONNECTION_NOT_CONNECTED", failure.error.details["reason"])
+        // The Reviewer is following its built-in default, and its own domain has no
+        // connection at all: that is "nothing configured for this API role yet", not a
+        // connection the user created and lost.
+        assertEquals(AgentErrorCode.NOT_CONFIGURED, failure.error.code)
+        assertEquals("NO_CONNECTION_CONFIGURED", failure.error.details["reason"])
+        assertEquals("default", failure.error.details["assignment"])
+        assertEquals("false", failure.error.details["explicit"])
+        assertEquals("API", failure.error.details["domain"])
         assertEquals(AgentModelProviders.FREELMAPI, failure.error.details["provider"])
         assertEquals("gemini-2.5-flash", failure.error.details["model"])
+        // Nothing was invented to answer it: the local model, and the two other API
+        // providers that *are* connected, are not substituted for the missing gateway.
+        assertEquals("0", failure.error.details["connectionsInDomain"])
     }
 
     @Test
@@ -204,7 +213,9 @@ class ApiRoleRoutingTest {
         val failure = assertFailsWith<AgentModelResolutionException> {
             resolver(local).resolve(AgentCatalog.EXPLORER, active)
         }
-        assertEquals(AgentErrorCode.MODEL_NOT_CONNECTED, failure.error.code)
+        assertEquals(AgentErrorCode.NOT_CONFIGURED, failure.error.code)
+        assertEquals("NO_CONNECTION_CONFIGURED", failure.error.details["reason"])
+        assertEquals("default", failure.error.details["assignment"])
         assertEquals("openai/gpt-oss-20b", failure.error.details["model"])
     }
 
