@@ -146,9 +146,13 @@ data class RoleModelPreference(
      * on it, so a model chosen here could otherwise never acquire the capability a
      * tool-using role requires. The statement belongs to the one `(providerId, model)`
      * pair this preference names: it is applied to that model alone, never to the
-     * connection, never to its other models, and never to another role.
-     *
-     * False by default: nothing is claimed on the user's behalf, and a model nobody
+      * connection, never to its other models, and never to another role. It is applied
+      * whichever branch resolves the assignment — a named connection, the active
+      * connection of the same family and domain, or a family match — and to the model
+      * that is finally resolved, so it cannot be lost on the way to the eligibility
+      * check (see [statingToolCalling]).
+      *
+      * False by default: nothing is claimed on the user's behalf, and a model nobody
      * stated anything about keeps resolving to `UNKNOWN`.
      */
     val declaresToolCalling: Boolean = false,
@@ -412,8 +416,16 @@ class AgentModelResolver(
         // The active model is used only when it satisfies the preference's provider
         // family *and* its execution domain, so a local role never picks up an API
         // active model (and vice versa) just because the provider family matches.
+        //
+        // The assignment's own statement is applied here too. This branch resolves the
+        // role's configured model out of the active connection, and it is the branch a
+        // role takes whenever the connection it was assigned from *is* the active one —
+        // the ordinary case for a gateway whose model list the role was assigned from.
+        // Returning the model without the statement is what made a declared assignment
+        // arrive at the eligibility check undeclared (`declared=false`) and be rejected
+        // for the capability the user had just stated for it.
         if (providerId == default.providerId && matchesDomain(default, domain)) {
-            return Selection(withModel(default, model), fromRoleMapping = true)
+            return Selection(withAssignedStatement(withModel(default, model), preference), fromRoleMapping = true)
         }
 
         val candidates = connectionsForProvider(providerId, domain)
@@ -680,6 +692,11 @@ class AgentModelResolver(
      * degrading to a different connection of the same family, so a candidate's
      * identity is preserved. It performs no network request and touches no
      * credential beyond what the supplied connection already holds.
+     *
+     * A candidate that carries its own capability statement keeps it, exactly as the
+     * role's own selection does: a candidate judged without its statement would be
+     * rejected for the capability the user stated for it, and a usable model would be
+     * skipped by the layer that asked.
      */
     fun configFor(preference: RoleModelPreference, default: ModelConfig): ModelConfig? {
         val model = preference.model?.takeIf { it.isNotBlank() }
@@ -690,13 +707,13 @@ class AgentModelResolver(
         val namedId = preference.connectionId?.takeIf { it.isNotBlank() }
         if (namedId != null) {
             val named = connections()[namedId] ?: return null
-            return withModel(named, model)
+            return withAssignedStatement(withModel(named, model), preference)
         }
         if (preference.providerId == default.providerId && matchesDomain(default, domain)) {
-            return withModel(default, model)
+            return withAssignedStatement(withModel(default, model), preference)
         }
         val connection = connectionForProvider(preference.providerId, domain) ?: return null
-        return withModel(connection, model)
+        return withAssignedStatement(withModel(connection, model), preference)
     }
 
     /**
@@ -853,27 +870,34 @@ class AgentModelResolver(
     /**
      * Applies the statement an *assignment* carries, for the model that assignment names.
      *
-     * The connection's own statement always wins: if the connection already says
-     * something about the resolved model, that is the user's considered statement about
-     * the connection and is left exactly as it is. Only when the connection says nothing
-     * about this model does the assignment's own statement apply — scoped to that one
-     * model, published under its own id so registry-based consumers agree, and never
-     * spread to the connection's other models.
+     * The rule itself is [statingToolCalling], shared with the Settings screen that judges
+     * the same assignment, so the two cannot disagree. It resolves nothing here: the
+     * statement is applied to whatever model the configuration ended up naming, which is
+     * the model the role will actually run — never to a model the assignment did not name,
+     * and never to the connection's other models.
+     *
+     * Every path that resolves a role's own assignment goes through this — a named
+     * connection, the active connection, and a connection matched by family — so a
+     * declared assignment arrives at the eligibility check declared whichever branch
+     * resolved it.
+     *
+     * The statement is also published to the shared capability registry under its own
+     * `(providerId, model)`. The gateway resolves that pair rather than the configuration
+     * when it decides whether to send tools, so a statement that only travelled on the
+     * configuration would be read by the eligibility check and lost by the request.
      */
     private fun withAssignedStatement(config: ModelConfig, preference: RoleModelPreference): ModelConfig {
         if (!preference.declaresToolCalling) return config
-        val model = config.model
-        if (model.isBlank()) return config
-        if (config.statedCapabilitiesFor(model) != null) return config
-        val statement = ModelCapabilityDeclaration.toolEnabledEndpoint()
-        capabilityRegistry.registerOrUpdate(
-            statement.applyTo(capabilityRegistry.profile(config.providerId, model)),
-        )
-        return config.copy(
-            declaredCapabilities = statement,
-            declaredCapabilitiesModel = model,
-            statedCapabilitiesByModel = config.statedCapabilitiesByModel.stating(model, statement),
-        )
+        val stated = config.statingToolCalling(config.model)
+        // Unchanged means the connection already states something for this model, which was
+        // published when the connection was built.
+        if (stated == config) return config
+        stated.declaredCapabilities?.let { statement ->
+            capabilityRegistry.registerOrUpdate(
+                statement.applyTo(capabilityRegistry.profile(config.providerId, config.model)),
+            )
+        }
+        return stated
     }
 
     private fun withModel(config: ModelConfig, model: String?): ModelConfig =

@@ -29,6 +29,7 @@ import com.agentx.app.model.DefaultModelGateway
 import com.agentx.app.model.ModelConfig
 import com.agentx.app.model.ModelProviderErrorCode
 import com.agentx.app.model.ModelRole
+import com.agentx.app.model.capability.InMemoryModelCapabilityRegistry
 import com.agentx.app.model.manager.ModelConnectionKind
 import com.agentx.app.tools.BuiltinTools
 import com.agentx.app.tools.DefaultToolRegistry
@@ -512,6 +513,127 @@ class AgentCoreTest {
         assertTrue(error.message.contains("Settings"), error.message)
         assertTrue(localTarget.completeCalls.isEmpty())
         assertTrue(apiActive.completeCalls.isEmpty())
+    }
+
+    /**
+     * A conversation startup with MAIN assigned a model from a gateway's catalogue — the
+     * shape the reported failure had. The assignment is saved through the production
+     * registry, so the statement the user made travels the way it does in the app:
+     * store → registry → preference → resolver → eligibility.
+     */
+    private suspend fun gatewayRuntime(
+        fx: Fixtures,
+        provider: ScriptedModelProvider,
+        declaresToolCalling: Boolean,
+    ): AgentRuntime {
+        val roles = AgentRoleModelRegistry(
+            DefaultAgentRoleModelRepository(InMemoryAgentRoleModelStore()),
+        )
+        roles.save(
+            role = AgentRole.MAIN,
+            providerId = "freellmapi",
+            model = GATEWAY_MODEL,
+            connectionId = "gateway-preset",
+            declaresToolCalling = declaresToolCalling,
+        )
+        // The reload the app performs at startup.
+        roles.load()
+        val connection = ModelConfig(
+            providerId = "freellmapi",
+            // Never contacted: the cases below fail before any request, or answer from the
+            // scripted provider registered under this connection's identity.
+            baseUrl = "https://gateway.example/v1",
+            model = "gemini-2.5-flash",
+            connectionId = "gateway-preset",
+            connectionKind = ModelConnectionKind.API,
+        )
+        return AgentModule.assemble(
+            gateway = DefaultModelGateway().also { it.register(provider) },
+            registry = fx.registry,
+            router = DefaultToolRouter(fx.registry),
+            modelResolver = AgentModelResolver(
+                preferences = AgentModelPreferences.DEFAULT,
+                connections = { mapOf(connection.connectionId to connection) },
+                livePreferences = { roles.preferences() },
+                // What the app knows about a gateway model: nothing authoritative. The
+                // live registry is fed by discovery, which is why the device reported
+                // `provenance=DISCOVERED support=UNKNOWN`; an empty registry is the same
+                // state for this pair — no entry, so tool calling stays unknown.
+                capabilityRegistry = InMemoryModelCapabilityRegistry(initial = emptyList()),
+            ),
+        )
+    }
+
+    /**
+     * A gateway's catalogue cannot say whether a model calls tools, so a role that needs
+     * them cannot run on "unknown". Once the user states it for the model they assigned,
+     * the conversation runs on that exact model.
+     */
+    @Test
+    fun `a gateway model the user declared tool calling for runs MAIN`() = runAgent {
+        val fx = Fixtures()
+        val provider = ScriptedModelProvider(
+            mapOf(
+                AgentRole.MAIN to mutableListOf(
+                    response("", toolCall(AgentProtocol.FINISH_TOOL, AgentProtocol.ARG_SUMMARY to "Done")),
+                ),
+            ),
+            id = "gateway-preset",
+        )
+        val runtime = gatewayRuntime(fx, provider, declaresToolCalling = true)
+
+        val result = runtime.orchestrator.run(
+            request = AgentRunRequest(prompt = "go"),
+            // The session is running on another model; MAIN's assignment decides.
+            modelConfig = ModelConfig(
+                providerId = "openai-compatible",
+                baseUrl = "http://127.0.0.1:8080/v1",
+                model = "devstral-24b",
+                connectionKind = ModelConnectionKind.LOCAL_CUSTOM,
+            ),
+            sink = CollectingEventSink(),
+        )
+
+        assertEquals(AgentStatus.COMPLETED, result.status)
+        assertEquals(listOf(GATEWAY_MODEL), provider.requests.map { it.config.model })
+    }
+
+    /**
+     * Without the statement the same wiring is refused — and refused as what it is: an
+     * eligibility verdict about a model that is connected, naming the capability and where
+     * to fix it. It must not read as "no model is online", which means no connection at
+     * all, and it must not call anything.
+     */
+    @Test
+    fun `an undeclared gateway model is refused as ineligible, not as no model online`() = runAgent {
+        val fx = Fixtures()
+        val provider = ScriptedModelProvider(
+            mapOf(AgentRole.MAIN to mutableListOf(response("should not run"))),
+            id = "gateway-preset",
+        )
+        val runtime = gatewayRuntime(fx, provider, declaresToolCalling = false)
+
+        val result = runtime.orchestrator.run(
+            request = AgentRunRequest(prompt = "go"),
+            modelConfig = ModelConfig(
+                providerId = "openai-compatible",
+                baseUrl = "http://127.0.0.1:8080/v1",
+                model = "devstral-24b",
+                connectionKind = ModelConnectionKind.LOCAL_CUSTOM,
+            ),
+            sink = CollectingEventSink(),
+        )
+
+        assertEquals(AgentStatus.FAILED, result.status)
+        val error = result.errors.single()
+        assertEquals(AgentErrorCode.MODEL_NOT_ELIGIBLE, error.code)
+        assertEquals("gemini-3.5-flash-lite", error.details["model"])
+        assertEquals("freellmapi", error.details["provider"])
+        assertEquals("false", error.details["declared"])
+        assertEquals("UNKNOWN", error.details["reason"])
+        assertFalse(error.message.contains("No model is online"), error.message)
+        assertTrue(error.message.contains("Settings → Agent Models"), error.message)
+        assertEquals(emptyList(), provider.requests.map { it.config.model })
     }
 
     /** The same wiring with the local model connected: the conversation runs on it. */
@@ -1128,8 +1250,13 @@ class AgentCoreTest {
         val afterSearch = provider.requests[2].messages.filter { it.role == ModelRole.TOOL }.last()
         assertTrue(afterSearch.content.contains("supabase.kt"), afterSearch.content)
 
-        val afterRead = provider.requests[3].messages.filter { it.role == ModelRole.TOOL }.last()
-        assertTrue(afterRead.content.contains("initSupabase"), afterRead.content)
-        assertFalse(provider.requests.any { request -> request.messages.any { it.content.contains(secret) } })
-    }
-}
+         val afterRead = provider.requests[3].messages.filter { it.role == ModelRole.TOOL }.last()
+         assertTrue(afterRead.content.contains("initSupabase"), afterRead.content)
+         assertFalse(provider.requests.any { request -> request.messages.any { it.content.contains(secret) } })
+     }
+
+     private companion object {
+         /** A model a gateway serves and its own catalogue says nothing about. */
+         const val GATEWAY_MODEL: String = "gemini-3.5-flash-lite"
+     }
+ }

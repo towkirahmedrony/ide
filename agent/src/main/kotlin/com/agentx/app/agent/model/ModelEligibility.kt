@@ -113,6 +113,53 @@ data class ModelEligibility(
     val local: Boolean get() = profile.local
 
     /**
+     * One sentence saying which kind of rejection this is and what repairs it, or null
+     * for a state that is already self-describing.
+     *
+     * The four situations a user has to tell apart are kept apart here:
+     *
+     * - *missing connection* — no connection to run on at all. Never this verdict; it is
+     *   reported as [AgentErrorCode.NOT_CONFIGURED] before any model is resolved;
+     * - *missing declaration* — nothing is stated for this exact model, so its support is
+     *   unknown ([statedModels] is empty): the user states it for this model, or assigns
+     *   another;
+     * - *unknown capability* — support is unknown and a statement exists, but for other
+     *   models of the connection: the user states it for this model, or assigns one of
+     *   those;
+     * - *confirmed unsupported* — the model is known not to support it: only another
+     *   model helps.
+     */
+    private fun setupAdvice(capability: ModelCapability?): String? {
+        val what = capability?.let(::humanCapability) ?: "the required capability"
+        val who = "${role.name.lowercase()} agent"
+        return when (state) {
+            ModelEligibilityState.DISABLED ->
+                "$providerId lists $modelId, but that model is disabled."
+            ModelEligibilityState.CAPABILITY_UNSUPPORTED ->
+                "$providerId does not support $what for $modelId, which this $who requires. " +
+                    "Assign a model that does."
+            ModelEligibilityState.UNKNOWN ->
+                if (statedModels.isEmpty()) {
+                    if (declared) {
+                        // Cannot happen through the shared statement rule, but a caller may
+                        // hand over a configuration whose statement does not cover the
+                        // resolved model: say so rather than guessing.
+                        "The statement saved for $modelId does not resolve to $what support."
+                    } else {
+                        "Nothing has been stated about $what for $modelId, which this $who " +
+                            "requires. State it for this model in Settings → Agent Models if it " +
+                            "does support it, otherwise assign a model that does."
+                    }
+                } else {
+                    "Support for $what is unconfirmed for $modelId, which this $who requires. " +
+                        "The statement saved for this connection covers ${statedModels.joinToString(", ")}, " +
+                        "not $modelId. State it for this model in Settings → Agent Models, or assign one of those."
+                }
+            else -> null
+        }
+    }
+
+    /**
      * A structured [AgentError] for an ineligible model. Only valid when
      * [eligible] is false; a successful eligibility has no error to report.
      */
@@ -154,6 +201,16 @@ data class ModelEligibility(
         healthScope?.let { details["healthScope"] = it.name }
         details["local"] = profile.local.toString()
         val message = buildString {
+            // Lead with what actually happened and what repairs it, then the
+            // machine-readable line, so the verdict is both readable and traceable. The
+            // wording keeps the states apart, because they are repaired differently: no
+            // connection at all is a connection problem (reported elsewhere, never as an
+            // eligibility verdict), a model the user never stated anything about needs a
+            // statement for *this* model, and a model that is known not to support the
+            // capability needs another model. None of them is reported as "no model
+            // connected" — the model is here, and the user has to be told which of the
+            // three it is.
+            setupAdvice(first)?.let { append(it).append(' ') }
             append("MODEL_NOT_ELIGIBLE role=${role.name} provider=$providerId model=$modelId")
             append(" reason=${state.name}")
             first?.let {
@@ -362,6 +419,19 @@ private fun ModelEligibility.withEvidenceOf(config: ModelConfig): ModelEligibili
         .sorted()
         .take(MAX_STATED_MODELS),
 )
+
+/**
+ * A capability as a person would name it in a sentence ("tool calling"), falling back to
+ * the id so an unmapped capability is still reported rather than swallowed.
+ */
+private fun humanCapability(capability: ModelCapability): String = when (capability) {
+    ModelCapability.TOOL_CALLING -> "tool calling"
+    ModelCapability.TEXT_GENERATION -> "text generation"
+    ModelCapability.STREAMING -> "streaming"
+    ModelCapability.VISION -> "vision"
+    ModelCapability.STRUCTURED_OUTPUT -> "structured output"
+    ModelCapability.REASONING -> "reasoning"
+}
 
 /**
  * A resolved model plus the eligibility that decided it.

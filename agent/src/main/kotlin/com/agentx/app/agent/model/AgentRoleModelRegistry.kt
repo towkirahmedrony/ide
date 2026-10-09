@@ -66,6 +66,10 @@ class AgentRoleModelRegistry(
                 ?: AgentCatalog.definition(role).modelPreference,
             connectionId = override?.connectionId,
             explicit = override != null,
+            // Read from the same saved record the resolver reads through
+            // [preferences], so a screen judging this assignment reports the statement the
+            // runtime will actually use rather than a second, independent opinion.
+            declaresToolCalling = override?.declaresToolCalling == true,
         )
     }
 
@@ -111,4 +115,14 @@ data class RoleModelSelection(
     val connectionId: String?,
     /** True when the user explicitly saved this assignment rather than the default. */
     val explicit: Boolean,
+    /**
+     * The user's saved statement that this assignment's [model] calls tools.
+     *
+     * Carried so a caller judging the assignment — the Settings screen — can apply it
+     * through the same rule the runtime applies, instead of resolving the capability from
+     * `providerId` + `model` alone and reporting a model the user has already stated as
+     * `UNKNOWN`. False for a built-in default and for any assignment the user did not
+     * state it for: an unstated model is never assumed capable.
+     */
+    val declaresToolCalling: Boolean = false,
 )

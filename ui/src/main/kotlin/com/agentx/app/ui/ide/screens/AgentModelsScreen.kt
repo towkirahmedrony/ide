@@ -17,6 +17,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -30,6 +31,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.agentx.app.agent.domain.AgentRole
 import com.agentx.app.agent.model.ProviderModelOption
+import com.agentx.app.agent.model.RoleModelEvaluation
 import com.agentx.app.agent.model.RoleModelState
 import com.agentx.app.model.manager.ModelConnectionKind
 import com.agentx.app.ui.ide.components.IdeCard
@@ -64,7 +66,13 @@ fun AgentModelsScreen(
     loading: Boolean,
     message: String?,
     onBack: () -> Unit,
-    onSave: (AgentRole, String, String?, String?) -> Unit,
+    /**
+     * `role`, provider, model, the connection it was chosen from, and the user's statement
+     * that this model calls tools. The statement travels with the assignment because this
+     * is where the model is chosen: a role may be pointed at any model a gateway serves,
+     * and the model the gateway routes to decides whether tools work.
+     */
+    onSave: (AgentRole, String, String?, String?, Boolean) -> Unit,
     onReset: (AgentRole) -> Unit,
     onDismissMessage: () -> Unit,
     modifier: Modifier = Modifier,
@@ -144,9 +152,9 @@ fun AgentModelsScreen(
                 row = row,
                 options = options,
                 providerSummaries = providerSummaries,
-                onSave = { providerId, model, connectionId ->
+                onSave = { providerId, model, connectionId, declaresToolCalling ->
                     editing = null
-                    onSave(role, providerId, model, connectionId)
+                    onSave(role, providerId, model, connectionId, declaresToolCalling)
                 },
                 onReset = {
                     editing = null
@@ -221,7 +229,13 @@ private fun AgentModelCard(row: AgentModelRow, onClick: () -> Unit) {
         }
         IdeSpacer(4)
         Text(
-            text = if (row.explicit) "Custom assignment" else "Built-in default",
+            // The statement is part of what was assigned, so it is shown with it: a role
+            // whose model the user stated tool calling for is not the same assignment as
+            // one whose model's support is still unknown.
+            text = buildString {
+                append(if (row.explicit) "Custom assignment" else "Built-in default")
+                if (row.declaresToolCalling) append(" · tool calling stated")
+            },
             style = MaterialTheme.typography.labelSmall,
             color = ForgeMuted,
         )
@@ -233,7 +247,7 @@ private fun AgentModelEditorDialog(
     row: AgentModelRow,
     options: List<ProviderModelOption>,
     providerSummaries: Map<String, String>,
-    onSave: (providerId: String, model: String?, connectionId: String?) -> Unit,
+    onSave: (providerId: String, model: String?, connectionId: String?, declaresToolCalling: Boolean) -> Unit,
     onReset: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -242,7 +256,16 @@ private fun AgentModelEditorDialog(
     var selectedProvider by remember(row.role) { mutableStateOf(initialProvider) }
     var selectedModel by remember(row.role) { mutableStateOf(row.model) }
 
+    // The statement belongs to one model, so the switch follows the selection: opening the
+    // saved model shows what was stated for it, and picking another model shows nothing
+    // rather than carrying the previous model's answer over — which would state a
+    // capability for a model the user never said it about.
+    var declaresToolCalling by remember(row.role, selectedModel) {
+        mutableStateOf(row.declaresToolCalling && selectedModel == row.model)
+    }
+
     val currentProvider = options.firstOrNull { it.providerId == selectedProvider }
+    val selectedModelLabel = selectedModel?.takeIf { it.isNotBlank() } ?: "this model"
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -296,6 +319,40 @@ private fun AgentModelEditorDialog(
                         )
                     }
                 }
+                // The user's statement for this assignment's model. A gateway routes a
+                // model to whatever upstream serves it, so nothing authoritative describes
+                // whether it calls tools, and a role that needs tools cannot run on
+                // "unknown". Only shown for the providers whose models the user states
+                // themselves — a catalogue provider states its own capabilities and a
+                // switch must not override them.
+                if (RoleModelEvaluation.declarableByUser(selectedProvider)) {
+                    IdeSpacer(10)
+                    IdeDivider()
+                    IdeSpacer(10)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Supports tool calling",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = ForgeInk,
+                            )
+                            Text(
+                                text = if (declaresToolCalling) {
+                                    "Stated for $selectedModelLabel only: this agent will send tools to it"
+                                } else {
+                                    "Leave off unless this model really calls tools — it stays unknown " +
+                                        "until stated, and this agent cannot run on it"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = ForgeMuted,
+                            )
+                        }
+                        Switch(
+                            checked = declaresToolCalling,
+                            onCheckedChange = { enabled -> declaresToolCalling = enabled },
+                        )
+                    }
+                }
                 currentProvider?.discoveryNote?.takeIf { it.isNotBlank() }?.let { note ->
                     IdeSpacer(10)
                     Text(
@@ -341,7 +398,11 @@ private fun AgentModelEditorDialog(
                 enabled = selectedProvider != null,
                 onClick = {
                     val provider = selectedProvider ?: return@TextButton
-                    onSave(provider, selectedModel, currentProvider?.connectionId)
+                    // Only a provider the user states for carries the switch: for a
+                    // catalogue provider the statement stays false, never a claim that
+                    // overrides what the provider says about its own models.
+                    val declares = declaresToolCalling && RoleModelEvaluation.declarableByUser(provider)
+                    onSave(provider, selectedModel, currentProvider?.connectionId, declares)
                 },
             ) { Text("Save") }
         },

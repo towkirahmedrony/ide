@@ -37,6 +37,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -237,5 +238,51 @@ class AgentModelsViewModelTest {
         vm.reset(AgentRole.MAIN)
         assertEquals(AgentModelIds.DEVSTRAL_24B, vm.rows.first { it.role == AgentRole.MAIN }.model)
         assertEquals("OpenAI-compatible", vm.rows.first { it.role == AgentRole.MAIN }.providerLabel)
+    }
+
+    /**
+     * The screen's own save, with the statement the switch produces. This is the producer
+     * the runtime was missing: [AgentModelsViewModel.save] always accepted the statement,
+     * but nothing on the screen ever passed it, so a role could not be told that the model
+     * it was assigned calls tools — and `declared=false` was permanent.
+     */
+    @Test
+    fun `a statement made for a role's model is saved and reported back`() {
+        val store = InMemoryAgentRoleModelStore()
+        val registry = AgentRoleModelRegistry(DefaultAgentRoleModelRepository(store))
+        val vm = viewModel(registry)
+
+        vm.save(
+            role = AgentRole.MAIN,
+            providerId = AgentModelProviders.FREELMAPI,
+            model = "gemini-3.5-flash-lite",
+            connectionId = "gateway-preset",
+            declaresToolCalling = true,
+        )
+
+        // The exact persisted value, read back from the store the app reloads at startup.
+        assertEquals(true, registry.override(AgentRole.MAIN)?.declaresToolCalling)
+        assertTrue(vm.rows.first { it.role == AgentRole.MAIN }.declaresToolCalling)
+
+        // Reopening the screen reloads from the same store and still reports it, so the
+        // editor does not open showing "off" and withdraw a statement the user made.
+        val reopened = viewModel(AgentRoleModelRegistry(DefaultAgentRoleModelRepository(store)))
+        reopened.refresh()
+        assertTrue(reopened.rows.first { it.role == AgentRole.MAIN }.declaresToolCalling)
+    }
+
+    @Test
+    fun `switching the assigned model does not carry the statement to the new model`() {
+        val store = InMemoryAgentRoleModelStore()
+        val registry = AgentRoleModelRegistry(DefaultAgentRoleModelRepository(store))
+        val vm = viewModel(registry)
+
+        vm.save(AgentRole.MAIN, AgentModelProviders.FREELMAPI, "gemini-3.5-flash-lite", "gateway-preset", true)
+        // The user picks another model of the same gateway; the switch is off for it.
+        vm.save(AgentRole.MAIN, AgentModelProviders.FREELMAPI, "glm-5.3", "gateway-preset", false)
+
+        assertEquals("glm-5.3", registry.override(AgentRole.MAIN)?.model)
+        assertEquals(false, registry.override(AgentRole.MAIN)?.declaresToolCalling)
+        assertFalse(vm.rows.first { it.role == AgentRole.MAIN }.declaresToolCalling)
     }
 }

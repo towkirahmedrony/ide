@@ -4,6 +4,7 @@ import com.agentx.app.agent.domain.AgentRole
 import com.agentx.app.model.ModelConfig
 import com.agentx.app.model.capability.CapabilitySupport
 import com.agentx.app.model.capability.ModelCapabilityRegistry
+import com.agentx.app.model.connect.ModelSetupKind
 import com.agentx.app.model.preset.ModelProviderIds
 
 /**
@@ -116,6 +117,23 @@ data class RoleModelStatus(
  * never pretends a model is available when it is not.
  */
 object RoleModelEvaluation {
+
+    /**
+     * Whether the capabilities of [providerId]'s models are the user's to state.
+     *
+     * True for the providers nothing authoritative describes: a Custom/Local
+     * OpenAI-compatible endpoint, and an endpoint-addressed gateway (FreeLLMAPI), which
+     * routes a model to whatever upstream serves it and is therefore listed with tool
+     * calling unknown. False for a fixed-address catalogue provider (Gemini, Groq), which
+     * states its own capabilities and must not be overridden by a switch.
+     *
+     * The same rule the connect flow uses to decide whether to show the switch
+     * ([ModelSetupKind.showsEndpointField]), so the two surfaces cannot disagree about
+     * whose statement counts.
+     */
+    fun declarableByUser(providerId: String?): Boolean =
+        providerId == ModelProviderIds.OPENAI_COMPATIBLE ||
+            ModelSetupKind.entries.any { it.id == providerId && it.showsEndpointField }
 
     /** Human provider name for the well-known identities. */
     fun providerLabel(providerId: String?): String = when (providerId) {
@@ -234,15 +252,27 @@ object RoleModelEvaluation {
         // consult admission, nor require a provider to be answering right now in order
         // to describe what its models can do.
         if (capabilities != null && effectiveModel != null) {
-            val profile = ModelEligibilityChecker(capabilities).profile(
-                ModelConfig(
-                    providerId = providerId,
-                    // Inert for capability resolution, which reads identity and any saved
-                    // declaration only. Never logged and never used to connect.
-                    baseUrl = option.endpoint.orEmpty(),
-                    model = effectiveModel,
-                ),
+            // The assignment's own statement, applied through the rule the runtime applies
+            // ([statingToolCalling]) rather than resolved from `providerId` + `model`
+            // alone. Without it a model the user had already stated tool calling for was
+            // reported here as `CAPABILITY_UNKNOWN` while the runtime ran it — the
+            // disagreement this evaluation exists to prevent — and the screen offered no
+            // way to see that the statement had taken effect. The rule is applied in its
+            // pure form: judging an assignment must not change what any other consumer
+            // believes about the model.
+            val base = ModelConfig(
+                providerId = providerId,
+                // Inert for capability resolution, which reads identity and any saved
+                // declaration only. Never logged and never used to connect.
+                baseUrl = option.endpoint.orEmpty(),
+                model = effectiveModel,
             )
+            val config = if (selection.declaresToolCalling) {
+                base.statingToolCalling(effectiveModel)
+            } else {
+                base
+            }
+            val profile = ModelEligibilityChecker(capabilities).profile(config)
             if (!profile.enabled) {
                 return RoleModelStatus(
                     role = selection.role,

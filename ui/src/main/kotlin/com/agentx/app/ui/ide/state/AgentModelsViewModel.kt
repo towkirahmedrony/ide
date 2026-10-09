@@ -51,6 +51,17 @@ data class AgentModelRow(
      * unverified model is not reported as broken.
      */
     val capabilityNote: String? = null,
+    /**
+     * The user's saved statement that this assignment's [model] calls tools, scoped to
+     * that one model.
+     *
+     * Read from the assignment the resolver reads, so the editor opens showing what is
+     * actually in effect rather than defaulting to off and silently withdrawing a
+     * statement the user already made. Null [model] means there is nothing to state it
+     * for; the editor offers the switch only for a provider whose models the user states
+     * themselves ([RoleModelEvaluation.declarableByUser]).
+     */
+    val declaresToolCalling: Boolean = false,
 )
 
 /**
@@ -236,6 +247,9 @@ class AgentModelsViewModel(
                 message = status.message,
                 explicit = status.explicit,
                 capabilityNote = status.capabilityNote,
+                // The statement the resolver will apply, from the same saved record, so the
+                // editor shows what is in effect instead of assuming nothing was stated.
+                declaresToolCalling = selection.declaresToolCalling,
                 // Local AI vs API AI, from the assigned provider identity.
                 domain = selection.providerId.connectionKind,
             )
