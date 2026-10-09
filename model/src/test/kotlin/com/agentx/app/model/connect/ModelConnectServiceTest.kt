@@ -7,6 +7,9 @@ import com.agentx.app.model.DefaultModelGateway
 import com.agentx.app.model.FakeHttpTransport
 import com.agentx.app.model.SUCCESS_RESPONSE
 import com.agentx.app.model.http.HttpResponseSpec
+import com.agentx.app.model.json.JsonCodec
+import com.agentx.app.model.json.objectOrNull
+import com.agentx.app.model.json.stringOrNull
 import com.agentx.app.model.manager.DefaultModelManager
 import com.agentx.app.model.manager.FakeModelRunner
 import com.agentx.app.model.manager.GatewayModelConnectionRegistry
@@ -103,6 +106,26 @@ class ModelConnectServiceTest {
             }
         },
     )
+
+    /**
+     * The model id the verification request actually sent, read from the request body.
+     *
+     * The saved preset and the runtime connection are deliberately not consulted: a
+     * connection that stores one model while asking the endpoint for another is
+     * exactly the divergence these tests exist to rule out, so the assertion has to
+     * look at the wire.
+     */
+    private fun verifiedModel(transport: FakeHttpTransport): String? {
+        val body = transport.requests
+            .lastOrNull { request -> request.url.endsWith("/chat/completions") }
+            ?.body
+            ?: return null
+        return JsonCodec.parse(body).objectOrNull()?.stringOrNull("model")
+    }
+
+    /** How many verification requests were sent. One means nothing was retried. */
+    private fun verificationCount(transport: FakeHttpTransport): Int =
+        transport.requests.count { request -> request.url.endsWith("/chat/completions") }
 
     /** Gemini's own model list: a `models` array whose entries are `models/<id>`. */
     private fun geminiModelsJson(vararg ids: String): String =
@@ -434,6 +457,182 @@ class ModelConnectServiceTest {
         val discovery = assertNotNull(transport.requests.firstOrNull { it.method == "GET" })
         assertEquals("https://gateway.example.com/v1/models", discovery.url)
         assertEquals("https://gateway.example.com/v1", assertNotNull(manager.activeConfig()).baseUrl)
+    }
+
+    // --- FreeLLMAPI discovery / verification model identity -------------------
+    //
+    // What discovery reports it would select and what the request actually carries are
+    // two separate facts: the first is a preference among the ids the endpoint listed,
+    // the second is the id the connection uses. These tests pin both from the wire, so
+    // the verified model, the saved preset and the runtime connection cannot drift
+    // apart silently.
+
+    @Test
+    fun `the catalogue preference is the model freeLLMAPI verifies when none is chosen`() = runBlocking {
+        // The gateway lists several models — with the catalogue preference deliberately
+        // not first — and the caller supplies none, so FreeLLMAPI's own preference
+        // (gemini-2.5-flash) decides. That same id has to be the one verification sends:
+        // a connection that probed one model while saving another would be tested
+        // against something it does not use.
+        val transport = openAiTransport(
+            listBody = modelsJson("llama-3.3-70b-versatile", "gemini-2.5-flash", "openai/gpt-oss-20b"),
+        )
+        val manager = manager(transport)
+
+        val connected = assertIs<ModelConnectOutcome.Connected>(
+            assertNotNull(
+                manager.connectQuick(
+                    ModelConnectRequest(
+                        displayName = "FreeLLMAPI",
+                        setupKind = ModelSetupKind.FREELLMAPI,
+                        credential = "fla-test-key",
+                    ),
+                ).valueOrNull(),
+            ),
+        )
+
+        // Discovery reports its catalogue preference as the selection ...
+        assertTrue(logs.contains("selected=gemini-2.5-flash"), logs.text())
+        assertTrue(logs.contains("reason=catalog-preferred"), logs.text())
+        // ... no request-supplied id overrode it ...
+        assertTrue(logs.contains("override=-"), logs.text())
+        // ... and it is the model that was verified, saved and connected over.
+        assertEquals("gemini-2.5-flash", verifiedModel(transport))
+        assertEquals("gemini-2.5-flash", connected.preset.modelIdentifier)
+        assertEquals("gemini-2.5-flash", assertNotNull(manager.activeConfig()).model)
+    }
+
+    @Test
+    fun `an explicit model id absent from the gateway list is used instead of the preference`() = runBlocking {
+        // The reported production shape: the form carried an id the gateway's own list
+        // does not contain, so discovery falls through to its catalogue preference and
+        // reports that as what it would select. The explicit id is still the one sent
+        // and saved — a preference is never substituted for the chosen model — and both
+        // values are now on the record, so the discovery line and the verification line
+        // no longer look like a contradiction.
+        val transport = openAiTransport(
+            listBody = modelsJson("gemini-2.5-flash", "llama-3.3-70b-versatile"),
+        )
+        val manager = manager(transport)
+
+        val connected = assertIs<ModelConnectOutcome.Connected>(
+            assertNotNull(
+                manager.connectQuick(
+                    ModelConnectRequest(
+                        displayName = "FreeLLMAPI",
+                        setupKind = ModelSetupKind.FREELLMAPI,
+                        credential = "fla-test-key",
+                        modelIdentifier = "openai/gpt-oss-20b",
+                    ),
+                ).valueOrNull(),
+            ),
+        )
+
+        // What discovery would have chosen, and the override that supersedes it, are
+        // both logged.
+        assertTrue(logs.contains("reason=catalog-preferred"), logs.text())
+        assertTrue(logs.contains("selected=gemini-2.5-flash"), logs.text())
+        assertTrue(logs.contains("override=openai/gpt-oss-20b"), logs.text())
+        // An id the endpoint did not list is reported rather than silently accepted.
+        assertTrue(logs.contains("reason=not-in-discovered-list"), logs.text())
+        // And the explicit id is what was verified, saved and connected — not the
+        // catalogue's preferred model.
+        assertEquals("openai/gpt-oss-20b", verifiedModel(transport))
+        assertEquals("openai/gpt-oss-20b", connected.preset.modelIdentifier)
+        assertEquals("openai/gpt-oss-20b", assertNotNull(manager.activeConfig()).model)
+    }
+
+    @Test
+    fun `a listed explicit model id takes precedence and is verified verbatim`() = runBlocking {
+        // The ordinary case: the id the user chose is one the gateway lists, next to the
+        // model the catalogue would have preferred. The explicit choice wins in discovery
+        // and on the wire, and the id travels unchanged — no normalization, no quiet
+        // re-pointing at the more familiar model.
+        val transport = openAiTransport(
+            listBody = modelsJson("gemini-2.5-flash", "openai/gpt-oss-20b"),
+        )
+        val manager = manager(transport)
+
+        val connected = assertIs<ModelConnectOutcome.Connected>(
+            assertNotNull(
+                manager.connectQuick(
+                    ModelConnectRequest(
+                        displayName = "FreeLLMAPI",
+                        setupKind = ModelSetupKind.FREELLMAPI,
+                        credential = "fla-test-key",
+                        modelIdentifier = "openai/gpt-oss-20b",
+                    ),
+                ).valueOrNull(),
+            ),
+        )
+
+        // The explicit id is what discovery selects, so the catalogue preference is never
+        // reached ...
+        assertTrue(logs.contains("reason=preferred"), logs.text())
+        assertTrue(logs.contains("selected=openai/gpt-oss-20b"), logs.text())
+        // ... and it is the exact id the outgoing request body carries.
+        assertEquals("openai/gpt-oss-20b", verifiedModel(transport))
+        assertEquals("openai/gpt-oss-20b", connected.preset.modelIdentifier)
+        assertEquals("openai/gpt-oss-20b", assertNotNull(manager.activeConfig()).model)
+    }
+
+    @Test
+    fun `a 502 from the gateway is reported as an upstream failure and the model is not swapped`() = runBlocking {
+        // FreeLLMAPI answering 502 with its own upstream reason: the endpoint this
+        // connection is configured at reported that the provider behind it failed. That
+        // is a failure of the endpoint AgentX was pointed at — not a model-selection or
+        // preset-configuration error — and it is never answered by verifying some other
+        // model instead.
+        val transport = openAiTransport(
+            listBody = modelsJson("gemini-2.5-flash", "openai/gpt-oss-20b"),
+            chatStatus = 502,
+            chatBody = """
+                {"error":{"message":"upstream route groq/openai/gpt-oss-20b failed: empty_completion","type":"empty_completion"}}
+            """.trimIndent(),
+        )
+        val manager = manager(transport)
+
+        val error = assertNotNull(
+            manager.connectQuick(
+                ModelConnectRequest(
+                    displayName = "FreeLLMAPI",
+                    setupKind = ModelSetupKind.FREELLMAPI,
+                    credential = "fla-test-key",
+                    modelIdentifier = "openai/gpt-oss-20b",
+                ),
+            ).errorOrNull(),
+        )
+
+        // An endpoint (upstream) failure, reported as such: the connect outcome is a model
+        // operation failure, not an invalid preset, and the status is stated rather than
+        // blamed on the configuration.
+        assertEquals(ForgeErrorCode.MODEL_OPERATION_FAILED, error.code)
+        assertEquals(DiscoveryFailureKind.SERVER_ERROR.name, error.details["kind"])
+        assertEquals("The chat endpoint returned HTTP 502.", error.message)
+
+        // Both classifications survive into the Developer Log: AgentX's own code
+        // (SERVER_ERROR) next to the error type the gateway itself reported
+        // (empty_completion), which is what keeps an upstream provider failure from
+        // being read as a local fault.
+        assertTrue(logs.contains("status=502"), logs.text())
+        assertTrue(logs.contains("kind=SERVER_ERROR"), logs.text())
+        // The probe's own line, found by its stage field, carries both facts: the
+        // endpoint's error type and AgentX's classification of it.
+        val probeFailure = assertNotNull(
+            logs.records.lastOrNull { record -> record.fields["stage"] == "chat-probe" },
+        )
+        assertEquals("empty_completion", probeFailure.fields["providerErrorType"])
+        assertEquals("SERVER_ERROR", probeFailure.fields["code"])
+
+        // The model under test is the one that was sent — nothing was substituted for it —
+        // and the failure was not retried into a second verification request.
+        assertEquals("openai/gpt-oss-20b", verifiedModel(transport))
+        assertEquals(1, verificationCount(transport))
+
+        // Nothing was saved and no runtime was started, so a failed verification cannot
+        // leave a half-configured connection behind.
+        assertTrue(store.load().isEmpty())
+        assertEquals(0, runner.startCalls)
     }
 
     @Test

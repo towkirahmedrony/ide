@@ -222,6 +222,24 @@ class ModelConnectService(
             }
         }
 
+        // The id about to be sent and saved is the chosen one, whether it came from the
+        // form or from the discovery selection. When the endpoint did not list it, that
+        // is recorded here — an endpoint can list a model it will not actually serve,
+        // and an id can outlive the list it came from — so the fact is visible before
+        // the verification runs rather than only after it fails. It is a diagnostic and
+        // nothing else: the request still carries the id the caller asked for, because
+        // a model is never substituted for the one that was chosen.
+        if (api.modelIds.isNotEmpty() &&
+            api.modelIds.none { listed -> normalizeModelId(listed) == normalizeModelId(modelId) }
+        ) {
+            trace.warn(
+                "MODEL",
+                "reason" to "not-in-discovered-list",
+                "model" to modelId,
+                "listed" to api.modelIds.size,
+            )
+        }
+
         val protocol = request.apiProtocol ?: api.protocol
         val apiBase = request.apiBasePath?.takeIf { it.isNotBlank() } ?: api.apiBasePath
         val providerType = request.providerType ?: inferProviderType(request, api.rootUrl)

@@ -716,6 +716,13 @@ class ModelApiDiscovery(
                 unique.size == 1 -> "single"
                 else -> "auto"
             },
+            // A model id the caller supplied is the one it will actually use — whether
+            // or not this list contains it — so [selected] above is then only the
+            // fallback this probe would have chosen. Stating the override here is what
+            // keeps a discovery line from being read as "the model that will be
+            // verified": the candidate this list picked and the id the request will
+            // carry are both visible, instead of appearing to contradict each other.
+            "override" to (preferredModelId?.takeIf { it.isNotBlank() } ?: "-"),
         )
         val api = DiscoveredApi(
             protocol = protocol,

@@ -159,6 +159,16 @@ class ChatCapabilityProbe(
                 "kind" to kind.name,
                 "code" to error.code.name,
                 "retryable" to error.retryable,
+                // The endpoint's own machine-readable error type — `empty_completion`
+                // from a gateway relaying an upstream failure, Gemini's
+                // `RESOURCE_EXHAUSTED`, an OpenAI-compatible `invalid_request_error` —
+                // next to [code], which is AgentX's own classification of it. The two
+                // together are what separate an upstream failure the endpoint reported
+                // from a fault in this client, and this is the same field the provider
+                // layer already logs for a completion. Redacted like every other
+                // free-text value: it is provider-supplied text, so it is not trusted
+                // to be free of secrets.
+                "providerErrorType" to (error.providerErrorType?.let(::sanitizeForLog) ?: "-"),
                 "message" to sanitizeForLog(error.message ?: ""),
             )
             ChatProbeResult(
