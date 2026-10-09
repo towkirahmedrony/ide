@@ -99,7 +99,7 @@ class GatewayStatedModelCapabilityTest {
         capabilityRegistry = capabilities,
     )
 
-    private fun resolve(model: String, config: com.agentx.app.model.ModelConfig) =
+    private suspend fun resolve(model: String, config: com.agentx.app.model.ModelConfig) =
         resolverFor(model).resolveForRole(AgentRole.MAIN, config)
 
     /**

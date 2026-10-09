@@ -694,10 +694,13 @@ class AgentModelResolver(
         if (model == null || model == config.model) {
             config
         } else {
-            val moved = config.copy(model = model)
+            val moved = config.copy(model = model, declaredCapabilitiesModel = model)
             // Read only the connection's per-model statements: the statement the
             // configuration carried for its previous model belongs to that model, and
-            // must not be read as this one's.
+            // must not be read as this one's. Whatever this model's own statement turns
+            // out to be — or nothing, when the connection says nothing about it — the
+            // scope now names the model it belongs to, so it can never be inherited by
+            // a later rebuild either.
             moved.copy(declaredCapabilities = moved.statedCapabilitiesFor(model))
         }
 }

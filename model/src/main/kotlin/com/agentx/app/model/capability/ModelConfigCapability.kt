@@ -36,8 +36,12 @@ fun ModelConfig.statedCapabilitiesFor(modelId: String): ModelCapabilityDeclarati
  * made for another.
  */
 fun ModelConfig.declarationFor(modelId: String = model): ModelCapabilityDeclaration? =
-    statedCapabilitiesFor(modelId) ?: declaredCapabilities?.takeIf {
-        normalizeModelId(model) == normalizeModelId(modelId) && !it.isEmpty
+    statedCapabilitiesFor(modelId) ?: declaredCapabilities?.takeIf { statement ->
+        // The single statement answers only for the model it was *stated* for — not for
+        // whichever model this configuration happens to name now, which is what a
+        // rebuild that re-pointed it would otherwise turn it into.
+        val scope = declaredCapabilitiesModel ?: return@takeIf false
+        normalizeModelId(scope) == normalizeModelId(modelId) && !statement.isEmpty
     }
 
 /**

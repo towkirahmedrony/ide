@@ -51,6 +51,19 @@ data class ModelConfig(
      */
     val declaredCapabilities: ModelCapabilityDeclaration? = null,
     /**
+     * The model [declaredCapabilities] was stated for — the scope of that single
+     * statement.
+     *
+     * Defaults to this configuration's own [model], which is what a caller that builds
+     * a configuration for one model means. It exists so the statement cannot be read
+     * as belonging to another model: a caller that re-points the configuration at a
+     * different model either records that other model's own statement beside it (see
+     * `AgentModelResolver.withModel`) or leaves this naming the model the statement was
+     * actually made for — and a statement made for one model is then never applied to
+     * another, whichever way a configuration was rebuilt.
+     */
+    val declaredCapabilitiesModel: String? = model,
+    /**
      * Every statement the connection behind this configuration holds, keyed by the
      * model id each was made for.
      *
