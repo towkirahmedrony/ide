@@ -361,7 +361,7 @@ class AgentModelResolver(
         // unusable — MAIN's default is domain-bound to the local runtime, so with no
         // local connection yet the resolver failed against a connection and a model the
         // user had never configured, instead of falling back as documented below.
-        val authoritative = preference.explicit || !preference.connectionId.isNullOrBlank()
+        val authoritative = preference.explicit || !preference.connectionId.isNullOrBlank() || domain != null
 
         // A specific saved connection is addressed by its own identity, so a role
         // assigned to one custom endpoint never resolves to another endpoint of the
@@ -418,13 +418,6 @@ class AgentModelResolver(
                 error = connectionFailure(role, preference, model, providerId),
             )
         }
-        if (!matchesDomain(default, domain)) {
-            return Selection(
-                config = null,
-                fromRoleMapping = true,
-                error = unconfiguredDefaultFailure(role, preference, model),
-            )
-        }
         return Selection(default, fromRoleMapping = false)
     }
 
@@ -476,18 +469,24 @@ class AgentModelResolver(
         model: String?,
         missingConnectionId: String,
     ): AgentError {
-        val connection = preference.connectionId?.takeIf { it.isNotBlank() } ?: missingConnectionId
+        val named = preference.connectionId?.takeIf { it.isNotBlank() }
+        val connection = named ?: missingConnectionId
         val requestedModel = model ?: preference.model
         val fallbackConfigured = intentionalFallback(role)
+        // A built-in *policy default* is reported as a default. Naming its provider as
+        // `connection=` made a fresh install read as though the user had bound a
+        // connection that does not exist, which is what sent the first investigation
+        // looking for one; `explicit=` hardcoded to true compounded it.
+        val target = if (named != null || preference.explicit) {
+            "connection=$connection"
+        } else {
+            "defaultConnection=$connection"
+        }
         return AgentError(
             code = AgentErrorCode.MODEL_NOT_CONNECTED,
             message = "MODEL_NOT_CONNECTED role=${role.name} provider=${preference.providerId} " +
-                "connection=$connection model=${requestedModel ?: "(provider default)"} " +
+                "$target model=${requestedModel ?: "(provider default)"} " +
                 "reason=CONNECTION_NOT_CONNECTED fallbackAvailable=$fallbackConfigured " +
-                // Whether the role was bound by the user or is following its built-in
-                // default. The two look identical in the old message, and a default
-                // reported as an explicit assignment sent readers looking for a
-                // connection the user had never created.
                 "explicit=${preference.explicit}",
             role = role,
             details = buildMap {
@@ -498,44 +497,11 @@ class AgentModelResolver(
                 put("reason", "CONNECTION_NOT_CONNECTED")
                 put("cause", "MODEL_NOT_CONNECTED")
                 put("explicit", preference.explicit.toString())
-                put("assignment", if (preference.explicit) "user" else "default")
+                put("assignment", if (named != null || preference.explicit) "user" else "default")
                 put("fallbackAvailable", fallbackConfigured.toString())
             },
         )
     }
-
-    /**
-     * The structured failure for a *policy default* whose provider is not configured
-     * and whose active model cannot serve the role either.
-     *
-     * This is the fresh-install state: the app ships a built-in mapping (MAIN on the
-     * local runtime's Devstral) but no connection yet. The report has to say that — the
-     * default is named as the default, `explicit=false` says no one chose it, and no
-     * connection is claimed to exist — rather than reading as a broken assignment
-     * pointing at a connection the user never created.
-     */
-    private fun unconfiguredDefaultFailure(
-        role: AgentRole,
-        preference: RoleModelPreference,
-        model: String?,
-    ): AgentError = AgentError(
-        code = AgentErrorCode.MODEL_NOT_CONNECTED,
-        message = "MODEL_NOT_CONNECTED role=${role.name} provider=${preference.providerId} " +
-            "defaultConnection=${preference.providerId} model=${model ?: preference.model ?: "(provider default)"} " +
-            "reason=NO_CONNECTION_CONFIGURED explicit=false fallbackAvailable=false",
-        role = role,
-        details = buildMap {
-            put("role", role.name)
-            put("provider", preference.providerId)
-            put("defaultConnection", preference.providerId)
-            model?.let { put("model", it) }
-            put("reason", "NO_CONNECTION_CONFIGURED")
-            put("cause", "MODEL_NOT_CONNECTED")
-            put("explicit", "false")
-            put("assignment", "default")
-            put("fallbackAvailable", "false")
-        },
-    )
 
     /**
      * The structured failure for an authoritative assignment that matches more than

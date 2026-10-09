@@ -20,6 +20,7 @@ import com.agentx.app.model.runtime.ModelEndpoint
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -310,20 +311,18 @@ class GatewayStatedModelCapabilityTest {
     // --- Evidence A: the fresh-install default -------------------------------
 
     /**
-     * A fresh install has no connection at all. MAIN's built-in preference is
-     * domain-bound to the local runtime, which made resolution fail against a
-     * connection the user had never created:
+     * A fresh install has no connection at all. MAIN follows the built-in mapping (the
+     * local runtime's Devstral), which is a policy default — not something the user
+     * bound — so the report must say that, and must not name a connection nobody
+     * created (which is what the first investigation was sent looking for):
      *
      * ```
      * MODEL_NOT_CONNECTED role=MAIN provider=openai-compatible connection=openai-compatible
      * model=devstral-24b reason=CONNECTION_NOT_CONNECTED fallbackAvailable=false
      * ```
-     *
-     * The built-in default is a policy, not the user's assignment: it must report itself
-     * as such, name no connection it does not have, and say what is actually missing.
      */
     @Test
-    fun `a policy default with no matching connection reports itself as an unconfigured default`() =
+    fun `a fresh install reports its built-in default as a default, not as a connection`() =
         runBlocking {
             val apiActive = com.agentx.app.model.ModelConfig(
                 providerId = providerId,
@@ -331,65 +330,60 @@ class GatewayStatedModelCapabilityTest {
                 model = selectedModel,
             ).copy(connectionKind = ModelConnectionKind.API)
 
-            val result = AgentModelResolver(
-                preferences = AgentModelPreferences.DEFAULT,
-                connections = { emptyMap() },
-                capabilityRegistry = capabilities,
-            ).resolveForRole(AgentRole.MAIN, apiActive)
+            val failure = assertFailsWith<AgentModelResolutionException> {
+                AgentModelResolver(
+                    preferences = AgentModelPreferences.DEFAULT,
+                    connections = { emptyMap() },
+                    capabilityRegistry = capabilities,
+                ).resolveForRole(AgentRole.MAIN, apiActive)
+            }
 
-            assertFalse(result.eligible)
-            val error = result.errorOrNull()!!
-            assertEquals(AgentErrorCode.MODEL_NOT_CONNECTED, error.code)
-            assertTrue(error.message.contains("reason=NO_CONNECTION_CONFIGURED"), error.message)
-            assertTrue(error.message.contains("explicit=false"), error.message)
-            // The default target is named as a default, and no connection is claimed.
-            assertTrue(error.message.contains("defaultConnection=openai-compatible"), error.message)
-            assertFalse(error.message.contains("connection=openai-compatible"), error.message)
-            assertEquals("default", error.details["assignment"])
-            assertEquals("false", error.details["explicit"])
-            assertNull(error.details["connection"])
+            // The pinned contract is unchanged: an unconnected role target still fails
+            // rather than running on something else.
+            assertEquals(AgentErrorCode.MODEL_NOT_CONNECTED, failure.error.code)
+            assertEquals("CONNECTION_NOT_CONNECTED", failure.error.details["reason"])
+            assertEquals("openai-compatible", failure.error.details["provider"])
+            assertEquals("devstral-24b", failure.error.details["model"])
+            // What changed: it is reported as the built-in default, with no connection
+            // claimed and no false claim that the user chose it.
+            assertEquals("false", failure.error.details["explicit"])
+            assertEquals("default", failure.error.details["assignment"])
+            assertTrue(
+                failure.error.message.contains("defaultConnection=openai-compatible"),
+                failure.error.message,
+            )
+            assertFalse(
+                failure.error.message.contains("connection=openai-compatible"),
+                failure.error.message,
+            )
+            assertTrue(failure.error.message.contains("explicit=false"), failure.error.message)
         }
 
-    /**
-     * The documented compatibility behaviour is preserved: a policy default whose
-     * provider is absent still runs on the active model *of its own domain*.
-     */
+    /** A saved assignment is still reported as the user's own, and still never substituted. */
     @Test
-    fun `a policy default falls back to the active model of its own domain`() = runBlocking {
-        val groqActive = com.agentx.app.model.ModelConfig(
-            providerId = "groq",
-            baseUrl = "https://api.groq.com/openai/v1",
-            model = "llama-3.3-70b-versatile",
-        ).copy(connectionKind = ModelConnectionKind.API)
-
-        val result = AgentModelResolver(
-            preferences = AgentModelPreferences.DEFAULT,
-            connections = { emptyMap() },
-            capabilityRegistry = capabilities,
-        ).resolveForRole(AgentRole.REVIEWER, groqActive)
-
-        assertTrue(result.eligible, result.errorOrNull()?.message.orEmpty())
-        assertEquals("groq", result.config.providerId)
-    }
-
-    /** An explicit assignment still fails hard: it is never answered by another model. */
-    @Test
-    fun `an explicit assignment is still never substituted`() = runBlocking {
-        // A named connection that no longer exists fails rather than falling back.
-        val missing = AgentModelResolver(
-            preferences = AgentModelPreferences().with(
+    fun `a deleted saved connection is reported as the user's own missing connection`() = runBlocking {
+        val failure = assertFailsWith<AgentModelResolutionException> {
+            AgentModelResolver(
+                preferences = AgentModelPreferences().with(
+                    AgentRole.MAIN,
+                    RoleModelPreference(
+                        providerId,
+                        selectedModel,
+                        connectionId = "deleted-preset",
+                        explicit = true,
+                    ),
+                ),
+                connections = { emptyMap() },
+                capabilityRegistry = capabilities,
+            ).resolveForRole(
                 AgentRole.MAIN,
-                RoleModelPreference(providerId, selectedModel, connectionId = "deleted-preset", explicit = true),
-            ),
-            connections = { emptyMap() },
-            capabilityRegistry = capabilities,
-        ).resolveForRole(
-            AgentRole.MAIN,
-            com.agentx.app.model.ModelConfig(providerId, gatewayUrl, selectedModel),
-        )
-        assertFalse(missing.eligible)
-        assertEquals(AgentErrorCode.MODEL_NOT_CONNECTED, missing.errorOrNull()!!.code)
-        assertEquals("deleted-preset", missing.errorOrNull()!!.details["connection"])
-        assertEquals("true", missing.errorOrNull()!!.details["explicit"])
+                com.agentx.app.model.ModelConfig(providerId, gatewayUrl, selectedModel),
+            )
+        }
+
+        assertEquals(AgentErrorCode.MODEL_NOT_CONNECTED, failure.error.code)
+        assertEquals("deleted-preset", failure.error.details["connection"])
+        assertEquals("true", failure.error.details["explicit"])
+        assertEquals("user", failure.error.details["assignment"])
     }
 }
