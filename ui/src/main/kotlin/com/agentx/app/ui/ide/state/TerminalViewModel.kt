@@ -930,6 +930,7 @@ class TerminalViewModel(
      */
     private fun projectStatus(developer: LocalUbuntuRuntime, current: TermuxRuntime): ProjectStatus {
         val location = workspaceHandle() ?: workspaceLocation()
+        DeveloperLogger.info(DeveloperLogCategory.STORAGE, "Project raw handle=${workspaceHandle() ?: "(null)"} display=${workspaceLocation() ?: "(null)"} id=$workspaceId")
         val binding = developer.projectBinding(projectHandle(current), workspaceLocation())
         val mountable = binding is UbuntuProjectBinding.Direct
         val granted = runCatching { allFilesAccessGranted() }.getOrDefault(true)
