@@ -81,12 +81,14 @@ class AgentRoleModelRegistry(
         providerId: String,
         model: String? = null,
         connectionId: String? = null,
+        declaresToolCalling: Boolean = false,
     ): RoleModelConfig {
         val config = RoleModelConfig(
             role = role,
             providerId = providerId.trim(),
             model = model?.trim()?.takeIf { it.isNotBlank() },
             connectionId = connectionId?.trim()?.takeIf { it.isNotBlank() },
+            declaresToolCalling = declaresToolCalling,
             updatedAtMillis = clock(),
         )
         repository.save(config)

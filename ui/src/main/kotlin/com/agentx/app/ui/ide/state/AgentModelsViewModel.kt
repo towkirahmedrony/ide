@@ -145,13 +145,19 @@ class AgentModelsViewModel(
      * Assigns [providerId] (and an optional model within it) to [role]. Only the
      * identifiers are stored; the provider connection keeps its own credential.
      */
-    fun save(role: AgentRole, providerId: String, model: String?, connectionId: String?) {
+    fun save(
+        role: AgentRole,
+        providerId: String,
+        model: String?,
+        connectionId: String?,
+        declaresToolCalling: Boolean = false,
+    ) {
         if (providerId.isBlank()) {
             message = "Choose a provider for the ${name(role)}."
             return
         }
         viewModelScope.launch {
-            registry.save(role, providerId, model, connectionId)
+            registry.save(role, providerId, model, connectionId, declaresToolCalling)
             rebuild()
             message = "Saved. The ${name(role)} will use that model on its next run."
         }

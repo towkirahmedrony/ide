@@ -10,12 +10,14 @@ import com.agentx.app.model.ModelConfig
 import com.agentx.app.model.capability.InMemoryModelCapabilityRegistry
 import com.agentx.app.model.capability.ModelCapability
 import com.agentx.app.model.capability.ModelCapabilityErrors
+import com.agentx.app.model.capability.ModelCapabilityDeclaration
 import com.agentx.app.model.capability.ModelCapabilityProfile
 import com.agentx.app.model.capability.ModelCapabilityRegistry
 import com.agentx.app.model.capability.capabilityProfile
 import com.agentx.app.model.capability.statedCapabilitiesFor
 import com.agentx.app.model.manager.ModelConnectionKind
 import com.agentx.app.model.preset.ModelProviderIds
+import com.agentx.app.model.preset.stating
 import com.agentx.app.model.ratelimit.RateLimitManager
 
 /**
@@ -126,6 +128,20 @@ data class RoleModelPreference(
      * [connectionId] is authoritative regardless of this flag.
      */
     val explicit: Boolean = false,
+    /**
+     * The user's statement that the model this role is assigned to calls tools.
+     *
+     * A role can be assigned any model a connection serves — the picker offers the
+     * gateway's whole catalog — while the connection itself can only state what is saved
+     * on it, so a model chosen here could otherwise never acquire the capability a
+     * tool-using role requires. The statement belongs to the one `(providerId, model)`
+     * pair this preference names: it is applied to that model alone, never to the
+     * connection, never to its other models, and never to another role.
+     *
+     * False by default: nothing is claimed on the user's behalf, and a model nobody
+     * stated anything about keeps resolving to `UNKNOWN`.
+     */
+    val declaresToolCalling: Boolean = false,
 ) {
     init {
         require(providerId.isNotBlank()) { "providerId must not be blank" }
@@ -335,11 +351,17 @@ class AgentModelResolver(
         // what makes a model picked in Settings take effect at run time.
         val model = preference.model?.takeIf { it.isNotBlank() }
             ?: preferredModel?.takeIf { it.isNotBlank() }
-        // An explicit assignment — the user's saved Settings choice, any preference
-        // that names a specific saved connection, or a preference bound to an
-        // execution domain — is authoritative. It is never silently answered by
-        // another connection, another domain or the active model.
-        val authoritative = preference.explicit || !preference.connectionId.isNullOrBlank() || domain != null
+        // An explicit assignment — the user's saved Settings choice, or a preference
+        // that names a specific saved connection — is authoritative. It is never
+        // silently answered by another connection, another domain or the active model.
+        //
+        // A built-in *policy default* is not an assignment, even though it names a
+        // domain: the domain is the role's documented preference ("MAIN runs locally"),
+        // not a user choice. Counting it as authoritative is what made a fresh install
+        // unusable — MAIN's default is domain-bound to the local runtime, so with no
+        // local connection yet the resolver failed against a connection and a model the
+        // user had never configured, instead of falling back as documented below.
+        val authoritative = preference.explicit || !preference.connectionId.isNullOrBlank()
 
         // A specific saved connection is addressed by its own identity, so a role
         // assigned to one custom endpoint never resolves to another endpoint of the
@@ -354,7 +376,7 @@ class AgentModelResolver(
                     fromRoleMapping = true,
                     error = connectionFailure(role, preference, model, namedId),
                 )
-            return Selection(withModel(named, model), fromRoleMapping = true)
+            return Selection(withAssignedStatement(withModel(named, model), preference), fromRoleMapping = true)
         }
 
         // The active model is used only when it satisfies the preference's provider
@@ -379,17 +401,28 @@ class AgentModelResolver(
                 error = ambiguousConnectionFailure(role, preference, model, candidates.map { it.connectionId }),
             )
         }
-        candidates.firstOrNull()?.let { return Selection(withModel(it, model), fromRoleMapping = true) }
+        candidates.firstOrNull()?.let {
+            return Selection(withAssignedStatement(withModel(it, model), preference), fromRoleMapping = true)
+        }
 
-        // The provider family is not connected in the required domain. A policy
-        // default may still fall back to the active model (documented compatibility);
-        // a domain-bound or explicit assignment may not, which is what keeps
-        // MAIN/CODER/DEBUGGER on the local model when only an API connection exists.
+        // The provider family is not connected in the required domain. An explicit
+        // assignment may not be answered by anything else, which is what keeps
+        // MAIN/CODER/DEBUGGER on their saved local model when only an API connection
+        // exists. A policy default keeps the documented fallback to the active model —
+        // but only within its own domain, so an API active model never answers a local
+        // role merely because the built-in preference could not be met.
         if (authoritative) {
             return Selection(
                 config = null,
                 fromRoleMapping = true,
                 error = connectionFailure(role, preference, model, providerId),
+            )
+        }
+        if (!matchesDomain(default, domain)) {
+            return Selection(
+                config = null,
+                fromRoleMapping = true,
+                error = unconfiguredDefaultFailure(role, preference, model),
             )
         }
         return Selection(default, fromRoleMapping = false)
@@ -450,7 +483,12 @@ class AgentModelResolver(
             code = AgentErrorCode.MODEL_NOT_CONNECTED,
             message = "MODEL_NOT_CONNECTED role=${role.name} provider=${preference.providerId} " +
                 "connection=$connection model=${requestedModel ?: "(provider default)"} " +
-                "reason=CONNECTION_NOT_CONNECTED fallbackAvailable=$fallbackConfigured",
+                "reason=CONNECTION_NOT_CONNECTED fallbackAvailable=$fallbackConfigured " +
+                // Whether the role was bound by the user or is following its built-in
+                // default. The two look identical in the old message, and a default
+                // reported as an explicit assignment sent readers looking for a
+                // connection the user had never created.
+                "explicit=${preference.explicit}",
             role = role,
             details = buildMap {
                 put("role", role.name)
@@ -459,11 +497,45 @@ class AgentModelResolver(
                 requestedModel?.let { put("model", it) }
                 put("reason", "CONNECTION_NOT_CONNECTED")
                 put("cause", "MODEL_NOT_CONNECTED")
-                put("explicit", "true")
+                put("explicit", preference.explicit.toString())
+                put("assignment", if (preference.explicit) "user" else "default")
                 put("fallbackAvailable", fallbackConfigured.toString())
             },
         )
     }
+
+    /**
+     * The structured failure for a *policy default* whose provider is not configured
+     * and whose active model cannot serve the role either.
+     *
+     * This is the fresh-install state: the app ships a built-in mapping (MAIN on the
+     * local runtime's Devstral) but no connection yet. The report has to say that — the
+     * default is named as the default, `explicit=false` says no one chose it, and no
+     * connection is claimed to exist — rather than reading as a broken assignment
+     * pointing at a connection the user never created.
+     */
+    private fun unconfiguredDefaultFailure(
+        role: AgentRole,
+        preference: RoleModelPreference,
+        model: String?,
+    ): AgentError = AgentError(
+        code = AgentErrorCode.MODEL_NOT_CONNECTED,
+        message = "MODEL_NOT_CONNECTED role=${role.name} provider=${preference.providerId} " +
+            "defaultConnection=${preference.providerId} model=${model ?: preference.model ?: "(provider default)"} " +
+            "reason=NO_CONNECTION_CONFIGURED explicit=false fallbackAvailable=false",
+        role = role,
+        details = buildMap {
+            put("role", role.name)
+            put("provider", preference.providerId)
+            put("defaultConnection", preference.providerId)
+            model?.let { put("model", it) }
+            put("reason", "NO_CONNECTION_CONFIGURED")
+            put("cause", "MODEL_NOT_CONNECTED")
+            put("explicit", "false")
+            put("assignment", "default")
+            put("fallbackAvailable", "false")
+        },
+    )
 
     /**
      * The structured failure for an authoritative assignment that matches more than
@@ -690,6 +762,32 @@ class AgentModelResolver(
      * made for that exact model, instead of losing it and resolving to unknown.
      * A model the connection says nothing about arrives with no statement at all.
      */
+    /**
+     * Applies the statement an *assignment* carries, for the model that assignment names.
+     *
+     * The connection's own statement always wins: if the connection already says
+     * something about the resolved model, that is the user's considered statement about
+     * the connection and is left exactly as it is. Only when the connection says nothing
+     * about this model does the assignment's own statement apply — scoped to that one
+     * model, published under its own id so registry-based consumers agree, and never
+     * spread to the connection's other models.
+     */
+    private fun withAssignedStatement(config: ModelConfig, preference: RoleModelPreference): ModelConfig {
+        if (!preference.declaresToolCalling) return config
+        val model = config.model
+        if (model.isBlank()) return config
+        if (config.statedCapabilitiesFor(model) != null) return config
+        val statement = ModelCapabilityDeclaration.toolEnabledEndpoint()
+        capabilityRegistry.registerOrUpdate(
+            statement.applyTo(capabilityRegistry.profile(config.providerId, model)),
+        )
+        return config.copy(
+            declaredCapabilities = statement,
+            declaredCapabilitiesModel = model,
+            statedCapabilitiesByModel = config.statedCapabilitiesByModel.stating(model, statement),
+        )
+    }
+
     private fun withModel(config: ModelConfig, model: String?): ModelConfig =
         if (model == null || model == config.model) {
             config

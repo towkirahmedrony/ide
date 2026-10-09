@@ -30,6 +30,16 @@ data class RoleModelConfig(
     val model: String? = null,
     /** Saved connection (model preset) this role was assigned from, when any. */
     val connectionId: String? = null,
+    /**
+     * The user's statement that the model assigned to this role calls tools.
+     *
+     * Saved with the assignment because this is where the model is chosen: a role may be
+     * pointed at any model a connection serves, and the model a gateway routes to decides
+     * whether tools work. Scoped to the one `(providerId, connectionId, model)` this
+     * record names — stated for one model, it is never applied to another, to the
+     * connection, or to another role. Defaults to false: nothing is claimed unasked.
+     */
+    val declaresToolCalling: Boolean = false,
     val updatedAtMillis: Long = 0L,
 ) {
     init {
@@ -53,6 +63,7 @@ data class RoleModelConfig(
             providerId = providerId,
             model = model,
             connectionId = connectionId,
+            declaresToolCalling = declaresToolCalling,
             domain = executionDomain,
             explicit = true,
         )

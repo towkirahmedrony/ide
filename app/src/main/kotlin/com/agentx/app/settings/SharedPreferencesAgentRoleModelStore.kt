@@ -33,6 +33,7 @@ class SharedPreferencesAgentRoleModelStore(
             .putString(field(key, FIELD_PROVIDER), config.providerId)
             .putString(field(key, FIELD_MODEL), config.model.orEmpty())
             .putString(field(key, FIELD_CONNECTION), config.connectionId.orEmpty())
+            .putBoolean(field(key, FIELD_DECLARES_TOOL_CALLING), config.declaresToolCalling)
             .putLong(field(key, FIELD_UPDATED), config.updatedAtMillis)
             .apply()
     }
@@ -44,6 +45,7 @@ class SharedPreferencesAgentRoleModelStore(
             .remove(field(key, FIELD_PROVIDER))
             .remove(field(key, FIELD_MODEL))
             .remove(field(key, FIELD_CONNECTION))
+            .remove(field(key, FIELD_DECLARES_TOOL_CALLING))
             .remove(field(key, FIELD_UPDATED))
             .apply()
     }
@@ -59,6 +61,9 @@ class SharedPreferencesAgentRoleModelStore(
             providerId = providerId,
             model = prefs.getString(field(key, FIELD_MODEL), null)?.takeIf { it.isNotBlank() },
             connectionId = prefs.getString(field(key, FIELD_CONNECTION), null)?.takeIf { it.isNotBlank() },
+            // The user's statement for this assignment's model. Absent in an older
+            // installation, which reads back as false: nothing is claimed unasked.
+            declaresToolCalling = prefs.getBoolean(field(key, FIELD_DECLARES_TOOL_CALLING), false),
             updatedAtMillis = prefs.getLong(field(key, FIELD_UPDATED), 0L),
         )
     }
@@ -72,6 +77,7 @@ class SharedPreferencesAgentRoleModelStore(
         private const val FIELD_PROVIDER = "provider"
         private const val FIELD_MODEL = "model"
         private const val FIELD_CONNECTION = "connection"
+        private const val FIELD_DECLARES_TOOL_CALLING = "toolCalling"
         private const val FIELD_UPDATED = "updated"
     }
 }
