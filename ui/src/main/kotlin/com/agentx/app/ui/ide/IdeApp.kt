@@ -70,6 +70,7 @@ import com.agentx.app.ui.ide.state.OAuthCallbackViewModel
 import com.agentx.app.ui.ide.state.SkillsViewModel
 import com.agentx.app.ui.ide.state.ToolsViewModel
 import com.agentx.app.ui.ide.state.WorkspaceSettingsViewModel
+import com.agentx.app.termux.DeveloperLogVisibility
 import com.agentx.app.tools.DefaultToolPreferences
 import com.agentx.app.ui.theme.ForgeCanvas
 
@@ -697,11 +698,25 @@ fun ForgeIdeApp(
                 layers = layers,
                 health = health,
                 onBack = { navController.popBackStack() },
-                onOpenLogs = { navController.navigate(IdeDestinations.DEVELOPER_LOGS) },
+                onOpenLogs = { navController.navigate(IdeDestinations.developerLogs(false)) },
             )
         }
 
-        composable(IdeDestinations.DEVELOPER_LOGS) {
+        composable(
+            route = IdeDestinations.DEVELOPER_LOGS,
+            arguments = listOf(
+                navArgument(IdeDestinations.ARG_TERMINAL) {
+                    type = NavType.StringType
+                    defaultValue = "false"
+                },
+            ),
+        ) { entry ->
+            // Whether terminal diagnostics are shown was decided from the navigation
+            // state at the moment the destination was opened (see DeveloperLogsButton).
+            val showTerminalLogs = entry.arguments
+                ?.getString(IdeDestinations.ARG_TERMINAL)
+                ?.toBooleanStrictOrNull()
+                ?: false
             val logsViewModel: DeveloperLogsViewModel = viewModel(
                 key = "developer-logs",
                 factory = IdeViewModelFactory {
@@ -709,6 +724,7 @@ fun ForgeIdeApp(
                         appVersion = version,
                         terminalRuntime = dependencies.terminalRuntime,
                         developerRuntime = dependencies.developerRuntime,
+                        showTerminalLogs = showTerminalLogs,
                     )
                 },
             )
@@ -721,7 +737,14 @@ fun ForgeIdeApp(
 
         DeveloperLogsButton(
             onClick = {
-                navController.navigate(IdeDestinations.DEVELOPER_LOGS) { launchSingleTop = true }
+                // Capture the terminal context from the actual navigation state: the
+                // Terminal page is active exactly while its composable is composed, so a
+                // log opened from the terminal shows terminal diagnostics and one opened
+                // from anywhere else does not.
+                val showTerminalLogs = DeveloperLogVisibility.terminalPageActive.value
+                navController.navigate(IdeDestinations.developerLogs(showTerminalLogs)) {
+                    launchSingleTop = true
+                }
             },
         )
     }

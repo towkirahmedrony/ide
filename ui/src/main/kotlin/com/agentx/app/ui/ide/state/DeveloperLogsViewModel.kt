@@ -31,6 +31,16 @@ class DeveloperLogsViewModel(
     private val deviceAbi: () -> String? = {
         Build.SUPPORTED_ABIS?.joinToString().takeUnless { it.isNullOrBlank() }
     },
+    /**
+     * Whether terminal/runtime diagnostics are shown in the active view.
+     *
+     * Captured from the real navigation state when this destination is opened: true
+     * when the user came from the Terminal page, false otherwise. It only filters what
+     * is rendered — the stored log (and [fullLog]) always keeps every line — so leaving
+     * the Terminal page never deletes history. Defaults to true so a caller that does
+     * not supply the navigation context keeps the previous behaviour.
+     */
+    private val showTerminalLogs: Boolean = true,
 ) : ViewModel() {
 
     val lines: StateFlow<List<String>> = DeveloperLogger.lines
@@ -61,6 +71,7 @@ class DeveloperLogsViewModel(
         filter = filter,
         query = query,
         limit = DEVELOPER_LOGS_UI_LIMIT,
+        showTerminalLogs = showTerminalLogs,
     )
 
     fun fullLog(): String = DeveloperLogger.readAll()

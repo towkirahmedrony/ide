@@ -42,7 +42,15 @@ object IdeDestinations {
 
     const val ABOUT = "about"
     const val DEVELOPER = "developer"
-    const val DEVELOPER_LOGS = "developer/logs"
+
+    /**
+     * The Developer Log. [ARG_TERMINAL] is the navigation context captured when the
+     * destination is opened — true when the user came from the Terminal page — so the
+     * log view can show terminal diagnostics only in that context. It is part of the
+     * route so the decision is made from real navigation state, not a timer.
+     */
+    const val DEVELOPER_LOGS = "developer/logs?terminal={terminal}"
+    const val ARG_TERMINAL = "terminal"
 
     /** Saved model presets: the Model Manager screen. */
     const val MODELS = "models"
@@ -71,6 +79,9 @@ object IdeDestinations {
     const val NEW_CONNECTION = "new"
 
     fun workspace(workspaceId: String): String = "workspace/$workspaceId"
+
+    fun developerLogs(showTerminalLogs: Boolean): String =
+        "developer/logs?terminal=$showTerminalLogs"
 
     fun settingsDetail(sectionId: String): String = "settings/section/$sectionId"
 

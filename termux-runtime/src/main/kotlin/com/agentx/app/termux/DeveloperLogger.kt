@@ -34,6 +34,21 @@ enum class DeveloperLogCategory {
     MODEL,
 
     /**
+     * Agent-turn diagnostics: one user message and its whole lifecycle (input,
+     * request, streaming, tools, sub-agents, permissions, outcome), forwarded from
+     * the platform's structured logger by the app-level log sink. Every record
+     * carries a correlation id so a single turn reads as one story.
+     */
+    AGENT,
+
+    /**
+     * Application diagnostics that originate outside the terminal/runtime path:
+     * workspace, context, settings and other platform layers. Kept distinct from
+     * [SESSION] so generic app logs stay visible regardless of the current page.
+     */
+    APP,
+
+    /**
      * GitHub connection diagnostics: configuration, authorization (OAuth/device
      * flow), the callback, token validation and repository loading, forwarded from
      * the platform's structured logger by the app-level log sink. Messages carry a
@@ -103,8 +118,9 @@ object DeveloperLogger {
         message: String,
         error: Throwable? = null,
     ) {
-        append(level, category, message)
-        if (error != null) writeThrowable(level, category, error)
+        // One entry per event: an error carries its message and stack together, so a
+        // single tap in the viewer copies the whole diagnostic instead of a fragment.
+        append(level, category, if (error == null) message else "$message | ${describeThrowable(error)}")
     }
 
     fun debug(category: DeveloperLogCategory, message: String) =
@@ -199,21 +215,24 @@ object DeveloperLogger {
     private fun redact(name: String, value: String): String =
         if (TermuxEnvironment.looksSecret(name)) "<redacted>" else value
 
-    private fun writeThrowable(level: DeveloperLogLevel, category: DeveloperLogCategory, error: Throwable) {
-        append(level, category, "exception class=${error.javaClass.name}")
-        append(level, category, "message=${error.message ?: "(no message)"}")
-        append(level, category, "stack:")
+    /**
+     * Renders an exception as a single, line-safe description so its class, message
+     * and stack trace travel together on one log line: the in-app viewer keeps them
+     * per entry, and copying the entry copies the whole diagnostic instead of a
+     * single frame. Newlines in the stack are flattened because the persistent file is
+     * line-based; the readable content is unchanged.
+     */
+    private fun describeThrowable(error: Throwable): String {
         val trace = runCatching { error.stackTraceToString() }.getOrNull().orEmpty()
-        trace.lineSequence()
-            .filter { it.isNotBlank() }
-            .forEach { append(level, category, "  $it") }
-        val cause = error.cause
-        if (cause != null && cause !== error) {
-            append(
-                level,
-                category,
-                "caused by ${cause.javaClass.name}: ${cause.message ?: "(no message)"}",
-            )
+        val flattened = trace.lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .joinToString(" | ")
+        return buildString {
+            append("exception class=${error.javaClass.name}")
+            append(" | message=${error.message ?: "(no message)"}")
+            append(" | stack: ")
+            append(flattened)
         }
     }
 

@@ -26,6 +26,9 @@ import com.agentx.app.context.RunContextFactory
 import com.agentx.app.context.SkillContextProvider
 import com.agentx.app.context.SkillContextResolver
 import com.agentx.app.core.foundation.ServiceKeys
+import com.agentx.app.core.logging.ForgeLogger
+import com.agentx.app.core.logging.ForgeLoggers
+import com.agentx.app.core.logging.LogLevel
 import com.agentx.app.core.timeout.AgentTimeouts
 import com.agentx.app.core.module.ForgeModule
 import com.agentx.app.core.module.ModuleContext
@@ -159,6 +162,10 @@ class AgentModule(
             fallbackPolicy = fallbackPolicy,
             fallbackPolicyProvider = fallbackPolicyProvider,
             toolPreferences = toolPreferences,
+            // The app's shared logger, so the loop's request/context/model records are
+            // mirrored into the Developer Log under the `Agent` category instead of
+            // only reaching stdout. Null in a test/preview keeps the console default.
+            logger = context.services.get<ForgeLogger>(ServiceKeys.LOGGER),
         )
         context.services.register(ServiceKeys.AGENT_ORCHESTRATOR, assembled.orchestrator)
         context.services.register(ServiceKeys.AGENT_REGISTRY, assembled.specialized)
@@ -206,9 +213,19 @@ class AgentModule(
              * disabled in Settings is kept out of what every role is offered.
              */
             toolPreferences: ToolPreferences = AllowAllToolPreferences,
+            /**
+             * Destination for the agent layer's structured records. Null keeps the
+             * layer's own console logger. When supplied (the app passes its shared
+             * logger) records are tagged `component=agent` so the app-level sink files
+             * them under the Developer Log's `Agent` category, distinct from terminal
+             * and generic application logs.
+             */
+            logger: ForgeLogger? = null,
         ): AgentRuntime {
             val engine = contextEngine ?: DefaultContextEngine()
             val bridge = AgentToolBridge(registry, toolPreferences)
+            val agentLogger = (logger ?: ForgeLoggers.create(LogLevel.INFO, baseFields = mapOf("layer" to "agent")))
+                .child(mapOf("component" to "agent"))
             val loop = AgentLoop(
                 gateway = gateway,
                 toolRouter = router,
@@ -219,6 +236,7 @@ class AgentModule(
                 designContext = designContext,
                 platformProfile = platformProfile,
                 timeouts = timeouts,
+                logger = agentLogger,
                 // The context ceiling of every run is read from the selected model's
                 // authoritative capability profile, so a specialist running a small
                 // local model is budgeted for that model rather than inheriting the
@@ -245,6 +263,7 @@ class AgentModule(
                 history = history,
                 timeouts = timeouts,
                 modelResolver = modelResolver,
+                logger = agentLogger,
             )
             return AgentRuntime(
                 orchestrator = orchestrator,

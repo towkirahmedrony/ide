@@ -6,6 +6,7 @@ import com.agentx.app.agent.conversation.ConversationHistory
 import com.agentx.app.agent.conversation.ConversationMessage
 import com.agentx.app.agent.conversation.MessageRole
 import com.agentx.app.agent.conversation.SessionTitle
+import com.agentx.app.agent.diagnostics.AgentTurnDiagnostics
 import com.agentx.app.agent.domain.AgentError
 import com.agentx.app.agent.domain.AgentErrorCode
 import com.agentx.app.agent.domain.AgentEvent
@@ -19,6 +20,9 @@ import com.agentx.app.agent.domain.AgentStatus
 import com.agentx.app.agent.domain.PendingPermission
 import com.agentx.app.agent.orchestrator.AgentOrchestrator
 import com.agentx.app.context.ContextBudget
+import com.agentx.app.core.logging.ForgeLogger
+import com.agentx.app.core.logging.ForgeLoggers
+import com.agentx.app.core.logging.LogLevel
 import com.agentx.app.model.ModelConfig
 import com.agentx.app.model.ModelMessage
 import com.agentx.app.model.ModelProviderError
@@ -54,7 +58,18 @@ class OrchestratorAgentSession(
      * scripted or test caller without a project keeps working.
      */
     private val defaultProjectId: String? = null,
+    /**
+     * Structured logger the turn diagnostics write to. The composition root passes
+     * the app's shared logger (which the app-level sink mirrors into the Developer
+     * Log); a test or preview keeps the default console logger.
+     */
+    logger: ForgeLogger? = null,
 ) : AgentSession {
+
+    private val diagnosticsLogger: ForgeLogger = logger ?: ForgeLoggers.create(
+        LogLevel.INFO,
+        baseFields = mapOf("layer" to "agent-bridge"),
+    )
 
     /**
      * The session selected per project, keyed by project id. Chat is
@@ -199,7 +214,30 @@ class OrchestratorAgentSession(
         skillIds: Set<String>?,
     ) {
         val config = modelConfig()
+        // One correlation id per user message: input, request, streaming, tools,
+        // sub-agents, permissions and the outcome all carry it, so a turn reads as a
+        // single traceable story and concurrent turns cannot mix.
+        val diagnostics = AgentTurnDiagnostics(
+            logger = diagnosticsLogger,
+            sessionId = sessionId ?: UNBOUND_SESSION_ID,
+        )
+        val request = AgentRunRequest(
+            prompt = input,
+            sessionId = sessionId,
+            workspaceId = workspaceId ?: defaultProjectId,
+            selectedFile = selectedFile,
+            // Attachments are part of this turn's request, not of the stored transcript: the
+            // context engine loads each one from the workspace, like a mentioned path.
+            attachments = attachments,
+            skillIds = skillIds,
+            // With persistent history the core rebuilds the conversation from
+            // the stored transcript; the fallback list is only for no-history runs.
+            conversation = if (sessionId == null) conversation.toList() else emptyList(),
+        )
+        diagnostics.started(request, config)
         if (config.validate().isNotEmpty()) {
+            // Fails before the model provider is reached; the real reason is logged.
+            diagnostics.rejected(NO_MODEL_ONLINE, config)
             onEvent(AgentStreamEvent.Failed(NO_MODEL_ONLINE, AgentFailureKind.NOT_CONFIGURED))
             return
         }
@@ -210,7 +248,7 @@ class OrchestratorAgentSession(
             ),
         )
 
-        val activeWorkspaceId = workspaceId ?: defaultProjectId
+        val activeWorkspaceId = request.workspaceId
         Log.d(
             TAG,
             "Agent run sessionId=${sessionId ?: "(none)"} workspaceId=${activeWorkspaceId ?: "(none)"} " +
@@ -218,24 +256,25 @@ class OrchestratorAgentSession(
                 "attachments=${attachments.size} skills=${skillIds?.size ?: 0}",
         )
 
-        val sink = AgentEventSink { event -> mapEvent(event)?.let(onEvent) }
-        val result = orchestrator.run(
-            request = AgentRunRequest(
-                prompt = input,
-                sessionId = sessionId,
-                workspaceId = activeWorkspaceId,
-                selectedFile = selectedFile,
-                // Attachments are part of this turn's request, not of the stored transcript: the
-                // context engine loads each one from the workspace, like a mentioned path.
-                attachments = attachments,
-                skillIds = skillIds,
-                // With persistent history the core rebuilds the conversation from
-                // the stored transcript; the fallback list is only for no-history runs.
-                conversation = if (sessionId == null) conversation.toList() else emptyList(),
-            ),
-            modelConfig = config,
-            sink = sink,
-        )
+        // The diagnostics observe the RAW runtime event stream (before UI mapping), so a
+        // model selection or fallback that the UI does not render is still recorded.
+        val sink = AgentEventSink { event ->
+            diagnostics.onEvent(event)
+            mapEvent(event)?.let(onEvent)
+        }
+        val result = try {
+            orchestrator.run(
+                request = request,
+                modelConfig = config,
+                sink = sink,
+            )
+        } catch (error: Throwable) {
+            // The original exception is preserved: it is recorded and rethrown, never
+            // swallowed to manufacture a log line.
+            diagnostics.fail(error, stage = "orchestrator.run")
+            throw error
+        }
+        diagnostics.finish(result)
         if (sessionId == null) record(input, result)
         emitOutcome(result, sessionId = sessionId, onEvent = onEvent)
     }
@@ -267,12 +306,29 @@ class OrchestratorAgentSession(
             onEvent(AgentStreamEvent.Failed("No pending permission to resolve", AgentFailureKind.UNKNOWN))
             return
         }
-        val sink = AgentEventSink { event -> mapEvent(event)?.let(onEvent) }
-        val resumed = orchestrator.resumePermission(sessionId, approved, sink)
+        // A resume is a new phase of the parked turn; it gets its own correlation id
+        // but the same session id, so the pause and its continuation can be linked.
+        val diagnostics = AgentTurnDiagnostics(logger = diagnosticsLogger, sessionId = sessionId)
+        diagnostics.resumed(approved)
+        val sink = AgentEventSink { event ->
+            diagnostics.onEvent(event)
+            mapEvent(event)?.let(onEvent)
+        }
+        val resumed = try {
+            orchestrator.resumePermission(sessionId, approved, sink)
+        } catch (error: Throwable) {
+            diagnostics.fail(error, stage = "orchestrator.resumePermission")
+            throw error
+        }
         if (resumed == null) {
+            diagnostics.fail(
+                IllegalStateException("The paused agent turn is no longer available"),
+                stage = "resume.unavailable",
+            )
             onEvent(AgentStreamEvent.Failed("The paused agent turn is no longer available", AgentFailureKind.UNKNOWN))
             return
         }
+        diagnostics.finish(resumed)
         emitOutcome(resumed, sessionId = sessionId, onEvent = onEvent)
     }
 
@@ -320,6 +376,9 @@ class OrchestratorAgentSession(
 
     private companion object {
         const val TAG = "ForgeAgent"
+
+        /** Placeholder session id for a turn with no owning project; never persisted. */
+        const val UNBOUND_SESSION_ID = "unbound"
         const val NO_MODEL_ONLINE =
             "No model is online. Open Settings → Models, select a model and connect it first."
 

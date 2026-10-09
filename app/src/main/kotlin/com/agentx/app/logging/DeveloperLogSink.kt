@@ -16,9 +16,12 @@ import com.agentx.app.termux.DeveloperLogger
  * the existing ForgeLogger, and only their destination is extended. Fields are
  * rendered as `key=value` so one record stays one readable log line.
  *
- * A record's `component` field selects the category, so model traffic is filed
- * under [DeveloperLogCategory.MODEL] and everything else under
- * [DeveloperLogCategory.SESSION].
+ * A record's `component` field selects the category: model traffic is filed under
+ * [DeveloperLogCategory.MODEL], agent-turn diagnostics under
+ * [DeveloperLogCategory.AGENT], GitHub diagnostics under
+ * [DeveloperLogCategory.GITHUB], and everything else under
+ * [DeveloperLogCategory.APP]. Terminal/runtime diagnostics are written directly to
+ * [DeveloperLogger] with their own categories, so they are never mislabelled here.
  */
 class DeveloperLogSink(
     /** Optional second destination, for example the console sink used in development. */
@@ -44,17 +47,19 @@ class DeveloperLogSink(
     }
 
     private fun categoryFor(record: LogRecord): DeveloperLogCategory {
-        val component = record.fields[COMPONENT_FIELD] as? String ?: return DeveloperLogCategory.SESSION
+        val component = record.fields[COMPONENT_FIELD] as? String ?: return DeveloperLogCategory.APP
         return when {
             component.startsWith(MODEL_COMPONENT_PREFIX) -> DeveloperLogCategory.MODEL
+            component.startsWith(AGENT_COMPONENT_PREFIX) -> DeveloperLogCategory.AGENT
             component.startsWith(GITHUB_COMPONENT_PREFIX) -> DeveloperLogCategory.GITHUB
-            else -> DeveloperLogCategory.SESSION
+            else -> DeveloperLogCategory.APP
         }
     }
 
     private companion object {
         const val COMPONENT_FIELD = "component"
         const val MODEL_COMPONENT_PREFIX = "model"
+        const val AGENT_COMPONENT_PREFIX = "agent"
         const val GITHUB_COMPONENT_PREFIX = "github"
     }
 }

@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -25,6 +26,8 @@ import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -33,6 +36,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -53,6 +57,7 @@ import com.agentx.app.ui.theme.ForgeDanger
 import com.agentx.app.ui.theme.ForgeInk
 import com.agentx.app.ui.theme.ForgeMint
 import com.agentx.app.ui.theme.ForgeMuted
+import kotlinx.coroutines.launch
 import java.io.File
 
 private const val SHARE_FILE_NAME = "agentx-terminal-diagnostics.txt"
@@ -68,9 +73,18 @@ fun DeveloperLogsScreen(
     val visible = remember(raw, viewModel.filter, viewModel.query) {
         viewModel.displayed(raw)
     }
-    val empty = raw.isEmpty()
+    val empty = visible.isEmpty()
     var confirmClear by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
+    val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+
+    // Tapping a row copies exactly that entry and confirms it, without opening a
+    // detail screen and without touching the rest of the list.
+    fun copyEntry(line: DeveloperLogLine) {
+        copyLog(context, line.copyText)
+        scope.launch { snackbarHostState.showSnackbar("Log copied") }
+    }
 
     LaunchedEffect(visible.size, viewModel.autoScroll) {
         if (viewModel.autoScroll && visible.isNotEmpty()) {
@@ -88,6 +102,7 @@ fun DeveloperLogsScreen(
                 onBack = onBack,
             )
         },
+        snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { padding ->
         Column(
             modifier = Modifier
@@ -148,7 +163,14 @@ fun DeveloperLogsScreen(
                     IdeEmptyState(
                         icon = Icons.Filled.Subject,
                         title = "No developer logs yet.",
-                        message = "Open Terminal to start collecting diagnostics.",
+                        message = if (raw.isEmpty()) {
+                            "Open Terminal to start collecting diagnostics."
+                        } else {
+                            // There are entries, but not for this view: the Terminal page is
+                            // closed, or the search/filter excludes them. Stored history is
+                            // untouched.
+                            "No entries match the current view."
+                        },
                     )
                 }
             } else {
@@ -164,6 +186,13 @@ fun DeveloperLogsScreen(
                     ) { _, line ->
                         Text(
                             text = line.display,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(
+                                    onClickLabel = "Copy log entry",
+                                    onClick = { copyEntry(line) },
+                                )
+                                .padding(vertical = 2.dp),
                             style = MaterialTheme.typography.bodyMedium.copy(
                                 fontFamily = FontFamily.Monospace,
                                 fontSize = 12.sp,

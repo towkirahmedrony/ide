@@ -530,6 +530,10 @@ class MainActivity : ComponentActivity() {
                             // The agent always uses whatever model the Model Manager
                             // has online; it never learns where that model runs.
                             modelConfig = { modelManagerOrDefault(modelManager) },
+                            // The app's shared logger, whose sink mirrors agent-turn
+                            // diagnostics into the Developer Log under the `Agent`
+                            // category, each turn carrying its own correlation id.
+                            logger = foundation.services.get<ForgeLogger>(ServiceKeys.LOGGER),
                         ),
                         terminalRuntime = termuxRuntime,
                         developerRuntime = developerRuntime,

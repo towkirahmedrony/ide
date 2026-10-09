@@ -56,6 +56,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.agentx.app.termux.DeveloperLogCategory
 import com.agentx.app.termux.DeveloperLogger
+import com.agentx.app.termux.DeveloperLogVisibility
 import com.agentx.app.termux.TerminalSessionState
 import com.agentx.app.termux.TermuxKeys
 import com.agentx.app.termux.TermuxProvisioningState
@@ -184,6 +185,15 @@ fun TerminalScreen(
     DisposableEffect(viewModel) {
         viewModel.bindTerminalHost(terminalHost)
         onDispose { viewModel.unbindTerminalHost(terminalHost) }
+    }
+
+    // The Terminal page is "open" exactly while this composable is composed. This is
+    // the real page lifecycle (not a screen-text or timer check), and it is what the
+    // Developer Log uses to decide whether terminal diagnostics belong in the active
+    // view. Leaving the page stops showing them; it never deletes them.
+    DisposableEffect(Unit) {
+        DeveloperLogVisibility.enterTerminalPage()
+        onDispose { DeveloperLogVisibility.exitTerminalPage() }
     }
 
     // The grant flow. The reader is the app's one place for Android permission state, so the screen
