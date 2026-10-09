@@ -652,14 +652,17 @@ class ModelSetupFormTest {
             .toPreset(null)
             .copy(id = "p1", declaredCapabilities = ModelCapabilityDeclaration.toolEnabledEndpoint())
 
-        // Off is a statement too. It must produce an *empty* declaration rather than
-        // null: null means "leave the preset alone", which would keep a claim the
-        // user has just withdrawn.
-        val form = ModelSetupForm.from(existing)
-        assertFalse(form.declaresToolCalling)
-        val withdrawal = assertNotNull(form.declaredCapabilities())
-        assertTrue(withdrawal.isEmpty)
-        assertTrue(form.toPreset(existing).declaredCapabilities.isEmpty)
+        // The saved statement is shown back as on, so the user can see it and change it.
+        val loaded = ModelSetupForm.from(existing)
+        assertTrue(loaded.declaresToolCalling)
+
+        // Turning it off is a statement too. It must produce an *empty* declaration
+        // rather than null: null means "leave the preset alone", which would keep the
+        // claim the user has just withdrawn.
+        val withdrawn = loaded.copy(declaresToolCalling = false)
+        val declaration = assertNotNull(withdrawn.declaredCapabilities())
+        assertTrue(declaration.isEmpty)
+        assertTrue(withdrawn.toPreset(existing).declaredCapabilities.isEmpty)
     }
 
     @Test
