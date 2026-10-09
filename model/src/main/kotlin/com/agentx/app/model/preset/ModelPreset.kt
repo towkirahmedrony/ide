@@ -507,7 +507,7 @@ fun Map<String, ModelCapabilityDeclaration>.stating(
     val key = normalizeModelId(modelId)
     if (key.isEmpty()) return this
     val next = LinkedHashMap(this)
-    next.keys.filter { normalizeModelId(it) == key }.forEach(next::remove)
+    next.keys.filter { normalizeModelId(it) == key }.forEach { existing -> next.remove(existing) }
     if (!statement.isEmpty) next[key] = statement
     return next
 }

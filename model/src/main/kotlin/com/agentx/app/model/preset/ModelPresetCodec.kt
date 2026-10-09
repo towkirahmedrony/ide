@@ -174,19 +174,18 @@ object ModelPresetCodec {
         modelIdentifier: String,
     ): Map<String, ModelCapabilityDeclaration> {
         if (json == null) return emptyMap()
-        val entries = json.entries
         // A flat declaration names capabilities as its keys and supports as its
         // (string) values; a per-model one names model ids as its keys and objects
         // as its values.
-        val legacy = entries.isNotEmpty() && entries.all { (_, value) -> value.stringOrNull() != null }
+        val legacy = json.isNotEmpty() && json.values.all { value -> value.stringOrNull() != null }
         if (legacy) {
             val key = normalizeModelId(modelIdentifier)
             if (key.isEmpty()) return emptyMap()
-            val declaration = declarationFrom(entries.mapValues { (_, value) -> value.stringOrNull() })
+            val declaration = declarationFrom(json.mapValues { (_, value) -> value.stringOrNull() })
             return if (declaration.isEmpty) emptyMap() else mapOf(key to declaration)
         }
         val byModel = LinkedHashMap<String, ModelCapabilityDeclaration>()
-        entries.forEach { (rawModelId, value) ->
+        json.forEach { (rawModelId, value) ->
             val objectValue = value.objectOrNull() ?: return@forEach
             val key = normalizeModelId(rawModelId)
             if (key.isEmpty()) return@forEach
