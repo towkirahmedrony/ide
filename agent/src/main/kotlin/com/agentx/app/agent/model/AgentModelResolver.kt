@@ -437,52 +437,37 @@ class AgentModelResolver(
         // legacy family-only preference (no domain, not explicit) keeps its documented
         // first-match behaviour.
         //
-        // CRITICAL: When the user has an explicit assignment (userAssignment == true),
-        // we must NOT silently substitute a candidate connection — the user's
-        // configured model must remain the effective assignment. The ambiguity check
-        // above only applies when there are multiple candidates; when there is exactly
-        // one candidate and the user has an explicit assignment, we still report a
-        // connection failure so the assignment is not overridden by the built-in default.
-        if (candidates.size > 1 && !userAssignment && !domainConstrained) {
+        // Ambiguity is about the *count of candidates*, never about whether the preference
+        // came from the user. An explicit, domain-constrained assignment that names one
+        // provider family with several connections in its domain is exactly as ambiguous as
+        // a built-in default: the model id is preserved either way, but the connection would
+        // have to be guessed from list order, so both fail and name the candidates.
+        if (candidates.size > 1 && (userAssignment || domainConstrained)) {
             return Selection(
                 config = null,
                 fromRoleMapping = true,
                 error = ambiguousConnectionFailure(role, preference, model, candidates.map { it.connectionId }),
             )
         }
-        // When there's exactly one candidate and the user does NOT have an explicit
-        // assignment, use that candidate with the statement applied.
-        if (candidates.size == 1 && !userAssignment) {
-            return Selection(
-                withAssignedStatement(withModel(candidates.firstOrNull()!!, model), preference),
-                fromRoleMapping = true,
-            )
-        }
-        // When there's exactly one candidate and the user DOES have an explicit
-        // assignment, report a connection failure rather than substituting the
-        // candidate — this prevents the built-in default from silently overriding
-        // the user's configured model, which is the root cause of the HARDCODED
-        // provenance mismatch reported on device.
-        if (candidates.size == 1 && userAssignment) {
-            return Selection(
-                config = null,
-                fromRoleMapping = true,
-                error = connectionFailure(role, preference, model, providerId),
-            )
-        }
-        // If there are no candidates and we don't have a user assignment or domain
-        // constraint, fall through to the connection-failure or default branches below.
-        if (candidates.isEmpty() && !userAssignment && !domainConstrained) {
-            // Fall through to the connection-failure or default branches below.
+        // A single candidate in the required domain resolves, whoever authored the
+        // preference. The user's model id is preserved by [withModel] and the assignment's
+        // own tool-calling statement is carried by [withAssignedStatement], so this is not a
+        // substitution of the user's configuration — it is that configuration addressed to
+        // the one connection that can serve it. Rejecting it here (as an earlier revision
+        // did) made a perfectly addressable assignment look unconnected, and made a role
+        // assigned by provider identity fall back to an unrelated built-in default.
+        //
+        // A legacy family-only preference with several candidates and no domain keeps its
+        // documented first-match behaviour.
+        candidates.firstOrNull()?.let {
+            return Selection(withAssignedStatement(withModel(it, model), preference), fromRoleMapping = true)
         }
 
-        // The provider family is not connected in the required domain. The user's own
-        // assignment may not be answered by anything else, which is what keeps
-        // MAIN/CODER/DEBUGGER on their saved local model when only an API connection
-        // exists. When the user has an explicit assignment, we report a connection
-        // failure rather than silently substituting the built-in default, which would
-        // override the user's configured model — the exact defect that produces the
-        // HARDCODED provenance mismatch reported on device.
+        // No candidate at all. The provider family is not connected in the required domain.
+        // The user's own assignment may not be answered by anything else, which is what keeps
+        // MAIN/CODER/DEBUGGER on their saved local model when only an API connection exists.
+        // We report a connection failure rather than silently substituting the built-in
+        // default, which would override the user's configured model.
         if (userAssignment) {
             return Selection(
                 config = null,
