@@ -181,7 +181,15 @@ class GitHubListReposTool(
             description = "Repositories as owner/name with visibility and default branch, plus total and hasMore.",
         ),
         permission = ToolPermissionDecision.ALLOW,
-        capabilities = setOf(ToolCapability.NETWORK, ToolCapability.CREDENTIALS, ToolCapability.READ_ONLY),
+        // The access token is never on this tool: the Connection Manager lends it to
+        // the GitHub service inside the call, so the tool does not declare
+        // CREDENTIALS. It also does not declare NETWORK, because the transport
+        // belongs to the connection-scoped service, not to the tool — the same way
+        // `ci_verification` is READ_ONLY while it reads GitHub Actions. Those two
+        // capabilities exceeded the WORKSPACE_WRITE ceiling of the MAIN role that is
+        // granted this tool, which silently kept it out of the agent's tool set.
+        // The declared `connectionRequirement` below is what gates the call.
+        capabilities = setOf(ToolCapability.READ_ONLY),
         category = ToolCategory.GIT,
         requiredPermissions = setOf(ToolPermissionLevel.READ_ONLY),
         connectionRequirement = ToolConnectionRequirement(
@@ -302,7 +310,11 @@ class GitHubCloneRepoTool(
             description = "The repository, its default branch, whether an earlier clone was reused, and the project name.",
         ),
         permission = ToolPermissionDecision.ASK,
-        capabilities = setOf(ToolCapability.NETWORK, ToolCapability.CREDENTIALS, ToolCapability.MUTATING),
+        // Same as `github_list_repos`: the credential and the transport stay inside
+        // the connection-scoped services, so this tool is MUTATING only. Declaring
+        // CREDENTIALS/NETWORK here exceeded MAIN's WORKSPACE_WRITE ceiling and meant
+        // the Main Agent was never offered its own GitHub tools.
+        capabilities = setOf(ToolCapability.MUTATING),
         category = ToolCategory.GIT,
         requiredPermissions = setOf(ToolPermissionLevel.WORKSPACE_WRITE),
         connectionRequirement = ToolConnectionRequirement(
