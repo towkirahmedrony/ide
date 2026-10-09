@@ -332,4 +332,73 @@ class ModelEditorViewModelTest {
         assertEquals("gemini-3.5-flash", viewModel.state.form.modelId)
         assertTrue(viewModel.state.models.none { it.id == "gemini-legacy-flash" })
     }
+
+    // --- a manually entered id, and what the pre-save preview runs against ----
+
+    private fun freeLlmPreset(modelId: String) = ModelPreset(
+        id = "freellmapi-preset",
+        displayName = "FreeLLMAPI",
+        providerType = ModelProviderType.REMOTE_OPENAI_COMPATIBLE,
+        modelIdentifier = modelId,
+        apiProtocol = ModelApiProtocol.OPENAI_COMPATIBLE,
+        apiBasePath = "",
+        endpoint = EndpointConfig(EndpointDiscoveryMode.CONFIGURED_ENDPOINT, "https://agentx-vgtx.onrender.com/v1"),
+        setupKind = ModelSetupKind.FREELLMAPI.id,
+    )
+
+    /**
+     * A model id the endpoint's own list does not carry — the incident's
+     * `qwen3.6-27b` shape. It must stay exactly what the user typed: it is the id
+     * that gets saved and the id connect verifies, and the picker must never
+     * invent a row (or a substitute) for a model the gateway did not return.
+     */
+    @Test
+    fun `a manually typed gateway model id is kept and is what gets saved`() {
+        val live = freeLlmSnapshot("gemini-2.5-flash", "glm-5.3")
+        val registry = FakeCatalogRegistry(live, ForgeResult.Success(live))
+        val viewModel = ModelEditorViewModel(
+            manager = manager(listOf(freeLlmPreset("gemini-2.5-flash"))),
+            presetId = "freellmapi-preset",
+            catalog = registry,
+        )
+        assertEquals("gemini-2.5-flash", viewModel.state.form.modelId)
+
+        viewModel.toggleManualModel(true)
+        viewModel.selectModel("qwen3.6-27b")
+        viewModel.retryCatalog()
+
+        // Survives the refresh exactly as typed...
+        assertEquals("qwen3.6-27b", viewModel.state.form.modelId)
+        // ...because it is what the connection saves and verifies.
+        assertEquals("qwen3.6-27b", viewModel.state.form.toPreset(null).modelIdentifier)
+        assertEquals("qwen3.6-27b", viewModel.state.form.toConnectRequest().modelIdentifier)
+        // ...and the endpoint's own list is never padded with it.
+        assertTrue(viewModel.state.models.none { it.id == "qwen3.6-27b" })
+        assertEquals(listOf("gemini-2.5-flash", "glm-5.3"), viewModel.state.models.map { it.id }.sorted())
+    }
+
+    /**
+     * The pre-save preview is addressed at the form's own endpoint and carries the
+     * form's own model: the same provider identity, address and id the runtime will
+     * chat through, so the picker, the save and the verification cannot disagree.
+     */
+    @Test
+    fun `the pre-save preview discovers against the form's own endpoint and model`() {
+        val live = freeLlmSnapshot("gemini-2.5-flash", "glm-5.3")
+        val registry = FakeCatalogRegistry(null, notConnected(), ForgeResult.Success(live))
+        val viewModel = newFreeLlmApiForm(registry)
+        viewModel.selectModel("qwen3.6-27b")
+
+        viewModel.retryCatalog()
+
+        val draft = assertNotNull(registry.lastPreviewConnection)
+        assertEquals("https://agentx-vgtx.onrender.com/v1", draft.baseUrl)
+        assertEquals("qwen3.6-27b", draft.model)
+        assertEquals("freellmapi", draft.providerId)
+        // The endpoint answered, so the picker shows its list and no error.
+        assertTrue(viewModel.state.models.any { it.id == "gemini-2.5-flash" })
+        assertNull(viewModel.state.catalogError)
+        // A preview is read-only: nothing was saved by it.
+        assertFalse(viewModel.state.saved)
+    }
 }

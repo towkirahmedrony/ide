@@ -185,6 +185,13 @@ fun ModelEditorScreen(
                     label = if (state.form.hasStoredCredential) "Replace API key" else "API key",
                     supporting = "Stored encrypted on this device",
                 )
+                // A gateway this connection is addressed at is listed with tool
+                // calling unknown, because the upstream a model is routed to
+                // decides it. The same statement the Local flow offers is the one
+                // thing that can resolve it here — for this model, not the gateway.
+                if (state.form.declarableCapabilities) {
+                    ToolCallingDeclaration(state, onEdit)
+                }
             }
 
             if (state.discoveredModels.isNotEmpty()) {
@@ -376,13 +383,12 @@ private fun ProtocolSelector(
 }
 
 /**
- * The user's statement that this Custom/Local model can serve a tool-enabled
- * agent role.
+ * The user's statement that this one model can serve a tool-enabled agent role.
  *
  * A server listing a model says nothing about whether it calls tools, so AgentX
  * leaves it unknown and a role that needs tools cannot use it. Only the user
  * knows what their own endpoint can do, and this switch is where they say it —
- * for this one model, never for `openai-compatible` as a whole.
+ * for this one model, never for `openai-compatible` or a gateway as a whole.
  */
 @Composable
 private fun ToolCallingDeclaration(

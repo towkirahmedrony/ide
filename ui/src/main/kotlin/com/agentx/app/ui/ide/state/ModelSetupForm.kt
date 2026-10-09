@@ -146,14 +146,16 @@ data class ModelSetupForm(
      */
     val manualModel: Boolean = false,
     /**
-     * The user's statement that this Custom/Local model can serve a tool-enabled
-     * agent role — it calls tools and streams completions.
+     * The user's statement that this one model can serve a tool-enabled agent
+     * role — it calls tools and streams completions.
      *
      * AgentX does not infer this from the provider or a model name, so a model a
      * server merely lists stays unknown and cannot fill a role that needs tools.
      * Off by default: nothing is claimed on the user's behalf. The statement
-     * belongs to this one model, not to `openai-compatible` as a provider, so the
-     * switch never makes another custom model look tool-capable.
+     * belongs to the one model it was made for — not to `openai-compatible` or to
+     * a gateway as a provider — so the switch never makes another model look
+     * tool-capable. It is offered only where a catalogue cannot speak for the
+     * connection (see [declarableCapabilities]).
      */
     val declaresToolCalling: Boolean = false,
 ) {
@@ -223,16 +225,34 @@ data class ModelSetupForm(
         get() = showsServerUrl && effectiveServerUrl.isBlank() && !inheritsEndpointDiscovery
 
     /**
+     * Whether this connection's model capabilities are the user's to state.
+     *
+     * True for exactly the connections no provider catalogue speaks for: a
+     * Custom/Local endpoint, and an API provider that is addressed by its own
+     * endpoint (FreeLLMAPI). A gateway routes a model to whatever upstream serves
+     * it, so the catalogue deliberately lists its models with tool calling unknown
+     * — and unknown is not support, which is why the user's own statement is the
+     * one thing that can resolve it for their connection.
+     *
+     * False for a fixed-address catalogue provider (Gemini, Groq): those state
+     * their own capabilities, and a declaration must not override what the
+     * catalogue says about them.
+     */
+    val declarableCapabilities: Boolean
+        get() = connectionType == ModelConnectionType.LOCAL || setupKind.showsEndpointField
+
+    /**
      * The declaration this form states, or null when the form has nothing to say
      * about capabilities.
      *
-     * Only a Custom/Local endpoint can be declared: an API provider states its
-     * capabilities through the provider catalogue, so editing one leaves whatever
-     * the preset already carries untouched. An endpoint the user does not declare
-     * for produces an empty declaration, which withdraws an earlier one.
+     * A [declarableCapabilities] connection states exactly what its switch says: a
+     * declared endpoint produces the tool-enabled statement, and one the user does
+     * not declare for produces an empty declaration, which withdraws an earlier
+     * one. Every other connection returns null, which leaves whatever the preset
+     * already carries untouched.
      */
     fun declaredCapabilities(): ModelCapabilityDeclaration? =
-        if (connectionType == ModelConnectionType.LOCAL) {
+        if (declarableCapabilities) {
             if (declaresToolCalling) {
                 ModelCapabilityDeclaration.toolEnabledEndpoint()
             } else {

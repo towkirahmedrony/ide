@@ -1,8 +1,10 @@
 package com.agentx.app.agent.model
 
+import com.agentx.app.agent.domain.AgentErrorCode
 import com.agentx.app.agent.domain.AgentRole
 import com.agentx.app.model.ModelCapabilities
 import com.agentx.app.model.ModelConfig
+import com.agentx.app.model.capability.CapabilityProvenance
 import com.agentx.app.model.capability.CapabilitySupport
 import com.agentx.app.model.capability.InMemoryModelCapabilityRegistry
 import com.agentx.app.model.capability.ModelCapability
@@ -282,5 +284,113 @@ class DiscoveredModelCapabilityPipelineTest {
         assertEquals(CapabilitySupport.UNKNOWN, restored.toolCalling)
         assertEquals(CapabilitySupport.UNKNOWN, restored.streaming)
         assertFalse(second.supports("gemini", "gemini-9-experimental", ModelCapability.TOOL_CALLING))
+    }
+
+    // --- H. a gateway model: the reported FreeLLMAPI failure -------------------
+
+    /**
+     * The reported diagnostic, reproduced and then resolved by the one statement
+     * the connection can make about it.
+     *
+     * A model a gateway lists is registered as *discovered*: an identity with no
+     * capability. `MAIN` requires tool calling and unknown is not support, so the
+     * exact line the user saw is produced. Nothing about the discovery, the model
+     * id or the role policy is wrong — the missing thing is the capability, and
+     * the per-model declaration an endpoint-addressed connection can now save is
+     * what supplies it.
+     */
+    @Test
+    fun `a gateway model is ineligible for MAIN until its own connection states tool calling`() = runBlocking {
+        val registry = InMemoryModelCapabilityRegistry(initial = emptyList())
+        // What discovery registers for a gateway model: identity only.
+        registry.register(ModelCapabilityProfile.discovered("freellmapi", "qwen3.6-27b"))
+
+        val resolver = AgentModelResolver(capabilityRegistry = registry)
+        val saved = config("freellmapi", "qwen3.6-27b", baseUrl = "https://gateway.example.dev/v1")
+
+        // The reported failure, field for field.
+        val rejected = resolver.resolveForRole(AgentRole.MAIN, saved)
+        assertFalse(rejected.eligible)
+        assertEquals(ModelEligibilityState.UNKNOWN, rejected.eligibility.state)
+        assertEquals(CapabilitySupport.UNKNOWN, rejected.eligibility.profile.toolCalling)
+        assertEquals(CapabilityProvenance.DISCOVERED, rejected.eligibility.profile.provenance)
+        val error = assertNotNull(rejected.errorOrNull())
+        assertEquals(AgentErrorCode.MODEL_NOT_ELIGIBLE, error.code)
+        assertEquals("MODEL_CAPABILITY_UNKNOWN", error.details["cause"])
+        assertEquals("toolCalling", error.details["capability"])
+        assertEquals("UNKNOWN", error.details["support"])
+        assertEquals("DISCOVERED", error.details["provenance"])
+        assertTrue(
+            error.message.contains("MODEL_NOT_ELIGIBLE role=MAIN provider=freellmapi model=qwen3.6-27b"),
+            error.message,
+        )
+        // Neither the provider nor the id was rewritten while reaching the verdict.
+        assertEquals("freellmapi", rejected.config.providerId)
+        assertEquals("qwen3.6-27b", rejected.config.model)
+
+        // The statement the Add/Edit form now saves for this connection. It travels
+        // on the configuration, so it is this model — not the gateway — that is
+        // stated tool-capable.
+        val declared = resolver.resolveForRole(
+            AgentRole.MAIN,
+            saved.copy(declaredCapabilities = ModelCapabilityDeclaration.toolEnabledEndpoint()),
+        )
+        assertTrue(declared.eligible, declared.errorOrNull()?.message.orEmpty())
+        assertEquals(ModelEligibilityState.AVAILABLE, declared.eligibility.state)
+        assertEquals(CapabilitySupport.SUPPORTED, declared.eligibility.profile.toolCalling)
+        assertEquals(CapabilityProvenance.HARDCODED, declared.eligibility.profile.provenance)
+        assertEquals("qwen3.6-27b", declared.eligibility.modelId)
+
+        // Guarantee: the declaration is per model. The registry entry was never
+        // upgraded, and another model the same gateway lists keeps no capability.
+        assertEquals(
+            CapabilitySupport.UNKNOWN,
+            assertNotNull(registry.get("freellmapi", "qwen3.6-27b")).toolCalling,
+        )
+        val other = resolver.resolveForRole(
+            AgentRole.MAIN,
+            config("freellmapi", "claude-unknown-model", baseUrl = "https://gateway.example.dev/v1"),
+        )
+        assertFalse(other.eligible)
+        assertEquals(ModelEligibilityState.UNKNOWN, other.eligibility.state)
+        assertEquals(CapabilitySupport.UNKNOWN, other.eligibility.profile.toolCalling)
+    }
+
+    /**
+     * The registry path the runtime actually takes: the manager publishes a saved
+     * declaration into the shared registry, and the role then resolves the saved
+     * model without the declaration having to be repeated on every config.
+     */
+    @Test
+    fun `a published gateway declaration makes the saved model eligible and no other`() = runBlocking {
+        val registry = InMemoryModelCapabilityRegistry(initial = emptyList())
+        val declaredModel = "qwen3.6-27b"
+
+        // DefaultModelManager.registerPresetCapabilities, for a saved FreeLLMAPI preset.
+        registry.registerOrUpdate(
+            ModelCapabilityDeclaration.toolEnabledEndpoint()
+                .applyTo(ModelCapabilityProfile.discovered("freellmapi", declaredModel)),
+        )
+
+        val resolver = AgentModelResolver(capabilityRegistry = registry)
+        val eligible = resolver.resolveForRole(
+            AgentRole.MAIN,
+            config("freellmapi", declaredModel, baseUrl = "https://gateway.example.dev/v1"),
+        )
+        assertTrue(eligible.eligible, eligible.errorOrNull()?.message.orEmpty())
+        assertEquals(CapabilitySupport.SUPPORTED, eligible.eligibility.profile.toolCalling)
+
+        // A model the user did not state anything about is untouched.
+        val untouched = resolver.resolveForRole(
+            AgentRole.MAIN,
+            config("freellmapi", "glm-5.3", baseUrl = "https://gateway.example.dev/v1"),
+        )
+        assertFalse(untouched.eligible)
+        assertEquals(CapabilitySupport.UNKNOWN, untouched.eligibility.profile.toolCalling)
+        // And the user's statement never made the gateway's whole provider capable.
+        assertEquals(
+            CapabilitySupport.UNKNOWN,
+            registry.profile("freellmapi", "claude-unknown-model").toolCalling,
+        )
     }
 }

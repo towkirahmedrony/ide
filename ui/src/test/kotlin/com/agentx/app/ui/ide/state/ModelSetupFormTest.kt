@@ -2,6 +2,8 @@ package com.agentx.app.ui.ide.state
 
 import com.agentx.app.agent.domain.AgentRole
 import com.agentx.app.agent.model.RoleModelSelection
+import com.agentx.app.model.capability.CapabilitySupport
+import com.agentx.app.model.capability.ModelCapabilityDeclaration
 import com.agentx.app.model.catalog.CatalogModel
 import com.agentx.app.model.catalog.CatalogSource
 import com.agentx.app.model.catalog.ModelCatalog
@@ -610,5 +612,102 @@ class ModelSetupFormTest {
         assertNotNull(line)
         assertTrue(line.contains("12 requests"), line)
         assertTrue(line.contains("30 rpm"), line)
+    }
+
+    // --- stating tool calling where no catalogue speaks for the connection ----
+
+    /**
+     * The reported incident: a gateway model discovered through FreeLLMAPI stays
+     * `toolCalling = UNKNOWN`, so a role that needs tools cannot use it. The
+     * gateway is addressed by its own endpoint, so its model capabilities are the
+     * one thing only the user can state — and the form must let them.
+     */
+    @Test
+    fun `a FreeLLMAPI connection can state tool calling for one model`() {
+        val form = apiForm(ModelSetupKind.FREELLMAPI, model = "qwen3.6-27b", name = "Qwen")
+            .copy(declaresToolCalling = true)
+
+        assertTrue(form.declarableCapabilities)
+        val declared = assertNotNull(form.declaredCapabilities())
+        assertEquals(CapabilitySupport.SUPPORTED, declared.toolCalling)
+        assertEquals(CapabilitySupport.SUPPORTED, declared.streaming)
+        // Nothing else is claimed on the user's behalf.
+        assertEquals(CapabilitySupport.UNKNOWN, declared.vision)
+        assertEquals(CapabilitySupport.UNKNOWN, declared.structuredOutput)
+        assertEquals(CapabilitySupport.UNKNOWN, declared.reasoning)
+
+        // The statement travels on both paths this connection uses: the saved preset
+        // and the connect request that verifies it.
+        assertEquals(declared, form.toPreset(null).declaredCapabilities)
+        assertEquals(declared, form.toConnectRequest().declaredCapabilities)
+        // And the id it was stated for is unchanged on both.
+        assertEquals("qwen3.6-27b", form.toPreset(null).modelIdentifier)
+        assertEquals("qwen3.6-27b", form.toConnectRequest().modelIdentifier)
+        assertEquals("freellmapi", form.toPreset(null).providerId)
+    }
+
+    @Test
+    fun `a FreeLLMAPI connection that states nothing withdraws an earlier statement`() {
+        val existing = apiForm(ModelSetupKind.FREELLMAPI, model = "qwen3.6-27b")
+            .toPreset(null)
+            .copy(id = "p1", declaredCapabilities = ModelCapabilityDeclaration.toolEnabledEndpoint())
+
+        // Off is a statement too. It must produce an *empty* declaration rather than
+        // null: null means "leave the preset alone", which would keep a claim the
+        // user has just withdrawn.
+        val form = ModelSetupForm.from(existing)
+        assertFalse(form.declaresToolCalling)
+        val withdrawal = assertNotNull(form.declaredCapabilities())
+        assertTrue(withdrawal.isEmpty)
+        assertTrue(form.toPreset(existing).declaredCapabilities.isEmpty)
+    }
+
+    @Test
+    fun `a statement saved for a gateway model is loaded back into the form`() {
+        val saved = apiForm(ModelSetupKind.FREELLMAPI, model = "qwen3.6-27b")
+            .toPreset(null)
+            .copy(id = "p1", declaredCapabilities = ModelCapabilityDeclaration.toolEnabledEndpoint())
+
+        val form = ModelSetupForm.from(saved)
+
+        // Only a stated SUPPORTED reads back as on, so the switch shows the user's
+        // own statement rather than one nobody made.
+        assertTrue(form.declaresToolCalling)
+        assertEquals(saved.declaredCapabilities, form.declaredCapabilities())
+    }
+
+    /**
+     * The guarantee on the other side: a provider whose catalogue does state its
+     * capabilities is never overridden by the form.
+     */
+    @Test
+    fun `a catalogue provider is never declared over`() {
+        val gemini = apiForm(ModelSetupKind.GEMINI).copy(declaresToolCalling = true)
+        assertFalse(gemini.declarableCapabilities)
+        assertNull(gemini.declaredCapabilities())
+
+        val groq = apiForm(ModelSetupKind.GROQ, model = "llama-3.3-70b-versatile")
+            .copy(declaresToolCalling = true)
+        assertFalse(groq.declarableCapabilities)
+        assertNull(groq.declaredCapabilities())
+
+        // Editing a Gemini preset that already carries a statement leaves that
+        // statement exactly as it was, rather than reading it back as this form's.
+        val existing = apiForm(ModelSetupKind.GEMINI).toPreset(null)
+            .copy(id = "p1", declaredCapabilities = ModelCapabilityDeclaration.toolEnabledEndpoint())
+        val untouched = ModelSetupForm.from(existing).toPreset(existing)
+        assertEquals(existing.declaredCapabilities, untouched.declaredCapabilities)
+    }
+
+    @Test
+    fun `declarability follows the endpoint addressed connections`() {
+        assertTrue(localForm().declarableCapabilities)
+        assertTrue(apiForm(ModelSetupKind.FREELLMAPI).declarableCapabilities)
+        assertFalse(apiForm(ModelSetupKind.GEMINI).declarableCapabilities)
+        assertFalse(apiForm(ModelSetupKind.GROQ).declarableCapabilities)
+
+        // Off by default everywhere: nothing is claimed on the user's behalf.
+        assertTrue(localForm().declaredCapabilities()!!.isEmpty)
+        assertTrue(apiForm(ModelSetupKind.FREELLMAPI).declaredCapabilities()!!.isEmpty)
     }
 }
