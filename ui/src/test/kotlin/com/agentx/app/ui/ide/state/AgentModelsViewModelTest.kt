@@ -19,6 +19,7 @@ import com.agentx.app.model.catalog.ModelCatalog
 import com.agentx.app.model.catalog.ModelCatalogRegistry
 import com.agentx.app.model.catalog.ModelCatalogSnapshot
 import com.agentx.app.model.connect.ModelSetupKind
+import com.agentx.app.model.manager.ModelConnectionKind
 import com.agentx.app.model.manager.ModelManager
 import com.agentx.app.model.manager.ModelManagers
 import com.agentx.app.model.preset.EndpointConfig
@@ -285,4 +286,73 @@ class AgentModelsViewModelTest {
         assertEquals(false, registry.override(AgentRole.MAIN)?.declaresToolCalling)
         assertFalse(vm.rows.first { it.role == AgentRole.MAIN }.declaresToolCalling)
     }
+
+    // --- the reported stale connection assignment ---------------------------
+
+    /**
+     * Settings → Agent Models records the user's choice: a *provider family* and a
+     * model. It must not also pin the role to whichever connection of that family the
+     * editor happened to list — that identity is not the user's, and it goes stale as
+     * soon as the connection is replaced, after which every run of the role fails with
+     * `MODEL_NOT_CONNECTED` while an equivalent connection for the same provider and
+     * model is connected.
+     */
+    @Test
+    fun `the editor records a provider family, so a replacement connection is followed`() {
+        val store = InMemoryAgentRoleModelStore()
+        val registry = AgentRoleModelRegistry(DefaultAgentRoleModelRepository(store))
+        val vm = AgentModelsViewModel(
+            registry = registry,
+            modelManager = ModelManagers.create(
+                presetStore = InMemoryModelPresetStore(listOf(freeLlmPreset())),
+                monitorEnabled = false,
+                ioDispatcher = Dispatchers.Unconfined,
+            ),
+        )
+        vm.refresh()
+
+        // The picker offers FreeLLMAPI and carries no connection identity for it: the
+        // editor's choice is the provider family plus a model.
+        val option = vm.options.single { it.providerId == AgentModelProviders.FREELMAPI }
+        assertEquals(null, option.connectionId, "a provider-family option must not name a connection")
+
+        // What the editor saves when the user picks FreeLLMAPI and a model.
+        vm.save(AgentRole.MAIN, option.providerId, "qwen-3.8-27b", option.connectionId)
+
+        val saved = runBlocking { store.loadAll().single { it.role == AgentRole.MAIN } }
+        assertEquals(null, saved.connectionId, "no connection identity the user did not choose")
+        assertEquals(AgentModelProviders.FREELMAPI, saved.providerId)
+        assertEquals("qwen-3.8-27b", saved.model)
+
+        // The user replaces the connection (a fresh preset id) for the same provider and
+        // model. The assignment is not pinned to the old one, so it resolves to the
+        // replacement instead of failing with MODEL_NOT_CONNECTED.
+        val replacement = ModelConfig(
+            providerId = AgentModelProviders.FREELMAPI,
+            baseUrl = "https://replacement.example/v1",
+            model = "qwen-3.8-27b",
+            connectionId = "replacement-preset",
+            connectionKind = ModelConnectionKind.API,
+        )
+        val resolver = AgentModelResolver(
+            preferences = AgentModelPreferences.DEFAULT,
+            connections = { mapOf("replacement-preset" to replacement) },
+            livePreferences = { registry.preferences() },
+        )
+        val resolved = resolver.resolve(AgentRole.MAIN, default = replacement)
+        assertEquals("replacement-preset", resolved.connectionId)
+        assertEquals("qwen-3.8-27b", resolved.model)
+        assertEquals(AgentModelProviders.FREELMAPI, resolved.providerId)
+    }
+
+    private fun freeLlmPreset(id: String = "freellmapi-gateway") = ModelPreset(
+        id = id,
+        displayName = "FreeLLMAPI",
+        providerType = ModelProviderType.REMOTE_OPENAI_COMPATIBLE,
+        modelIdentifier = "qwen-3.8-27b",
+        apiProtocol = ModelApiProtocol.OPENAI_COMPATIBLE,
+        apiBasePath = "/v1",
+        endpoint = EndpointConfig(EndpointDiscoveryMode.CONFIGURED_ENDPOINT, "https://gateway.example"),
+        setupKind = ModelSetupKind.FREELLMAPI.id,
+    )
 }

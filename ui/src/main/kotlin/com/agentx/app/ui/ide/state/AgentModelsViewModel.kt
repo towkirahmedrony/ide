@@ -286,6 +286,11 @@ class AgentModelsViewModel(
      * Builds the provider catalog from the Model Manager's saved presets plus any
      * dynamic model catalog: one option per provider identity, with the models it
      * can serve, which are deprecated, and whether it is connected right now.
+     *
+     * The editor's choice is a *provider family* plus a model, and an option here
+     * therefore carries no connection identity (see the `connectionId = null` note
+     * below). The per-connection view lives in [connectionOptionsFor], which is what
+     * judging an existing assignment uses.
      */
     private fun optionsFor(state: ModelManagerState): List<ProviderModelOption> {
         val grouped = LinkedHashMap<String, MutableList<ModelPreset>>()
@@ -325,7 +330,24 @@ class AgentModelsViewModel(
                 models = available.toList(),
                 unavailableModels = unavailable,
                 connected = usable != null,
-                connectionId = origin.id,
+                // No connection identity. This option stands for a provider *family*,
+                // and the editor's choice is (provider family + model) — the user never
+                // picks one of the family's connections here. Naming one of them would
+                // save that connection as the role's own binding, an identity the user
+                // did not choose, and it goes stale the moment that connection is
+                // deleted or replaced: the role then refuses every run with
+                // MODEL_NOT_CONNECTED (assignment=user) even though an equivalent
+                // connection for the same provider and model is connected.
+                //
+                // A family-scoped assignment resolves by provider family *within its
+                // execution domain*, so it follows a replacement connection for the same
+                // provider and model, and can never be answered by an unrelated provider,
+                // by a connection in the other domain, or by a sibling when several
+                // same-domain candidates would have to be guessed from list order. A role
+                // that names an exact connection still resolves by it; that binding is
+                // written by a flow that actually knows the connection, never guessed
+                // here from the family's list order.
+                connectionId = null,
                 connectionLabel = origin.displayName,
                 endpoint = usable?.let { state.status(it.id).endpoint?.url },
                 // Why the list is what it is: a provider that publishes no list, or

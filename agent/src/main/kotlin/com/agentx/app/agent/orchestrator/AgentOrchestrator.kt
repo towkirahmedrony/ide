@@ -474,6 +474,14 @@ class DefaultAgentOrchestrator(
      * connection identity and whether the selection was an explicit assignment or
      * policy-derived. A substitution can therefore never be hidden; the event and
      * log carry no credential, endpoint or request body.
+     *
+     * The role's *saved* assignment connection is reported beside the resolved one.
+     * The two differ legitimately: an assignment that names no connection resolves by
+     * provider family, and one that names a connection resolves to that exact
+     * connection. Logging both is what makes a stale assignment (one that names a
+     * connection the runtime can no longer address) distinguishable from a
+     * family-scoped one that legitimately followed a replacement connection — and
+     * neither value is a secret.
      */
     private fun emitModelSelected(
         sink: AgentEventSink,
@@ -482,6 +490,11 @@ class DefaultAgentOrchestrator(
         config: ModelConfig,
         explicit: Boolean,
     ) {
+        // The connection the role's saved assignment names, when it names one; null for
+        // a family-scoped assignment (and for a policy default). Read from the same
+        // live mapping the resolution read, so it describes this run.
+        val assignedConnectionId = modelResolver.preference(role)?.connectionId
+            ?.takeIf { it.isNotBlank() }
         sink.emit(
             AgentEvent.ModelSelected(
                 sessionId = sessionId,
@@ -489,6 +502,7 @@ class DefaultAgentOrchestrator(
                 providerId = config.providerId,
                 modelId = config.model,
                 connectionId = config.connectionId,
+                assignedConnectionId = assignedConnectionId,
                 explicit = explicit,
                 timestampMillis = clock(),
             ),
@@ -500,7 +514,11 @@ class DefaultAgentOrchestrator(
                 "role" to role.name,
                 "provider" to config.providerId,
                 "model" to config.model,
+                // The connection actually resolved, and the connection the assignment
+                // names (null when it names none). Identifiers only — never a credential
+                // or an endpoint.
                 "connection" to config.connectionId,
+                "assignedConnection" to assignedConnectionId,
                 "selection" to if (explicit) "explicit" else "policy",
             ),
         )

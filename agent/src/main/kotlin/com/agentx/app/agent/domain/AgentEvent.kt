@@ -22,6 +22,14 @@ sealed interface AgentEvent {
      * and whether the selection came from an explicit role assignment
      * (`explicit = true`) or from the role/active-model selection policy. It never
      * carries an endpoint, credential or request body.
+     *
+     * [connectionId] is the connection the execution will actually run on.
+     * [assignedConnectionId] is the connection the role's *saved assignment* names,
+     * when it names one, so a log can tell a family-scoped assignment (it names no
+     * connection, and resolved by provider family) from one pinned to an exact
+     * connection — and can show that the two agree. It is null for an assignment
+     * that names no connection and for a policy-derived selection. Neither field
+     * ever carries a credential or an endpoint.
      */
     data class ModelSelected(
         override val sessionId: String,
@@ -29,6 +37,7 @@ sealed interface AgentEvent {
         val providerId: String,
         val modelId: String,
         val connectionId: String,
+        val assignedConnectionId: String? = null,
         val explicit: Boolean,
         override val timestampMillis: Long,
     ) : AgentEvent

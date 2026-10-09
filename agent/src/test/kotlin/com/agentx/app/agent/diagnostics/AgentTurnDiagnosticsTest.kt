@@ -62,7 +62,7 @@ class AgentTurnDiagnosticsTest {
 
         diagnostics.started(request(), config())
         diagnostics.onEvent(
-            AgentEvent.ModelSelected("s1", AgentRole.MAIN, "openai", "gpt-test", "openai", true, 0),
+            AgentEvent.ModelSelected("s1", AgentRole.MAIN, "openai", "gpt-test", "openai", null, true, 0),
         )
         diagnostics.onEvent(AgentEvent.OutputDelta("s1", "hello", 0))
         diagnostics.onEvent(AgentEvent.OutputDelta("s1", " world", 0))

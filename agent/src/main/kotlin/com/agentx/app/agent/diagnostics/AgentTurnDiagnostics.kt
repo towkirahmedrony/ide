@@ -151,7 +151,12 @@ class AgentTurnDiagnostics(
                     "role" to event.role.name,
                     "provider" to event.providerId,
                     "model" to event.modelId,
+                    // The connection the execution runs on, and the connection the role's
+                    // saved assignment names (null when it names none). Logging both is
+                    // what lets a stale assignment be told apart from a family-scoped one
+                    // that followed a replacement connection. Identifiers only.
                     "connection" to event.connectionId,
+                    "assignedConnection" to event.assignedConnectionId,
                     "selection" to if (event.explicit) "explicit" else "policy",
                 ),
             )
