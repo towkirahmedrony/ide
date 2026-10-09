@@ -3,11 +3,13 @@ package com.agentx.app.ui.ide.state
 import com.agentx.app.core.ForgeError
 import com.agentx.app.core.ForgeErrorCode
 import com.agentx.app.core.ForgeResult
+import com.agentx.app.model.ModelConfig
 import com.agentx.app.model.catalog.CatalogModel
 import com.agentx.app.model.catalog.CatalogSource
 import com.agentx.app.model.catalog.ModelCatalog
 import com.agentx.app.model.catalog.ModelCatalogRegistry
 import com.agentx.app.model.catalog.ModelCatalogSnapshot
+import com.agentx.app.model.catalog.ModelCatalogState
 import com.agentx.app.model.connect.ModelSetupKind
 import com.agentx.app.model.manager.ModelManager
 import com.agentx.app.model.manager.ModelManagers
@@ -26,6 +28,10 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertIs
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -46,12 +52,21 @@ class ModelEditorViewModelTest {
         Dispatchers.resetMain()
     }
 
-    /** Catalog registry whose snapshot and refresh outcome the test controls. */
+    /**
+     * Catalog registry whose snapshot, saved-catalog refresh and draft-connection
+     * preview outcomes the test controls. A provider the user has not saved has no
+     * cached catalog ([current] null), so the picker reaches [preview] instead.
+     */
     private class FakeCatalogRegistry(
         var current: ModelCatalogSnapshot?,
         var result: ForgeResult<ModelCatalogSnapshot, ForgeError>,
+        var previewResult: ForgeResult<ModelCatalogSnapshot, ForgeError> = ForgeResult.Failure(
+            ForgeError(ForgeErrorCode.MODEL_CATALOG_UNAVAILABLE, "no draft catalog"),
+        ),
     ) : ModelCatalogRegistry {
         var refreshes: Int = 0
+        var previews: Int = 0
+        var lastPreviewConnection: ModelConfig? = null
 
         override fun providers(): List<String> = listOf("gemini")
         override fun catalog(providerId: String): ModelCatalog? = null
@@ -61,6 +76,15 @@ class ModelEditorViewModelTest {
         override suspend fun refresh(providerId: String, force: Boolean): ForgeResult<ModelCatalogSnapshot, ForgeError> {
             refreshes++
             return result
+        }
+
+        override suspend fun preview(
+            providerId: String,
+            connection: ModelConfig,
+        ): ForgeResult<ModelCatalogSnapshot, ForgeError> {
+            previews++
+            lastPreviewConnection = connection
+            return previewResult
         }
 
         override suspend fun refreshAll(force: Boolean): Map<String, ModelCatalogSnapshot> =
@@ -101,6 +125,33 @@ class ModelEditorViewModelTest {
             catalog = registry,
         )
         viewModel.selectConnectionType(ModelConnectionType.API)
+        return viewModel
+    }
+
+    private fun freeLlmSnapshot(vararg ids: String) = ModelCatalogSnapshot(
+        providerId = "freellmapi",
+        models = ids.map { CatalogModel(id = it) },
+        fetchedAtMillis = 1L,
+        source = CatalogSource.REMOTE,
+    )
+
+    private fun notConnected() = ForgeResult.Failure(
+        ForgeError(ForgeErrorCode.MODEL_CATALOG_UNAVAILABLE, "not connected"),
+    )
+
+    /**
+     * A new model form switched to FreeLLMAPI. No connection is saved for it, so
+     * the picker has no cached catalog and discovery runs against the draft
+     * endpoint the form carries.
+     */
+    private fun newFreeLlmApiForm(registry: FakeCatalogRegistry): ModelEditorViewModel {
+        val viewModel = ModelEditorViewModel(
+            manager = manager(),
+            presetId = null,
+            catalog = registry,
+        )
+        viewModel.selectConnectionType(ModelConnectionType.API)
+        viewModel.selectProvider(ModelSetupKind.FREELLMAPI)
         return viewModel
     }
 
@@ -148,6 +199,121 @@ class ModelEditorViewModelTest {
 
         // The refreshed catalog replaces the old list, again in ascending id order.
         assertEquals(listOf("gemini-3.1-flash", "gemini-3.5-flash"), viewModel.state.models.map { it.id })
+    }
+
+    // --- FreeLLMAPI: catalog-driven before the connection is saved ----------
+
+    @Test
+    fun `a new FreeLLMAPI connection lists the endpoint catalog before it is saved`() {
+        val live = freeLlmSnapshot(
+            "gemini-2.5-flash",
+            "openai/gpt-oss-20b",
+            "deepseek-v4-pro",
+            "glm-5.3",
+            "brand-new-gateway-model",
+        )
+        val registry = FakeCatalogRegistry(
+            current = null,
+            result = notConnected(),
+            previewResult = ForgeResult.Success(live),
+        )
+
+        val viewModel = newFreeLlmApiForm(registry)
+
+        assertTrue(viewModel.state.modelsFromCatalog)
+        // The complete discovered catalog is available, not the four-item preset list.
+        assertEquals(
+            listOf(
+                "brand-new-gateway-model",
+                "deepseek-v4-pro",
+                "gemini-2.5-flash",
+                "glm-5.3",
+                "openai/gpt-oss-20b",
+            ),
+            viewModel.state.models.map { it.id }.sorted(),
+        )
+        assertTrue(viewModel.state.models.size > 4)
+        assertEquals(1, registry.previews)
+        // Discovery ran against the form's own endpoint, not a hardcoded address.
+        assertEquals("https://agentx-vgtx.onrender.com/v1", registry.lastPreviewConnection?.baseUrl)
+        // A live list is never mixed with the built-in compatibility list.
+        assertTrue(viewModel.state.models.none { it.id == "llama-3.3-70b-versatile" })
+    }
+
+    @Test
+    fun `featured FreeLLMAPI candidates appear only when the endpoint returns them`() {
+        val live = freeLlmSnapshot("gemini-3.8-flash", "openai/gpt-oss-120b", "some-gateway-model")
+        val registry = FakeCatalogRegistry(
+            current = null,
+            result = notConnected(),
+            previewResult = ForgeResult.Success(live),
+        )
+
+        val byId = newFreeLlmApiForm(registry).state.models.associateBy { it.id }
+
+        assertTrue(byId.getValue("gemini-3.8-flash").recommended)
+        assertTrue(byId.getValue("openai/gpt-oss-120b").recommended)
+        assertFalse(byId.getValue("some-gateway-model").recommended)
+        // A candidate the endpoint did not return is never fabricated.
+        assertNull(byId["glm-5.3"])
+        assertNull(byId["deepseek-v4-pro"])
+        assertNull(byId["devstral-2"])
+    }
+
+    @Test
+    fun `a FreeLLMAPI discovery failure shows an error and never presents the built-in list`() {
+        val registry = FakeCatalogRegistry(
+            current = null,
+            result = notConnected(),
+            previewResult = ForgeResult.Failure(
+                ForgeError(ForgeErrorCode.MODEL_CATALOG_UNAVAILABLE, "The model list endpoint returned HTTP 401."),
+            ),
+        )
+
+        val viewModel = newFreeLlmApiForm(registry)
+
+        assertNotNull(viewModel.state.catalogError)
+        assertTrue(viewModel.state.catalogState is ModelCatalogState.Failed)
+        assertFalse(viewModel.state.modelsFromCatalog)
+        // The outdated built-in list is not offered as if it were the endpoint's.
+        assertTrue(viewModel.state.models.isEmpty())
+        assertFalse(viewModel.state.hasModelList)
+    }
+
+    @Test
+    fun `an empty FreeLLMAPI catalog is an empty state, not the four presets`() {
+        val registry = FakeCatalogRegistry(
+            current = null,
+            result = notConnected(),
+            previewResult = ForgeResult.Success(freeLlmSnapshot()),
+        )
+
+        val viewModel = newFreeLlmApiForm(registry)
+
+        val state = assertIs<ModelCatalogState.Discovered>(viewModel.state.catalogState)
+        assertEquals(0, state.modelCount)
+        assertFalse(viewModel.state.modelsFromCatalog)
+        assertTrue(viewModel.state.models.isEmpty())
+        assertNull(viewModel.state.catalogError)
+    }
+
+    @Test
+    fun `refreshing the FreeLLMAPI catalog keeps the selected model`() {
+        val live = freeLlmSnapshot("gemini-3.8-flash", "deepseek-v4-pro")
+        val registry = FakeCatalogRegistry(
+            current = null,
+            result = notConnected(),
+            previewResult = ForgeResult.Success(live),
+        )
+        val viewModel = newFreeLlmApiForm(registry)
+        viewModel.selectModel("deepseek-v4-pro")
+
+        viewModel.retryCatalog()
+
+        // The exact selected id survives a refresh that still lists it, and is never
+        // switched to a default or another model.
+        assertEquals("deepseek-v4-pro", viewModel.state.form.modelId)
+        assertEquals(2, registry.previews)
     }
 
     @Test

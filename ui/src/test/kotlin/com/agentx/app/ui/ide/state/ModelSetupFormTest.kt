@@ -514,6 +514,51 @@ class ModelSetupFormTest {
     }
 
     @Test
+    fun `searching the full catalog preserves the exact discovered id`() {
+        val catalog = registry(
+            models = listOf(
+                CatalogModel(id = "openai/gpt-oss-120b", displayName = "GPT OSS 120B"),
+                CatalogModel(id = "deepseek-v4-pro", displayName = "DeepSeek V4 Pro"),
+                CatalogModel(id = "gemini-2.5-flash"),
+            ),
+        )
+        val choices = ModelChoices.offered(catalog, "groq")
+
+        // Matching is on the id and on the human label, and an id is never rewritten.
+        assertEquals(listOf("openai/gpt-oss-120b"), ModelChoices.search(choices, "gpt-oss-120b").map { it.id })
+        assertEquals(listOf("deepseek-v4-pro"), ModelChoices.search(choices, "DeepSeek V4").map { it.id })
+        assertEquals(listOf("gemini-2.5-flash"), ModelChoices.search(choices, "GEMINI-2.5").map { it.id })
+        // A blank query keeps the complete catalog.
+        assertEquals(choices, ModelChoices.search(choices, "  "))
+        // A query that matches nothing is empty, never a fallback to a preset list.
+        assertTrue(ModelChoices.search(choices, "no-such-model").isEmpty())
+    }
+
+    @Test
+    fun `featured ids are only the candidates the catalog actually returned`() {
+        val live = listOf(
+            CatalogModel(id = "gemini-3.8-flash", displayName = "Gemini 3.8 Flash"),
+            CatalogModel(id = "openai/gpt-oss-120b", displayName = "GPT OSS 120B"),
+            CatalogModel(id = "some-unlisted-model"),
+        )
+        val choices = ModelChoices.catalogChoices(live)
+
+        val featured = ModelChoices.markRecommended(choices, FREELLMAPI_RECOMMENDED_MODELS)
+
+        // Returned candidates are featured and presented first ...
+        assertEquals(
+            listOf("gemini-3.8-flash", "openai/gpt-oss-120b"),
+            featured.filter { it.recommended }.map { it.id },
+        )
+        // ... everything else keeps a place, and no candidate is invented.
+        assertTrue(featured.none { it.id == "deepseek-v4-pro" })
+        assertTrue(featured.none { it.id == "glm-5.3" })
+        assertEquals(choices.size, featured.size)
+        // The featured section can never contain a model the endpoint did not list.
+        assertTrue(featured.filter { it.recommended }.all { it.id in choices.map { c -> c.id } })
+    }
+
+    @Test
     fun `a saved model stays selectable when discovery cannot list it`() {
         val choices = ModelChoices.offered(null, "gemini")
 

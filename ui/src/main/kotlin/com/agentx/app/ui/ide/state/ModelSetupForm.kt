@@ -5,6 +5,7 @@ import com.agentx.app.agent.model.AgentRoleModelRegistry
 import com.agentx.app.agent.model.RoleModelSelection
 import com.agentx.app.model.capability.CapabilitySupport
 import com.agentx.app.model.capability.ModelCapabilityDeclaration
+import com.agentx.app.model.catalog.CatalogModel
 import com.agentx.app.model.catalog.ModelCatalogRegistry
 import com.agentx.app.model.connect.EndpointResolver
 import com.agentx.app.model.connect.KnownModelProviders
@@ -80,6 +81,27 @@ val API_PROVIDER_KINDS: List<ModelSetupKind> = listOf(
     ModelSetupKind.GEMINI,
     ModelSetupKind.GROQ,
     ModelSetupKind.FREELLMAPI,
+)
+
+/**
+ * Model ids featured first when the live FreeLLMAPI endpoint returns them.
+ *
+ * This is a *presentation* preference, not an allowlist and not a catalog: a
+ * candidate is only ever shown when the configured endpoint's own `/v1/models`
+ * response contains that exact id, and every other discovered model stays
+ * searchable and selectable beside it. Nothing is invented here, no id is
+ * rewritten to an assumed upstream alias, and a candidate the endpoint does not
+ * return simply does not appear.
+ */
+val FREELLMAPI_RECOMMENDED_MODELS: List<String> = listOf(
+    "gemini-3.8-flash",
+    "gemini-3.5-flash-lite",
+    "openai/gpt-oss-120b",
+    "qwen/qwen3.8-27b",
+    "deepseek-v4-flash",
+    "deepseek-v4-pro",
+    "devstral-2",
+    "glm-5.3",
 )
 
 /** Which input a validation issue belongs to, so the form can mark one field. */
@@ -438,7 +460,12 @@ data class ModelSetupForm(
  * A provider that reports a human name gets it shown while the id is still what
  * is stored, so a model can be recognised without hiding what is actually sent.
  */
-data class ModelChoice(val id: String, val label: String)
+data class ModelChoice(
+    val id: String,
+    val label: String,
+    /** True when the id is one the provider is asked to feature first. */
+    val recommended: Boolean = false,
+)
 
 /**
  * Models the user may pick for a provider.
@@ -450,17 +477,20 @@ data class ModelChoice(val id: String, val label: String)
 object ModelChoices {
 
     fun catalogChoices(catalog: ModelCatalogRegistry?, providerId: String): List<ModelChoice> =
-        catalog?.availableModels(providerId)
-            ?.filter { it.id.isNotBlank() }
-            ?.map { model ->
+        catalogChoices(catalog?.availableModels(providerId).orEmpty())
+
+    /** The choices a provider's own model records describe, in ascending id order. */
+    fun catalogChoices(models: List<CatalogModel>): List<ModelChoice> =
+        models
+            .filter { it.id.isNotBlank() }
+            .map { model ->
                 ModelChoice(
                     id = model.id,
                     label = model.displayName?.takeIf { it.isNotBlank() } ?: model.id,
                 )
             }
-            ?.distinctBy { it.id }
-            ?.sortedBy { it.id }
-            .orEmpty()
+            .distinctBy { it.id }
+            .sortedBy { it.id }
 
     /** The provider's built-in compatibility list, used only when discovery cannot answer. */
     fun suggestions(providerId: String): List<String> =
@@ -479,6 +509,38 @@ object ModelChoices {
         val live = catalogChoices(catalog, providerId)
         if (live.isNotEmpty()) return live
         return suggestions(providerId).map { id -> ModelChoice(id, id) }
+    }
+
+    /**
+     * Features the [recommendedIds] the catalog already contains, first.
+     *
+     * A candidate that discovery did not return has no entry to mark, so it simply
+     * is not shown — the section can never contain a model the endpoint did not
+     * actually list. Everything else keeps its place after the featured ids.
+     */
+    fun markRecommended(
+        choices: List<ModelChoice>,
+        recommendedIds: Collection<String>,
+    ): List<ModelChoice> {
+        val wanted = recommendedIds.toSet()
+        return choices
+            .map { choice -> choice.copy(recommended = choice.id in wanted) }
+            .sortedWith(compareByDescending<ModelChoice> { it.recommended }.thenBy { it.id })
+    }
+
+    /**
+     * Case-insensitive search over the full discovered catalog.
+     *
+     * Matches the exact model id as well as the human label, so a user can find a
+     * model by either name; the returned [ModelChoice] keeps the id that is sent to
+     * the endpoint verbatim.
+     */
+    fun search(choices: List<ModelChoice>, query: String): List<ModelChoice> {
+        val q = query.trim()
+        if (q.isEmpty()) return choices
+        return choices.filter { choice ->
+            choice.id.contains(q, ignoreCase = true) || choice.label.contains(q, ignoreCase = true)
+        }
     }
 
     /** The label to show for the currently selected id, even when it is not listed. */

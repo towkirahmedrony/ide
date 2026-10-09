@@ -8,6 +8,8 @@ import androidx.lifecycle.viewModelScope
 import com.agentx.app.core.ForgeError
 import com.agentx.app.core.errorOrNull
 import com.agentx.app.core.valueOrNull
+import com.agentx.app.model.ModelConfig
+import com.agentx.app.model.catalog.CatalogModel
 import com.agentx.app.model.catalog.ModelCatalogRegistry
 import com.agentx.app.model.catalog.ModelCatalogState
 import com.agentx.app.model.connect.KnownModelProviders
@@ -15,6 +17,7 @@ import com.agentx.app.model.connect.ModelConnectOutcome
 import com.agentx.app.model.connect.ModelConnectPhase
 import com.agentx.app.model.connect.ModelSetupKind
 import com.agentx.app.model.connect.selectDiscoveredModel
+import com.agentx.app.model.manager.ModelConnectionKind
 import com.agentx.app.model.manager.ModelManager
 import com.agentx.app.model.preset.ModelApiProtocol
 import com.agentx.app.model.preset.ModelPreset
@@ -273,37 +276,106 @@ class ModelEditorViewModel(
             state = state.copy(models = emptyList(), modelsFromCatalog = false, catalogError = null)
             return
         }
-        val providerId = ModelProviderIds.forPreset(state.form.setupKind.id, ModelApiProtocol.OPENAI_COMPATIBLE)
+        val setupKind = state.form.setupKind
+        val providerId = providerIdFor(setupKind)
         val registry = catalog
         state = state.copy(catalogLoading = true, catalogError = null)
-        val failure = if (registry == null) {
+
+        // 1. The provider's own catalog. A saved/connected provider is discovered
+        //    here, through the same provider identity the runtime chats through.
+        var live: List<CatalogModel> = emptyList()
+        var failure: String? = if (registry == null) {
             null
         } else {
-            runCatching { registry.refresh(providerId, force) }.getOrNull()?.errorOrNull()
+            runCatching { registry.refresh(providerId, force) }.getOrNull()?.errorOrNull()?.message
         }
-        val fromCatalog = ModelChoices.catalogChoices(registry, providerId)
+        if (registry != null) {
+            live = runCatching { registry.availableModels(providerId) }.getOrDefault(emptyList())
+        }
+
+        // 2. A provider the user has configured but not saved has no catalog yet, so
+        //    nothing could be discovered for it above. When it is addressed by
+        //    endpoint (FreeLLMAPI), discovery runs against the address and credential
+        //    the form holds, through the same factory a saved connection uses — the
+        //    picker then lists the endpoint's own model records instead of a built-in
+        //    list. This is a read-only preview: nothing is persisted and no saved
+        //    catalog is touched.
+        var draftState: ModelCatalogState? = null
+        if (live.isEmpty() &&
+            registry != null &&
+            setupKind.showsEndpointField &&
+            state.form.effectiveServerUrl.isNotBlank()
+        ) {
+            val preview = runCatching { registry.preview(providerId, draftConnection(providerId)) }.getOrNull()
+            val snapshot = preview?.valueOrNull()
+            if (snapshot != null) {
+                live = snapshot.availableModels()
+                draftState = ModelCatalogState.Discovered(snapshot.availableModels().size, snapshot.fetchedAtMillis)
+                // The endpoint answered, so any catalog-only failure no longer applies.
+                failure = null
+            } else {
+                failure = preview?.errorOrNull()?.message ?: failure
+                draftState = ModelCatalogState.Failed(
+                    message = failure ?: "The model list could not be read.",
+                )
+            }
+        }
+
         val connected = registry?.catalog(providerId) != null
         // Read after the refresh, so the state describes the attempt that just ran.
         val discoveryState = registry?.lastDiscovery(providerId)
-        // A live catalog replaces the built-in compatibility list outright; the
-        // compatibility list only fills the gap when discovery cannot answer at all,
-        // so a fallback id is never presented as one the provider offers.
-        val offers = if (fromCatalog.isNotEmpty()) {
-            fromCatalog
+
+        // The configured endpoint is the only authority for its own model list. Once
+        // discovery has run against it — whether it answered with models, answered
+        // with none, or could not be read — the built-in compatibility list is *not*
+        // substituted, because those ids were never received from that endpoint. The
+        // fallback list survives only for a provider no discovery was attempted for
+        // (no endpoint on the form), so an offline provider stays usable without ever
+        // presenting an outdated list as the live catalog.
+        val liveChoices = ModelChoices.catalogChoices(live)
+        val fromCatalog = liveChoices.isNotEmpty()
+        val offers = when {
+            fromCatalog -> liveChoices
+            draftState != null -> emptyList()
+            else -> ModelChoices.suggestions(providerId).map { id -> ModelChoice(id, id) }
+        }
+        // Feature the priority FreeLLMAPI ids — but only the ones the endpoint
+        // actually returned, so the section can never invent a model.
+        val presented = if (fromCatalog && setupKind == ModelSetupKind.FREELLMAPI) {
+            ModelChoices.markRecommended(offers, FREELLMAPI_RECOMMENDED_MODELS)
         } else {
-            ModelChoices.suggestions(providerId).map { ModelChoice(it, it) }
+            offers
         }
         state = state.copy(
             catalogLoading = false,
-            models = offers,
-            modelsFromCatalog = fromCatalog.isNotEmpty(),
-            // Only a connected provider that failed to answer is worth a retry; an
-            // unconnected one simply has no model list yet.
-            catalogError = failure?.message?.takeIf { connected || fromCatalog.isNotEmpty() },
-            catalogState = discoveryState,
-            form = resolveStaleSavedModel(state.form, fromCatalog, providerId),
+            models = presented,
+            modelsFromCatalog = fromCatalog,
+            // Only something that failed to answer and could be retried is an error: a
+            // connected provider that failed, or a draft endpoint that could not be
+            // read. A provider with no catalog yet simply has no model list.
+            catalogError = failure?.takeIf { connected || fromCatalog || draftState != null },
+            catalogState = draftState ?: discoveryState,
+            form = resolveStaleSavedModel(state.form, liveChoices, providerId),
         )
     }
+
+    /** The provider family identity a setup kind resolves to for its model list. */
+    private fun providerIdFor(kind: ModelSetupKind): String =
+        ModelProviderIds.forPreset(kind.id, ModelApiProtocol.OPENAI_COMPATIBLE)
+
+    /**
+     * The connection a draft discovery runs against: the address and credential the
+     * form currently holds, and nothing else. It is never saved —
+     * [ModelCatalogRegistry.preview] discards it after the one refresh.
+     */
+    private fun draftConnection(providerId: String): ModelConfig = ModelConfig(
+        providerId = providerId,
+        baseUrl = state.form.effectiveServerUrl.trim().trimEnd('/'),
+        model = state.form.modelId.trim(),
+        apiKey = state.form.credential.takeIf { it.isNotBlank() },
+        connectionKind = ModelConnectionKind.API,
+        headers = state.form.setupKind.requestHeaders,
+    )
 
     /**
      * Re-points a saved model the provider no longer lists at a valid one from the

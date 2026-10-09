@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -413,7 +414,14 @@ private fun ToolCallingDeclaration(
     }
 }
 
-/** The model id: a picker when a list is available, a field otherwise. */
+/**
+ * The model id: a searchable picker when a list is available, a field otherwise.
+ *
+ * The picker is fed by the full discovered catalog — every model the configured
+ * endpoint returned — and searching filters that catalog on the id or the human
+ * label while the id itself is what gets saved. Featured ids are marked, never
+ * invented: a model absent from the endpoint's answer has no row to appear in.
+ */
 @Composable
 private fun ModelField(
     state: ModelEditorState,
@@ -423,6 +431,7 @@ private fun ModelField(
     onRefreshModels: () -> Unit,
 ) {
     var open by remember { mutableStateOf(false) }
+    var query by remember { mutableStateOf("") }
 
     if (state.hasModelList) {
         Box {
@@ -430,17 +439,48 @@ private fun ModelField(
                 label = "Model",
                 value = ModelChoices.labelFor(state.models, state.form.modelId).ifBlank { "Select" },
                 enabled = !state.catalogLoading,
-                onClick = { open = true },
+                onClick = {
+                    query = ""
+                    open = true
+                },
             )
             DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-                state.models.forEach { choice ->
+                // Search the complete discovered catalog, not just the visible page:
+                // a provider that lists hundreds of models stays usable from here.
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    singleLine = true,
+                    label = { Text("Search ${state.models.size} models") },
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                        .width(280.dp),
+                )
+                val results = ModelChoices.search(state.models, query)
+                if (results.isEmpty()) {
                     DropdownMenuItem(
-                        text = { Text(choice.label) },
-                        onClick = {
-                            open = false
-                            onSelectModel(choice.id)
-                        },
+                        text = { Text("No model matches \"$query\"") },
+                        onClick = {},
+                        enabled = false,
                     )
+                } else {
+                    results.forEach { choice ->
+                        DropdownMenuItem(
+                            text = {
+                                val label = if (choice.recommended) {
+                                    "Recommended · ${choice.label}"
+                                } else {
+                                    choice.label
+                                }
+                                Text(label)
+                            },
+                            onClick = {
+                                open = false
+                                onSelectModel(choice.id)
+                            },
+                        )
+                    }
                 }
             }
         }
@@ -466,6 +506,16 @@ private fun ModelField(
             supporting = state.issue(ModelSetupField.MODEL)
                 ?: "Model id sent to the provider",
         )
+        // An endpoint that answered but listed nothing is an empty catalog, not a
+        // reason to offer ids it never returned.
+        val discovery = state.catalogState
+        if (discovery is ModelCatalogState.Discovered && discovery.modelCount == 0) {
+            Text(
+                text = "${state.form.apiProvider.displayName} returned no models for this endpoint.",
+                style = MaterialTheme.typography.bodySmall,
+                color = ForgeAmber,
+            )
+        }
         Row(verticalAlignment = Alignment.CenterVertically) {
             if (state.catalogLoading) {
                 CircularProgressIndicator(color = ForgeMint, modifier = Modifier.size(14.dp))

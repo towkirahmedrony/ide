@@ -454,6 +454,28 @@ interface ModelCatalogRegistry {
 
     suspend fun refresh(providerId: String, force: Boolean = false): ForgeResult<ModelCatalogSnapshot, ForgeError>
 
+    /**
+     * Discovers the models a *draft* connection lists, without saving it.
+     *
+     * This is the same factory and provider-owned discovery a saved connection
+     * uses, so a provider the user has configured but not yet saved — the moment a
+     * model is being chosen — can still show the endpoint's own model records
+     * instead of a built-in list. Nothing is cached, persisted or added to
+     * [providers]: the snapshot is returned to the caller only, so no other
+     * provider's models are touched.
+     *
+     * Defaults to an unavailable result, so a registry that is not built on a
+     * catalog (a preview or a test double) needs no extra implementation.
+     */
+    suspend fun preview(providerId: String, connection: ModelConfig): ForgeResult<ModelCatalogSnapshot, ForgeError> =
+        failure(
+            ForgeError(
+                code = ForgeErrorCode.MODEL_CATALOG_UNAVAILABLE,
+                message = "No model catalog is available for '$providerId'.",
+                details = mapOf("providerId" to providerId),
+            ),
+        )
+
     suspend fun refreshAll(force: Boolean = false): Map<String, ModelCatalogSnapshot>
 
     /** Loads persisted snapshots into memory; safe to call more than once. */
@@ -625,6 +647,27 @@ class DefaultModelCatalogRegistry(
                 ),
             )
         return target.refresh(force)
+    }
+
+    /**
+     * Builds a throwaway catalog from the same factory a saved connection uses and
+     * refreshes it once. It is deliberately not stored, so a draft the user is
+     * still editing never enters [providers], the cached snapshots, or the store,
+     * and can never displace the saved connection's own catalog.
+     */
+    override suspend fun preview(
+        providerId: String,
+        connection: ModelConfig,
+    ): ForgeResult<ModelCatalogSnapshot, ForgeError> {
+        val transient = factory.create(providerId, connection)
+            ?: return failure(
+                ForgeError(
+                    code = ForgeErrorCode.MODEL_CATALOG_UNAVAILABLE,
+                    message = "No model catalog is available for '$providerId'.",
+                    details = mapOf("providerId" to providerId),
+                ),
+            )
+        return transient.refresh(force = true)
     }
 
     override suspend fun refreshAll(force: Boolean): Map<String, ModelCatalogSnapshot> {
