@@ -55,12 +55,23 @@ object ModelPresetCodec {
         // Only what the user actually states is written, so a preset that declares
         // nothing gains no field and an older build reads the same document back
         // unchanged (unknown fields are already ignored on decode).
-        if (!preset.declaredCapabilities.isEmpty) {
-            val declared = LinkedHashMap<String, JsonValue>()
-            preset.declaredCapabilities.declared.forEach { (capability, support) ->
-                declared[capability.id] = Json.of(support.name)
+        //
+        // Each statement is nested under the model id it was made for, so a
+        // connection that serves several models persists the difference between
+        // them instead of collapsing them into one claim. A document written by an
+        // earlier build (a flat capability → support object) is still read: it is a
+        // statement about the preset's own model (see declaredCapabilitiesFrom).
+        val stated = preset.declaredCapabilitiesByModel.filterValues { !it.isEmpty }
+        if (stated.isNotEmpty()) {
+            val byModel = LinkedHashMap<String, JsonValue>()
+            stated.forEach { (modelId, declaration) ->
+                val declared = LinkedHashMap<String, JsonValue>()
+                declaration.declared.forEach { (capability, support) ->
+                    declared[capability.id] = Json.of(support.name)
+                }
+                byModel[modelId] = Json.obj(declared)
             }
-            fields["declaredCapabilities"] = Json.obj(declared)
+            fields["declaredCapabilities"] = Json.obj(byModel)
         }
         fields["setupKind"] = Json.of(preset.setupKind)
         fields["createdAtMillis"] = Json.of(preset.createdAtMillis)
@@ -133,7 +144,10 @@ object ModelPresetCodec {
                 ?.takeIf { it.isNotBlank() }
                 ?.let(::ColabRuntimeConfig),
             enabled = json.booleanOrNull("enabled") ?: true,
-            declaredCapabilities = declaredCapabilitiesFrom(json.objectOrNull("declaredCapabilities")),
+            declaredCapabilitiesByModel = declaredCapabilitiesFrom(
+                json.objectOrNull("declaredCapabilities"),
+                json.stringOrNull("modelIdentifier").orEmpty(),
+            ),
             setupKind = json.stringOrNull("setupKind")?.takeIf { it.isNotBlank() } ?: "custom",
             createdAtMillis = json.numberOrNull("createdAtMillis")?.toLong() ?: 0L,
             updatedAtMillis = json.numberOrNull("updatedAtMillis")?.toLong() ?: 0L,
@@ -141,18 +155,53 @@ object ModelPresetCodec {
     }
 
     /**
-     * Reads a saved declaration. An absent object, an unknown capability name and
-     * an unreadable value are all ignored rather than guessed at, which is what
-     * keeps a document written by a newer build from turning into an unintended
-     * capability claim here. A declaration that survives none of that decoding is
-     * empty — the same as never having declared anything.
+     * Reads the saved statements, each keyed by the model id it was written for.
+     *
+     * Two shapes are accepted. The current one nests each statement under its model
+     * id. The earlier one is a flat capability → support object, written when a
+     * connection could only ever state anything about its own model; it is read as
+     * a statement about [modelIdentifier], which is exactly what it meant, so a
+     * declaration made before this change survives the upgrade.
+     *
+     * An absent object, an unknown capability name and an unreadable value are all
+     * ignored rather than guessed at, which is what keeps a document written by a
+     * newer build from turning into an unintended capability claim here. A
+     * statement that survives none of that decoding is dropped — the same as never
+     * having declared anything.
      */
-    private fun declaredCapabilitiesFrom(json: JsonObject?): ModelCapabilityDeclaration {
-        if (json == null) return ModelCapabilityDeclaration.EMPTY
+    private fun declaredCapabilitiesFrom(
+        json: JsonObject?,
+        modelIdentifier: String,
+    ): Map<String, ModelCapabilityDeclaration> {
+        if (json == null) return emptyMap()
+        val entries = json.entries
+        // A flat declaration names capabilities as its keys and supports as its
+        // (string) values; a per-model one names model ids as its keys and objects
+        // as its values.
+        val legacy = entries.isNotEmpty() && entries.all { (_, value) -> value.stringOrNull() != null }
+        if (legacy) {
+            val key = normalizeModelId(modelIdentifier)
+            if (key.isEmpty()) return emptyMap()
+            val declaration = declarationFrom(entries.mapValues { (_, value) -> value.stringOrNull() })
+            return if (declaration.isEmpty) emptyMap() else mapOf(key to declaration)
+        }
+        val byModel = LinkedHashMap<String, ModelCapabilityDeclaration>()
+        entries.forEach { (rawModelId, value) ->
+            val objectValue = value.objectOrNull() ?: return@forEach
+            val key = normalizeModelId(rawModelId)
+            if (key.isEmpty()) return@forEach
+            val declaration = declarationFrom(objectValue.mapValues { (_, raw) -> raw.stringOrNull() })
+            if (!declaration.isEmpty) byModel[key] = declaration
+        }
+        return byModel
+    }
+
+    /** One statement, from capability id → support name, ignoring what cannot be read. */
+    private fun declarationFrom(values: Map<String, String?>): ModelCapabilityDeclaration {
         val stated = LinkedHashMap<ModelCapability, CapabilitySupport>()
-        json.forEach { (rawCapability, rawSupport) ->
+        values.forEach { (rawCapability, rawSupport) ->
             val capability = ModelCapability.fromId(rawCapability) ?: return@forEach
-            val support = rawSupport.stringOrNull()
+            val support = rawSupport
                 ?.let { name -> CapabilitySupport.entries.firstOrNull { it.name.equals(name, ignoreCase = true) } }
                 ?: return@forEach
             stated[capability] = support

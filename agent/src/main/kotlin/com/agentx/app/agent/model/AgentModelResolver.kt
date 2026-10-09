@@ -13,6 +13,7 @@ import com.agentx.app.model.capability.ModelCapabilityErrors
 import com.agentx.app.model.capability.ModelCapabilityProfile
 import com.agentx.app.model.capability.ModelCapabilityRegistry
 import com.agentx.app.model.capability.capabilityProfile
+import com.agentx.app.model.capability.statedCapabilitiesFor
 import com.agentx.app.model.manager.ModelConnectionKind
 import com.agentx.app.model.preset.ModelProviderIds
 import com.agentx.app.model.ratelimit.RateLimitManager
@@ -679,16 +680,25 @@ class AgentModelResolver(
     /**
      * [config] pointed at [model].
      *
-     * A change of model drops the configuration's capability declaration: a
-     * statement made about one model must never be inherited by another of the
-     * same provider, or a role that overrides the model would borrow a capability
-     * that was never stated for it.
+     * A change of model re-resolves the capability statement from the connection's
+     * own per-model statements: the statement made for [model] travels with it, and
+     * a statement made for a *different* model is never inherited by it.
+     *
+     * That is the same rule as before — one model's statement never lends itself to
+     * another — and it is what makes a connection that serves several models usable:
+     * a role pointed at one of a gateway's models receives the statement the user
+     * made for that exact model, instead of losing it and resolving to unknown.
+     * A model the connection says nothing about arrives with no statement at all.
      */
     private fun withModel(config: ModelConfig, model: String?): ModelConfig =
         if (model == null || model == config.model) {
             config
         } else {
-            config.copy(model = model, declaredCapabilities = null)
+            val moved = config.copy(model = model)
+            // Read only the connection's per-model statements: the statement the
+            // configuration carried for its previous model belongs to that model, and
+            // must not be read as this one's.
+            moved.copy(declaredCapabilities = moved.statedCapabilitiesFor(model))
         }
 }
 

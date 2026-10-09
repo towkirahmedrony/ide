@@ -27,6 +27,7 @@ import com.agentx.app.model.preset.HealthCheckConfig
 import com.agentx.app.model.preset.ModelApiProtocol
 import com.agentx.app.model.preset.ModelPreset
 import com.agentx.app.model.preset.ModelProviderType
+import com.agentx.app.model.preset.stating
 import com.agentx.app.model.preset.TunnelConfig
 import com.agentx.app.model.preset.TunnelType
 import com.agentx.app.model.runtime.ModelRuntimeStatus
@@ -462,16 +463,36 @@ class ModelConnectService(
             ),
             colab = existing?.colab,
             enabled = request.enabled,
-            // An unnamed declaration keeps whatever the preset already carries, so
-            // reconnecting an endpoint never silently withdraws a capability the
-            // user stated for it.
-            declaredCapabilities = request.declaredCapabilities
-                ?: existing?.declaredCapabilities
-                ?: ModelCapabilityDeclaration.EMPTY,
+            // The statements this connection carries, per model. A request that does
+            // not mention capabilities at all keeps every saved statement, so
+            // reconnecting an endpoint never silently withdraws a capability the user
+            // stated for any of its models; a request that names one model's
+            // statement records or withdraws that one and leaves the others alone.
+            declaredCapabilitiesByModel = statementsFor(request, existing, modelId),
             setupKind = request.setupKind.id,
             createdAtMillis = existing?.createdAtMillis ?: 0L,
             updatedAtMillis = existing?.updatedAtMillis ?: 0L,
         )
+    }
+
+    /**
+     * The statements the saved preset should carry, per model.
+     *
+     * What the request states is recorded — or withdrawn — for the model being
+     * saved, on top of every statement already saved for this connection's other
+     * models. A request that says nothing about capabilities (a reconnect, or a
+     * provider whose catalogue states its own) leaves them all exactly as they were,
+     * so connecting or reconnecting an endpoint can never erase a statement the user
+     * made for one of its models.
+     */
+    private fun statementsFor(
+        request: ModelConnectRequest,
+        existing: ModelPreset?,
+        modelId: String,
+    ): Map<String, ModelCapabilityDeclaration> {
+        val saved = existing?.declaredCapabilitiesByModel.orEmpty()
+        val single = request.declaredCapabilities ?: return saved
+        return saved.stating(modelId, single)
     }
 
     private suspend fun persist(

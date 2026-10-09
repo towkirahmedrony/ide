@@ -50,6 +50,18 @@ data class ModelConfig(
      * named above and must not be carried across a model change.
      */
     val declaredCapabilities: ModelCapabilityDeclaration? = null,
+    /**
+     * Every statement the connection behind this configuration holds, keyed by the
+     * model id each was made for.
+     *
+     * One connection serves several models — a gateway routes many, and a role may
+     * be pointed at any of them — so the statements have to travel together. When a
+     * role names a different model of the same connection, that model's *own*
+     * statement is what applies ([declarationFor]); a statement made for another
+     * model is never inherited, and a model nobody stated anything about stays
+     * unresolved.
+     */
+    val statedCapabilitiesByModel: Map<String, ModelCapabilityDeclaration> = emptyMap(),
     val metadata: Map<String, String> = emptyMap(),
     /**
      * Identity of the persisted connection this configuration belongs to.

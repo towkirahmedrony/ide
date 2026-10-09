@@ -650,7 +650,8 @@ class ModelSetupFormTest {
     fun `a FreeLLMAPI connection that states nothing withdraws an earlier statement`() {
         val existing = apiForm(ModelSetupKind.FREELLMAPI, model = "qwen3.6-27b")
             .toPreset(null)
-            .copy(id = "p1", declaredCapabilities = ModelCapabilityDeclaration.toolEnabledEndpoint())
+            .copy(id = "p1")
+            .stating("qwen3.6-27b", ModelCapabilityDeclaration.toolEnabledEndpoint())
 
         // The saved statement is shown back as on, so the user can see it and change it.
         val loaded = ModelSetupForm.from(existing)
@@ -669,7 +670,8 @@ class ModelSetupFormTest {
     fun `a statement saved for a gateway model is loaded back into the form`() {
         val saved = apiForm(ModelSetupKind.FREELLMAPI, model = "qwen3.6-27b")
             .toPreset(null)
-            .copy(id = "p1", declaredCapabilities = ModelCapabilityDeclaration.toolEnabledEndpoint())
+            .copy(id = "p1")
+            .stating("qwen3.6-27b", ModelCapabilityDeclaration.toolEnabledEndpoint())
 
         val form = ModelSetupForm.from(saved)
 
@@ -697,9 +699,46 @@ class ModelSetupFormTest {
         // Editing a Gemini preset that already carries a statement leaves that
         // statement exactly as it was, rather than reading it back as this form's.
         val existing = apiForm(ModelSetupKind.GEMINI).toPreset(null)
-            .copy(id = "p1", declaredCapabilities = ModelCapabilityDeclaration.toolEnabledEndpoint())
+            .copy(id = "p1")
+            .stating("gemini-3.5-flash", ModelCapabilityDeclaration.toolEnabledEndpoint())
         val untouched = ModelSetupForm.from(existing).toPreset(existing)
         assertEquals(existing.declaredCapabilities, untouched.declaredCapabilities)
+    }
+
+    /**
+     * A gateway connection can hold a statement for each of the models a role may run,
+     * and editing one of them must not disturb the others. Otherwise a user with two
+     * roles on one gateway would lose the first statement by saving the second.
+     */
+    @Test
+    fun `a statement made for one model of a gateway leaves another model's alone`() {
+        val existing = apiForm(ModelSetupKind.FREELLMAPI, model = "gemini-2.5-flash")
+            .toPreset(null)
+            .copy(id = "gw")
+            .stating("gemini-3.5-flash-lite", ModelCapabilityDeclaration.toolEnabledEndpoint())
+
+        // This form edits the connection's own model, which was never stated, so the
+        // switch reports the truth for the model on screen.
+        val form = ModelSetupForm.from(existing)
+        assertFalse(form.declaresToolCalling)
+
+        val untouched = form.toPreset(existing)
+        assertEquals(
+            ModelCapabilityDeclaration.toolEnabledEndpoint(),
+            untouched.declarationFor("gemini-3.5-flash-lite"),
+        )
+        assertNull(untouched.declarationFor("gemini-2.5-flash"))
+
+        // Stating the model on screen records it beside the one already saved.
+        val both = form.copy(declaresToolCalling = true).toPreset(existing)
+        assertEquals(
+            ModelCapabilityDeclaration.toolEnabledEndpoint(),
+            both.declarationFor("gemini-2.5-flash"),
+        )
+        assertEquals(
+            ModelCapabilityDeclaration.toolEnabledEndpoint(),
+            both.declarationFor("gemini-3.5-flash-lite"),
+        )
     }
 
     @Test

@@ -14,7 +14,9 @@ import com.agentx.app.model.capability.ModelCapability
 import com.agentx.app.model.capability.ModelCapabilityProfile
 import com.agentx.app.model.capability.ModelCapabilityRegistry
 import com.agentx.app.model.capability.capabilityProfile
+import com.agentx.app.model.capability.declarationFor
 import com.agentx.app.model.capability.isLocalRuntime
+import com.agentx.app.model.preset.normalizeModelId
 import com.agentx.app.model.ratelimit.RateLimitDecision
 import com.agentx.app.model.ratelimit.RateLimitKind
 import com.agentx.app.model.ratelimit.RateLimitManager
@@ -90,6 +92,21 @@ data class ModelEligibility(
     val healthState: CandidateHealthState? = null,
     val healthScope: CandidateHealthScope? = null,
     val reason: String? = null,
+    /**
+     * Whether a statement the user made was applied to *this* exact model.
+     *
+     * Part of the diagnostic record at the decision point: false with an empty
+     * [statedModels] means nothing was ever stated for it, while false with a
+     * non-empty [statedModels] means the connection states *other* models — which is
+     * the difference between "nothing is known" and "a statement was made, for a
+     * different model". Never a secret: a boolean and model ids the user chose.
+     */
+    val declared: Boolean = false,
+    /**
+     * The models this configuration's connection states something about, capped for
+     * readability. Ids only — never an endpoint, a key or a request body.
+     */
+    val statedModels: List<String> = emptyList(),
 ) {
     val eligible: Boolean get() = state == ModelEligibilityState.AVAILABLE
 
@@ -127,6 +144,10 @@ data class ModelEligibility(
         first?.let { details["support"] = profile.support(it).name }
         details["provenance"] = profile.provenance.name
         details["known"] = profile.known.toString()
+        // Whether the verdict rests on a statement made for this exact model, and —
+        // when it does not — which models the connection states instead. Ids only.
+        details["declared"] = declared.toString()
+        if (statedModels.isNotEmpty()) details["statedModels"] = statedModels.joinToString(",")
         retryAfterMs?.let { details["retryAfterMs"] = it.toString() }
         rateLimitKind?.let { details["rateLimitKind"] = it.name }
         healthState?.let { details["healthState"] = it.name }
@@ -140,6 +161,8 @@ data class ModelEligibility(
                 append(" support=${profile.support(it).name}")
             }
             append(" provenance=${profile.provenance.name}")
+            append(" declared=$declared")
+            if (statedModels.isNotEmpty()) append(" statedModels=${statedModels.joinToString(",")}")
             retryAfterMs?.let { append(" retryAfterMs=$it") }
         }
         return AgentError(
@@ -211,6 +234,13 @@ class ModelEligibilityChecker(
         role: AgentRole,
         config: ModelConfig,
         requirements: ModelRequestRequirements = ModelRequestRequirements.DEFAULT,
+    ): ModelEligibility = decide(role, config, requirements).withEvidenceOf(config)
+
+    /** The verdict itself; [check] adds the capability evidence it was reached on. */
+    private suspend fun decide(
+        role: AgentRole,
+        config: ModelConfig,
+        requirements: ModelRequestRequirements,
     ): ModelEligibility {
         val profile = profile(config)
 
@@ -307,6 +337,31 @@ class ModelEligibilityChecker(
         }
     }
 }
+
+/** How many stated model ids a diagnostic lists, so a rejection stays readable. */
+private const val MAX_STATED_MODELS: Int = 5
+
+/**
+ * The same verdict, carrying the capability evidence it was reached on.
+ *
+ * Recorded where every verdict passes through, so an eligible model and a rejected
+ * one report the same facts: the resolved support and provenance carried by
+ * [ModelEligibility.profile], whether a statement was applied to this exact model,
+ * and — when none was — which models the connection states instead. That is the
+ * difference between "nothing is known about this model" and "a statement was made,
+ * for a different model", which is otherwise indistinguishable in a report.
+ *
+ * Nothing recorded here is a secret: a boolean, and model ids the user chose.
+ */
+private fun ModelEligibility.withEvidenceOf(config: ModelConfig): ModelEligibility = copy(
+    declared = config.declarationFor(config.model) != null,
+    statedModels = config.statedCapabilitiesByModel.keys
+        .map(::normalizeModelId)
+        .filter { it.isNotEmpty() }
+        .distinct()
+        .sorted()
+        .take(MAX_STATED_MODELS),
+)
 
 /**
  * A resolved model plus the eligibility that decided it.

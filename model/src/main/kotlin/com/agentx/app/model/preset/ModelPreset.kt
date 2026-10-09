@@ -315,16 +315,19 @@ data class ModelPreset(
     val colab: ColabRuntimeConfig? = null,
     val enabled: Boolean = true,
     /**
-     * What the user states this one model/configuration can do.
+     * What the user states about the models this connection serves, each keyed by
+     * the model id it was stated for.
      *
-     * Empty by default, which changes nothing: an undeclared model keeps
-     * resolving to `CapabilitySupport.UNKNOWN` and is never assumed capable. A
-     * Custom/Local user who knows their own server declares the capabilities
-     * AgentX cannot discover for itself here, so capability resolution stays
-     * accurate for a model that has no authoritative definition — without
-     * marking every OpenAI-compatible model tool-capable.
+     * Keyed by model, never by connection, because a statement is a fact about one
+     * model: a gateway routes several models whose real capabilities differ, and a
+     * role may be pointed at any of them. Keying by model is what lets a user state
+     * tool calling for the exact models they run — and what keeps a statement about
+     * one of them from lending itself to another.
+     *
+     * Empty by default, which changes nothing: an undeclared model keeps resolving
+     * to `CapabilitySupport.UNKNOWN` and is never assumed capable.
      */
-    val declaredCapabilities: ModelCapabilityDeclaration = ModelCapabilityDeclaration(),
+    val declaredCapabilitiesByModel: Map<String, ModelCapabilityDeclaration> = emptyMap(),
     /**
      * Quick-connect catalog id (`custom`, `gemini`, `groq`). Informational only;
      * the gateway still sees a normal OpenAI-compatible preset.
@@ -335,6 +338,43 @@ data class ModelPreset(
 ) {
     /** Whether the preset contains a usable connection description. */
     val isConfigured: Boolean get() = validate().isEmpty()
+
+    /**
+     * The statement made for this preset's own model, or an empty one.
+     *
+     * A convenience for readers that ask about the model the connection is saved
+     * with. The per-model map stays the source of truth, so a statement made for a
+     * different model of this connection is never read as this model's.
+     */
+    val declaredCapabilities: ModelCapabilityDeclaration
+        get() = declarationFor(modelIdentifier) ?: ModelCapabilityDeclaration.EMPTY
+
+    /**
+     * The statement made for [modelId], or null when nothing was stated for it.
+     *
+     * Matched on the normalized model id, so the id as written by a provider or by
+     * the user resolves to the same statement, and never matched by provider or
+     * prefix: only the exact model the user stated it for answers with it.
+     */
+    fun declarationFor(modelId: String): ModelCapabilityDeclaration? {
+        val key = normalizeModelId(modelId)
+        if (key.isEmpty()) return null
+        declaredCapabilitiesByModel[key]?.takeIf { !it.isEmpty }?.let { return it }
+        // Tolerates a document written with an id the normalizer changes.
+        return declaredCapabilitiesByModel.entries
+            .firstOrNull { normalizeModelId(it.key) == key && !it.value.isEmpty }
+            ?.value
+    }
+
+    /**
+     * This preset with [statement] recorded for [modelId], or with that model's
+     * statement withdrawn when [statement] is empty.
+     *
+     * Every other model's statement is left exactly as it was, which is what makes
+     * editing one model of a connection unable to silently rewrite another's.
+     */
+    fun stating(modelId: String, statement: ModelCapabilityDeclaration): ModelPreset =
+        copy(declaredCapabilitiesByModel = declaredCapabilitiesByModel.stating(modelId, statement))
 
     /**
      * Stable provider identity this preset connects as, used by
@@ -448,4 +488,26 @@ data class ModelPreset(
             return withLeading.trimEnd('/')
         }
     }
+}
+
+/**
+ * [statements] with [statement] recorded for [modelId], or with that model's
+ * statement withdrawn when [statement] is empty.
+ *
+ * The operation every writer of a connection's statements shares, so adding or
+ * withdrawing one model's statement can never disturb another's — whether the
+ * writer holds a preset, a connect request or a configuration. An empty [modelId]
+ * changes nothing, and a statement whose normalized id already exists replaces that
+ * entry rather than accumulating a second one under a different spelling.
+ */
+fun Map<String, ModelCapabilityDeclaration>.stating(
+    modelId: String,
+    statement: ModelCapabilityDeclaration,
+): Map<String, ModelCapabilityDeclaration> {
+    val key = normalizeModelId(modelId)
+    if (key.isEmpty()) return this
+    val next = LinkedHashMap(this)
+    next.keys.filter { normalizeModelId(it) == key }.forEach(next::remove)
+    if (!statement.isEmpty) next[key] = statement
+    return next
 }

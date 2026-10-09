@@ -7,6 +7,7 @@ import com.agentx.app.model.capability.InMemoryModelCapabilityRegistry
 import com.agentx.app.model.capability.ModelCapability
 import com.agentx.app.model.capability.ModelCapabilityDeclaration
 import com.agentx.app.model.capability.capabilityProfile
+import com.agentx.app.model.capability.statedCapabilitiesFor
 import com.agentx.app.model.preset.ModelPreset
 import com.agentx.app.model.runtime.EndpointSource
 import com.agentx.app.model.runtime.ModelEndpoint
@@ -51,9 +52,8 @@ class DeclaredCapabilityPropagationTest {
     @Test
     fun `a connected configuration carries the capability stated for its model`() {
         val config = connect(
-            customPreset(model = devstral).copy(
-                declaredCapabilities = ModelCapabilityDeclaration.toolEnabledEndpoint(),
-            ),
+            customPreset(model = devstral)
+                .stating(devstral, ModelCapabilityDeclaration.toolEnabledEndpoint()),
         )
 
         assertEquals(devstral, config.model)
@@ -81,6 +81,46 @@ class DeclaredCapabilityPropagationTest {
         assertEquals(
             CapabilitySupport.UNKNOWN,
             config.capabilityProfile(capabilities).support(ModelCapability.TOOL_CALLING),
+        )
+    }
+
+    /**
+     * A gateway serves several models and a role may be pointed at any of them, so a
+     * connection that states several has to hand *all* of them to the runtime — each
+     * keyed to the model it was made for. Otherwise the statement exists on the saved
+     * preset and is still invisible to the eligibility check for every model except
+     * the one the connection happens to name.
+     */
+    @Test
+    fun `a connected configuration carries the statements for every model it serves`() {
+        val declared = customPreset(model = devstral)
+            .stating(devstral, ModelCapabilityDeclaration.toolEnabledEndpoint())
+            .stating(undefined, ModelCapabilityDeclaration.toolEnabledEndpoint())
+
+        val config = connect(declared)
+
+        // The connection's own model keeps its statement on the single field...
+        assertEquals(devstral, config.model)
+        assertEquals(ModelCapabilityDeclaration.toolEnabledEndpoint(), config.declaredCapabilities)
+        assertEquals(CapabilitySupport.SUPPORTED, config.capabilityProfile(capabilities).toolCalling)
+
+        // ...and the other stated model travels beside it, keyed by its own id, so the
+        // runtime can re-point at that model and keep the statement made for it.
+        assertEquals(
+            ModelCapabilityDeclaration.toolEnabledEndpoint(),
+            config.statedCapabilitiesFor(undefined),
+        )
+        assertEquals(
+            CapabilitySupport.SUPPORTED,
+            config.copy(model = undefined).capabilityProfile(capabilities).toolCalling,
+        )
+
+        // A model nobody stated anything about resolves to unknown, whichever model
+        // the configuration was last pointed at.
+        val neverStated = "hf.co/someone/never-stated-GGUF:Q4_K_M"
+        assertEquals(
+            CapabilitySupport.UNKNOWN,
+            config.copy(model = neverStated).capabilityProfile(capabilities).toolCalling,
         )
     }
 }

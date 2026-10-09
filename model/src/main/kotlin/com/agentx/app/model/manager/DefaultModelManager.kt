@@ -444,6 +444,8 @@ class DefaultModelManager(
                 // model travels with it, so the catalog sees the same value the
                 // eligibility check and the gateway see.
                 declaredCapabilities = preset.declaredCapabilities.takeUnless { it.isEmpty },
+                statedCapabilitiesByModel = preset.declaredCapabilitiesByModel
+                    .filterValues { !it.isEmpty },
                 metadata = mapOf(
                     "modelPresetId" to preset.id,
                     "modelPresetName" to preset.displayName,
@@ -729,23 +731,29 @@ class DefaultModelManager(
      * [ModelCapabilityRegistry], so the model a role resolves sees what the user
      * stated for it.
      *
+     * Every statement the connection holds is published, each under the model id it
+     * was made for — a gateway serves several models and a role may be pointed at
+     * any of them, so publishing only the connection's own model would leave the
+     * others reading as unknown even though the user stated them.
+     *
      * This is the only place a declaration becomes authoritative, which is what
-     * keeps it scoped: the registry entry is keyed by this preset's own
-     * `providerId` + `modelId`, so one declared custom model never confers a
-     * capability on any other model — not even another model of the same
-     * `openai-compatible` provider. An undeclared model is untouched and stays
-     * unknown.
+     * keeps it scoped: each registry entry is keyed by this preset's own
+     * `providerId` + that one `modelId`, so one declared model never confers a
+     * capability on any other — not another model of the same `openai-compatible`
+     * provider, and not another model of the same gateway. A model nobody declared
+     * is untouched and stays unknown.
      */
     private fun registerPresetCapabilities(presets: List<ModelPreset>) {
         presets.forEach { preset ->
-            val declaration = preset.declaredCapabilities
-            if (declaration.isEmpty) return@forEach
-            val modelId = normalizeModelId(preset.modelIdentifier)
-            if (modelId.isBlank()) return@forEach
             val providerId = preset.providerId
-            capabilityRegistry.registerOrUpdate(
-                declaration.applyTo(capabilityRegistry.profile(providerId, modelId)),
-            )
+            preset.declaredCapabilitiesByModel.forEach { (rawModelId, declaration) ->
+                if (declaration.isEmpty) return@forEach
+                val modelId = normalizeModelId(rawModelId)
+                if (modelId.isBlank()) return@forEach
+                capabilityRegistry.registerOrUpdate(
+                    declaration.applyTo(capabilityRegistry.profile(providerId, modelId)),
+                )
+            }
         }
     }
 

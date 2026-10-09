@@ -4,6 +4,7 @@ import com.agentx.app.core.ForgeError
 import com.agentx.app.core.ForgeErrorCode
 import com.agentx.app.core.ForgeResult
 import com.agentx.app.model.ModelConfig
+import com.agentx.app.model.capability.ModelCapabilityDeclaration
 import com.agentx.app.model.catalog.CatalogModel
 import com.agentx.app.model.catalog.CatalogSource
 import com.agentx.app.model.catalog.ModelCatalog
@@ -375,6 +376,35 @@ class ModelEditorViewModelTest {
         // ...and the endpoint's own list is never padded with it.
         assertTrue(viewModel.state.models.none { it.id == "qwen3.6-27b" })
         assertEquals(listOf("gemini-2.5-flash", "glm-5.3"), viewModel.state.models.map { it.id }.sorted())
+    }
+
+    /**
+     * The switch states a fact about one model, so it has to follow the selection.
+     * Otherwise a user could believe a model was declared that never was — or that a
+     * model they did declare was not, which is the state the incident was reported from.
+     */
+    @Test
+    fun `selecting a model shows that model's own statement`() {
+        val existing = freeLlmPreset("gemini-2.5-flash")
+            .stating("gemini-3.5-flash-lite", ModelCapabilityDeclaration.toolEnabledEndpoint())
+        val live = freeLlmSnapshot("gemini-2.5-flash", "gemini-3.5-flash-lite")
+        val viewModel = ModelEditorViewModel(
+            manager = manager(listOf(existing)),
+            presetId = "freellmapi-preset",
+            catalog = FakeCatalogRegistry(live, ForgeResult.Success(live)),
+        )
+
+        // The connection's own model was never stated, so the switch is off for it.
+        assertFalse(viewModel.state.form.declaresToolCalling)
+
+        // Selecting the model the user did state shows it as on...
+        viewModel.selectModel("gemini-3.5-flash-lite")
+        assertTrue(viewModel.state.form.declaresToolCalling)
+
+        // ...and selecting a model nothing is stated for shows off, rather than carrying
+        // the previous model's answer over to it.
+        viewModel.selectModel("gemini-2.5-flash")
+        assertFalse(viewModel.state.form.declaresToolCalling)
     }
 
     /**

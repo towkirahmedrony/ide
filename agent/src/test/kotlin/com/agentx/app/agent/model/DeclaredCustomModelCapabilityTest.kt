@@ -12,6 +12,7 @@ import com.agentx.app.model.capability.ModelCapabilityRegistry
 import com.agentx.app.model.preset.ModelApiProtocol
 import com.agentx.app.model.preset.ModelPreset
 import com.agentx.app.model.preset.ModelPresetCodec
+import com.agentx.app.model.preset.normalizeModelId
 import com.agentx.app.model.preset.ModelProviderType
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
@@ -301,7 +302,11 @@ class DeclaredCustomModelCapabilityTest {
         modelIdentifier = devstral,
         apiProtocol = ModelApiProtocol.OPENAI_COMPATIBLE,
         apiBasePath = "/v1",
-        declaredCapabilities = declared,
+        declaredCapabilitiesByModel = if (declared.isEmpty) {
+            emptyMap()
+        } else {
+            mapOf(normalizeModelId(devstral) to declared)
+        },
         setupKind = "custom",
     )
 }

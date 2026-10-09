@@ -18,6 +18,7 @@ import com.agentx.app.model.preset.ModelApiProtocol
 import com.agentx.app.model.preset.ModelPreset
 import com.agentx.app.model.preset.ModelProviderIds
 import com.agentx.app.model.preset.ModelProviderType
+import com.agentx.app.model.preset.stating
 import com.agentx.app.model.preset.TunnelConfig
 import com.agentx.app.model.preset.TunnelType
 import com.agentx.app.model.ratelimit.RateLimitManager
@@ -294,6 +295,21 @@ data class ModelSetupForm(
     }
 
     /**
+     * The capability statements the saved connection should carry, per model.
+     *
+     * A connection a provider catalogue speaks for states nothing here, so every
+     * statement already saved for it is left exactly as it was. A connection the
+     * user states for records — or withdraws — the statement for **the model this
+     * form is editing**, and every other model's statement is carried over
+     * untouched, so editing one model of a gateway can never rewrite another's.
+     */
+    private fun statementsFor(existing: ModelPreset?): Map<String, ModelCapabilityDeclaration> {
+        val saved = existing?.declaredCapabilitiesByModel.orEmpty()
+        val stated = declaredCapabilities() ?: return saved
+        return saved.stating(modelId, stated)
+    }
+
+    /**
      * The preset this form describes.
      *
      * Settings the form no longer shows are inherited from [existing] whenever it
@@ -357,9 +373,7 @@ data class ModelSetupForm(
             health = existing?.health ?: HealthCheckConfig(),
             colab = existing?.colab,
             enabled = existing?.enabled ?: true,
-            declaredCapabilities = declaredCapabilities()
-                ?: existing?.declaredCapabilities
-                ?: ModelCapabilityDeclaration.EMPTY,
+            declaredCapabilitiesByModel = statementsFor(existing),
             setupKind = setupKind.id,
             createdAtMillis = existing?.createdAtMillis ?: 0L,
             updatedAtMillis = existing?.updatedAtMillis ?: 0L,

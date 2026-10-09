@@ -84,9 +84,8 @@ class DeclaredModelCapabilityTest {
 
         assertNotNull(
             manager.createPreset(
-                customPreset(model = devstral).copy(
-                    declaredCapabilities = ModelCapabilityDeclaration.toolEnabledEndpoint(),
-                ),
+                customPreset(model = devstral)
+                    .stating(devstral, ModelCapabilityDeclaration.toolEnabledEndpoint()),
                 credential = null,
             ).valueOrNull(),
         )
@@ -103,6 +102,79 @@ class DeclaredModelCapabilityTest {
         assertEquals(
             CapabilitySupport.UNKNOWN,
             capabilities.support(providerId, "some-other-local-model", ModelCapability.TOOL_CALLING),
+        )
+        manager.close()
+    }
+
+    /**
+     * A gateway connection can state several of the models it serves, and each one has
+     * to be published under its own model id. Publishing only the connection's own
+     * model left the others reading as unknown at every consumer that resolves
+     * capabilities through the registry — which is what a role pointed at one of those
+     * models does.
+     */
+    @Test
+    fun `a connection that states two models publishes each under its own id`() = runBlocking {
+        val manager = manager()
+
+        assertNotNull(
+            manager.createPreset(
+                customPreset(model = devstral)
+                    .stating(devstral, ModelCapabilityDeclaration.toolEnabledEndpoint())
+                    .stating(undefined, ModelCapabilityDeclaration.toolEnabledEndpoint()),
+                credential = null,
+            ).valueOrNull(),
+        )
+
+        assertEquals(
+            CapabilitySupport.SUPPORTED,
+            capabilities.support(providerId, devstral, ModelCapability.TOOL_CALLING),
+        )
+        assertEquals(
+            CapabilitySupport.SUPPORTED,
+            capabilities.support(providerId, undefined, ModelCapability.TOOL_CALLING),
+        )
+        // A third model of the same connection was never stated, so it stays unknown:
+        // one model's statement never becomes the connection's.
+        val neverStated = "hf.co/someone/never-stated-GGUF:Q4_K_M"
+        assertEquals(
+            CapabilitySupport.UNKNOWN,
+            capabilities.support(providerId, neverStated, ModelCapability.TOOL_CALLING),
+        )
+        manager.close()
+    }
+
+    /** Withdrawing one model's statement leaves the connection's other ones in place. */
+    @Test
+    fun `withdrawing one model leaves another model's statement published`() = runBlocking {
+        val manager = manager()
+        val created = assertNotNull(
+            manager.createPreset(
+                customPreset(model = devstral)
+                    .stating(devstral, ModelCapabilityDeclaration.toolEnabledEndpoint())
+                    .stating(undefined, ModelCapabilityDeclaration.toolEnabledEndpoint()),
+                credential = null,
+            ).valueOrNull(),
+        )
+
+        assertNotNull(
+            manager.updatePreset(
+                preset = created.stating(devstral, ModelCapabilityDeclaration.EMPTY),
+                credential = null,
+                clearCredential = false,
+            ).valueOrNull(),
+        )
+
+        // The reloaded preset really did drop only that one, and republished what is
+        // left. (The registry keeps an entry it was once told about, which is the
+        // documented behaviour of a published statement — what matters here is the
+        // saved set the next load republishes from.)
+        val saved = assertNotNull(manager.preset(created.id))
+        assertNull(saved.declarationFor(devstral))
+        assertNotNull(saved.declarationFor(undefined))
+        assertEquals(
+            CapabilitySupport.SUPPORTED,
+            capabilities.support(providerId, undefined, ModelCapability.TOOL_CALLING),
         )
         manager.close()
     }
@@ -127,9 +199,8 @@ class DeclaredModelCapabilityTest {
     fun `the declaration is re-published after a restart`() = runBlocking {
         val first = manager()
         first.createPreset(
-            customPreset(model = devstral).copy(
-                declaredCapabilities = ModelCapabilityDeclaration.toolEnabledEndpoint(),
-            ),
+            customPreset(model = devstral)
+                .stating(devstral, ModelCapabilityDeclaration.toolEnabledEndpoint()),
             credential = null,
         )
         first.close()

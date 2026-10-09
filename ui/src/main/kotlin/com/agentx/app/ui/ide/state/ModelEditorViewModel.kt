@@ -131,9 +131,23 @@ class ModelEditorViewModel(
         viewModelScope.launch { loadModels(force = false) }
     }
 
+    /**
+     * Selects a model from the provider's list, showing what is stated for **it**.
+     *
+     * The statement the switch makes belongs to one model, so the switch follows the
+     * selection: picking a model the connection already declares shows it on, and
+     * picking one it says nothing about shows it off rather than carrying the
+     * previous model's answer over. Without this the switch would misreport what the
+     * saved connection claims, and a user could believe a model was declared that
+     * never was.
+     */
     fun selectModel(modelId: String) {
-        edit { form -> form.copy(modelId = modelId) }
+        edit { form -> form.copy(modelId = modelId, declaresToolCalling = statesToolCalling(modelId)) }
     }
+
+    /** Whether the saved connection already states tool calling for [modelId]. */
+    private fun statesToolCalling(modelId: String): Boolean =
+        existing?.declarationFor(modelId) != null
 
     fun toggleManualModel(enabled: Boolean) {
         edit { form -> form.copy(manualModel = enabled) }

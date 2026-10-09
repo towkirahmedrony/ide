@@ -166,6 +166,13 @@ class GatewayModelConnectionRegistry(
             // from providerId + model alone and does not lose the capability on the
             // way to the eligibility check.
             declaredCapabilities = preset.declaredCapabilities.takeUnless { it.isEmpty },
+            // The connection's statements for *every* model it serves travel too, so
+            // a role pointed at another model of this same gateway receives the
+            // statement made for that model rather than losing it. Keyed by model,
+            // so resolving a model nobody stated anything about still resolves to
+            // unknown instead of borrowing a neighbour's capability.
+            statedCapabilitiesByModel = preset.declaredCapabilitiesByModel
+                .filterValues { !it.isEmpty },
             // Only non-secret bookkeeping travels in metadata: never the URL or key.
             metadata = mapOf(
                 "modelPresetId" to preset.id,
